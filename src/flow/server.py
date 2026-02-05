@@ -182,7 +182,7 @@ def install_odoo_modules(branch_name: str, modules: str) -> str:
         return (
             f"Modules installed: {', '.join(result['modules'])}\n"
             f"Exit code: {result['exit_code']}\n\n"
-            f"Logs after restart:\n{result['logs']}"
+            f"Logs after restart:\n{result['output']}"
         )
     except Exception as e:
         return f"Error installing modules: {str(e)}"
@@ -206,7 +206,7 @@ def upgrade_odoo_modules(branch_name: str, modules: str) -> str:
         return (
             f"Modules upgraded: {', '.join(result['modules'])}\n"
             f"Exit code: {result['exit_code']}\n\n"
-            f"Logs after restart:\n{result['logs']}"
+            f"Logs after restart:\n{result['command_output']}"
         )
     except Exception as e:
         return f"Error upgrading modules: {str(e)}"

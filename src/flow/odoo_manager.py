@@ -52,14 +52,17 @@ def _wait_for_container(client: DockerClient, container_name: str, timeout: int 
         time.sleep(1)
     raise Exception(f"Container {container_name} did not start within {timeout}s")
 
-def _init_odoo_database(client: DockerClient, odoo_container_name: str) -> None:
-    _wait_for_container(client, odoo_container_name)
-    container = client.containers.get(odoo_container_name)
-    cmd = "/entrypoint.sh odoo -d odoo --no-http --stop-after-init -i base"
-    exit_code, output = container.exec_run(cmd)
-    if exit_code != 0:
-        output_str = output.decode("utf-8") if isinstance(output, bytes) else str(output)
-        raise Exception(f"Database initialization failed (exit code {exit_code}): {output_str}")
+def _wait_for_container_exit(client: DockerClient, container_name: str, timeout: int = 300) -> int:
+    for _ in range(timeout):
+        try:
+            container = client.containers.get(container_name)
+            if container.status in ("exited", "dead"):
+                exit_info = container.attrs.get("State", {})
+                return exit_info.get("ExitCode", -1)
+        except docker.errors.NotFound:
+            raise Exception(f"Container {container_name} not found")
+        time.sleep(1)
+    raise Exception(f"Container {container_name} did not stop within {timeout}s")
 
 def create_environment(branch_name: str, repo_url: str, version: str = "15.0") -> Dict[str, str]:
     try:
@@ -124,30 +127,53 @@ def create_environment(branch_name: str, repo_url: str, version: str = "15.0") -
         restart_policy={"Name": "unless-stopped"}
     )
 
-    # 4. Start Odoo
+    # 4. Init Odoo database (one-time run with -i base)
     odoo_image = f"{DEFAULT_ODOO_IMAGE}:{version}"
     host_port = _get_available_port()
+
+    odoo_env = {
+        "HOST": db_container_name,
+        "USER": ODOO_DB_USER,
+        "PASSWORD": ODOO_DB_PASSWORD
+    }
+    odoo_volumes = {
+        workspace_path: {'bind': '/mnt/extra-addons', 'mode': 'rw'}
+    }
+
+    _wait_for_container(client, db_container_name)
 
     client.containers.run(
         odoo_image,
         name=odoo_container_name,
         detach=True,
         network=network_name,
-        environment={
-            "HOST": db_container_name,
-            "USER": ODOO_DB_USER,
-            "PASSWORD": ODOO_DB_PASSWORD
-        },
+        environment=odoo_env,
+        labels=labels,
+        volumes=odoo_volumes,
+        command="odoo -d odoo --no-http --stop-after-init -i base"
+    )
+
+    exit_code = _wait_for_container_exit(client, odoo_container_name)
+    init_container = client.containers.get(odoo_container_name)
+    if exit_code != 0:
+        logs = init_container.logs(tail=50).decode("utf-8", errors="replace")
+        init_container.remove(v=True)
+        raise Exception(f"Database initialization failed (exit code {exit_code}):\n{logs}")
+    init_container.remove(v=True)
+
+    # 5. Start Odoo (permanent)
+    client.containers.run(
+        odoo_image,
+        name=odoo_container_name,
+        detach=True,
+        network=network_name,
+        environment=odoo_env,
         labels=labels,
         ports={'8069/tcp': host_port},
-        volumes={
-            workspace_path: {'bind': '/mnt/extra-addons', 'mode': 'rw'}
-        },
+        volumes=odoo_volumes,
         restart_policy={"Name": "unless-stopped"},
         command="odoo -d odoo --dev=xml"
     )
-
-    _init_odoo_database(client, odoo_container_name)
 
     return {
         "url": f"http://{EXTERNAL_HOST}:{host_port}",
