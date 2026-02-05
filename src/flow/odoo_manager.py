@@ -4,6 +4,7 @@ import subprocess
 import shutil
 import socket
 from typing import List, Dict, Any
+from docker import DockerClient
 from flow.config import (
     PREFIX,
     BRANCH_LABEL,
@@ -19,7 +20,7 @@ from flow.config import (
     PORT_RANGE_END
 )
 
-def get_client() -> docker.DockerClient:
+def get_client() -> DockerClient:
     return docker.from_env()
 
 def _get_resource_name(user_id: str, branch_name: str, resource_type: str) -> str:
