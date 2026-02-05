@@ -1,25 +1,9 @@
 import os
-from typing import Literal, Any, cast
 from fastmcp import FastMCP
-from fastmcp.server.dependencies import get_http_headers
 from flow import odoo_manager, config
 
 # Initialize FastMCP server
 mcp = FastMCP("Flow")
-
-def _get_user_id() -> str:
-    """Extract and verify user_id from API_KEY header."""
-    headers = get_http_headers()
-    api_key = headers.get("API_KEY") or headers.get("api_key")
-    if not api_key:
-        raise Exception("Missing API_KEY header")
-
-    if config.FLOW_API_KEYS:
-        allowed_keys = [k.strip() for k in config.FLOW_API_KEYS.split(",") if k.strip()]
-        if api_key not in allowed_keys:
-            raise Exception("Invalid API_KEY")
-
-    return api_key
 
 @mcp.tool()
 def provision_env(branch_name: str, repo_url: str, version: str = "17.0") -> str:
@@ -32,8 +16,7 @@ def provision_env(branch_name: str, repo_url: str, version: str = "17.0") -> str
         version: Odoo version to use (default "17.0").
     """
     try:
-        user_id = _get_user_id()
-        result = odoo_manager.provision_env(user_id, branch_name, repo_url, version)
+        result = odoo_manager.provision_env(branch_name, repo_url, version)
         return (
             f"Environment provisioned successfully!\n"
             f"URL: {result['url']}\n"
@@ -53,8 +36,7 @@ def teardown_env(branch_name: str) -> str:
         branch_name: The name of the branch to tear down.
     """
     try:
-        user_id = _get_user_id()
-        odoo_manager.teardown_env(user_id, branch_name)
+        odoo_manager.teardown_env(branch_name)
         return f"Environment for branch '{branch_name}' has been torn down."
     except Exception as e:
         return f"Error during teardown: {str(e)}"
@@ -62,11 +44,10 @@ def teardown_env(branch_name: str) -> str:
 @mcp.tool()
 def list_envs() -> str:
     """
-    List all managed Odoo environments for the current user.
+    List all managed Odoo environments.
     """
     try:
-        user_id = _get_user_id()
-        envs = odoo_manager.list_envs(user_id)
+        envs = odoo_manager.list_envs()
         if not envs:
             return "No active Flow environments found."
 
@@ -92,26 +73,45 @@ def execute_test(branch_name: str, modules: str) -> str:
         modules: Comma-separated list of modules to test.
     """
     try:
-        user_id = _get_user_id()
-        output = odoo_manager.execute_test(user_id, branch_name, modules)
+        output = odoo_manager.execute_test(branch_name, modules)
         return f"Test Results for {branch_name}:\n\n{output}"
     except Exception as e:
         return f"Error executing tests: {str(e)}"
 
+@mcp.tool()
+def get_env_odoo_log(branch_name: str, n_lines: int = 100) -> str:
+    """
+    Get the last N lines of logs from the Odoo container for a specific branch.
+
+    Args:
+        branch_name: The name of the branch/environment.
+        n_lines: The number of recent log lines to retrieve (default 100).
+    """
+    try:
+        output = odoo_manager.get_env_odoo_log(branch_name, n_lines)
+        return f"Recent logs for {branch_name}:\n\n{output}"
+    except Exception as e:
+        return f"Error fetching logs: {str(e)}"
+
 def main() -> None:
     """Entry point for the Flow MCP server."""
-    transport_str = os.getenv("FLOW_TRANSPORT", "http")
-    if transport_str not in ["stdio", "http"]:
-        transport_str = "http"
-
-    transport = cast(Literal["stdio", "http"], transport_str)
-
-    kwargs: dict[str, Any] = {}
-    if transport == "http":
-        kwargs["host"] = os.getenv("FLOW_HOST", "0.0.0.0")
-        kwargs["port"] = int(os.getenv("FLOW_PORT", "8000"))
-
-    mcp.run(transport=transport, **kwargs)
+    transport_str = os.getenv("FLOW_TRANSPORT", "stdio")
+    
+    if transport_str == "http":
+        from fastmcp.server.http import create_streamable_http_app
+        
+        host = os.getenv("FLOW_HOST", "0.0.0.0")
+        port = int(os.getenv("FLOW_PORT", "8000"))
+        
+        # Create streamable HTTP app without auth
+        app = create_streamable_http_app(mcp)
+        
+        # Run with Uvicorn
+        import uvicorn
+        uvicorn.run(app, host=host, port=port)
+    else:
+        # Fallback to stdio
+        mcp.run(transport="stdio")
 
 if __name__ == "__main__":
     main()

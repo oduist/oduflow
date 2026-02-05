@@ -3,7 +3,6 @@ import os
 # Docker Labels
 BRANCH_LABEL = "flow.branch"
 MANAGED_LABEL = "flow.managed"
-USER_LABEL = "flow.user"
 
 # Prefix for Docker resources
 PREFIX = "flow-"
@@ -24,6 +23,3 @@ PORT_RANGE_END = int(os.getenv("PORT_RANGE_END", "50100"))
 
 # Workspaces
 WORKSPACES_DIR = os.getenv("FLOW_WORKSPACES_DIR", os.path.expanduser("~/.flow/workspaces"))
-
-# Authentication
-FLOW_API_KEYS = os.getenv("FLOW_API_KEYS", "")

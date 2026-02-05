@@ -1,6 +1,5 @@
 import pytest
-from unittest.mock import patch, MagicMock
-from flow.server import mcp
+from unittest.mock import patch
 
 @patch("flow.server.get_http_headers")
 @patch("flow.odoo_manager.provision_env")

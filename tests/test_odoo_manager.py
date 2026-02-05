@@ -1,8 +1,7 @@
 import pytest
 import docker
-import os
 from unittest.mock import MagicMock, patch
-from flow.odoo_manager import provision_env, teardown_env, list_envs, execute_test
+from flow.odoo_manager import provision_env, teardown_env, list_envs, execute_test, get_env_odoo_log
 
 @pytest.fixture
 def mock_docker_client():
@@ -98,3 +97,17 @@ def test_execute_test(mock_docker_client):
     # Assertions
     assert output == "All tests passed"
     mock_container.exec_run.assert_called()
+
+def test_get_env_odoo_log(mock_docker_client):
+    # Setup mocks
+    mock_container = MagicMock()
+    mock_container.logs.return_value = b"2023-10-27 10:00:00,000 INFO odoo: log line 1\n2023-10-27 10:00:01,000 INFO odoo: log line 2"
+    mock_docker_client.containers.get.return_value = mock_container
+    
+    # Execute
+    output = get_env_odoo_log("user123", "feat/test", n_lines=2)
+    
+    # Assertions
+    assert "log line 1" in output
+    assert "log line 2" in output
+    mock_container.logs.assert_called_with(tail=2, stdout=True, stderr=True)

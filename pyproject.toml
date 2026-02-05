@@ -6,7 +6,7 @@ authors = [
     { name = "Flow Contributor" }
 ]
 dependencies = [
-    "fastmcp",
+    "fastmcp==2.14.3",
     "docker",
     "python-dotenv",
 ]
