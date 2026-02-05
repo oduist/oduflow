@@ -7,7 +7,7 @@
 ### [x] Step: Implement Phase 1: Server Refactoring
 - [x] Remove `auth_token` from tool parameters in `src/flow/server.py`.
 - [x] Implement `_get_user_id()` to extract `API_KEY` from headers.
-- [x] Default transport to `sse` in `main()`.
+- [x] Default transport to `http` in `main()`.
 
 ### [x] Step: Implement Phase 2: Manager Verification
 - [x] Verified `src/flow/odoo_manager.py` uses `user_id` correctly for isolation.

@@ -9,7 +9,7 @@ USER_LABEL = "flow.user"
 PREFIX = "flow-"
 
 # Default Odoo configurations
-DEFAULT_ODOO_VERSION = "17.0"
+DEFAULT_ODOO_VERSION = "15.0"
 DEFAULT_ODOO_IMAGE = "odoo"
 DEFAULT_POSTGRES_IMAGE = "postgres:15"
 
