@@ -27,7 +27,7 @@ def test_provision_env(mock_rmtree, mock_exists, mock_makedirs, mock_run, mock_g
     mock_docker_client.containers.run.return_value = mock_odoo_container
     
     # Execute
-    result = provision_env("feat/test-branch", repo_url="https://github.com/org/repo.git", version="17.0")
+    result = provision_env("user123", "feat/test-branch", repo_url="https://github.com/org/repo.git", version="17.0")
     
     # Assertions
     assert result["url"] == "http://localhost:50000"
@@ -37,8 +37,9 @@ def test_provision_env(mock_rmtree, mock_exists, mock_makedirs, mock_run, mock_g
     assert mock_docker_client.networks.create.called
     assert mock_docker_client.containers.run.call_count == 2
     
-    # Check port mapping in Odoo run call
+    # Check labels in Odoo run call
     args, kwargs = mock_docker_client.containers.run.call_args_list[1]
+    assert kwargs['labels']['flow.user'] == "user123"
     assert kwargs['ports'] == {'8072/tcp': 50000}
 
 @patch("flow.odoo_manager.shutil.rmtree")
@@ -52,7 +53,7 @@ def test_teardown_env(mock_exists, mock_rmtree, mock_docker_client):
     mock_docker_client.networks.list.return_value = [mock_network]
     
     # Execute
-    teardown_env("feat/test-branch")
+    teardown_env("user123", "feat/test-branch")
     
     # Assertions
     mock_container.stop.assert_called_once()
@@ -63,8 +64,8 @@ def test_teardown_env(mock_exists, mock_rmtree, mock_docker_client):
 def test_list_envs(mock_docker_client):
     # Setup mocks
     mock_container = MagicMock()
-    mock_container.labels = {"flow.branch": "feat/test", "flow.managed": "true"}
-    mock_container.name = "flow-feat-test-odoo"
+    mock_container.labels = {"flow.branch": "feat/test", "flow.managed": "true", "flow.user": "user123"}
+    mock_container.name = "flow-user123-feat-test-odoo"
     mock_container.status = "running"
     mock_container.image.tags = ["odoo:17.0"]
     mock_container.attrs = {
@@ -77,7 +78,7 @@ def test_list_envs(mock_docker_client):
     mock_docker_client.containers.list.return_value = [mock_container]
     
     # Execute
-    envs = list_envs()
+    envs = list_envs("user123")
     
     # Assertions
     assert len(envs) == 1
@@ -92,7 +93,7 @@ def test_execute_test(mock_docker_client):
     mock_docker_client.containers.get.return_value = mock_container
     
     # Execute
-    output = execute_test("feat/test", "base")
+    output = execute_test("user123", "feat/test", "base")
     
     # Assertions
     assert output == "All tests passed"

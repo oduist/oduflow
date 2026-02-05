@@ -8,6 +8,7 @@ from flow.config import (
     PREFIX,
     BRANCH_LABEL,
     MANAGED_LABEL,
+    USER_LABEL,
     DEFAULT_ODOO_IMAGE,
     DEFAULT_POSTGRES_IMAGE,
     ODOO_DB_USER,
@@ -21,11 +22,11 @@ from flow.config import (
 def get_client() -> docker.DockerClient:
     return docker.from_env()
 
-def _get_resource_name(branch_name: str, resource_type: str) -> str:
-    return f"{PREFIX}{branch_name.replace('/', '-')}-{resource_type}"
+def _get_resource_name(user_id: str, branch_name: str, resource_type: str) -> str:
+    return f"{PREFIX}{user_id}-{branch_name.replace('/', '-')}-{resource_type}"
 
-def _get_workspace_path(branch_name: str) -> str:
-    return os.path.join(WORKSPACES_DIR, branch_name.replace('/', '-'))
+def _get_workspace_path(user_id: str, branch_name: str) -> str:
+    return os.path.join(WORKSPACES_DIR, user_id, branch_name.replace('/', '-'))
 
 def _get_available_port() -> int:
     for port in range(PORT_RANGE_START, PORT_RANGE_END + 1):
@@ -37,16 +38,17 @@ def _get_available_port() -> int:
                 continue
     raise Exception(f"No available ports in range {PORT_RANGE_START}-{PORT_RANGE_END}")
 
-def provision_env(branch_name: str, repo_url: str, version: str = "17.0") -> Dict[str, str]:
+def provision_env(user_id: str, branch_name: str, repo_url: str, version: str = "17.0") -> Dict[str, str]:
     client = get_client()
-    network_name = _get_resource_name(branch_name, "net")
-    db_container_name = _get_resource_name(branch_name, "db")
-    odoo_container_name = _get_resource_name(branch_name, "odoo")
-    workspace_path = _get_workspace_path(branch_name)
+    network_name = _get_resource_name(user_id, branch_name, "net")
+    db_container_name = _get_resource_name(user_id, branch_name, "db")
+    odoo_container_name = _get_resource_name(user_id, branch_name, "odoo")
+    workspace_path = _get_workspace_path(user_id, branch_name)
     
     labels = {
         MANAGED_LABEL: "true",
-        BRANCH_LABEL: branch_name
+        BRANCH_LABEL: branch_name,
+        USER_LABEL: user_id
     }
 
     # 1. Prepare Workspace and Clone Repo
@@ -113,10 +115,15 @@ def provision_env(branch_name: str, repo_url: str, version: str = "17.0") -> Dic
         "workspace": workspace_path
     }
 
-def teardown_env(branch_name: str) -> None:
+def teardown_env(user_id: str, branch_name: str) -> None:
     client = get_client()
     # Find resources by label
-    filters = {"label": f"{BRANCH_LABEL}={branch_name}"}
+    filters = {
+        "label": [
+            f"{BRANCH_LABEL}={branch_name}",
+            f"{USER_LABEL}={user_id}"
+        ]
+    }
     
     # Remove containers
     containers = client.containers.list(all=True, filters=filters)
@@ -130,13 +137,18 @@ def teardown_env(branch_name: str) -> None:
         network.remove()
         
     # Remove workspace
-    workspace_path = _get_workspace_path(branch_name)
+    workspace_path = _get_workspace_path(user_id, branch_name)
     if os.path.exists(workspace_path):
         shutil.rmtree(workspace_path)
 
-def list_envs() -> List[Dict[str, Any]]:
+def list_envs(user_id: str) -> List[Dict[str, Any]]:
     client = get_client()
-    filters = {"label": MANAGED_LABEL}
+    filters = {
+        "label": [
+            MANAGED_LABEL,
+            f"{USER_LABEL}={user_id}"
+        ]
+    }
     containers = client.containers.list(all=True, filters=filters)
     
     envs = {}
@@ -172,15 +184,15 @@ def list_envs() -> List[Dict[str, Any]]:
 
     return list(envs.values())
 
-def execute_test(branch_name: str, modules: str) -> str:
+def execute_test(user_id: str, branch_name: str, modules: str) -> str:
     client = get_client()
-    odoo_container_name = _get_resource_name(branch_name, "odoo")
+    odoo_container_name = _get_resource_name(user_id, branch_name, "odoo")
     try:
         container = client.containers.get(odoo_container_name)
     except docker.errors.NotFound:
         raise Exception(f"Odoo container for branch {branch_name} not found.")
 
-    cmd = f"odoo --test-enable --stop-after-init -i {modules} --db_host={_get_resource_name(branch_name, 'db')} -u {ODOO_DB_USER} -p {ODOO_DB_PASSWORD} --database=postgres"
+    cmd = f"odoo --test-enable --stop-after-init -i {modules} --db_host={_get_resource_name(user_id, branch_name, 'db')} -u {ODOO_DB_USER} -p {ODOO_DB_PASSWORD} --database=postgres"
     
     exit_code, output = container.exec_run(cmd)
     

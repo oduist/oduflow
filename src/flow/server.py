@@ -1,10 +1,25 @@
 import os
 from typing import Literal, Any, cast
 from fastmcp import FastMCP
-from flow import odoo_manager
+from fastmcp.server.dependencies import get_http_headers
+from flow import odoo_manager, config
 
 # Initialize FastMCP server
 mcp = FastMCP("Flow")
+
+def _get_user_id() -> str:
+    """Extract and verify user_id from API_KEY header."""
+    headers = get_http_headers()
+    api_key = headers.get("API_KEY") or headers.get("api_key")
+    if not api_key:
+        raise Exception("Missing API_KEY header")
+    
+    if config.FLOW_API_KEYS:
+        allowed_keys = [k.strip() for k in config.FLOW_API_KEYS.split(",") if k.strip()]
+        if api_key not in allowed_keys:
+            raise Exception("Invalid API_KEY")
+            
+    return api_key
 
 @mcp.tool()
 def provision_env(branch_name: str, repo_url: str, version: str = "17.0") -> str:
@@ -17,7 +32,8 @@ def provision_env(branch_name: str, repo_url: str, version: str = "17.0") -> str
         version: Odoo version to use (default "17.0").
     """
     try:
-        result = odoo_manager.provision_env(branch_name, repo_url, version)
+        user_id = _get_user_id()
+        result = odoo_manager.provision_env(user_id, branch_name, repo_url, version)
         return (
             f"Environment provisioned successfully!\n"
             f"URL: {result['url']}\n"
@@ -37,7 +53,8 @@ def teardown_env(branch_name: str) -> str:
         branch_name: The name of the branch to tear down.
     """
     try:
-        odoo_manager.teardown_env(branch_name)
+        user_id = _get_user_id()
+        odoo_manager.teardown_env(user_id, branch_name)
         return f"Environment for branch '{branch_name}' has been torn down."
     except Exception as e:
         return f"Error during teardown: {str(e)}"
@@ -45,10 +62,11 @@ def teardown_env(branch_name: str) -> str:
 @mcp.tool()
 def list_envs() -> str:
     """
-    List all managed Odoo environments.
+    List all managed Odoo environments for the current user.
     """
     try:
-        envs = odoo_manager.list_envs()
+        user_id = _get_user_id()
+        envs = odoo_manager.list_envs(user_id)
         if not envs:
             return "No active Flow environments found."
         
@@ -74,23 +92,24 @@ def execute_test(branch_name: str, modules: str) -> str:
         modules: Comma-separated list of modules to test.
     """
     try:
-        output = odoo_manager.execute_test(branch_name, modules)
+        user_id = _get_user_id()
+        output = odoo_manager.execute_test(user_id, branch_name, modules)
         return f"Test Results for {branch_name}:\n\n{output}"
     except Exception as e:
         return f"Error executing tests: {str(e)}"
 
 def main() -> None:
     """Entry point for the Flow MCP server."""
-    transport_str = os.getenv("FLOW_TRANSPORT", "stdio")
+    transport_str = os.getenv("FLOW_TRANSPORT", "sse")
     if transport_str not in ["stdio", "sse"]:
-        transport_str = "stdio"
+        transport_str = "sse"
     
     transport = cast(Literal["stdio", "sse"], transport_str)
     
     kwargs: dict[str, Any] = {}
     if transport == "sse":
         kwargs["host"] = os.getenv("FLOW_HOST", "0.0.0.0")
-        kwargs["port"] = int(os.getenv("FLOW__PORT", "8000"))
+        kwargs["port"] = int(os.getenv("FLOW_PORT", "8000"))
     
     mcp.run(transport=transport, **kwargs)
 
