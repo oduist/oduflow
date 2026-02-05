@@ -41,6 +41,26 @@ def _get_available_port() -> int:
                 continue
     raise Exception(f"No available ports in range {PORT_RANGE_START}-{PORT_RANGE_END}")
 
+def _wait_for_container(client: DockerClient, container_name: str, timeout: int = 30) -> None:
+    for _ in range(timeout):
+        try:
+            container = client.containers.get(container_name)
+            if container.status == "running":
+                return
+        except docker.errors.NotFound:
+            pass
+        time.sleep(1)
+    raise Exception(f"Container {container_name} did not start within {timeout}s")
+
+def _init_odoo_database(client: DockerClient, odoo_container_name: str) -> None:
+    _wait_for_container(client, odoo_container_name)
+    container = client.containers.get(odoo_container_name)
+    cmd = "/entrypoint.sh odoo -d odoo --no-http --stop-after-init -i base"
+    exit_code, output = container.exec_run(cmd)
+    if exit_code != 0:
+        output_str = output.decode("utf-8") if isinstance(output, bytes) else str(output)
+        raise Exception(f"Database initialization failed (exit code {exit_code}): {output_str}")
+
 def create_environment(branch_name: str, repo_url: str, version: str = "15.0") -> Dict[str, str]:
     try:
         client = get_client()
@@ -124,8 +144,10 @@ def create_environment(branch_name: str, repo_url: str, version: str = "15.0") -
             workspace_path: {'bind': '/mnt/extra-addons', 'mode': 'rw'}
         },
         restart_policy={"Name": "unless-stopped"},
-        command=f"odoo -d odoo --dev=xml -i base"
+        command="odoo -d odoo --dev=xml"
     )
+
+    _init_odoo_database(client, odoo_container_name)
 
     return {
         "url": f"http://{EXTERNAL_HOST}:{host_port}",
