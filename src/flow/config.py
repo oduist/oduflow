@@ -23,3 +23,7 @@ PORT_RANGE_END = int(os.getenv("PORT_RANGE_END", "50100"))
 
 # Workspaces
 WORKSPACES_DIR = os.getenv("FLOW_WORKSPACES_DIR", os.path.expanduser("~/.flow/workspaces"))
+
+# Module operations
+MODULE_OPERATION_DELAY = 5  # Seconds to wait after module install/upgrade before fetching logs
+MODULE_OPERATION_LOG_LINES = 100  # Number of log lines to return after module operations

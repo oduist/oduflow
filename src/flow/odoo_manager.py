@@ -3,6 +3,7 @@ import os
 import subprocess
 import shutil
 import socket
+import time
 from typing import List, Dict, Any
 from docker import DockerClient
 from flow.config import (
@@ -16,7 +17,9 @@ from flow.config import (
     WORKSPACES_DIR,
     EXTERNAL_HOST,
     PORT_RANGE_START,
-    PORT_RANGE_END
+    PORT_RANGE_END,
+    MODULE_OPERATION_DELAY,
+    MODULE_OPERATION_LOG_LINES
 )
 
 def get_client() -> DockerClient:
@@ -38,17 +41,17 @@ def _get_available_port() -> int:
                 continue
     raise Exception(f"No available ports in range {PORT_RANGE_START}-{PORT_RANGE_END}")
 
-def provision_env(branch_name: str, repo_url: str, version: str = "17.0") -> Dict[str, str]:
+def create_environment(branch_name: str, repo_url: str, version: str = "15.0") -> Dict[str, str]:
     try:
         client = get_client()
     except Exception as e:
         raise Exception(f"Failed to connect to Docker daemon: {str(e)}. Ensure Docker is running.")
-    
+
     network_name = _get_resource_name(branch_name, "net")
     db_container_name = _get_resource_name(branch_name, "db")
     odoo_container_name = _get_resource_name(branch_name, "odoo")
     workspace_path = _get_workspace_path(branch_name)
-    
+
     labels = {
         MANAGED_LABEL: "true",
         BRANCH_LABEL: branch_name
@@ -58,7 +61,7 @@ def provision_env(branch_name: str, repo_url: str, version: str = "17.0") -> Dic
     if os.path.exists(workspace_path):
         shutil.rmtree(workspace_path)
     os.makedirs(workspace_path, exist_ok=True)
-    
+
     # Clone and checkout branch
     try:
         subprocess.run(
@@ -95,17 +98,16 @@ def provision_env(branch_name: str, repo_url: str, version: str = "17.0") -> Dic
         network=network_name,
         environment={
             "POSTGRES_USER": ODOO_DB_USER,
-            "POSTGRES_PASSWORD": ODOO_DB_PASSWORD,
-            "POSTGRES_DB": "postgres"
+            "POSTGRES_PASSWORD": ODOO_DB_PASSWORD
         },
         labels=labels,
-        restart_policy={"Name": "always"}
+        restart_policy={"Name": "unless-stopped"}
     )
 
     # 4. Start Odoo
     odoo_image = f"{DEFAULT_ODOO_IMAGE}:{version}"
     host_port = _get_available_port()
-    
+
     client.containers.run(
         odoo_image,
         name=odoo_container_name,
@@ -117,11 +119,12 @@ def provision_env(branch_name: str, repo_url: str, version: str = "17.0") -> Dic
             "PASSWORD": ODOO_DB_PASSWORD
         },
         labels=labels,
-        ports={'8072/tcp': host_port},
+        ports={'8069/tcp': host_port},
         volumes={
             workspace_path: {'bind': '/mnt/extra-addons', 'mode': 'rw'}
         },
-        restart_policy={"Name": "always"}
+        restart_policy={"Name": "unless-stopped"},
+        command=f"odoo -d odoo --dev=xml -i base"
     )
 
     return {
@@ -132,7 +135,7 @@ def provision_env(branch_name: str, repo_url: str, version: str = "17.0") -> Dic
         "workspace": workspace_path
     }
 
-def teardown_env(branch_name: str) -> None:
+def delete_environment(branch_name: str) -> None:
     client = get_client()
     # Find resources by label
     filters = {
@@ -140,7 +143,7 @@ def teardown_env(branch_name: str) -> None:
             f"{BRANCH_LABEL}={branch_name}"
         ]
     }
-    
+
     # Remove containers
     containers = client.containers.list(all=True, filters=filters)
     for container in containers:
@@ -151,13 +154,13 @@ def teardown_env(branch_name: str) -> None:
     networks = client.networks.list(filters=filters)
     for network in networks:
         network.remove()
-        
+
     # Remove workspace
     workspace_path = _get_workspace_path(branch_name)
     if os.path.exists(workspace_path):
         shutil.rmtree(workspace_path)
 
-def list_envs() -> List[Dict[str, Any]]:
+def list_environments() -> List[Dict[str, Any]]:
     client = get_client()
     filters = {
         "label": [
@@ -165,41 +168,41 @@ def list_envs() -> List[Dict[str, Any]]:
         ]
     }
     containers = client.containers.list(all=True, filters=filters)
-    
+
     envs = {}
     for container in containers:
         branch = container.labels.get(BRANCH_LABEL)
         if not branch:
             continue
-            
+
         if branch not in envs:
             envs[branch] = {"branch": branch, "containers": [], "status": "running", "url": None}
-        
+
         container_info = {
             "name": container.name,
             "status": container.status,
             "image": container.image.tags[0] if container.image.tags else "unknown"
         }
-        
+
         # Extract URL from Odoo container
         if "-odoo" in container.name:
             ports = container.attrs.get('NetworkSettings', {}).get('Ports', {})
             if ports:
-                # Look for 8072 mapping
-                mappings = ports.get('8072/tcp')
+                # Look for 8069 mapping
+                mappings = ports.get('8069/tcp')
                 if mappings:
                     host_port = mappings[0].get('HostPort')
                     if host_port:
                         envs[branch]["url"] = f"http://{EXTERNAL_HOST}:{host_port}"
 
         envs[branch]["containers"].append(container_info)
-        
+
         if container.status != "running":
             envs[branch]["status"] = "partial"
 
     return list(envs.values())
 
-def execute_test(branch_name: str, modules: str) -> str:
+def test_environment(branch_name: str, modules: str) -> str:
     client = get_client()
     odoo_container_name = _get_resource_name(branch_name, "odoo")
     try:
@@ -208,14 +211,14 @@ def execute_test(branch_name: str, modules: str) -> str:
         raise Exception(f"Odoo container for branch {branch_name} not found.")
 
     cmd = f"odoo --test-enable --stop-after-init -i {modules} --db_host={_get_resource_name(branch_name, 'db')} -u {ODOO_DB_USER} -p {ODOO_DB_PASSWORD} --database=postgres"
-    
+
     exit_code, output = container.exec_run(cmd)
-    
+
     if isinstance(output, bytes):
         return output.decode("utf-8")
     return str(output)
 
-def get_env_odoo_log(branch_name: str, n_lines: int = 100) -> str:
+def get_environment_logs(branch_name: str, n_lines: int = 100) -> str:
     client = get_client()
     odoo_container_name = _get_resource_name(branch_name, "odoo")
     try:
@@ -228,3 +231,153 @@ def get_env_odoo_log(branch_name: str, n_lines: int = 100) -> str:
         raise Exception(f"Odoo container for branch {branch_name} not found.")
     except Exception as e:
         raise Exception(f"Error fetching logs: {str(e)}")
+
+def restart_environment(branch_name: str) -> Dict[str, str]:
+    client = get_client()
+    odoo_container_name = _get_resource_name(branch_name, "odoo")
+    db_container_name = _get_resource_name(branch_name, "db")
+
+    try:
+        odoo_container = client.containers.get(odoo_container_name)
+        odoo_container.restart()
+    except docker.errors.NotFound:
+        raise Exception(f"Odoo container for branch {branch_name} not found.")
+
+    try:
+        db_container = client.containers.get(db_container_name)
+        db_container.restart()
+    except docker.errors.NotFound:
+        pass  # DB container may not exist in some setups
+
+    return {
+        "odoo_container": odoo_container_name,
+        "db_container": db_container_name
+    }
+
+def get_environment_status(branch_name: str) -> Dict[str, Any]:
+    client = get_client()
+    odoo_container_name = _get_resource_name(branch_name, "odoo")
+    db_container_name = _get_resource_name(branch_name, "db")
+
+    result = {
+        "branch": branch_name,
+        "odoo": {"name": odoo_container_name, "running": False, "status": "not found"},
+        "db": {"name": db_container_name, "running": False, "status": "not found"}
+    }
+
+    try:
+        odoo_container = client.containers.get(odoo_container_name)
+        result["odoo"]["status"] = odoo_container.status
+        result["odoo"]["running"] = odoo_container.status == "running"
+    except docker.errors.NotFound:
+        pass
+
+    try:
+        db_container = client.containers.get(db_container_name)
+        result["db"]["status"] = db_container.status
+        result["db"]["running"] = db_container.status == "running"
+    except docker.errors.NotFound:
+        pass
+
+    result["all_running"] = result["odoo"]["running"] and result["db"]["running"]
+    return result
+
+def stop_environment(branch_name: str) -> Dict[str, str]:
+    client = get_client()
+    odoo_container_name = _get_resource_name(branch_name, "odoo")
+    db_container_name = _get_resource_name(branch_name, "db")
+
+    stopped = []
+
+    try:
+        odoo_container = client.containers.get(odoo_container_name)
+        odoo_container.stop()
+        stopped.append(odoo_container_name)
+    except docker.errors.NotFound:
+        raise Exception(f"Odoo container for branch {branch_name} not found.")
+
+    try:
+        db_container = client.containers.get(db_container_name)
+        db_container.stop()
+        stopped.append(db_container_name)
+    except docker.errors.NotFound:
+        pass
+
+    return {
+        "odoo_container": odoo_container_name,
+        "db_container": db_container_name,
+        "stopped": stopped
+    }
+
+def start_environment(branch_name: str) -> Dict[str, str]:
+    client = get_client()
+    odoo_container_name = _get_resource_name(branch_name, "odoo")
+    db_container_name = _get_resource_name(branch_name, "db")
+
+    started = []
+
+    try:
+        db_container = client.containers.get(db_container_name)
+        db_container.start()
+        started.append(db_container_name)
+    except docker.errors.NotFound:
+        pass
+
+    try:
+        odoo_container = client.containers.get(odoo_container_name)
+        odoo_container.start()
+        started.append(odoo_container_name)
+    except docker.errors.NotFound:
+        raise Exception(f"Odoo container for branch {branch_name} not found.")
+
+    return {
+        "odoo_container": odoo_container_name,
+        "db_container": db_container_name,
+        "started": started
+    }
+
+
+def install_odoo_modules(branch_name: str, *modules: str) -> Dict[str, Any]:
+    if not modules:
+        raise Exception("At least one module name is required.")
+
+    client = get_client()
+    odoo_container_name = _get_resource_name(branch_name, "odoo")
+
+    try:
+        container = client.containers.get(odoo_container_name)
+    except docker.errors.NotFound:
+        raise Exception(f"Odoo container for branch {branch_name} not found.")
+
+    modules_str = ",".join(modules)
+    cmd = f"/entrypoint.sh odoo -d odoo --no-http --stop-after-init -i {modules_str}"
+    exit_code, output = container.exec_run(cmd)
+    return {
+        "modules": list(modules),
+        "exit_code": exit_code,
+        "output": output.decode("utf-8") if isinstance(output, bytes) else str(output),
+    }
+
+
+def upgrade_odoo_modules(branch_name: str, *modules: str) -> Dict[str, Any]:
+    if not modules:
+        raise Exception("At least one module name is required.")
+
+    client = get_client()
+    odoo_container_name = _get_resource_name(branch_name, "odoo")
+
+    try:
+        container = client.containers.get(odoo_container_name)
+    except docker.errors.NotFound:
+        raise Exception(f"Odoo container for branch {branch_name} not found.")
+
+    modules_str = ",".join(modules)
+    cmd = f"/entrypoint.sh odoo -d odoo --stop-after-init --no-http -u {modules_str}"
+
+    exit_code, output = container.exec_run(cmd)
+
+    return {
+        "modules": list(modules),
+        "exit_code": exit_code,
+        "command_output": output.decode("utf-8") if isinstance(output, bytes) else str(output),
+    }
