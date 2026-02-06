@@ -1,0 +1,54 @@
+import os
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class Settings:
+    external_host: str = "localhost"
+    port_range_start: int = 50000
+    port_range_end: int = 50100
+    workspaces_dir: str = ""
+    dump_file_path: str = ""
+    ref_filestore_path: str = ""
+    db_user: str = "odoo"
+    db_password: str = "odoo"
+    odoo_image: str = "odoo"
+    postgres_image: str = "postgres:15"
+    shared_network: str = "flow-net"
+    shared_db_container: str = "flow-db"
+    shared_db_volume: str = "flow-db-data"
+    template_db_name: str = "odoo_ref"
+    prefix: str = "flow-"
+    branch_label: str = "flow.branch"
+    managed_label: str = "flow.managed"
+    system_label: str = "flow.system"
+
+    @staticmethod
+    def from_env() -> "Settings":
+        return Settings(
+            external_host=os.getenv("EXTERNAL_HOST", "localhost"),
+            port_range_start=int(os.getenv("PORT_RANGE_START", "50000")),
+            port_range_end=int(os.getenv("PORT_RANGE_END", "50100")),
+            workspaces_dir=os.getenv(
+                "FLOW_WORKSPACES_DIR",
+                os.path.expanduser("~/.flow/workspaces"),
+            ),
+            dump_file_path=os.getenv(
+                "FLOW_DUMP_PATH",
+                os.path.expanduser("~/.flow/odoo_ref.dump"),
+            ),
+            ref_filestore_path=os.getenv(
+                "FLOW_REF_FILESTORE_PATH",
+                os.path.expanduser("~/.flow/odoo_ref_filestore"),
+            ),
+            db_user=os.getenv("ODOO_DB_USER", "odoo"),
+            db_password=os.getenv("ODOO_DB_PASSWORD", "odoo"),
+        )
+
+    def validate(self) -> None:
+        if self.port_range_start >= self.port_range_end:
+            raise ValueError(
+                f"Invalid port range: {self.port_range_start}-{self.port_range_end}"
+            )
+        if not self.workspaces_dir:
+            raise ValueError("workspaces_dir must be set")

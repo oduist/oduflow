@@ -1,0 +1,142 @@
+##
+# Integration test scenarios for Flow MCP tools.
+#
+# Each scenario defines:
+#   tool            – MCP tool name (from server.py)
+#   args            – keyword arguments passed to the tool
+#   expect_contains – list of substrings that MUST appear in the result
+#
+# Usage:
+#   CLI:    python tests/call_tool.py -s init_default
+#   pytest: pytest tests/test_integration.py -m integration
+##
+
+scenarios:
+
+  # ── System ────────────────────────────────────────────────────────
+  init_default:
+    tool: init_system
+    args:
+      dump_path: ""
+      version: "15.0"
+      force: false
+    expect_contains:
+      - "System"
+      - "Template DB"
+
+  init_v16:
+    tool: init_system
+    args:
+      dump_path: ""
+      version: "16.0"
+      force: false
+    expect_contains:
+      - "System"
+
+  init_force:
+    tool: init_system
+    args:
+      dump_path: ""
+      version: "15.0"
+      force: true
+    expect_contains:
+      - "System"
+
+  destroy:
+    tool: destroy_system
+    args: {}
+    expect_contains:
+      - "System"
+      - "Removed"
+
+  # ── Environments ──────────────────────────────────────────────────
+  create_env_main:
+    tool: create_environment
+    args:
+      branch_name: "main"
+      repo_url: "https://github.com/odoo/odoo.git"
+      version: "15.0"
+    expect_contains:
+      - "Environment provisioned"
+      - "Database"
+
+  create_env_feature:
+    tool: create_environment
+    args:
+      branch_name: "feature-login-fix"
+      repo_url: "https://github.com/odoo/odoo.git"
+      version: "16.0"
+    expect_contains:
+      - "Environment provisioned"
+
+  delete_env:
+    tool: delete_environment
+    args:
+      branch_name: "main"
+    expect_contains:
+      - "torn down"
+
+  list_envs:
+    tool: list_environments
+    args: {}
+    expect_contains: []
+
+  status_main:
+    tool: get_environment_status
+    args:
+      branch_name: "main"
+    expect_contains:
+      - "Environment Status"
+
+  restart_main:
+    tool: restart_environment
+    args:
+      branch_name: "main"
+    expect_contains:
+      - "restarted"
+
+  stop_main:
+    tool: stop_environment
+    args:
+      branch_name: "main"
+    expect_contains:
+      - "stopped"
+
+  start_main:
+    tool: start_environment
+    args:
+      branch_name: "main"
+    expect_contains:
+      - "started"
+
+  # ── Odoo operations ──────────────────────────────────────────────
+  logs_main:
+    tool: get_environment_logs
+    args:
+      branch_name: "main"
+      n_lines: 50
+    expect_contains: []
+
+  test_modules:
+    tool: test_environment
+    args:
+      branch_name: "main"
+      modules: "sale"
+    expect_contains:
+      - "Test Results"
+
+  install_modules:
+    tool: install_odoo_modules
+    args:
+      branch_name: "main"
+      modules: "sale,crm"
+    expect_contains:
+      - "Modules installed"
+
+  upgrade_modules:
+    tool: upgrade_odoo_modules
+    args:
+      branch_name: "main"
+      modules: "sale"
+    expect_contains:
+      - "Modules upgraded"

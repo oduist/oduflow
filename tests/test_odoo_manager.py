@@ -1,65 +1,40 @@
 import pytest
 import docker
-from unittest.mock import MagicMock, patch, call
-from flow.odoo_manager import (
-    create_environment,
-    delete_environment,
-    list_environments,
-    run_environment_tests,
-    get_environment_logs,
-    restart_environment,
-    stop_environment,
-    start_environment,
-    init_system,
-    destroy_system,
-    install_odoo_modules,
-    upgrade_odoo_modules,
-    _slugify_branch,
-    _get_db_name,
-    get_environment_status,
+from unittest.mock import MagicMock, patch
+
+from flow.docker_ops import system_ops, env_ops, odoo_ops
+from flow.errors import NotFoundError, PrerequisiteNotMetError, ConflictError
+from flow.settings import Settings
+
+TEST_SETTINGS = Settings(
+    external_host="localhost",
+    port_range_start=50000,
+    port_range_end=50100,
+    workspaces_dir="/tmp/flow-test/workspaces",
+    dump_file_path="/tmp/flow-test/odoo_ref.dump",
+    db_user="odoo",
+    db_password="odoo",
 )
-
-
-class TestSlugify:
-    def test_simple(self):
-        assert _slugify_branch("main") == "main"
-
-    def test_slash(self):
-        assert _slugify_branch("feature/payments") == "feature-payments"
-
-    def test_complex(self):
-        assert _slugify_branch("hotfix/CRM-123/fix") == "hotfix-crm-123-fix"
-
-    def test_special_chars(self):
-        assert _slugify_branch("feat/hello@world!") == "feat-helloworld"
-
-    def test_truncation(self):
-        long_name = "a" * 100
-        assert len(_slugify_branch(long_name)) == 63
-
-
-class TestGetDbName:
-    def test_main(self):
-        assert _get_db_name("main") == "flow_main"
-
-    def test_feature(self):
-        assert _get_db_name("feature/payments") == "flow_feature-payments"
 
 
 @pytest.fixture
 def mock_docker_client():
-    with patch("flow.odoo_manager.get_client") as mock:
-        client_instance = mock.return_value
+    with patch("flow.docker_ops.system_ops.get_client") as sys_mock, \
+         patch("flow.docker_ops.env_ops.get_client") as env_mock, \
+         patch("flow.docker_ops.odoo_ops.get_client") as odoo_mock:
+        client_instance = MagicMock()
+        sys_mock.return_value = client_instance
+        env_mock.return_value = client_instance
+        odoo_mock.return_value = client_instance
         yield client_instance
 
 
 class TestInitSystem:
-    @patch("flow.odoo_manager.subprocess.run")
-    @patch("flow.odoo_manager.os.path.isfile", return_value=True)
-    def test_init_system_fresh(self, mock_isfile, mock_subproc, mock_docker_client):
+    @patch("flow.docker_ops.system_ops._copy_file_to_container")
+    @patch("flow.docker_ops.system_ops.os.path.isfile", return_value=True)
+    def test_init_system_fresh(self, mock_isfile, mock_copy, mock_docker_client):
         mock_docker_client.networks.get.side_effect = docker.errors.NotFound("nf")
         mock_docker_client.volumes.get.side_effect = docker.errors.NotFound("nf")
-        mock_docker_client.containers.get.side_effect = docker.errors.NotFound("nf")
 
         mock_container = MagicMock()
         mock_docker_client.containers.run.return_value = mock_container
@@ -72,18 +47,17 @@ class TestInitSystem:
                 return c
             raise docker.errors.NotFound("nf")
 
-        mock_docker_client.containers.get.side_effect = None
         mock_docker_client.containers.get.side_effect = get_container
 
-        result = init_system(dump_path="/tmp/test.dump")
+        result = system_ops.init_system(TEST_SETTINGS, dump_path="/tmp/test.dump")
 
         assert result["status"] == "initialized"
         assert result["template_db"] == "odoo_ref"
         mock_docker_client.networks.create.assert_called_once()
         mock_docker_client.volumes.create.assert_called_once()
 
-    @patch("flow.odoo_manager._db_exists", return_value=True)
-    @patch("flow.odoo_manager._wait_pg_ready")
+    @patch("flow.docker_ops.system_ops._db_exists", return_value=True)
+    @patch("flow.docker_ops.system_ops._wait_pg_ready")
     def test_init_system_already_initialized(self, mock_pg, mock_db_exists, mock_docker_client):
         mock_docker_client.networks.get.return_value = MagicMock()
         mock_docker_client.volumes.get.return_value = MagicMock()
@@ -91,7 +65,7 @@ class TestInitSystem:
         db_container.status = "running"
         mock_docker_client.containers.get.return_value = db_container
 
-        result = init_system()
+        result = system_ops.init_system(TEST_SETTINGS)
 
         assert result["status"] == "already initialized"
 
@@ -103,8 +77,8 @@ class TestDestroySystem:
         container.name = "flow-main-odoo"
         mock_docker_client.containers.list.return_value = [container]
 
-        with pytest.raises(Exception, match="Active environments exist"):
-            destroy_system()
+        with pytest.raises(ConflictError, match="Active environments exist"):
+            system_ops.destroy_system(TEST_SETTINGS)
 
     def test_destroy_clean(self, mock_docker_client):
         mock_docker_client.containers.list.return_value = []
@@ -115,7 +89,7 @@ class TestDestroySystem:
         net = MagicMock()
         mock_docker_client.networks.get.return_value = net
 
-        result = destroy_system()
+        result = system_ops.destroy_system(TEST_SETTINGS)
 
         assert result["status"] == "destroyed"
         db.stop.assert_called_once()
@@ -125,17 +99,17 @@ class TestDestroySystem:
 
 
 class TestCreateEnvironment:
-    @patch("flow.odoo_manager._get_available_port", return_value=50000)
-    @patch("flow.odoo_manager._ensure_system_ready")
-    @patch("flow.odoo_manager._exec_sql")
-    @patch("flow.odoo_manager.subprocess.run")
-    @patch("flow.odoo_manager.os.makedirs")
-    @patch("flow.odoo_manager.os.path.exists", return_value=False)
-    def test_create(self, mock_exists, mock_makedirs, mock_run, mock_sql, mock_ready, mock_port, mock_docker_client):
+    @patch("flow.docker_ops.env_ops._ensure_system_ready")
+    @patch("flow.docker_ops.env_ops._exec_sql")
+    @patch("flow.docker_ops.env_ops.subprocess.run")
+    @patch("flow.docker_ops.env_ops.os.makedirs")
+    @patch("flow.docker_ops.env_ops.os.path.exists", return_value=False)
+    def test_create(self, mock_exists, mock_makedirs, mock_run, mock_sql, mock_ready, mock_docker_client):
         mock_odoo = MagicMock()
+        mock_odoo.ports = {"8069/tcp": [{"HostPort": "50000"}]}
         mock_docker_client.containers.run.return_value = mock_odoo
 
-        result = create_environment("feature/payments", "https://github.com/org/repo.git")
+        result = env_ops.create_environment(TEST_SETTINGS, "feature/payments", "https://github.com/org/repo.git")
 
         assert result["url"] == "http://localhost:50000"
         assert result["database"] == "flow_feature-payments"
@@ -143,23 +117,23 @@ class TestCreateEnvironment:
         mock_sql.assert_called_once()
         mock_docker_client.containers.run.assert_called_once()
 
-    @patch("flow.odoo_manager._ensure_system_ready")
+    @patch("flow.docker_ops.env_ops._ensure_system_ready")
     def test_create_system_not_ready(self, mock_ready, mock_docker_client):
-        mock_ready.side_effect = Exception("flow-db not found. Run init_system first.")
+        mock_ready.side_effect = PrerequisiteNotMetError("flow-db not found. Run init_system first.")
 
-        with pytest.raises(Exception, match="init_system"):
-            create_environment("main", "https://github.com/org/repo.git")
+        with pytest.raises(PrerequisiteNotMetError, match="init_system"):
+            env_ops.create_environment(TEST_SETTINGS, "main", "https://github.com/org/repo.git")
 
 
 class TestDeleteEnvironment:
-    @patch("flow.odoo_manager._exec_sql")
-    @patch("flow.odoo_manager.shutil.rmtree")
-    @patch("flow.odoo_manager.os.path.exists", return_value=True)
+    @patch("flow.docker_ops.env_ops._exec_sql")
+    @patch("flow.docker_ops.env_ops.shutil.rmtree")
+    @patch("flow.docker_ops.env_ops.os.path.exists", return_value=True)
     def test_delete(self, mock_exists, mock_rmtree, mock_sql, mock_docker_client):
         container = MagicMock()
         mock_docker_client.containers.get.return_value = container
 
-        delete_environment("feature/payments")
+        env_ops.delete_environment(TEST_SETTINGS, "feature/payments")
 
         container.stop.assert_called_once()
         container.remove.assert_called_once()
@@ -172,7 +146,7 @@ class TestRestartEnvironment:
         container = MagicMock()
         mock_docker_client.containers.get.return_value = container
 
-        result = restart_environment("main")
+        result = env_ops.restart_environment(TEST_SETTINGS, "main")
 
         assert result["odoo_container"] == "flow-main-odoo"
         container.restart.assert_called_once()
@@ -180,8 +154,8 @@ class TestRestartEnvironment:
     def test_restart_not_found(self, mock_docker_client):
         mock_docker_client.containers.get.side_effect = docker.errors.NotFound("nf")
 
-        with pytest.raises(Exception, match="not found"):
-            restart_environment("main")
+        with pytest.raises(NotFoundError, match="not found"):
+            env_ops.restart_environment(TEST_SETTINGS, "main")
 
 
 class TestStopEnvironment:
@@ -189,7 +163,7 @@ class TestStopEnvironment:
         container = MagicMock()
         mock_docker_client.containers.get.return_value = container
 
-        result = stop_environment("main")
+        result = env_ops.stop_environment(TEST_SETTINGS, "main")
 
         assert "flow-main-odoo" in result["stopped"]
         container.stop.assert_called_once()
@@ -208,7 +182,7 @@ class TestStartEnvironment:
 
         mock_docker_client.containers.get.side_effect = get_container
 
-        result = start_environment("main")
+        result = env_ops.start_environment(TEST_SETTINGS, "main")
 
         assert "flow-main-odoo" in result["started"]
         odoo.start.assert_called_once()
@@ -228,7 +202,7 @@ class TestGetEnvironmentStatus:
 
         mock_docker_client.containers.get.side_effect = get_container
 
-        result = get_environment_status("main")
+        result = env_ops.get_environment_status(TEST_SETTINGS, "main")
 
         assert result["all_running"] is True
         assert result["db"]["name"] == "flow-db"
@@ -240,7 +214,7 @@ class TestInstallModules:
         container.exec_run.return_value = (0, b"OK")
         mock_docker_client.containers.get.return_value = container
 
-        result = install_odoo_modules("main", "sale", "crm")
+        result = odoo_ops.install_odoo_modules(TEST_SETTINGS, "main", "sale", "crm")
 
         assert result["exit_code"] == 0
         args = container.exec_run.call_args[0][0]
@@ -254,7 +228,7 @@ class TestUpgradeModules:
         container.exec_run.return_value = (0, b"OK")
         mock_docker_client.containers.get.return_value = container
 
-        result = upgrade_odoo_modules("main", "sale")
+        result = odoo_ops.upgrade_odoo_modules(TEST_SETTINGS, "main", "sale")
 
         assert result["exit_code"] == 0
         args = container.exec_run.call_args[0][0]
@@ -268,7 +242,7 @@ class TestRunEnvironmentTests:
         container.exec_run.return_value = (0, b"All tests passed")
         mock_docker_client.containers.get.return_value = container
 
-        output = run_environment_tests("main", "base")
+        output = odoo_ops.run_environment_tests(TEST_SETTINGS, "main", "base")
 
         assert "All tests passed" in output
         args = container.exec_run.call_args[0][0]
@@ -282,7 +256,7 @@ class TestGetLogs:
         container.logs.return_value = b"log line 1\nlog line 2"
         mock_docker_client.containers.get.return_value = container
 
-        output = get_environment_logs("main", 50)
+        output = odoo_ops.get_environment_logs(TEST_SETTINGS, "main", 50)
 
         assert "log line 1" in output
         container.logs.assert_called_with(tail=50, stdout=True, stderr=True)

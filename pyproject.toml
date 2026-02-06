@@ -34,6 +34,9 @@ ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["src"]
+pythonpath = ["src", "tests"]
 norecursedirs = ["src"]
+markers = [
+    "integration: integration tests against live Docker (may be slow)",
+]
 
