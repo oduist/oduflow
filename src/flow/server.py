@@ -117,16 +117,16 @@ def setup_repo_auth(repo_url: str) -> str:
 @mcp.tool()
 @handle_errors
 @with_mutex
-def create_environment(branch_name: str, repo_url: str, version: str = "15.0") -> str:
+def create_environment(branch_name: str, repo_url: str, odoo_image: str = "odoo:15.0") -> str:
     """
-    Provision a new ephemeral Odoo environment for a specific branch and Odoo version.
+    Provision a new ephemeral Odoo environment for a specific branch.
 
     Args:
         branch_name: The name of the git branch (will be used for resource naming).
         repo_url: URL of the git repository to clone.
-        version: Odoo version to use (default "15.0").
+        odoo_image: Full Docker image name with tag (default "odoo:15.0"). Use a pre-built image with all dependencies for faster startup.
     """
-    result = env_ops.create_environment(_get_settings(), branch_name, repo_url, version)
+    result = env_ops.create_environment(_get_settings(), branch_name, repo_url, odoo_image)
     return (
         f"Environment provisioned successfully!\n"
         f"URL: {result['url']}\n"

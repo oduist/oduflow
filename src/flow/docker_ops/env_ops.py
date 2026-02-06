@@ -57,11 +57,23 @@ def _mount_filestore(
 
     paths = get_filestore_paths(branch_name, settings.workspaces_dir)
     for d in (paths["upper"], paths["work"], paths["merged"]):
-        os.makedirs(d, exist_ok=True)
+        os.makedirs(d, mode=0o777, exist_ok=True)
+        os.chmod(d, 0o777)
+
+    ODOO_UID_GID = "101:101"
+    try:
+        subprocess.run(
+            ["sudo", "-n", "chown", "-R", ODOO_UID_GID, paths["upper"], paths["work"], paths["merged"]],
+            check=True,
+            capture_output=True,
+        )
+    except (subprocess.CalledProcessError, FileNotFoundError) as e:
+        logger.warning("Could not chown filestore dirs to %s: %s", ODOO_UID_GID, e)
 
     try:
         subprocess.run(
             [
+                "sudo", "-n",
                 "fuse-overlayfs",
                 "-o", f"lowerdir={ref},upperdir={paths['upper']},workdir={paths['work']},allow_other",
                 paths["merged"],
@@ -97,10 +109,15 @@ def _unmount_filestore(branch_name: str, settings: Settings) -> None:
     if not os.path.isdir(merged):
         return
 
-    for cmd in (["fusermount", "-u", merged], ["umount", "-l", merged]):
+    for cmd in (
+        ["sudo", "-n", "fusermount", "-u", merged],
+        ["sudo", "-n", "umount", "-l", merged],
+        ["fusermount", "-u", merged],
+        ["umount", "-l", merged],
+    ):
         try:
             subprocess.run(cmd, check=True, capture_output=True)
-            logger.info("Filestore overlay unmounted (%s)", cmd[0], extra={"branch": branch_name})
+            logger.info("Filestore overlay unmounted (%s)", cmd[-2], extra={"branch": branch_name})
             return
         except (FileNotFoundError, subprocess.CalledProcessError):
             continue
@@ -135,18 +152,21 @@ def _install_apt_packages(container, repo_path: str) -> None:
         logger.info("apt packages installed")
 
 
-def _install_pip_requirements(container, repo_path: str, version: str = "15.0") -> None:
+def _install_pip_requirements(container, repo_path: str) -> None:
     req_file = os.path.join(repo_path, "requirements.txt")
     if not os.path.isfile(req_file):
         logger.debug("No requirements.txt in repo, skipping pip install")
         return
 
-    major = float(version.split(".")[0])
-    extra = " --break-system-packages" if major >= 17 else ""
-    cmd = f"pip3 install{extra} -r /mnt/extra-addons/requirements.txt"
+    cmd = "pip3 install --break-system-packages -r /mnt/extra-addons/requirements.txt"
     logger.info("Installing pip requirements from requirements.txt")
     exit_code, output = container.exec_run(cmd, user="root")
     output_str = output.decode("utf-8") if isinstance(output, bytes) else str(output)
+    if exit_code != 0 and "no such option" in output_str.lower():
+        logger.info("--break-system-packages not supported, retrying without it")
+        cmd = "pip3 install -r /mnt/extra-addons/requirements.txt"
+        exit_code, output = container.exec_run(cmd, user="root")
+        output_str = output.decode("utf-8") if isinstance(output, bytes) else str(output)
     if exit_code != 0:
         logger.warning("pip install failed (exit %d): %s", exit_code, output_str)
     else:
@@ -192,7 +212,7 @@ def create_environment(
     settings: Settings,
     branch_name: str,
     repo_url: str,
-    version: str = "15.0",
+    odoo_image: str = "odoo:15.0",
 ) -> dict[str, str]:
     try:
         client = get_client()
@@ -214,7 +234,7 @@ def create_environment(
 
     logger.info(
         "Creating environment",
-        extra={"branch": branch_name, "repo": repo_url, "version": version},
+        extra={"branch": branch_name, "repo": repo_url, "image": odoo_image},
     )
 
     os.makedirs(workspace_path, exist_ok=True)
@@ -265,8 +285,6 @@ def create_environment(
         f'CREATE DATABASE "{env_db}" TEMPLATE {settings.template_db_name};',
     )
 
-    odoo_image = f"{settings.odoo_image}:{version}"
-
     odoo_env = {
         "HOST": settings.shared_db_container,
         "USER": settings.db_user,
@@ -284,6 +302,14 @@ def create_environment(
     sessions_path = os.path.join(workspace_path, "sessions")
     os.makedirs(sessions_path, mode=0o777, exist_ok=True)
     os.chmod(sessions_path, 0o777)
+    try:
+        subprocess.run(
+            ["sudo", "-n", "chown", "-R", "101:101", sessions_path],
+            check=True,
+            capture_output=True,
+        )
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        pass
     odoo_volumes[sessions_path] = {
         "bind": "/var/lib/odoo/.local/share/Odoo/sessions",
         "mode": "rw",
@@ -303,7 +329,7 @@ def create_environment(
     )
 
     _install_apt_packages(container, repo_path)
-    _install_pip_requirements(container, repo_path, version)
+    _install_pip_requirements(container, repo_path)
 
     container.reload()
     host_port = container.ports["8069/tcp"][0]["HostPort"]
@@ -372,10 +398,15 @@ def list_environments(settings: Settings) -> list[dict[str, Any]]:
                 "url": None,
             }
 
+        try:
+            image_name = container.image.tags[0] if container.image.tags else "unknown"
+        except Exception:
+            image_name = container.attrs.get("Config", {}).get("Image", "unknown")
+
         container_info = {
             "name": container.name,
             "status": container.status,
-            "image": container.image.tags[0] if container.image.tags else "unknown",
+            "image": image_name,
         }
 
         if "-odoo" in container.name:

@@ -54,8 +54,8 @@ scenarios:
     tool: create_environment
     args:
       branch_name: "main"
-      repo_url: "https://github.com/odoo/odoo.git"
-      version: "15.0"
+      repo_url: "https://github.com/oduist/flow_test_addons.git"
+      odoo_image: "odoo:15.0"
     expect_contains:
       - "Environment provisioned"
       - "Database"
@@ -64,8 +64,8 @@ scenarios:
     tool: create_environment
     args:
       branch_name: "feature-login-fix"
-      repo_url: "https://github.com/odoo/odoo.git"
-      version: "16.0"
+      repo_url: "https://github.com/oduist/flow_test_addons.git"
+      odoo_image: "odoo:16.0"
     expect_contains:
       - "Environment provisioned"
 
