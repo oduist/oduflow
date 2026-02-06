@@ -63,12 +63,22 @@ def _mount_filestore(
         subprocess.run(
             [
                 "fuse-overlayfs",
-                "-o", f"lowerdir={ref},upperdir={paths['upper']},workdir={paths['work']}",
+                "-o", f"lowerdir={ref},upperdir={paths['upper']},workdir={paths['work']},allow_other",
                 paths["merged"],
             ],
             check=True,
             capture_output=True,
         )
+        deadline = time.time() + 2.0
+        while time.time() < deadline:
+            if os.path.ismount(paths["merged"]):
+                try:
+                    os.listdir(paths["merged"])
+                    break
+                except OSError:
+                    pass
+            time.sleep(0.05)
+
         odoo_volumes[paths["merged"]] = {
             "bind": f"/var/lib/odoo/.local/share/Odoo/filestore/{env_db}",
             "mode": "rw",
@@ -98,6 +108,86 @@ def _unmount_filestore(branch_name: str, settings: Settings) -> None:
     logger.warning("Could not unmount filestore overlay at %s", merged)
 
 
+def _install_apt_packages(container, repo_path: str) -> None:
+    apt_file = os.path.join(repo_path, "apt_packages.txt")
+    if not os.path.isfile(apt_file):
+        logger.debug("No apt_packages.txt in repo, skipping apt install")
+        return
+
+    with open(apt_file) as f:
+        packages = [line.strip() for line in f if line.strip() and not line.startswith("#")]
+    if not packages:
+        return
+
+    logger.info("Updating apt and installing packages: %s", " ".join(packages))
+    exit_code, output = container.exec_run("apt-get update", user="root")
+    output_str = output.decode("utf-8") if isinstance(output, bytes) else str(output)
+    if exit_code != 0:
+        logger.warning("apt-get update failed (exit %d): %s", exit_code, output_str)
+        return
+
+    cmd = "apt-get install -y " + " ".join(packages)
+    exit_code, output = container.exec_run(cmd, user="root")
+    output_str = output.decode("utf-8") if isinstance(output, bytes) else str(output)
+    if exit_code != 0:
+        logger.warning("apt install failed (exit %d): %s", exit_code, output_str)
+    else:
+        logger.info("apt packages installed")
+
+
+def _install_pip_requirements(container, repo_path: str, version: str = "15.0") -> None:
+    req_file = os.path.join(repo_path, "requirements.txt")
+    if not os.path.isfile(req_file):
+        logger.debug("No requirements.txt in repo, skipping pip install")
+        return
+
+    major = float(version.split(".")[0])
+    extra = " --break-system-packages" if major >= 17 else ""
+    cmd = f"pip3 install{extra} -r /mnt/extra-addons/requirements.txt"
+    logger.info("Installing pip requirements from requirements.txt")
+    exit_code, output = container.exec_run(cmd, user="root")
+    output_str = output.decode("utf-8") if isinstance(output, bytes) else str(output)
+    if exit_code != 0:
+        logger.warning("pip install failed (exit %d): %s", exit_code, output_str)
+    else:
+        logger.info("pip requirements installed")
+        container.restart()
+        logger.info("Container restarted after pip install")
+
+
+def _cleanup_old_environment(
+    client: "DockerClient",
+    settings: Settings,
+    branch_name: str,
+) -> None:
+    odoo_container_name = get_resource_name(branch_name, "odoo", settings.prefix)
+    try:
+        old = client.containers.get(odoo_container_name)
+        old.stop()
+        old.remove(v=True)
+        logger.info("Removed old container %s", odoo_container_name)
+    except docker.errors.NotFound:
+        pass
+    except docker.errors.APIError:
+        try:
+            old.remove(v=True, force=True)
+        except Exception:
+            pass
+
+    env_db = get_db_name(branch_name)
+    if _db_exists(client, settings, env_db):
+        try:
+            _exec_sql(client, settings, f'DROP DATABASE IF EXISTS "{env_db}" WITH (FORCE);')
+            logger.info("Dropped old database %s", env_db)
+        except Exception:
+            pass
+
+    workspace_path = get_workspace_path(branch_name, settings.workspaces_dir)
+    if os.path.exists(workspace_path):
+        _unmount_filestore(branch_name, settings)
+        shutil.rmtree(workspace_path, ignore_errors=True)
+
+
 def create_environment(
     settings: Settings,
     branch_name: str,
@@ -113,6 +203,8 @@ def create_environment(
 
     _ensure_system_ready(client, settings)
 
+    _cleanup_old_environment(client, settings, branch_name)
+
     odoo_container_name = get_resource_name(branch_name, "odoo", settings.prefix)
     workspace_path = get_workspace_path(branch_name, settings.workspaces_dir)
     repo_path = get_repo_path(branch_name, settings.workspaces_dir)
@@ -125,9 +217,6 @@ def create_environment(
         extra={"branch": branch_name, "repo": repo_url, "version": version},
     )
 
-    if os.path.exists(workspace_path):
-        _unmount_filestore(branch_name, settings)
-        shutil.rmtree(workspace_path)
     os.makedirs(workspace_path, exist_ok=True)
 
     git_env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
@@ -192,6 +281,14 @@ def create_environment(
 
     _mount_filestore(settings, branch_name, env_db, odoo_volumes)
 
+    sessions_path = os.path.join(workspace_path, "sessions")
+    os.makedirs(sessions_path, mode=0o777, exist_ok=True)
+    os.chmod(sessions_path, 0o777)
+    odoo_volumes[sessions_path] = {
+        "bind": "/var/lib/odoo/.local/share/Odoo/sessions",
+        "mode": "rw",
+    }
+
     container = client.containers.run(
         odoo_image,
         name=odoo_container_name,
@@ -204,6 +301,9 @@ def create_environment(
         restart_policy={"Name": "unless-stopped"},
         command=f"odoo -d {env_db} --dev=xml",
     )
+
+    _install_apt_packages(container, repo_path)
+    _install_pip_requirements(container, repo_path, version)
 
     container.reload()
     host_port = container.ports["8069/tcp"][0]["HostPort"]

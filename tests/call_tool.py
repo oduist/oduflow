@@ -163,8 +163,12 @@ def main() -> None:
         elif args.tool_args:
             tool_args = _build_kwargs_from_positional(tool_fn, args.tool_args)
         else:
-            _show_tool_usage(tool_name, tool_fn)
-            sys.exit(0)
+            sig = inspect.signature(tool_fn)
+            required = [p for p in sig.parameters.values() if p.default is inspect.Parameter.empty]
+            if required:
+                _show_tool_usage(tool_name, tool_fn)
+                sys.exit(0)
+            tool_args = {}
     else:
         parser.print_help()
         sys.exit(1)

@@ -17,6 +17,12 @@ sudo apt install fuse-overlayfs
 
 Устройство `/dev/fuse` должно быть доступно (есть по умолчанию в Ubuntu).
 
+В `/etc/fuse.conf` должна быть раскомментирована строка `user_allow_other` — это необходимо, чтобы Docker daemon (root) мог обращаться к FUSE-маунтпоинтам, созданным пользователем:
+
+```bash
+sudo sed -i 's/^#user_allow_other/user_allow_other/' /etc/fuse.conf
+```
+
 ## Структура путей
 
 | Путь | Переменная окружения | По умолчанию | Описание |
