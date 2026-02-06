@@ -5,6 +5,48 @@ from flow import odoo_manager, config
 # Initialize FastMCP server
 mcp = FastMCP("Flow")
 
+
+@mcp.tool()
+def init_system(dump_path: str = "", version: str = "15.0", force: bool = False) -> str:
+    """
+    Initialize shared system infrastructure: network, volume, PostgreSQL container,
+    and template database from a dump file.
+
+    Args:
+        dump_path: Path to the database dump file. Uses FLOW_DUMP_PATH or ~/.flow/odoo_ref.dump if empty.
+        version: Odoo version (default "15.0").
+        force: If True, recreate the template database even if it exists.
+    """
+    try:
+        result = odoo_manager.init_system(
+            dump_path=dump_path or None,
+            version=version,
+            force=force,
+        )
+        return (
+            f"System {result['status']}.\n"
+            f"Template DB: {result['template_db']}"
+        )
+    except Exception as e:
+        return f"Error initializing system: {str(e)}"
+
+
+@mcp.tool()
+def destroy_system() -> str:
+    """
+    Destroy all shared system resources (network, volume, PostgreSQL container).
+    Requires all environments to be deleted first.
+    """
+    try:
+        result = odoo_manager.destroy_system()
+        return (
+            f"System {result['status']}.\n"
+            f"Removed: {result['removed']}"
+        )
+    except Exception as e:
+        return f"Error destroying system: {str(e)}"
+
+
 @mcp.tool()
 def create_environment(branch_name: str, repo_url: str, version: str = "15.0") -> str:
     """
@@ -21,11 +63,12 @@ def create_environment(branch_name: str, repo_url: str, version: str = "15.0") -
             f"Environment provisioned successfully!\n"
             f"URL: {result['url']}\n"
             f"Odoo Container: {result['odoo_container']}\n"
-            f"DB Container: {result['db_container']}\n"
+            f"Database: {result['database']}\n"
             f"Workspace: {result['workspace']}"
         )
     except Exception as e:
         return f"Error provisioning environment: {str(e)}"
+
 
 @mcp.tool()
 def delete_environment(branch_name: str) -> str:
@@ -41,6 +84,7 @@ def delete_environment(branch_name: str) -> str:
     except Exception as e:
         return f"Error during teardown: {str(e)}"
 
+
 @mcp.tool()
 def list_environments() -> str:
     """
@@ -54,14 +98,15 @@ def list_environments() -> str:
         output = "Active Environments:\n"
         for env in envs:
             status_line = f"- Branch: {env['branch']} (Status: {env['status']})"
-            if env.get('url'):
+            if env.get("url"):
                 status_line += f" - {env['url']}"
             output += status_line + "\n"
-            for container in env['containers']:
+            for container in env["containers"]:
                 output += f"  * {container['name']} [{container['status']}] ({container['image']})\n"
         return output
     except Exception as e:
         return f"Error listing environments: {str(e)}"
+
 
 @mcp.tool()
 def test_environment(branch_name: str, modules: str) -> str:
@@ -73,10 +118,11 @@ def test_environment(branch_name: str, modules: str) -> str:
         modules: Comma-separated list of modules to test.
     """
     try:
-        output = odoo_manager.test_environment(branch_name, modules)
+        output = odoo_manager.run_environment_tests(branch_name, modules)
         return f"Test Results for {branch_name}:\n\n{output}"
     except Exception as e:
         return f"Error executing tests: {str(e)}"
+
 
 @mcp.tool()
 def get_environment_logs(branch_name: str, n_lines: int = 100) -> str:
@@ -93,6 +139,7 @@ def get_environment_logs(branch_name: str, n_lines: int = 100) -> str:
     except Exception as e:
         return f"Error fetching logs: {str(e)}"
 
+
 @mcp.tool()
 def restart_environment(branch_name: str) -> str:
     """
@@ -105,11 +152,11 @@ def restart_environment(branch_name: str) -> str:
         result = odoo_manager.restart_environment(branch_name)
         return (
             f"Environment restarted successfully!\n"
-            f"Odoo Container: {result['odoo_container']}\n"
-            f"DB Container: {result['db_container']}"
+            f"Odoo Container: {result['odoo_container']}"
         )
     except Exception as e:
         return f"Error restarting environment: {str(e)}"
+
 
 @mcp.tool()
 def get_environment_status(branch_name: str) -> str:
@@ -125,15 +172,16 @@ def get_environment_status(branch_name: str) -> str:
         return (
             f"Environment Status for '{branch_name}': {overall}\n"
             f"Odoo: {status['odoo']['status']} (running: {status['odoo']['running']})\n"
-            f"DB: {status['db']['status']} (running: {status['db']['running']})"
+            f"DB (shared): {status['db']['status']} (running: {status['db']['running']})"
         )
     except Exception as e:
         return f"Error checking status: {str(e)}"
 
+
 @mcp.tool()
 def stop_environment(branch_name: str) -> str:
     """
-    Stop all containers for a specific branch environment.
+    Stop the Odoo container for a specific branch environment.
 
     Args:
         branch_name: The name of the branch/environment to stop.
@@ -146,6 +194,7 @@ def stop_environment(branch_name: str) -> str:
         )
     except Exception as e:
         return f"Error stopping environment: {str(e)}"
+
 
 @mcp.tool()
 def start_environment(branch_name: str) -> str:
@@ -164,6 +213,7 @@ def start_environment(branch_name: str) -> str:
     except Exception as e:
         return f"Error starting environment: {str(e)}"
 
+
 @mcp.tool()
 def install_odoo_modules(branch_name: str, modules: str) -> str:
     """
@@ -177,7 +227,7 @@ def install_odoo_modules(branch_name: str, modules: str) -> str:
         modules_list = [m.strip() for m in modules.split(",") if m.strip()]
         if not modules_list:
             return "Error: At least one module name is required."
-        
+
         result = odoo_manager.install_odoo_modules(branch_name, *modules_list)
         return (
             f"Modules installed: {', '.join(result['modules'])}\n"
@@ -201,7 +251,7 @@ def upgrade_odoo_modules(branch_name: str, modules: str) -> str:
         modules_list = [m.strip() for m in modules.split(",") if m.strip()]
         if not modules_list:
             return "Error: At least one module name is required."
-        
+
         result = odoo_manager.upgrade_odoo_modules(branch_name, *modules_list)
         return (
             f"Modules upgraded: {', '.join(result['modules'])}\n"
@@ -214,7 +264,7 @@ def upgrade_odoo_modules(branch_name: str, modules: str) -> str:
 
 def main() -> None:
     """Entry point for the Flow MCP server."""
-    transport_str = os.getenv("FLOW_TRANSPORT", "stdio")
+    transport_str = os.getenv("FLOW_TRANSPORT", "http")
 
     if transport_str == "http":
         from fastmcp.server.http import create_streamable_http_app
@@ -222,15 +272,13 @@ def main() -> None:
         host = os.getenv("FLOW_HOST", "0.0.0.0")
         port = int(os.getenv("FLOW_PORT", "8000"))
 
-        # Create streamable HTTP app without auth
         app = create_streamable_http_app(mcp)
 
-        # Run with Uvicorn
         import uvicorn
         uvicorn.run(app, host=host, port=port)
     else:
-        # Fallback to stdio
         mcp.run(transport="stdio")
+
 
 if __name__ == "__main__":
     main()

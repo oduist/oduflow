@@ -27,3 +27,13 @@ WORKSPACES_DIR = os.getenv("FLOW_WORKSPACES_DIR", os.path.expanduser("~/.flow/wo
 # Module operations
 MODULE_OPERATION_DELAY = 5  # Seconds to wait after module install/upgrade before fetching logs
 MODULE_OPERATION_LOG_LINES = 100  # Number of log lines to return after module operations
+
+# Shared system resources
+SHARED_NETWORK = "flow-net"
+SHARED_DB_CONTAINER = "flow-db"
+SHARED_DB_VOLUME = "flow-db-data"
+TEMPLATE_DB_NAME = "odoo_ref"
+SYSTEM_LABEL = "flow.system"
+
+# Dump file path
+DUMP_FILE_PATH = os.getenv("FLOW_DUMP_PATH", os.path.expanduser("~/.flow/odoo_ref.dump"))

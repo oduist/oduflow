@@ -1,94 +1,91 @@
 import pytest
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 
-@patch("flow.server.get_http_headers")
-@patch("flow.odoo_manager.provision_env")
-def test_provision_env_tool(mock_provision, mock_headers):
-    user_id = "user123"
-    mock_headers.return_value = {"API_KEY": user_id}
-    mock_provision.return_value = {
-        "url": "http://localhost:8069",
-        "odoo_container": "odoo-test",
-        "db_container": "db-test",
-        "workspace": "/tmp/workspace",
-        "network": "net-test"
-    }
-    
-    from flow.server import provision_env as provision_tool
-    result = provision_tool.fn("feat/branch", "https://repo.url")
-    
-    assert "Environment provisioned successfully!" in result
-    assert "URL: http://localhost:8069" in result
-    mock_provision.assert_called_once_with(user_id, "feat/branch", "https://repo.url", "17.0")
 
-@patch("flow.server.get_http_headers")
-@patch("flow.odoo_manager.teardown_env")
-def test_teardown_env_tool(mock_teardown, mock_headers):
-    user_id = "user123"
-    mock_headers.return_value = {"API_KEY": user_id}
-    from flow.server import teardown_env as teardown_tool
-    
-    result = teardown_tool.fn("feat/branch")
-    
-    assert "torn down" in result
-    mock_teardown.assert_called_once_with(user_id, "feat/branch")
+class TestInitSystemTool:
+    @patch("flow.odoo_manager.init_system")
+    def test_init_system(self, mock_init):
+        mock_init.return_value = {"status": "initialized", "template_db": "odoo_ref"}
+        from flow.server import init_system
+        result = init_system("/tmp/dump.dump", "15.0", False)
+        assert "initialized" in result
+        mock_init.assert_called_once_with(dump_path="/tmp/dump.dump", version="15.0", force=False)
 
-@patch("flow.server.get_http_headers")
-@patch("flow.odoo_manager.list_envs")
-def test_list_envs_tool(mock_list, mock_headers):
-    user_id = "user123"
-    mock_headers.return_value = {"API_KEY": user_id}
-    mock_list.return_value = [
-        {
-            "branch": "feat/branch",
-            "status": "running",
-            "containers": [{"name": "odoo-test", "status": "running", "image": "odoo:17.0"}]
+    @patch("flow.odoo_manager.init_system")
+    def test_init_system_empty_path(self, mock_init):
+        mock_init.return_value = {"status": "initialized", "template_db": "odoo_ref"}
+        from flow.server import init_system
+        result = init_system("", "15.0", False)
+        mock_init.assert_called_once_with(dump_path=None, version="15.0", force=False)
+
+
+class TestDestroySystemTool:
+    @patch("flow.odoo_manager.destroy_system")
+    def test_destroy(self, mock_destroy):
+        mock_destroy.return_value = {"status": "destroyed", "removed": "flow-db, flow-db-data, flow-net"}
+        from flow.server import destroy_system
+        result = destroy_system()
+        assert "destroyed" in result
+
+
+class TestCreateEnvironmentTool:
+    @patch("flow.odoo_manager.create_environment")
+    def test_create(self, mock_create):
+        mock_create.return_value = {
+            "url": "http://localhost:50000",
+            "odoo_container": "flow-main-odoo",
+            "database": "flow_main",
+            "workspace": "/tmp/ws",
         }
-    ]
-    from flow.server import list_envs as list_tool
-    
-    result = list_tool.fn()
-    
-    assert "feat/branch" in result
-    assert "odoo-test" in result
-    mock_list.assert_called_once_with(user_id)
+        from flow.server import create_environment
+        result = create_environment("main", "https://repo.url")
+        assert "Environment provisioned successfully!" in result
+        assert "Database: flow_main" in result
 
-@patch("flow.server.get_http_headers")
-@patch("flow.odoo_manager.execute_test")
-def test_execute_test_tool(mock_test, mock_headers):
-    user_id = "user123"
-    mock_headers.return_value = {"API_KEY": user_id}
-    mock_test.return_value = "Success"
-    from flow.server import execute_test as test_tool
-    
-    result = test_tool.fn("feat/branch", "base")
-    
-    assert "Success" in result
-    mock_test.assert_called_once_with(user_id, "feat/branch", "base")
 
-@patch("flow.server.get_http_headers")
-@patch("flow.server.config")
-def test_api_key_verification(mock_config, mock_headers):
-    # Case 1: FLOW_API_KEYS is set, correct key provided
-    mock_config.FLOW_API_KEYS = "key1,key2"
-    mock_headers.return_value = {"API_KEY": "key1"}
-    
-    from flow.server import _get_user_id
-    assert _get_user_id() == "key1"
-    
-    # Case 2: FLOW_API_KEYS is set, incorrect key provided
-    mock_headers.return_value = {"API_KEY": "wrong-key"}
-    with pytest.raises(Exception, match="Invalid API_KEY"):
-        _get_user_id()
-    
-    # Case 3: FLOW_API_KEYS is NOT set, any key should work
-    mock_config.FLOW_API_KEYS = ""
-    mock_headers.return_value = {"API_KEY": "any-key"}
-    assert _get_user_id() == "any-key"
+class TestDeleteEnvironmentTool:
+    @patch("flow.odoo_manager.delete_environment")
+    def test_delete(self, mock_delete):
+        from flow.server import delete_environment
+        result = delete_environment("main")
+        assert "torn down" in result
+        mock_delete.assert_called_once_with("main")
 
-@patch("flow.server.get_http_headers")
-def test_missing_api_key_header(mock_headers):
-    mock_headers.return_value = {}
-    from flow.server import _get_user_id
-    with pytest.raises(Exception, match="Missing API_KEY header"):
-        _get_user_id()
+
+class TestListEnvironmentsTool:
+    @patch("flow.odoo_manager.list_environments")
+    def test_list(self, mock_list):
+        mock_list.return_value = [
+            {
+                "branch": "main",
+                "status": "running",
+                "url": "http://localhost:50000",
+                "containers": [{"name": "flow-main-odoo", "status": "running", "image": "odoo:15.0"}],
+            }
+        ]
+        from flow.server import list_environments
+        result = list_environments()
+        assert "main" in result
+        assert "flow-main-odoo" in result
+
+    @patch("flow.odoo_manager.list_environments")
+    def test_list_empty(self, mock_list):
+        mock_list.return_value = []
+        from flow.server import list_environments
+        result = list_environments()
+        assert "No active" in result
+
+
+class TestStatusTool:
+    @patch("flow.odoo_manager.get_environment_status")
+    def test_status(self, mock_status):
+        mock_status.return_value = {
+            "branch": "main",
+            "all_running": True,
+            "odoo": {"status": "running", "running": True},
+            "db": {"status": "running", "running": True},
+        }
+        from flow.server import get_environment_status
+        result = get_environment_status("main")
+        assert "All containers running" in result
+        assert "DB (shared)" in result
