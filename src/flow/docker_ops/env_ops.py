@@ -205,7 +205,17 @@ def _cleanup_old_environment(
     workspace_path = get_workspace_path(branch_name, settings.workspaces_dir)
     if os.path.exists(workspace_path):
         _unmount_filestore(branch_name, settings)
-        shutil.rmtree(workspace_path, ignore_errors=True)
+        try:
+            shutil.rmtree(workspace_path)
+        except (PermissionError, OSError):
+            try:
+                subprocess.run(
+                    ["sudo", "-n", "rm", "-rf", workspace_path],
+                    check=True,
+                    capture_output=True,
+                )
+            except (subprocess.CalledProcessError, FileNotFoundError) as e:
+                logger.warning("Could not fully remove workspace %s: %s", workspace_path, e)
 
 
 def create_environment(
@@ -374,7 +384,17 @@ def delete_environment(settings: Settings, branch_name: str) -> None:
     workspace_path = get_workspace_path(branch_name, settings.workspaces_dir)
     if os.path.exists(workspace_path):
         _unmount_filestore(branch_name, settings)
-        shutil.rmtree(workspace_path)
+        try:
+            shutil.rmtree(workspace_path)
+        except (PermissionError, OSError):
+            try:
+                subprocess.run(
+                    ["sudo", "-n", "rm", "-rf", workspace_path],
+                    check=True,
+                    capture_output=True,
+                )
+            except (subprocess.CalledProcessError, FileNotFoundError) as e:
+                logger.warning("Could not fully remove workspace %s: %s", workspace_path, e)
 
     logger.info("Environment deleted", extra={"branch": branch_name})
 
@@ -506,3 +526,56 @@ def get_environment_status(settings: Settings, branch_name: str) -> dict[str, An
 
     result["all_running"] = result["odoo"]["running"] and result["db"]["running"]
     return result
+
+
+def pull_environment(settings: Settings, branch_name: str) -> dict[str, Any]:
+    from flow.git_analysis import classify_changes
+    from flow.git_ops import pull_repo
+
+    client = get_client()
+    odoo_container_name = get_resource_name(branch_name, "odoo", settings.prefix)
+    repo_path = get_repo_path(branch_name, settings.workspaces_dir)
+
+    if not os.path.isdir(repo_path):
+        raise NotFoundError(f"Repository for branch '{branch_name}' not found at {repo_path}")
+
+    try:
+        client.containers.get(odoo_container_name)
+    except docker.errors.NotFound:
+        raise NotFoundError(f"Odoo container for branch '{branch_name}' not found.")
+
+    changed_files = pull_repo(repo_path, branch_name)
+    if not changed_files:
+        return {"action": "none", "message": "Already up to date."}
+
+    analysis = classify_changes(changed_files, repo_path)
+    action = analysis["action"]
+
+    if action == "upgrade":
+        from flow.docker_ops.odoo_ops import upgrade_odoo_modules
+
+        modules = analysis["modules_to_upgrade"]
+        result = upgrade_odoo_modules(settings, branch_name, *modules)
+        return {
+            "action": "upgrade",
+            "modules": modules,
+            "exit_code": result["exit_code"],
+            "changed_files": changed_files,
+            "message": f"Upgraded modules: {', '.join(modules)}",
+        }
+
+    if action == "restart":
+        container = client.containers.get(odoo_container_name)
+        container.restart()
+        logger.info("Container restarted after pull", extra={"branch": branch_name})
+        return {
+            "action": "restart",
+            "changed_files": changed_files,
+            "message": "Container restarted (Python files changed).",
+        }
+
+    return {
+        "action": "refresh",
+        "changed_files": changed_files,
+        "message": "Only XML/JS changes detected. Refresh your browser (--dev=xml is active).",
+    }

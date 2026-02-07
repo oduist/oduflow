@@ -1,3 +1,4 @@
+import argparse
 import functools
 import logging
 import os
@@ -48,46 +49,6 @@ def handle_errors(fn):
             logger.error("[%s] Error: %s", fn.__name__, e)
             raise ValueError(str(e)) from e
     return wrapper
-
-
-@mcp.tool()
-@handle_errors
-@with_mutex
-def init_system(dump_path: str = "", version: str = "15.0", force: bool = False) -> str:
-    """
-    Initialize shared system infrastructure: network, volume, PostgreSQL container,
-    and template database from a dump file.
-
-    Args:
-        dump_path: Path to the database dump file. Uses FLOW_DUMP_PATH or ~/.flow/odoo_ref.dump if empty.
-        version: Odoo version (default "15.0").
-        force: If True, recreate the template database even if it exists.
-    """
-    result = system_ops.init_system(
-        _get_settings(),
-        dump_path=dump_path or None,
-        version=version,
-        force=force,
-    )
-    msg = f"System {result['status']}.\nTemplate DB: {result['template_db']}"
-    if "restore_seconds" in result:
-        msg += f"\nDB restore time: {result['restore_seconds']}s"
-    return msg
-
-
-@mcp.tool()
-@handle_errors
-@with_mutex
-def destroy_system() -> str:
-    """
-    Destroy all shared system resources (network, volume, PostgreSQL container).
-    Requires all environments to be deleted first.
-    """
-    result = system_ops.destroy_system(_get_settings())
-    return (
-        f"System {result['status']}.\n"
-        f"Removed: {result['removed']}"
-    )
 
 
 @mcp.tool()
@@ -269,6 +230,39 @@ def start_environment(branch_name: str) -> str:
 @mcp.tool()
 @handle_errors
 @with_mutex
+def pull_environment_repository(branch_name: str) -> str:
+    """
+    Pull latest changes from the remote repository for an environment
+    and take appropriate action based on what changed.
+
+    Analyzes changed files and automatically:
+    - Upgrades modules if __manifest__.py version/data/assets changed, or security XML changed
+    - Restarts the container if Python files changed
+    - Does nothing if only XML/JS changed (--dev=xml handles hot reload)
+
+    Args:
+        branch_name: The name of the branch/environment to pull updates for.
+    """
+    result = env_ops.pull_environment(_get_settings(), branch_name)
+    action = result["action"]
+
+    if action == "none":
+        return result["message"]
+
+    lines = [result["message"]]
+    if result.get("modules"):
+        lines.append(f"Modules: {', '.join(result['modules'])}")
+    lines.append(f"Changed files ({len(result.get('changed_files', []))}):")
+    for f in result.get("changed_files", [])[:20]:
+        lines.append(f"  - {f}")
+    if len(result.get("changed_files", [])) > 20:
+        lines.append(f"  ... and {len(result['changed_files']) - 20} more")
+    return "\n".join(lines)
+
+
+@mcp.tool()
+@handle_errors
+@with_mutex
 def install_odoo_modules(branch_name: str, modules: str) -> str:
     """
     Install Odoo modules in an environment.
@@ -312,8 +306,41 @@ def upgrade_odoo_modules(branch_name: str, modules: str) -> str:
     )
 
 
+def _run_init(settings: Settings, args: argparse.Namespace) -> None:
+    result = system_ops.init_system(
+        settings,
+        dump_path=args.dump_path or None,
+        version=args.version,
+        force=args.force,
+    )
+    msg = f"System {result['status']}.\nTemplate DB: {result['template_db']}"
+    if "restore_seconds" in result:
+        msg += f"\nDB restore time: {result['restore_seconds']}s"
+    print(msg)
+
+
+def _run_destroy(settings: Settings) -> None:
+    result = system_ops.destroy_system(settings)
+    print(
+        f"System {result['status']}.\n"
+        f"Removed: {result['removed']}"
+    )
+
+
 def main() -> None:
     """Entry point for the Flow MCP server."""
+    parser = argparse.ArgumentParser(prog="flow", description="Flow — Odoo dev environment manager")
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument("--init", action="store_true", help="Initialize shared infrastructure (network, DB, template)")
+    group.add_argument("--destroy", action="store_true", help="Destroy all shared infrastructure")
+    parser.add_argument("--dump-path", default="", help="Path to DB dump file (for --init)")
+    parser.add_argument("--version", default="15.0", help="Odoo version (for --init, default 15.0)")
+    parser.add_argument("--force", action="store_true", help="Force recreate template DB (for --init)")
+    args = parser.parse_args()
+
+    from dotenv import load_dotenv
+    load_dotenv()
+
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(name)s %(levelname)s %(message)s",
@@ -322,6 +349,14 @@ def main() -> None:
     global _settings
     _settings = Settings.from_env()
     _settings.validate()
+
+    if args.init:
+        _run_init(_settings, args)
+        return
+
+    if args.destroy:
+        _run_destroy(_settings)
+        return
 
     transport_str = os.getenv("FLOW_TRANSPORT", "http")
 

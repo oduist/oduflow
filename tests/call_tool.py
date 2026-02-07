@@ -74,7 +74,7 @@ def _show_tool_usage(tool_name: str, tool_fn):
 
 
 def main() -> None:
-    from tool_helpers import call_tool, list_tools
+    from tool_helpers import call_cli, call_tool, list_tools
 
     from flow.server import mcp
 
@@ -118,11 +118,15 @@ def main() -> None:
         scenarios = _load_fixtures()
         passed, failed = 0, 0
         for name, sc in scenarios.items():
+            label = sc.get("tool") or f"cli:{sc.get('cli')}"
             print(f"\n{'='*60}")
-            print(f"  Scenario: {name}  (tool: {sc['tool']})")
+            print(f"  Scenario: {name}  ({label})")
             print(f"{'='*60}")
             try:
-                result = call_tool(sc["tool"], **sc.get("args", {}))
+                if "cli" in sc:
+                    result = call_cli(sc["cli"], **sc.get("args", {}))
+                else:
+                    result = call_tool(sc["tool"], **sc.get("args", {}))
                 print(result)
                 for expected in sc.get("expect_contains", []):
                     if expected not in result:
@@ -147,6 +151,16 @@ def main() -> None:
             print(f"Available: {', '.join(scenarios.keys())}")
             sys.exit(1)
         sc = scenarios[args.scenario]
+        if "cli" in sc:
+            print(f"Calling CLI: {sc['cli']}({sc.get('args', {})})")
+            print("-" * 60)
+            try:
+                result = call_cli(sc["cli"], **sc.get("args", {}))
+                print(result)
+            except Exception as e:
+                print(f"ERROR: {e}", file=sys.stderr)
+                sys.exit(1)
+            return
         tool_name = sc["tool"]
         tool_args = sc.get("args", {})
     elif args.tool:

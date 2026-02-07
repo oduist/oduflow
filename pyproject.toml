@@ -38,5 +38,6 @@ pythonpath = ["src", "tests"]
 norecursedirs = ["src"]
 markers = [
     "integration: integration tests against live Docker (may be slow)",
+    "heavyweight: slow tests (init/destroy/create/delete env) — run with pytest -m heavyweight",
 ]
 

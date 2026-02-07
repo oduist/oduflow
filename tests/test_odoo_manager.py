@@ -101,10 +101,13 @@ class TestDestroySystem:
 class TestCreateEnvironment:
     @patch("flow.docker_ops.env_ops._ensure_system_ready")
     @patch("flow.docker_ops.env_ops._exec_sql")
+    @patch("flow.docker_ops.env_ops._db_exists", return_value=False)
+    @patch("flow.docker_ops.env_ops._mount_filestore")
     @patch("flow.docker_ops.env_ops.subprocess.run")
+    @patch("flow.docker_ops.env_ops.os.chmod")
     @patch("flow.docker_ops.env_ops.os.makedirs")
     @patch("flow.docker_ops.env_ops.os.path.exists", return_value=False)
-    def test_create(self, mock_exists, mock_makedirs, mock_run, mock_sql, mock_ready, mock_docker_client):
+    def test_create(self, mock_exists, mock_makedirs, mock_chmod, mock_run, mock_mount, mock_db_exists, mock_sql, mock_ready, mock_docker_client):
         mock_odoo = MagicMock()
         mock_odoo.ports = {"8069/tcp": [{"HostPort": "50000"}]}
         mock_docker_client.containers.run.return_value = mock_odoo

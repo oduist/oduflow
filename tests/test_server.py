@@ -25,27 +25,31 @@ def inject_settings():
 from tool_helpers import call_tool as _call_tool
 
 
-class TestInitSystemTool:
+class TestCLIInitDestroy:
     @patch("flow.docker_ops.system_ops.init_system")
-    def test_init_system(self, mock_init):
-        mock_init.return_value = {"status": "initialized", "template_db": "odoo_ref"}
-        result = _call_tool("init_system", dump_path="/tmp/dump.dump", version="15.0", force=False)
-        assert "initialized" in result
+    def test_cli_init(self, mock_init):
+        import argparse
+        from flow.server import _run_init
+        mock_init.return_value = {"status": "initialized", "template_db": "odoo_ref", "restore_seconds": 5.2}
+        args = argparse.Namespace(dump_path="/tmp/dump.dump", version="15.0", force=False)
+        _run_init(TEST_SETTINGS, args)
         mock_init.assert_called_once_with(TEST_SETTINGS, dump_path="/tmp/dump.dump", version="15.0", force=False)
 
     @patch("flow.docker_ops.system_ops.init_system")
-    def test_init_system_empty_path(self, mock_init):
+    def test_cli_init_empty_path(self, mock_init):
+        import argparse
+        from flow.server import _run_init
         mock_init.return_value = {"status": "initialized", "template_db": "odoo_ref"}
-        result = _call_tool("init_system", dump_path="", version="15.0", force=False)
+        args = argparse.Namespace(dump_path="", version="15.0", force=False)
+        _run_init(TEST_SETTINGS, args)
         mock_init.assert_called_once_with(TEST_SETTINGS, dump_path=None, version="15.0", force=False)
 
-
-class TestDestroySystemTool:
     @patch("flow.docker_ops.system_ops.destroy_system")
-    def test_destroy(self, mock_destroy):
+    def test_cli_destroy(self, mock_destroy):
+        from flow.server import _run_destroy
         mock_destroy.return_value = {"status": "destroyed", "removed": "flow-db, flow-db-data, flow-net"}
-        result = _call_tool("destroy_system")
-        assert "destroyed" in result
+        _run_destroy(TEST_SETTINGS)
+        mock_destroy.assert_called_once_with(TEST_SETTINGS)
 
 
 class TestCreateEnvironmentTool:
@@ -116,12 +120,12 @@ class TestErrorHandling:
 
 
 class TestMutex:
-    @patch("flow.docker_ops.system_ops.init_system")
-    def test_busy_raises_value_error(self, mock_init):
+    @patch("flow.docker_ops.env_ops.create_environment")
+    def test_busy_raises_value_error(self, mock_create):
         import flow.server
         flow.server._busy.acquire()
         try:
             with pytest.raises(ValueError, match="Another operation is in progress"):
-                _call_tool("init_system", dump_path="", version="15.0", force=False)
+                _call_tool("create_environment", branch_name="main", repo_url="https://x.git")
         finally:
             flow.server._busy.release()

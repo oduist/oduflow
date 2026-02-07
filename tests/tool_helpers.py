@@ -1,4 +1,4 @@
-"""Shared helper for calling MCP tools directly without an MCP client."""
+"""Shared helpers for calling MCP tools and CLI commands directly."""
 
 from __future__ import annotations
 
@@ -19,3 +19,32 @@ def call_tool(name: str, **kwargs):
 def list_tools() -> list[str]:
     """Return sorted list of all registered tool names."""
     return sorted(mcp._tool_manager._tools.keys())
+
+
+def call_cli(command: str, **kwargs) -> str:
+    """Run a CLI command (init / destroy) and return formatted output."""
+    from flow.docker_ops import system_ops
+    from flow.settings import Settings
+
+    settings = Settings.from_env()
+
+    if command == "init":
+        result = system_ops.init_system(
+            settings,
+            dump_path=kwargs.get("dump_path") or None,
+            version=kwargs.get("version", "15.0"),
+            force=kwargs.get("force", False),
+        )
+        msg = f"System {result['status']}.\nTemplate DB: {result['template_db']}"
+        if "restore_seconds" in result:
+            msg += f"\nDB restore time: {result['restore_seconds']}s"
+        return msg
+
+    if command == "destroy":
+        result = system_ops.destroy_system(settings)
+        return (
+            f"System {result['status']}.\n"
+            f"Removed: {result['removed']}"
+        )
+
+    raise ValueError(f"Unknown CLI command: {command}")

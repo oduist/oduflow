@@ -1,9 +1,10 @@
 ##
-# Integration test scenarios for Flow MCP tools.
+# Integration test scenarios for Flow.
 #
 # Each scenario defines:
-#   tool            – MCP tool name (from server.py)
-#   args            – keyword arguments passed to the tool
+#   tool            – MCP tool name (from server.py), OR
+#   cli             – CLI command name ("init" or "destroy")
+#   args            – keyword arguments
 #   expect_contains – list of substrings that MUST appear in the result
 #
 # Usage:
@@ -13,9 +14,10 @@
 
 scenarios:
 
-  # ── System ────────────────────────────────────────────────────────
+  # ── System (CLI commands, not MCP tools) ──────────────────────────
   init_default:
-    tool: init_system
+    cli: init
+    marks: [heavyweight]
     args:
       dump_path: ""
       version: "15.0"
@@ -25,7 +27,8 @@ scenarios:
       - "Template DB"
 
   init_v16:
-    tool: init_system
+    cli: init
+    marks: [heavyweight]
     args:
       dump_path: ""
       version: "16.0"
@@ -34,7 +37,8 @@ scenarios:
       - "System"
 
   init_force:
-    tool: init_system
+    cli: init
+    marks: [heavyweight]
     args:
       dump_path: ""
       version: "15.0"
@@ -43,7 +47,8 @@ scenarios:
       - "System"
 
   destroy:
-    tool: destroy_system
+    cli: destroy
+    marks: [heavyweight]
     args: {}
     expect_contains:
       - "System"
@@ -52,6 +57,7 @@ scenarios:
   # ── Environments ──────────────────────────────────────────────────
   create_env_main:
     tool: create_environment
+    marks: [heavyweight]
     args:
       branch_name: "main"
       repo_url: "https://github.com/oduist/flow_test_addons.git"
@@ -62,6 +68,7 @@ scenarios:
 
   create_env_feature:
     tool: create_environment
+    marks: [heavyweight]
     args:
       branch_name: "feature-login-fix"
       repo_url: "https://github.com/oduist/flow_test_addons.git"
@@ -71,6 +78,7 @@ scenarios:
 
   delete_env:
     tool: delete_environment
+    marks: [heavyweight]
     args:
       branch_name: "main"
     expect_contains:

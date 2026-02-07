@@ -89,3 +89,56 @@ def setup_repo_auth(repo_url: str) -> dict[str, str]:
 
     logger.info("Repo auth verified for %s", clean_url)
     return {"repo_url": clean_url, "host": host, "status": "authenticated"}
+
+
+def pull_repo(repo_path: str, branch: str) -> list[str]:
+    """Pull latest changes and return list of changed file paths (relative to repo root)."""
+    old_head = subprocess.run(
+        ["git", "-C", repo_path, "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+        env=GIT_ENV,
+    ).stdout.strip()
+
+    try:
+        subprocess.run(
+            ["git", "-C", repo_path, "pull", "--ff-only", "origin", branch],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=60,
+            env=GIT_ENV,
+        )
+    except subprocess.CalledProcessError as e:
+        error_msg = e.stderr or str(e)
+        raise ExternalCommandError("git pull", e.returncode, error_msg)
+    except subprocess.TimeoutExpired:
+        raise ExternalCommandError("git pull", -1, "Pull timed out (60s).")
+
+    new_head = subprocess.run(
+        ["git", "-C", repo_path, "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+        env=GIT_ENV,
+    ).stdout.strip()
+
+    if old_head == new_head:
+        return []
+
+    result = subprocess.run(
+        ["git", "-C", repo_path, "diff", "--name-only", f"{old_head}..{new_head}"],
+        check=True,
+        capture_output=True,
+        text=True,
+        env=GIT_ENV,
+    )
+    return [f for f in result.stdout.strip().splitlines() if f]
+
+
+def parse_manifest(manifest_path: str) -> dict:
+    """Parse an Odoo __manifest__.py file and return its dict."""
+    import ast
+    with open(manifest_path, "r") as f:
+        return ast.literal_eval(f.read())

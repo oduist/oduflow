@@ -1,4 +1,5 @@
 import os
+import re
 from dataclasses import dataclass
 
 
@@ -26,7 +27,7 @@ class Settings:
     @staticmethod
     def from_env() -> "Settings":
         return Settings(
-            external_host=os.getenv("EXTERNAL_HOST", "localhost"),
+            external_host=re.sub(r"^https?://", "", os.getenv("EXTERNAL_HOST", "localhost")),
             port_range_start=int(os.getenv("PORT_RANGE_START", "50000")),
             port_range_end=int(os.getenv("PORT_RANGE_END", "50100")),
             workspaces_dir=os.getenv(
