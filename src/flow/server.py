@@ -78,14 +78,14 @@ def setup_repo_auth(repo_url: str) -> str:
 @mcp.tool()
 @handle_errors
 @with_mutex
-def create_environment(branch_name: str, repo_url: str, odoo_image: str = "odoo:15.0") -> str:
+def create_environment(branch_name: str, repo_url: str, odoo_image: str) -> str:
     """
     Provision a new ephemeral Odoo environment for a specific branch.
 
     Args:
         branch_name: The name of the git branch (will be used for resource naming).
         repo_url: URL of the git repository to clone.
-        odoo_image: Full Docker image name with tag (default "odoo:15.0"). Use a pre-built image with all dependencies for faster startup.
+        odoo_image: Full Docker image name with tag (e.g. "odoo:17.0"). Use a pre-built image with all dependencies for faster startup.
     """
     result = env_ops.create_environment(_get_settings(), branch_name, repo_url, odoo_image)
     return (
@@ -280,10 +280,13 @@ def install_odoo_modules(branch_name: str, modules: str) -> str:
         return "Error: At least one module name is required."
 
     result = odoo_ops.install_odoo_modules(_get_settings(), branch_name, *modules_list)
+    exit_code = result['exit_code']
+    modules_str = ', '.join(result['modules'])
+    if exit_code == 0:
+        return f"Success. Modules installed: {modules_str}. Exit code: 0."
     return (
-        f"Modules installed: {', '.join(result['modules'])}\n"
-        f"Exit code: {result['exit_code']}\n\n"
-        f"Logs after restart:\n{result['output']}"
+        f"Error. Modules: {modules_str}. Exit code: {exit_code}. "
+        f"Call get_environment_logs with branch_name='{branch_name}', tail=20 to investigate."
     )
 
 
@@ -303,10 +306,13 @@ def upgrade_odoo_modules(branch_name: str, modules: str) -> str:
         return "Error: At least one module name is required."
 
     result = odoo_ops.upgrade_odoo_modules(_get_settings(), branch_name, *modules_list)
+    exit_code = result['exit_code']
+    modules_str = ', '.join(result['modules'])
+    if exit_code == 0:
+        return f"Success. Modules upgraded: {modules_str}. Exit code: 0."
     return (
-        f"Modules upgraded: {', '.join(result['modules'])}\n"
-        f"Exit code: {result['exit_code']}\n\n"
-        f"Logs after restart:\n{result['command_output']}"
+        f"Error. Modules: {modules_str}. Exit code: {exit_code}. "
+        f"Call get_environment_logs with branch_name='{branch_name}', tail=20 to investigate."
     )
 
 

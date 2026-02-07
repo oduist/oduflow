@@ -19,7 +19,9 @@ def run_environment_tests(settings: Settings, branch_name: str, modules: str) ->
     try:
         container = client.containers.get(odoo_container_name)
     except docker.errors.NotFound:
-        raise NotFoundError(f"Odoo container for branch {branch_name} not found.")
+        raise NotFoundError(
+            f"Environment '{branch_name}' does not exist. Use create_environment first."
+        )
 
     cmd = (
         f"odoo --test-enable --stop-after-init -i {modules} "
@@ -50,7 +52,9 @@ def get_environment_logs(settings: Settings, branch_name: str, n_lines: int = 10
             return logs.decode("utf-8")
         return str(logs)
     except docker.errors.NotFound:
-        raise NotFoundError(f"Odoo container for branch {branch_name} not found.")
+        raise NotFoundError(
+            f"Environment '{branch_name}' does not exist. Use create_environment first."
+        )
 
 
 def install_odoo_modules(settings: Settings, branch_name: str, *modules: str) -> dict[str, Any]:
@@ -64,7 +68,9 @@ def install_odoo_modules(settings: Settings, branch_name: str, *modules: str) ->
     try:
         container = client.containers.get(odoo_container_name)
     except docker.errors.NotFound:
-        raise NotFoundError(f"Odoo container for branch {branch_name} not found.")
+        raise NotFoundError(
+            f"Environment '{branch_name}' does not exist. Use create_environment first."
+        )
 
     modules_str = ",".join(modules)
     cmd = f"/entrypoint.sh odoo -d {env_db} --no-http --stop-after-init -i {modules_str}"
@@ -78,7 +84,6 @@ def install_odoo_modules(settings: Settings, branch_name: str, *modules: str) ->
     return {
         "modules": list(modules),
         "exit_code": exit_code,
-        "output": output.decode("utf-8") if isinstance(output, bytes) else str(output),
     }
 
 
@@ -93,7 +98,9 @@ def upgrade_odoo_modules(settings: Settings, branch_name: str, *modules: str) ->
     try:
         container = client.containers.get(odoo_container_name)
     except docker.errors.NotFound:
-        raise NotFoundError(f"Odoo container for branch {branch_name} not found.")
+        raise NotFoundError(
+            f"Environment '{branch_name}' does not exist. Use create_environment first."
+        )
 
     modules_str = ",".join(modules)
     cmd = f"/entrypoint.sh odoo -d {env_db} --stop-after-init --no-http -u {modules_str}"
@@ -107,5 +114,4 @@ def upgrade_odoo_modules(settings: Settings, branch_name: str, *modules: str) ->
     return {
         "modules": list(modules),
         "exit_code": exit_code,
-        "command_output": output.decode("utf-8") if isinstance(output, bytes) else str(output),
     }

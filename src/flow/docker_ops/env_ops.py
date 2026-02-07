@@ -307,7 +307,16 @@ def create_environment(
 
     logger.info(
         "Creating environment",
-        extra={"branch": branch_name, "repo": repo_url, "image": odoo_image},
+        extra={
+            "branch": branch_name,
+            "repo": repo_url,
+            "image": odoo_image,
+            "prefix": settings.prefix,
+            "routing_mode": settings.routing_mode,
+            "base_domain": settings.base_domain,
+            "external_host": settings.external_host,
+            "workspaces_dir": settings.workspaces_dir,
+        },
     )
 
     os.makedirs(workspace_path, exist_ok=True)
@@ -315,6 +324,15 @@ def create_environment(
     git_env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
 
     branch_created = False
+    auth_keywords = (
+        "Authentication failed",
+        "could not read Username",
+        "Permission denied",
+        "Repository not found",
+        "terminal prompts disabled",
+        "Invalid username or password",
+    )
+
     try:
         subprocess.run(
             [
@@ -330,7 +348,7 @@ def create_environment(
         error_msg = e.stderr.decode("utf-8") if e.stderr else str(e)
         if "branch" in error_msg.lower() and "not found" in error_msg.lower():
             logger.info(
-                "Branch '%s' not found, cloning from default branch '%s'",
+                "Branch '%s' not found on remote, cloning latest '%s' and creating branch",
                 branch_name, settings.default_branch,
             )
             try:
@@ -346,14 +364,6 @@ def create_environment(
                 )
             except subprocess.CalledProcessError as e2:
                 error_msg2 = e2.stderr.decode("utf-8") if e2.stderr else str(e2)
-                auth_keywords = (
-                    "Authentication failed",
-                    "could not read Username",
-                    "Permission denied",
-                    "Repository not found",
-                    "terminal prompts disabled",
-                    "Invalid username or password",
-                )
                 if any(kw.lower() in error_msg2.lower() for kw in auth_keywords):
                     raise RepoAuthError(
                         f"Git authentication failed for {repo_url}. "
@@ -375,14 +385,6 @@ def create_environment(
             )
             branch_created = True
         else:
-            auth_keywords = (
-                "Authentication failed",
-                "could not read Username",
-                "Permission denied",
-                "Repository not found",
-                "terminal prompts disabled",
-                "Invalid username or password",
-            )
             if any(kw.lower() in error_msg.lower() for kw in auth_keywords):
                 raise RepoAuthError(
                     f"Git authentication failed for {repo_url}. "
@@ -584,7 +586,9 @@ def restart_environment(settings: Settings, branch_name: str) -> dict[str, str]:
         odoo_container = client.containers.get(odoo_container_name)
         odoo_container.restart()
     except docker.errors.NotFound:
-        raise NotFoundError(f"Odoo container for branch {branch_name} not found.")
+        raise NotFoundError(
+            f"Environment '{branch_name}' does not exist. Use create_environment first."
+        )
 
     logger.info("Environment restarted", extra={"branch": branch_name})
     return {"odoo_container": odoo_container_name}
@@ -598,7 +602,9 @@ def stop_environment(settings: Settings, branch_name: str) -> dict[str, str]:
         odoo_container = client.containers.get(odoo_container_name)
         odoo_container.stop()
     except docker.errors.NotFound:
-        raise NotFoundError(f"Odoo container for branch {branch_name} not found.")
+        raise NotFoundError(
+            f"Environment '{branch_name}' does not exist. Use create_environment first."
+        )
 
     logger.info("Environment stopped", extra={"branch": branch_name})
     return {"odoo_container": odoo_container_name, "stopped": [odoo_container_name]}
@@ -624,7 +630,9 @@ def start_environment(settings: Settings, branch_name: str) -> dict[str, str]:
         odoo_container.start()
         started.append(odoo_container_name)
     except docker.errors.NotFound:
-        raise NotFoundError(f"Odoo container for branch {branch_name} not found.")
+        raise NotFoundError(
+            f"Environment '{branch_name}' does not exist. Use create_environment first."
+        )
 
     logger.info("Environment started", extra={"branch": branch_name})
     return {"odoo_container": odoo_container_name, "started": started}
@@ -684,7 +692,9 @@ def pull_environment(settings: Settings, branch_name: str) -> dict[str, Any]:
     try:
         client.containers.get(odoo_container_name)
     except docker.errors.NotFound:
-        raise NotFoundError(f"Odoo container for branch '{branch_name}' not found.")
+        raise NotFoundError(
+            f"Environment '{branch_name}' does not exist. Use create_environment first."
+        )
 
     changed_files = pull_repo(repo_path, branch_name)
     if not changed_files:

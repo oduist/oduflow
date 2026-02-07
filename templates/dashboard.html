@@ -1,0 +1,471 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="/favicon.ico" type="image/x-icon">
+<title>Odoo Flow — Environments</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --surface: #161b22;
+    --border: #30363d;
+    --text: #e6edf3;
+    --text-dim: #8b949e;
+    --accent: #58a6ff;
+    --green: #3fb950;
+    --red: #f85149;
+    --yellow: #d29922;
+    --radius: 8px;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    padding: 24px;
+    padding-bottom: 56px;
+    min-height: 100vh;
+  }
+  header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 24px;
+    padding-bottom: 16px;
+    border-bottom: 1px solid var(--border);
+  }
+  header h1 { font-size: 20px; font-weight: 600; }
+  header .actions { display: flex; gap: 8px; align-items: center; }
+  .auto-label { font-size: 12px; color: var(--text-dim); }
+  #refresh-btn {
+    background: var(--surface);
+    color: var(--text);
+    border: 1px solid var(--border);
+    padding: 6px 14px;
+    border-radius: var(--radius);
+    cursor: pointer;
+    font-size: 13px;
+  }
+  #refresh-btn:hover { border-color: var(--accent); }
+  .empty {
+    text-align: center;
+    padding: 64px 0;
+    color: var(--text-dim);
+    font-size: 15px;
+  }
+  .env-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 16px 20px;
+    margin-bottom: 12px;
+  }
+  .env-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 12px;
+  }
+  .env-header .left { display: flex; align-items: center; gap: 10px; }
+  .branch-name { font-weight: 600; font-size: 15px; }
+  .badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 12px;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+  .badge-running { background: rgba(63,185,80,0.15); color: var(--green); }
+  .badge-partial { background: rgba(210,153,34,0.15); color: var(--yellow); }
+  .badge-exited  { background: rgba(248,81,73,0.15); color: var(--red); }
+  .env-url { margin-bottom: 10px; }
+  .env-url a {
+    color: var(--accent);
+    text-decoration: none;
+    font-size: 13px;
+  }
+  .env-url a:hover { text-decoration: underline; }
+  .containers {
+    font-size: 12px;
+    color: var(--text-dim);
+    margin-bottom: 12px;
+  }
+  .containers span { margin-right: 16px; }
+  .env-actions { display: flex; gap: 8px; }
+  .btn {
+    padding: 5px 14px;
+    border-radius: var(--radius);
+    border: 1px solid var(--border);
+    background: var(--surface);
+    color: var(--text);
+    font-size: 12px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+  .btn:hover { border-color: var(--accent); color: var(--accent); }
+  .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+  .btn-start { border-color: var(--green); color: var(--green); }
+  .btn-start:hover { background: rgba(63,185,80,0.1); }
+  .btn-stop { border-color: var(--red); color: var(--red); }
+  .btn-stop:hover { background: rgba(248,81,73,0.1); }
+  .btn-restart { border-color: var(--yellow); color: var(--yellow); }
+  .btn-restart:hover { background: rgba(210,153,34,0.1); }
+  .btn-delete { border-color: var(--red); color: var(--red); }
+  .btn-delete:hover { background: rgba(248,81,73,0.1); }
+  .btn-logs { border-color: var(--accent); color: var(--accent); }
+  .btn-logs:hover { background: rgba(88,166,255,0.1); }
+  .modal-overlay {
+    position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(0,0,0,0.6); z-index: 200;
+    display: none; align-items: center; justify-content: center;
+  }
+  .modal-overlay.show { display: flex; }
+  .modal {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: var(--radius); width: 80%; max-width: 900px;
+    max-height: 80vh; display: flex; flex-direction: column;
+  }
+  .modal-header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 12px 20px; border-bottom: 1px solid var(--border);
+  }
+  .modal-header h2 { font-size: 15px; font-weight: 600; }
+  .modal-close {
+    background: none; border: none; color: var(--text-dim);
+    font-size: 20px; cursor: pointer; padding: 0 4px;
+  }
+  .modal-close:hover { color: var(--text); }
+  .modal-body {
+    padding: 16px 20px; overflow-y: auto; flex: 1;
+  }
+  .modal-body pre {
+    margin: 0; font-size: 12px; line-height: 1.5;
+    white-space: pre-wrap; word-break: break-all;
+    color: var(--text-dim); font-family: "SFMono-Regular", Consolas, monospace;
+  }
+  .toast {
+    position: fixed;
+    bottom: 24px;
+    right: 24px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 12px 20px;
+    font-size: 13px;
+    max-width: 400px;
+    opacity: 0;
+    transform: translateY(10px);
+    transition: all 0.25s;
+    pointer-events: none;
+    z-index: 100;
+  }
+  .toast.show { opacity: 1; transform: translateY(0); pointer-events: auto; }
+  .toast.error { border-color: var(--red); color: var(--red); }
+  .spinner {
+    display: inline-block;
+    width: 12px; height: 12px;
+    border: 2px solid var(--border);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin 0.6s linear infinite;
+    margin-right: 4px;
+    vertical-align: middle;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .container-stats {
+    display: inline-flex;
+    gap: 12px;
+    margin-left: 8px;
+    font-size: 11px;
+    color: var(--text-dim);
+  }
+  .container-stats .stat-val { color: var(--text); font-weight: 500; }
+  .system-bar {
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    background: var(--surface);
+    border-top: 1px solid var(--border);
+    padding: 8px 24px;
+    display: flex;
+    align-items: center;
+    gap: 24px;
+    font-size: 12px;
+    color: var(--text-dim);
+    z-index: 50;
+  }
+  .system-bar .sys-label { font-weight: 600; color: var(--text); margin-right: 4px; }
+  .system-bar .sys-val { color: var(--text); font-weight: 500; }
+  .usage-bar {
+    display: inline-block;
+    width: 64px;
+    height: 10px;
+    background: rgba(255,255,255,0.06);
+    border-radius: 5px;
+    overflow: hidden;
+    vertical-align: middle;
+    margin-left: 6px;
+    border: 1px solid rgba(255,255,255,0.08);
+  }
+  .usage-bar-fill {
+    height: 100%;
+    border-radius: 4px;
+    transition: width 0.4s ease, background 0.4s ease;
+    min-width: 2px;
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Odoo Flow Environments</h1>
+  <div class="actions">
+    <label class="auto-label" for="refresh-interval">Refresh
+      <input type="number" id="refresh-interval" value="60" min="5" step="5"
+             style="width:48px;background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:2px 4px;font-size:12px;text-align:center;">s
+    </label>
+    <button id="refresh-btn" onclick="loadEnvironments()">Refresh</button>
+  </div>
+</header>
+
+<div id="env-list"></div>
+<div class="toast" id="toast"></div>
+<div class="modal-overlay" id="logs-modal" onclick="closeLogsModal(event)">
+  <div class="modal">
+    <div class="modal-header">
+      <h2 id="logs-title">Logs</h2>
+      <button class="modal-close" onclick="closeLogsModal()">&times;</button>
+    </div>
+    <div class="modal-body"><pre id="logs-content">Loading...</pre></div>
+  </div>
+</div>
+<div class="system-bar" id="system-bar">
+  <span><span class="sys-label">System</span></span>
+  <span>CPU: <span class="sys-val" id="sys-cpu">—</span></span>
+  <span>RAM: <span class="sys-val" id="sys-ram">—</span></span>
+  <span>Load: <span class="sys-val" id="sys-load">—</span></span>
+</div>
+
+<script>
+const API = '/api/environments';
+const MIN_INTERVAL = 5;
+let refreshInterval = 60;
+let refreshTimer = null;
+let statsTimer = null;
+let containerStatsMap = {};
+
+function showToast(msg, isError) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.className = 'toast show' + (isError ? ' error' : '');
+  clearTimeout(t._tid);
+  t._tid = setTimeout(() => t.className = 'toast', 3000);
+}
+
+function badgeClass(status) {
+  if (status === 'running') return 'badge-running';
+  if (status === 'partial') return 'badge-partial';
+  return 'badge-exited';
+}
+
+function usageColor(pct) {
+  // Smooth HSL gradient: 120 (green) → 60 (yellow) → 30 (orange) → 0 (red)
+  var hue = Math.max(0, 120 - pct * 1.2);
+  var sat = 70 + Math.min(pct, 100) * 0.15;
+  var lit = 45 + (pct < 50 ? 0 : (pct - 50) * 0.1);
+  return 'hsl(' + hue + ',' + sat + '%,' + lit + '%)';
+}
+
+function usageBar(pct) {
+  var w = Math.min(pct, 100);
+  var color = usageColor(pct);
+  return '<span class="usage-bar"><span class="usage-bar-fill" style="' +
+    'width:' + Math.max(w, 2) + '%;background:' + color + '"></span></span>';
+}
+
+function containerStatsHtml(name) {
+  const s = containerStatsMap[name];
+  if (!s) return '';
+  return '<span class="container-stats">' +
+    '<span>CPU <span class="stat-val">' + s.cpu_percent + '%</span></span>' +
+    '<span>RAM <span class="stat-val">' + s.mem_usage_mb + ' MB</span> ' +
+      usageBar(s.mem_percent) + '</span>' +
+  '</span>';
+}
+
+function renderEnvironments(envs) {
+  const el = document.getElementById('env-list');
+  if (!envs || envs.length === 0) {
+    el.innerHTML = '<div class="empty">No environments found.<br>Create one via MCP tools.</div>';
+    return;
+  }
+
+  el.innerHTML = envs.map(env => {
+    const allRunning = env.status === 'running';
+    const allStopped = env.containers.every(c => c.status !== 'running');
+
+    const containerHtml = env.containers.map(c =>
+      '<span>' + esc(c.name) + ' [' + esc(c.status) + ']' + containerStatsHtml(c.name) + '</span>'
+    ).join('');
+
+    const urlHtml = env.url
+      ? '<div class="env-url"><a href="' + esc(env.url) + '" target="_blank">' + esc(env.url) + '</a></div>'
+      : '';
+
+    return '<div class="env-card" data-branch="' + esc(env.branch) + '">' +
+      '<div class="env-header">' +
+        '<div class="left">' +
+          '<span class="branch-name">' + esc(env.branch) + '</span>' +
+          '<span class="badge ' + badgeClass(env.status) + '">' + esc(env.status) + '</span>' +
+        '</div>' +
+        '<div class="env-actions">' +
+          '<button class="btn btn-start" onclick="doAction(\'' + escAttr(env.branch) + '\',\'start\')" ' +
+            (allRunning ? 'disabled' : '') + '>Start</button>' +
+          '<button class="btn btn-stop" onclick="doAction(\'' + escAttr(env.branch) + '\',\'stop\')" ' +
+            (allStopped ? 'disabled' : '') + '>Stop</button>' +
+          '<button class="btn btn-restart" onclick="doAction(\'' + escAttr(env.branch) + '\',\'restart\')" ' +
+            (allStopped ? 'disabled' : '') + '>Restart</button>' +
+          '<button class="btn btn-logs" onclick="showLogs(\'' + escAttr(env.branch) + '\')">Logs</button>' +
+          '<button class="btn btn-delete" onclick="doDelete(\'' + escAttr(env.branch) + '\')">Delete</button>' +
+        '</div>' +
+      '</div>' +
+      urlHtml +
+      '<div class="containers">' + containerHtml + '</div>' +
+    '</div>';
+  }).join('');
+}
+
+function esc(s) {
+  const d = document.createElement('div');
+  d.textContent = s || '';
+  return d.innerHTML;
+}
+
+function escAttr(s) {
+  return (s || '').replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+}
+
+async function loadEnvironments() {
+  try {
+    const r = await fetch(API);
+    const data = await r.json();
+    if (data.ok) {
+      renderEnvironments(data.environments);
+    } else {
+      showToast(data.error || 'Failed to load', true);
+    }
+  } catch (e) {
+    showToast('Connection error: ' + e.message, true);
+  }
+}
+
+async function loadStats() {
+  try {
+    const r = await fetch('/api/stats');
+    const data = await r.json();
+    if (!data.ok) return;
+
+    containerStatsMap = {};
+    (data.containers || []).forEach(c => { containerStatsMap[c.name] = c; });
+
+    const sys = data.system;
+    document.getElementById('sys-cpu').innerHTML =
+      sys.cpu_percent + '%' + usageBar(sys.cpu_percent);
+    document.getElementById('sys-ram').innerHTML =
+      sys.mem_used_mb + ' / ' + sys.mem_total_mb + ' MB' + usageBar(sys.mem_percent);
+    document.getElementById('sys-load').textContent =
+      sys.load_avg.join(' / ');
+
+    loadEnvironments();
+  } catch (e) {
+    // stats are optional, don't show errors
+  }
+}
+
+async function doDelete(branch) {
+  if (!confirm('Delete environment "' + branch + '"? This will remove the container, database, and workspace.')) return;
+  const card = document.querySelector('[data-branch="' + branch + '"]');
+  if (card) card.querySelectorAll('.btn').forEach(b => b.disabled = true);
+  try {
+    const r = await fetch(API + '/' + encodeURIComponent(branch) + '/delete', { method: 'POST' });
+    const data = await r.json();
+    if (data.ok) {
+      showToast(branch + ': deleted');
+    } else {
+      showToast(data.error || 'Delete failed', true);
+    }
+  } catch (e) {
+    showToast('Connection error: ' + e.message, true);
+  }
+  await loadEnvironments();
+}
+
+async function showLogs(branch) {
+  const modal = document.getElementById('logs-modal');
+  document.getElementById('logs-title').textContent = 'Logs — ' + branch;
+  document.getElementById('logs-content').textContent = 'Loading...';
+  modal.classList.add('show');
+  try {
+    const r = await fetch(API + '/' + encodeURIComponent(branch) + '/logs?n=300');
+    const data = await r.json();
+    if (data.ok) {
+      document.getElementById('logs-content').textContent = data.logs || '(empty)';
+    } else {
+      document.getElementById('logs-content').textContent = 'Error: ' + (data.error || 'Failed to load logs');
+    }
+  } catch (e) {
+    document.getElementById('logs-content').textContent = 'Connection error: ' + e.message;
+  }
+}
+
+function closeLogsModal(event) {
+  if (event && event.target !== event.currentTarget) return;
+  document.getElementById('logs-modal').classList.remove('show');
+}
+
+async function doAction(branch, action) {
+  const card = document.querySelector('[data-branch="' + branch + '"]');
+  if (card) card.querySelectorAll('.btn').forEach(b => b.disabled = true);
+
+  try {
+    const r = await fetch(API + '/' + encodeURIComponent(branch) + '/' + action, { method: 'POST' });
+    const data = await r.json();
+    if (data.ok) {
+      showToast(branch + ': ' + action + ' OK');
+    } else {
+      showToast(data.error || 'Action failed', true);
+    }
+  } catch (e) {
+    showToast('Connection error: ' + e.message, true);
+  }
+
+  await loadEnvironments();
+}
+
+function resetTimers() {
+  clearInterval(refreshTimer);
+  clearInterval(statsTimer);
+  var ms = refreshInterval * 1000;
+  refreshTimer = setInterval(loadEnvironments, ms);
+  statsTimer = setInterval(loadStats, ms);
+}
+
+document.getElementById('refresh-interval').addEventListener('change', function() {
+  var v = parseInt(this.value, 10);
+  if (isNaN(v) || v < MIN_INTERVAL) v = MIN_INTERVAL;
+  this.value = v;
+  refreshInterval = v;
+  resetTimers();
+});
+
+loadEnvironments();
+loadStats();
+resetTimers();
+</script>
+</body>
+</html>

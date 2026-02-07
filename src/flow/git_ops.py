@@ -103,7 +103,7 @@ def pull_repo(repo_path: str, branch: str) -> list[str]:
 
     try:
         subprocess.run(
-            ["git", "-C", repo_path, "pull", "--ff-only", "origin", branch],
+            ["git", "-C", repo_path, "pull", "--rebase", "origin", branch],
             check=True,
             capture_output=True,
             text=True,
