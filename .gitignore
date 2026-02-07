@@ -49,3 +49,4 @@ dmypy.json
 
 # OS
 .DS_Store
+.tmp

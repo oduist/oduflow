@@ -23,17 +23,20 @@ class Settings:
     branch_label: str = "flow.branch"
     managed_label: str = "flow.managed"
     system_label: str = "flow.system"
+    default_branch: str = "prod"
+    port_registry_path: str = ""
 
     @staticmethod
     def from_env() -> "Settings":
+        workspaces_dir = os.getenv(
+            "FLOW_WORKSPACES_DIR",
+            os.path.expanduser("~/.flow/workspaces"),
+        )
         return Settings(
             external_host=re.sub(r"^https?://", "", os.getenv("EXTERNAL_HOST", "localhost")),
             port_range_start=int(os.getenv("PORT_RANGE_START", "50000")),
             port_range_end=int(os.getenv("PORT_RANGE_END", "50100")),
-            workspaces_dir=os.getenv(
-                "FLOW_WORKSPACES_DIR",
-                os.path.expanduser("~/.flow/workspaces"),
-            ),
+            workspaces_dir=workspaces_dir,
             dump_file_path=os.getenv(
                 "FLOW_DUMP_PATH",
                 os.path.expanduser("~/.flow/odoo_ref.dump"),
@@ -44,6 +47,11 @@ class Settings:
             ),
             db_user=os.getenv("ODOO_DB_USER", "odoo"),
             db_password=os.getenv("ODOO_DB_PASSWORD", "odoo"),
+            default_branch=os.getenv("FLOW_DEFAULT_BRANCH", "prod"),
+            port_registry_path=os.getenv(
+                "FLOW_PORT_REGISTRY",
+                os.path.join(os.path.dirname(workspaces_dir), "ports.json"),
+            ),
         )
 
     def validate(self) -> None:

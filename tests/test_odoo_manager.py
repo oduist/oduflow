@@ -3,7 +3,7 @@ import docker
 from unittest.mock import MagicMock, patch
 
 from flow.docker_ops import system_ops, env_ops, odoo_ops
-from flow.errors import NotFoundError, PrerequisiteNotMetError, ConflictError
+from flow.errors import ConflictError, NotFoundError, PrerequisiteNotMetError
 from flow.settings import Settings
 
 TEST_SETTINGS = Settings(
@@ -14,6 +14,7 @@ TEST_SETTINGS = Settings(
     dump_file_path="/tmp/flow-test/odoo_ref.dump",
     db_user="odoo",
     db_password="odoo",
+    port_registry_path="/tmp/flow-test/ports.json",
 )
 
 
@@ -103,14 +104,16 @@ class TestCreateEnvironment:
     @patch("flow.docker_ops.env_ops._exec_sql")
     @patch("flow.docker_ops.env_ops._db_exists", return_value=False)
     @patch("flow.docker_ops.env_ops._mount_filestore")
+    @patch("flow.docker_ops.env_ops._get_used_ports", return_value=set())
+    @patch("flow.docker_ops.env_ops.allocate_port", return_value=50000)
     @patch("flow.docker_ops.env_ops.subprocess.run")
     @patch("flow.docker_ops.env_ops.os.chmod")
     @patch("flow.docker_ops.env_ops.os.makedirs")
     @patch("flow.docker_ops.env_ops.os.path.exists", return_value=False)
-    def test_create(self, mock_exists, mock_makedirs, mock_chmod, mock_run, mock_mount, mock_db_exists, mock_sql, mock_ready, mock_docker_client):
+    def test_create(self, mock_exists, mock_makedirs, mock_chmod, mock_run, mock_alloc, mock_used, mock_mount, mock_db_exists, mock_sql, mock_ready, mock_docker_client):
         mock_odoo = MagicMock()
-        mock_odoo.ports = {"8069/tcp": [{"HostPort": "50000"}]}
         mock_docker_client.containers.run.return_value = mock_odoo
+        mock_docker_client.containers.get.side_effect = docker.errors.NotFound("nf")
 
         result = env_ops.create_environment(TEST_SETTINGS, "feature/payments", "https://github.com/org/repo.git")
 
@@ -119,6 +122,17 @@ class TestCreateEnvironment:
         assert result["odoo_container"] == "flow-feature-payments-odoo"
         mock_sql.assert_called_once()
         mock_docker_client.containers.run.assert_called_once()
+        mock_alloc.assert_called_once()
+
+    @patch("flow.docker_ops.env_ops._ensure_system_ready")
+    def test_create_already_exists(self, mock_ready, mock_docker_client):
+        existing = MagicMock()
+        existing.status = "running"
+        existing.ports = {"8069/tcp": [{"HostPort": "50000"}]}
+        mock_docker_client.containers.get.return_value = existing
+
+        with pytest.raises(ConflictError, match="already exists"):
+            env_ops.create_environment(TEST_SETTINGS, "main", "https://github.com/org/repo.git")
 
     @patch("flow.docker_ops.env_ops._ensure_system_ready")
     def test_create_system_not_ready(self, mock_ready, mock_docker_client):
@@ -129,10 +143,11 @@ class TestCreateEnvironment:
 
 
 class TestDeleteEnvironment:
+    @patch("flow.docker_ops.env_ops.release_port")
     @patch("flow.docker_ops.env_ops._exec_sql")
     @patch("flow.docker_ops.env_ops.shutil.rmtree")
     @patch("flow.docker_ops.env_ops.os.path.exists", return_value=True)
-    def test_delete(self, mock_exists, mock_rmtree, mock_sql, mock_docker_client):
+    def test_delete(self, mock_exists, mock_rmtree, mock_sql, mock_release, mock_docker_client):
         container = MagicMock()
         mock_docker_client.containers.get.return_value = container
 
@@ -142,6 +157,7 @@ class TestDeleteEnvironment:
         container.remove.assert_called_once()
         mock_sql.assert_called_once()
         mock_rmtree.assert_called_once()
+        mock_release.assert_called_once_with(TEST_SETTINGS.port_registry_path, "feature/payments")
 
 
 class TestRestartEnvironment:

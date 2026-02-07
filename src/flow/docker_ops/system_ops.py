@@ -16,10 +16,14 @@ logger = logging.getLogger("flow")
 
 def _wait_pg_ready(client: DockerClient, settings: Settings, timeout: int = 30) -> None:
     container = client.containers.get(settings.shared_db_container)
-    for _ in range(timeout):
+    for i in range(timeout):
         exit_code, _ = container.exec_run(["pg_isready", "-U", settings.db_user])
         if exit_code == 0:
-            return
+            exit_code2, _ = container.exec_run(
+                ["psql", "-U", settings.db_user, "-d", "postgres", "-tAc", "SELECT 1;"]
+            )
+            if exit_code2 == 0:
+                return
         time.sleep(1)
     raise PrerequisiteNotMetError(
         f"PostgreSQL did not become ready within {timeout}s"

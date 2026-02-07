@@ -36,6 +36,7 @@ ignore_missing_imports = true
 testpaths = ["tests"]
 pythonpath = ["src", "tests"]
 norecursedirs = ["src"]
+addopts = "-m 'not heavyweight'"
 markers = [
     "integration: integration tests against live Docker (may be slow)",
     "heavyweight: slow tests (init/destroy/create/delete env) — run with pytest -m heavyweight",

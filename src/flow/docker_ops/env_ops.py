@@ -12,18 +12,38 @@ from docker import DockerClient
 from flow.docker_ops.client import get_client
 from flow.docker_ops.system_ops import _db_exists, _exec_sql
 from flow.errors import (
+    ConflictError,
     ExternalCommandError,
     NotFoundError,
     PrerequisiteNotMetError,
 )
 from flow.git_ops import RepoAuthError
 from flow.naming import get_db_name, get_filestore_paths, get_repo_path, get_resource_name, get_workspace_path
+from flow.port_registry import allocate_port, release_port
 from flow.settings import Settings
 
 logger = logging.getLogger("flow")
 
 _PROJECT_ROOT = pathlib.Path(__file__).resolve().parents[3]
 _ODOO_CONF_TEMPLATE = _PROJECT_ROOT / "templates" / "odoo.conf"
+
+
+def _get_used_ports(client: DockerClient, settings: Settings, exclude_branch: str = "") -> set[int]:
+    """Collect host ports currently bound by managed containers (excluding a specific branch)."""
+    used: set[int] = set()
+    for c in client.containers.list(all=True, filters={"label": [settings.managed_label]}):
+        branch = c.labels.get(settings.branch_label, "")
+        if branch == exclude_branch:
+            continue
+        ports = c.attrs.get("NetworkSettings", {}).get("Ports", {}) or {}
+        for mappings in ports.values():
+            if mappings:
+                for m in mappings:
+                    try:
+                        used.add(int(m["HostPort"]))
+                    except (KeyError, ValueError, TypeError):
+                        pass
+    return used
 
 
 def _ensure_system_ready(client: DockerClient, settings: Settings) -> None:
@@ -233,9 +253,24 @@ def create_environment(
 
     _ensure_system_ready(client, settings)
 
-    _cleanup_old_environment(client, settings, branch_name)
-
     odoo_container_name = get_resource_name(branch_name, "odoo", settings.prefix)
+    try:
+        existing = client.containers.get(odoo_container_name)
+        if existing.status == "running":
+            existing.reload()
+            ports = existing.ports.get("8069/tcp")
+            host_port = ports[0]["HostPort"] if ports else "?"
+            url = f"http://{settings.external_host}:{host_port}"
+            raise ConflictError(
+                f"Environment for branch '{branch_name}' already exists and is running at {url}."
+            )
+        raise ConflictError(
+            f"Environment for branch '{branch_name}' already exists (status: {existing.status})."
+        )
+    except docker.errors.NotFound:
+        pass
+
+    _cleanup_old_environment(client, settings, branch_name)
     workspace_path = get_workspace_path(branch_name, settings.workspaces_dir)
     repo_path = get_repo_path(branch_name, settings.workspaces_dir)
     env_db = get_db_name(branch_name)
@@ -251,6 +286,7 @@ def create_environment(
 
     git_env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
 
+    branch_created = False
     try:
         subprocess.run(
             [
@@ -265,24 +301,67 @@ def create_environment(
     except subprocess.CalledProcessError as e:
         error_msg = e.stderr.decode("utf-8") if e.stderr else str(e)
         if "branch" in error_msg.lower() and "not found" in error_msg.lower():
-            raise NotFoundError(
-                f"Branch '{branch_name}' not found in repository {repo_url}"
+            logger.info(
+                "Branch '%s' not found, cloning from default branch '%s'",
+                branch_name, settings.default_branch,
             )
-        auth_keywords = (
-            "Authentication failed",
-            "could not read Username",
-            "Permission denied",
-            "Repository not found",
-            "terminal prompts disabled",
-            "Invalid username or password",
-        )
-        if any(kw.lower() in error_msg.lower() for kw in auth_keywords):
-            raise RepoAuthError(
-                f"Git authentication failed for {repo_url}. "
-                f"Call 'setup_repo_auth' first with URL in format "
-                f"https://user:PAT@github.com/owner/repo.git to cache credentials."
+            try:
+                subprocess.run(
+                    [
+                        "git", "clone", "--branch", settings.default_branch,
+                        "--depth", "1", repo_url, repo_path,
+                    ],
+                    check=True,
+                    capture_output=True,
+                    timeout=60,
+                    env=git_env,
+                )
+            except subprocess.CalledProcessError as e2:
+                error_msg2 = e2.stderr.decode("utf-8") if e2.stderr else str(e2)
+                auth_keywords = (
+                    "Authentication failed",
+                    "could not read Username",
+                    "Permission denied",
+                    "Repository not found",
+                    "terminal prompts disabled",
+                    "Invalid username or password",
+                )
+                if any(kw.lower() in error_msg2.lower() for kw in auth_keywords):
+                    raise RepoAuthError(
+                        f"Git authentication failed for {repo_url}. "
+                        f"Call 'setup_repo_auth' first with URL in format "
+                        f"https://user:PAT@github.com/owner/repo.git to cache credentials."
+                    )
+                raise ExternalCommandError("git clone", e2.returncode, error_msg2)
+            except subprocess.TimeoutExpired:
+                raise ExternalCommandError(
+                    "git clone", -1,
+                    "Repository clone timed out (60s). Repository may be too large or network is slow.",
+                )
+            subprocess.run(
+                ["git", "checkout", "-b", branch_name],
+                check=True,
+                capture_output=True,
+                cwd=repo_path,
+                env=git_env,
             )
-        raise ExternalCommandError("git clone", e.returncode, error_msg)
+            branch_created = True
+        else:
+            auth_keywords = (
+                "Authentication failed",
+                "could not read Username",
+                "Permission denied",
+                "Repository not found",
+                "terminal prompts disabled",
+                "Invalid username or password",
+            )
+            if any(kw.lower() in error_msg.lower() for kw in auth_keywords):
+                raise RepoAuthError(
+                    f"Git authentication failed for {repo_url}. "
+                    f"Call 'setup_repo_auth' first with URL in format "
+                    f"https://user:PAT@github.com/owner/repo.git to cache credentials."
+                )
+            raise ExternalCommandError("git clone", e.returncode, error_msg)
     except subprocess.TimeoutExpired:
         raise ExternalCommandError(
             "git clone", -1,
@@ -309,6 +388,15 @@ def create_environment(
 
     _mount_filestore(settings, branch_name, env_db, odoo_volumes)
 
+    used_ports = _get_used_ports(client, settings, exclude_branch=branch_name)
+    host_port = allocate_port(
+        settings.port_registry_path,
+        branch_name,
+        settings.port_range_start,
+        settings.port_range_end,
+        used_ports=used_ports,
+    )
+
     sessions_path = os.path.join(workspace_path, "sessions")
     os.makedirs(sessions_path, mode=0o777, exist_ok=True)
     os.chmod(sessions_path, 0o777)
@@ -332,7 +420,7 @@ def create_environment(
         network=settings.shared_network,
         environment=odoo_env,
         labels=labels,
-        ports={"8069/tcp": None},
+        ports={"8069/tcp": host_port},
         volumes=odoo_volumes,
         restart_policy={"Name": "unless-stopped"},
         command=f"odoo -d {env_db} --dev=xml",
@@ -341,21 +429,21 @@ def create_environment(
     _install_apt_packages(container, repo_path)
     _install_pip_requirements(container, repo_path)
 
-    container.reload()
-    host_port = container.ports["8069/tcp"][0]["HostPort"]
-
     url = f"http://{settings.external_host}:{host_port}"
     logger.info(
         "Environment created",
         extra={"branch": branch_name, "url": url, "container": odoo_container_name},
     )
 
-    return {
+    result = {
         "url": url,
         "odoo_container": odoo_container_name,
         "database": env_db,
         "workspace": workspace_path,
     }
+    if branch_created:
+        result["branch_created_from"] = settings.default_branch
+    return result
 
 
 def delete_environment(settings: Settings, branch_name: str) -> None:
@@ -364,6 +452,8 @@ def delete_environment(settings: Settings, branch_name: str) -> None:
     env_db = get_db_name(branch_name)
 
     logger.info("Deleting environment", extra={"branch": branch_name})
+
+    release_port(settings.port_registry_path, branch_name)
 
     try:
         container = client.containers.get(odoo_container_name)
