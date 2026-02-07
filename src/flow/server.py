@@ -188,11 +188,15 @@ def get_environment_status(branch_name: str) -> str:
     """
     status = env_ops.get_environment_status(_get_settings(), branch_name)
     overall = "All containers running" if status["all_running"] else "Some containers not running"
-    return (
-        f"Environment Status for '{branch_name}': {overall}\n"
-        f"Odoo: {status['odoo']['status']} (running: {status['odoo']['running']})\n"
-        f"DB (shared): {status['db']['status']} (running: {status['db']['running']})"
-    )
+    lines = [f"Environment Status for '{branch_name}': {overall}"]
+    for key in ("odoo", "db"):
+        info = status[key]
+        label = "Odoo" if key == "odoo" else "DB (shared)"
+        line = f"{label}: {info['status']} (running: {info['running']})"
+        if "cpu_percent" in info:
+            line += f" | CPU: {info['cpu_percent']}% | RAM: {info['mem_usage_mb']} MB ({info['mem_percent']}%)"
+        lines.append(line)
+    return "\n".join(lines)
 
 
 @mcp.tool()
@@ -379,6 +383,10 @@ def main() -> None:
             logger.warning("HTTP auth DISABLED (FLOW_AUTH_TOKEN not set)")
 
         app = create_streamable_http_app(mcp, "/mcp", auth=auth)
+
+        from flow.web_ui import mount_web_ui
+        mount_web_ui(app, _get_settings, _busy)
+        logger.info("Web UI available at http://%s:%d/", host, port)
 
         import uvicorn
         uvicorn.run(app, host=host, port=port)

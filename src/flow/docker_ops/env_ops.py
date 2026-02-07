@@ -631,6 +631,8 @@ def start_environment(settings: Settings, branch_name: str) -> dict[str, str]:
 
 
 def get_environment_status(settings: Settings, branch_name: str) -> dict[str, Any]:
+    from flow.docker_ops.stats import _get_one_container_stats
+
     client = get_client()
     odoo_container_name = get_resource_name(branch_name, "odoo", settings.prefix)
 
@@ -644,6 +646,11 @@ def get_environment_status(settings: Settings, branch_name: str) -> dict[str, An
         odoo_container = client.containers.get(odoo_container_name)
         result["odoo"]["status"] = odoo_container.status
         result["odoo"]["running"] = odoo_container.status == "running"
+        stats = _get_one_container_stats(odoo_container)
+        if stats:
+            result["odoo"]["cpu_percent"] = stats["cpu_percent"]
+            result["odoo"]["mem_usage_mb"] = stats["mem_usage_mb"]
+            result["odoo"]["mem_percent"] = stats["mem_percent"]
     except docker.errors.NotFound:
         pass
 
@@ -651,6 +658,11 @@ def get_environment_status(settings: Settings, branch_name: str) -> dict[str, An
         db_container = client.containers.get(settings.shared_db_container)
         result["db"]["status"] = db_container.status
         result["db"]["running"] = db_container.status == "running"
+        stats = _get_one_container_stats(db_container)
+        if stats:
+            result["db"]["cpu_percent"] = stats["cpu_percent"]
+            result["db"]["mem_usage_mb"] = stats["mem_usage_mb"]
+            result["db"]["mem_percent"] = stats["mem_percent"]
     except docker.errors.NotFound:
         pass
 
