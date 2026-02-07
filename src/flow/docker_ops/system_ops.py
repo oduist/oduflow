@@ -34,20 +34,47 @@ def _ensure_traefik(client: DockerClient, settings: Settings) -> None:
     except docker.errors.NotFound:
         pass
 
+    dynamic_cfg = (
+        "http:\n"
+        "  routers:\n"
+        "    flow-server:\n"
+        "      rule: \"Host(`{host}`)\"\n"
+        "      entryPoints: [websecure]\n"
+        "      service: flow-server\n"
+        "      tls:\n"
+        "        certResolver: le\n"
+        "  services:\n"
+        "    flow-server:\n"
+        "      loadBalancer:\n"
+        "        servers:\n"
+        "          - url: \"http://host.docker.internal:{port}\"\n"
+    ).format(host=settings.base_domain, port=settings.flow_server_port)
+
+    import tempfile
+    dynamic_file = os.path.join(
+        tempfile.gettempdir(), "flow-traefik-dynamic.yml"
+    )
+    with open(dynamic_file, "w") as f:
+        f.write(dynamic_cfg)
+
     client.containers.run(
-        "traefik:v3.4",
+        "traefik:v3.6",
         name=settings.traefik_container,
         detach=True,
         network=settings.shared_network,
         ports={"80/tcp": 80, "443/tcp": 443},
+        extra_hosts={"host.docker.internal": "host-gateway"},
         volumes={
             "/var/run/docker.sock": {"bind": "/var/run/docker.sock", "mode": "ro"},
             settings.traefik_acme_volume: {"bind": "/acme", "mode": "rw"},
+            dynamic_file: {"bind": "/etc/traefik/dynamic.yml", "mode": "ro"},
         },
         command=[
+            "--log.level=INFO",
             "--providers.docker=true",
             "--providers.docker.exposedbydefault=false",
             f"--providers.docker.network={settings.shared_network}",
+            "--providers.file.filename=/etc/traefik/dynamic.yml",
             "--entrypoints.web.address=:80",
             "--entrypoints.websecure.address=:443",
             "--entrypoints.web.http.redirections.entrypoint.to=websecure",
@@ -235,6 +262,66 @@ def init_system(
 
     logger.info("System initialized, template_db=%s, restore_time=%.1fs", settings.template_db_name, restore_elapsed)
     return {"status": "initialized", "template_db": settings.template_db_name, "restore_seconds": round(restore_elapsed, 1)}
+
+
+def reload_template_db(
+    settings: Settings,
+    dump_path: str | None = None,
+) -> dict[str, str]:
+    client = get_client()
+    resolved_dump = dump_path or settings.dump_file_path
+
+    if not os.path.isfile(resolved_dump):
+        raise NotFoundError(f"Dump file not found: {resolved_dump}")
+
+    _wait_pg_ready(client, settings)
+
+    if _db_exists(client, settings, settings.template_db_name):
+        _exec_sql(
+            client,
+            settings,
+            f"UPDATE pg_database SET datistemplate=false WHERE datname='{settings.template_db_name}';",
+        )
+        _exec_sql(client, settings, f"DROP DATABASE {settings.template_db_name};")
+        logger.info("Dropped template DB %s", settings.template_db_name)
+
+    _exec_sql(client, settings, f"CREATE DATABASE {settings.template_db_name};")
+
+    db_container = client.containers.get(settings.shared_db_container)
+    tmp_name = os.path.basename(resolved_dump)
+
+    _copy_file_to_container(db_container, resolved_dump, "/tmp")
+
+    use_psql = resolved_dump.endswith(".sql") or _is_text_dump(resolved_dump)
+
+    if use_psql:
+        restore_cmd = ["psql", "-U", settings.db_user, "-d", settings.template_db_name, "-f", f"/tmp/{tmp_name}"]
+    else:
+        restore_cmd = ["pg_restore", "-U", settings.db_user, "-d", settings.template_db_name, f"/tmp/{tmp_name}"]
+
+    logger.info("DB restore started, template_db=%s, dump=%s", settings.template_db_name, resolved_dump)
+    restore_start = time.monotonic()
+
+    exit_code, output = db_container.exec_run(restore_cmd)
+
+    restore_elapsed = time.monotonic() - restore_start
+
+    if exit_code != 0:
+        logger.error("DB restore failed after %.1fs", restore_elapsed)
+        msg = output.decode("utf-8") if isinstance(output, bytes) else str(output)
+        cmd_name = "psql" if use_psql else "pg_restore"
+        raise ExternalCommandError(cmd_name, exit_code, msg)
+
+    logger.info("DB restore finished in %.1fs", restore_elapsed)
+
+    _exec_sql(
+        client,
+        settings,
+        f"UPDATE pg_database SET datistemplate=true WHERE datname='{settings.template_db_name}';",
+    )
+
+    logger.info("Template DB reloaded, template_db=%s, restore_time=%.1fs", settings.template_db_name, restore_elapsed)
+    return {"status": "reloaded", "template_db": settings.template_db_name, "restore_seconds": round(restore_elapsed, 1)}
 
 
 def destroy_system(settings: Settings) -> dict[str, str]:

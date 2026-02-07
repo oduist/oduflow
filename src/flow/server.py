@@ -329,6 +329,17 @@ def _run_init(settings: Settings, args: argparse.Namespace) -> None:
     print(msg)
 
 
+def _run_reload_dump(settings: Settings, args: argparse.Namespace) -> None:
+    result = system_ops.reload_template_db(
+        settings,
+        dump_path=args.dump_path or None,
+    )
+    msg = f"Template DB {result['status']}.\nTemplate DB: {result['template_db']}"
+    if "restore_seconds" in result:
+        msg += f"\nDB restore time: {result['restore_seconds']}s"
+    print(msg)
+
+
 def _run_destroy(settings: Settings) -> None:
     result = system_ops.destroy_system(settings)
     print(
@@ -343,7 +354,8 @@ def main() -> None:
     group = parser.add_mutually_exclusive_group()
     group.add_argument("--init", action="store_true", help="Initialize shared infrastructure (network, DB, template)")
     group.add_argument("--destroy", action="store_true", help="Destroy all shared infrastructure")
-    parser.add_argument("--dump-path", default="", help="Path to DB dump file (for --init)")
+    group.add_argument("--reload-dump", action="store_true", help="Drop and re-restore the template DB from dump (safe while server is running)")
+    parser.add_argument("--dump-path", default="", help="Path to DB dump file (for --init / --reload-dump)")
     parser.add_argument("--version", default="15.0", help="Odoo version (for --init, default 15.0)")
     parser.add_argument("--force", action="store_true", help="Force recreate template DB (for --init)")
     args = parser.parse_args()
@@ -366,6 +378,10 @@ def main() -> None:
 
     if args.destroy:
         _run_destroy(_settings)
+        return
+
+    if args.reload_dump:
+        _run_reload_dump(_settings, args)
         return
 
     transport_str = os.getenv("FLOW_TRANSPORT", "http")

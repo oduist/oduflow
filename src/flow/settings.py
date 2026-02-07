@@ -23,6 +23,7 @@ class Settings:
     shared_db_volume: str = "flow-db-data"
     traefik_container: str = "flow-traefik"
     traefik_acme_volume: str = "flow-traefik-acme"
+    flow_server_port: int = 8000
     template_db_name: str = "odoo_ref"
     prefix: str = "flow-"
     branch_label: str = "flow.branch"
@@ -55,6 +56,7 @@ class Settings:
             ),
             db_user=os.getenv("ODOO_DB_USER", "odoo"),
             db_password=os.getenv("ODOO_DB_PASSWORD", "odoo"),
+            flow_server_port=int(os.getenv("FLOW_PORT", "8000")),
             default_branch=os.getenv("FLOW_DEFAULT_BRANCH", "prod"),
             port_registry_path=os.getenv(
                 "FLOW_PORT_REGISTRY",
