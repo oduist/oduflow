@@ -14,6 +14,72 @@ from flow.settings import Settings
 logger = logging.getLogger("flow")
 
 
+def _ensure_traefik(client: DockerClient, settings: Settings) -> None:
+    if settings.routing_mode != "traefik":
+        return
+
+    system_labels = {settings.managed_label: "true", settings.system_label: "true"}
+
+    try:
+        client.volumes.get(settings.traefik_acme_volume)
+    except docker.errors.NotFound:
+        client.volumes.create(settings.traefik_acme_volume, labels=system_labels)
+        logger.info("Created volume %s", settings.traefik_acme_volume)
+
+    try:
+        t = client.containers.get(settings.traefik_container)
+        if t.status != "running":
+            t.start()
+        return
+    except docker.errors.NotFound:
+        pass
+
+    client.containers.run(
+        "traefik:v3.4",
+        name=settings.traefik_container,
+        detach=True,
+        network=settings.shared_network,
+        ports={"80/tcp": 80, "443/tcp": 443},
+        volumes={
+            "/var/run/docker.sock": {"bind": "/var/run/docker.sock", "mode": "ro"},
+            settings.traefik_acme_volume: {"bind": "/acme", "mode": "rw"},
+        },
+        command=[
+            "--providers.docker=true",
+            "--providers.docker.exposedbydefault=false",
+            f"--providers.docker.network={settings.shared_network}",
+            "--entrypoints.web.address=:80",
+            "--entrypoints.websecure.address=:443",
+            "--entrypoints.web.http.redirections.entrypoint.to=websecure",
+            "--entrypoints.web.http.redirections.entrypoint.scheme=https",
+            "--certificatesresolvers.le.acme.httpchallenge=true",
+            "--certificatesresolvers.le.acme.httpchallenge.entrypoint=web",
+            f"--certificatesresolvers.le.acme.email={settings.acme_email}",
+            "--certificatesresolvers.le.acme.storage=/acme/acme.json",
+        ],
+        labels=system_labels,
+        restart_policy={"Name": "unless-stopped"},
+    )
+    logger.info("Created container %s", settings.traefik_container)
+
+
+def _destroy_traefik(client: DockerClient, settings: Settings, removed: list[str]) -> None:
+    try:
+        t = client.containers.get(settings.traefik_container)
+        t.stop()
+        t.remove(v=True)
+        removed.append(settings.traefik_container)
+    except docker.errors.NotFound:
+        pass
+
+    try:
+        v = client.volumes.get(settings.traefik_acme_volume)
+        v.remove()
+        removed.append(settings.traefik_acme_volume)
+    except docker.errors.NotFound:
+        pass
+
+
 def _wait_pg_ready(client: DockerClient, settings: Settings, timeout: int = 30) -> None:
     container = client.containers.get(settings.shared_db_container)
     for i in range(timeout):
@@ -87,6 +153,8 @@ def init_system(
     except docker.errors.NotFound:
         client.networks.create(settings.shared_network, labels=system_labels)
         logger.info("Created network %s", settings.shared_network)
+
+    _ensure_traefik(client, settings)
 
     try:
         client.volumes.get(settings.shared_db_volume)
@@ -175,9 +243,10 @@ def destroy_system(settings: Settings) -> dict[str, str]:
 
     filters = {"label": [f"{settings.managed_label}=true"]}
     containers = client.containers.list(all=True, filters=filters)
+    system_names = {settings.shared_db_container, settings.traefik_container}
     env_containers = [
         c for c in containers
-        if c.labels.get(settings.branch_label) and c.name != settings.shared_db_container
+        if c.labels.get(settings.branch_label) and c.name not in system_names
     ]
     if env_containers:
         names = [c.name for c in env_containers]
@@ -187,6 +256,8 @@ def destroy_system(settings: Settings) -> dict[str, str]:
         )
 
     removed: list[str] = []
+
+    _destroy_traefik(client, settings, removed)
 
     try:
         db = client.containers.get(settings.shared_db_container)

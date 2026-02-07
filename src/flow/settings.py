@@ -5,6 +5,9 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class Settings:
+    routing_mode: str = "port"
+    base_domain: str = ""
+    acme_email: str = ""
     external_host: str = "localhost"
     port_range_start: int = 50000
     port_range_end: int = 50100
@@ -18,6 +21,8 @@ class Settings:
     shared_network: str = "flow-net"
     shared_db_container: str = "flow-db"
     shared_db_volume: str = "flow-db-data"
+    traefik_container: str = "flow-traefik"
+    traefik_acme_volume: str = "flow-traefik-acme"
     template_db_name: str = "odoo_ref"
     prefix: str = "flow-"
     branch_label: str = "flow.branch"
@@ -33,6 +38,9 @@ class Settings:
             os.path.expanduser("~/.flow/workspaces"),
         )
         return Settings(
+            routing_mode=os.getenv("FLOW_ROUTING_MODE", "port").strip().lower(),
+            base_domain=re.sub(r"^https?://", "", os.getenv("FLOW_BASE_DOMAIN", "")).strip(),
+            acme_email=os.getenv("FLOW_ACME_EMAIL", "").strip(),
             external_host=re.sub(r"^https?://", "", os.getenv("EXTERNAL_HOST", "localhost")),
             port_range_start=int(os.getenv("PORT_RANGE_START", "50000")),
             port_range_end=int(os.getenv("PORT_RANGE_END", "50100")),
@@ -61,3 +69,12 @@ class Settings:
             )
         if not self.workspaces_dir:
             raise ValueError("workspaces_dir must be set")
+
+        if self.routing_mode not in ("port", "traefik"):
+            raise ValueError("routing_mode must be 'port' or 'traefik'")
+
+        if self.routing_mode == "traefik":
+            if not self.base_domain:
+                raise ValueError("base_domain must be set when routing_mode=traefik")
+            if not self.acme_email:
+                raise ValueError("acme_email must be set when routing_mode=traefik")

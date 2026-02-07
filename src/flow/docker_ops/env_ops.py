@@ -18,7 +18,7 @@ from flow.errors import (
     PrerequisiteNotMetError,
 )
 from flow.git_ops import RepoAuthError
-from flow.naming import get_db_name, get_filestore_paths, get_repo_path, get_resource_name, get_workspace_path
+from flow.naming import get_db_name, get_env_hostname, get_filestore_paths, get_repo_path, get_resource_name, get_workspace_path, slugify_branch
 from flow.port_registry import allocate_port, release_port
 from flow.settings import Settings
 
@@ -62,6 +62,18 @@ def _ensure_system_ready(client: DockerClient, settings: Settings) -> None:
         raise PrerequisiteNotMetError(
             f"Template database '{settings.template_db_name}' not found. Run init_system first."
         )
+
+    if settings.routing_mode == "traefik":
+        try:
+            t = client.containers.get(settings.traefik_container)
+            if t.status != "running":
+                raise PrerequisiteNotMetError(
+                    f"{settings.traefik_container} is not running. Run init_system first."
+                )
+        except docker.errors.NotFound:
+            raise PrerequisiteNotMetError(
+                f"{settings.traefik_container} not found. Run init_system first."
+            )
 
 
 def _mount_filestore(
@@ -258,9 +270,12 @@ def create_environment(
         existing = client.containers.get(odoo_container_name)
         if existing.status == "running":
             existing.reload()
-            ports = existing.ports.get("8069/tcp")
-            host_port = ports[0]["HostPort"] if ports else "?"
-            url = f"http://{settings.external_host}:{host_port}"
+            if settings.routing_mode == "traefik":
+                url = f"https://{get_env_hostname(branch_name, settings.base_domain)}"
+            else:
+                ports = existing.ports.get("8069/tcp")
+                host_port = ports[0]["HostPort"] if ports else "?"
+                url = f"http://{settings.external_host}:{host_port}"
             raise ConflictError(
                 f"Environment for branch '{branch_name}' already exists and is running at {url}."
             )
@@ -276,6 +291,19 @@ def create_environment(
     env_db = get_db_name(branch_name)
 
     labels = {settings.managed_label: "true", settings.branch_label: branch_name}
+
+    if settings.routing_mode == "traefik":
+        slug = slugify_branch(branch_name)
+        traefik_router = f"flow-{slug}"
+        traefik_host = get_env_hostname(branch_name, settings.base_domain)
+        labels.update({
+            "traefik.enable": "true",
+            f"traefik.http.routers.{traefik_router}.rule": f"Host(`{traefik_host}`)",
+            f"traefik.http.routers.{traefik_router}.entrypoints": "websecure",
+            f"traefik.http.routers.{traefik_router}.tls": "true",
+            f"traefik.http.routers.{traefik_router}.tls.certresolver": "le",
+            f"traefik.http.services.{traefik_router}.loadbalancer.server.port": "8069",
+        })
 
     logger.info(
         "Creating environment",
@@ -388,14 +416,16 @@ def create_environment(
 
     _mount_filestore(settings, branch_name, env_db, odoo_volumes)
 
-    used_ports = _get_used_ports(client, settings, exclude_branch=branch_name)
-    host_port = allocate_port(
-        settings.port_registry_path,
-        branch_name,
-        settings.port_range_start,
-        settings.port_range_end,
-        used_ports=used_ports,
-    )
+    host_port: int | None = None
+    if settings.routing_mode == "port":
+        used_ports = _get_used_ports(client, settings, exclude_branch=branch_name)
+        host_port = allocate_port(
+            settings.port_registry_path,
+            branch_name,
+            settings.port_range_start,
+            settings.port_range_end,
+            used_ports=used_ports,
+        )
 
     sessions_path = os.path.join(workspace_path, "sessions")
     os.makedirs(sessions_path, mode=0o777, exist_ok=True)
@@ -413,23 +443,29 @@ def create_environment(
         "mode": "rw",
     }
 
-    container = client.containers.run(
-        odoo_image,
+    run_kwargs: dict = dict(
+        image=odoo_image,
         name=odoo_container_name,
         detach=True,
         network=settings.shared_network,
         environment=odoo_env,
         labels=labels,
-        ports={"8069/tcp": host_port},
         volumes=odoo_volumes,
         restart_policy={"Name": "unless-stopped"},
         command=f"odoo -d {env_db} --dev=xml",
     )
+    if settings.routing_mode == "port":
+        run_kwargs["ports"] = {"8069/tcp": host_port}
+
+    container = client.containers.run(**run_kwargs)
 
     _install_apt_packages(container, repo_path)
     _install_pip_requirements(container, repo_path)
 
-    url = f"http://{settings.external_host}:{host_port}"
+    if settings.routing_mode == "traefik":
+        url = f"https://{get_env_hostname(branch_name, settings.base_domain)}"
+    else:
+        url = f"http://{settings.external_host}:{host_port}"
     logger.info(
         "Environment created",
         extra={"branch": branch_name, "url": url, "container": odoo_container_name},
@@ -453,7 +489,8 @@ def delete_environment(settings: Settings, branch_name: str) -> None:
 
     logger.info("Deleting environment", extra={"branch": branch_name})
 
-    release_port(settings.port_registry_path, branch_name)
+    if settings.routing_mode == "port":
+        release_port(settings.port_registry_path, branch_name)
 
     try:
         container = client.containers.get(odoo_container_name)
@@ -520,13 +557,16 @@ def list_environments(settings: Settings) -> list[dict[str, Any]]:
         }
 
         if "-odoo" in container.name:
-            ports = container.attrs.get("NetworkSettings", {}).get("Ports", {})
-            if ports:
-                mappings = ports.get("8069/tcp")
-                if mappings:
-                    host_port = mappings[0].get("HostPort")
-                    if host_port:
-                        envs[branch]["url"] = f"http://{settings.external_host}:{host_port}"
+            if settings.routing_mode == "traefik":
+                envs[branch]["url"] = f"https://{get_env_hostname(branch, settings.base_domain)}"
+            else:
+                ports = container.attrs.get("NetworkSettings", {}).get("Ports", {})
+                if ports:
+                    mappings = ports.get("8069/tcp")
+                    if mappings:
+                        host_port = mappings[0].get("HostPort")
+                        if host_port:
+                            envs[branch]["url"] = f"http://{settings.external_host}:{host_port}"
 
         envs[branch]["containers"].append(container_info)
 

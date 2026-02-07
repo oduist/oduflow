@@ -25,6 +25,10 @@ def get_repo_path(branch_name: str, workspaces_dir: str) -> str:
     return os.path.join(get_workspace_path(branch_name, workspaces_dir), "repo")
 
 
+def get_env_hostname(branch_name: str, base_domain: str) -> str:
+    return f"{slugify_branch(branch_name)}.{base_domain}"
+
+
 def get_filestore_paths(branch_name: str, workspaces_dir: str) -> dict[str, str]:
     base = get_workspace_path(branch_name, workspaces_dir)
     return {

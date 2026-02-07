@@ -84,9 +84,21 @@ class TestDestroySystem:
     def test_destroy_clean(self, mock_docker_client):
         mock_docker_client.containers.list.return_value = []
         db = MagicMock()
-        mock_docker_client.containers.get.return_value = db
+
+        def _get_container(name):
+            if name == TEST_SETTINGS.shared_db_container:
+                return db
+            raise docker.errors.NotFound("not found")
+
+        mock_docker_client.containers.get.side_effect = _get_container
         vol = MagicMock()
-        mock_docker_client.volumes.get.return_value = vol
+
+        def _get_volume(name):
+            if name == TEST_SETTINGS.shared_db_volume:
+                return vol
+            raise docker.errors.NotFound("not found")
+
+        mock_docker_client.volumes.get.side_effect = _get_volume
         net = MagicMock()
         mock_docker_client.networks.get.return_value = net
 
