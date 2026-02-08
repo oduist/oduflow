@@ -9,7 +9,7 @@ from typing import Any
 import docker
 from docker import DockerClient
 
-from flow.docker_ops.client import get_client
+from flow.docker_ops.client import get_client, get_odoo_uid_gid
 from flow.docker_ops.system_ops import _db_exists, _exec_sql
 from flow.errors import (
     ConflictError,
@@ -77,13 +77,16 @@ def _ensure_system_ready(client: DockerClient, settings: Settings) -> None:
 
 
 def _mount_filestore(
+    client: DockerClient,
     settings: Settings,
     branch_name: str,
     env_db: str,
+    odoo_image: str,
     odoo_volumes: dict,
 ) -> None:
-    ref = settings.ref_filestore_path
-    if not ref or not os.path.isdir(ref):
+    ref_data = settings.ref_filestore_path
+    ref = os.path.join(ref_data, "filestore", settings.template_db_name)
+    if not ref_data or not os.path.isdir(ref):
         logger.debug("Reference filestore not found at %s, skipping overlay mount", ref)
         return
 
@@ -92,47 +95,60 @@ def _mount_filestore(
         os.makedirs(d, mode=0o777, exist_ok=True)
         os.chmod(d, 0o777)
 
-    ODOO_UID_GID = "101:101"
+    odoo_uid_gid = get_odoo_uid_gid(client, odoo_image)
     try:
         subprocess.run(
-            ["sudo", "-n", "chown", "-R", ODOO_UID_GID, paths["upper"], paths["work"], paths["merged"]],
+            ["sudo", "-n", "chown", "-R", odoo_uid_gid, paths["upper"], paths["work"], paths["merged"]],
             check=True,
             capture_output=True,
         )
     except (subprocess.CalledProcessError, FileNotFoundError) as e:
-        logger.warning("Could not chown filestore dirs to %s: %s", ODOO_UID_GID, e)
+        logger.warning("Could not chown filestore dirs to %s: %s", odoo_uid_gid, e)
 
-    try:
-        subprocess.run(
-            [
-                "sudo", "-n",
-                "fuse-overlayfs",
-                "-o", f"lowerdir={ref},upperdir={paths['upper']},workdir={paths['work']},allow_other",
-                paths["merged"],
-            ],
-            check=True,
-            capture_output=True,
+    if not shutil.which("fuse-overlayfs"):
+        raise PrerequisiteNotMetError(
+            "fuse-overlayfs is not installed. "
+            "Install it with: sudo apt install fuse-overlayfs"
         )
-        deadline = time.time() + 2.0
-        while time.time() < deadline:
-            if os.path.ismount(paths["merged"]):
-                try:
-                    os.listdir(paths["merged"])
-                    break
-                except OSError:
-                    pass
-            time.sleep(0.05)
 
-        odoo_volumes[paths["merged"]] = {
-            "bind": f"/var/lib/odoo/.local/share/Odoo/filestore/{env_db}",
-            "mode": "rw",
-        }
-        logger.info("Filestore overlay mounted", extra={"branch": branch_name})
-    except FileNotFoundError:
-        logger.warning("fuse-overlayfs not installed, skipping filestore mount")
-    except subprocess.CalledProcessError as e:
-        error_msg = e.stderr.decode("utf-8") if e.stderr else str(e)
-        logger.warning("Failed to mount filestore overlay: %s", error_msg)
+    result = subprocess.run(
+        [
+            "sudo", "-n",
+            "fuse-overlayfs",
+            "-o", f"lowerdir={ref},upperdir={paths['upper']},workdir={paths['work']},allow_other",
+            paths["merged"],
+        ],
+        capture_output=True,
+    )
+    if result.returncode != 0:
+        error_msg = result.stderr.decode("utf-8", errors="replace").strip() if result.stderr else ""
+        hint = ""
+        if "allow_other" in error_msg or "permission" in error_msg.lower():
+            hint = " Hint: uncomment 'user_allow_other' in /etc/fuse.conf"
+        raise PrerequisiteNotMetError(
+            f"Failed to mount filestore overlay: {error_msg}.{hint}"
+        )
+
+    deadline = time.time() + 2.0
+    while time.time() < deadline:
+        if os.path.ismount(paths["merged"]):
+            try:
+                os.listdir(paths["merged"])
+                break
+            except OSError:
+                pass
+        time.sleep(0.05)
+
+    if not os.path.ismount(paths["merged"]):
+        raise PrerequisiteNotMetError(
+            f"Filestore overlay mount at {paths['merged']} did not become ready"
+        )
+
+    odoo_volumes[paths["merged"]] = {
+        "bind": f"/var/lib/odoo/.local/share/Odoo/filestore/{env_db}",
+        "mode": "rw",
+    }
+    logger.info("Filestore overlay mounted", extra={"branch": branch_name})
 
 
 def _unmount_filestore(branch_name: str, settings: Settings) -> None:
@@ -410,13 +426,21 @@ def create_environment(
         "PASSWORD": settings.db_password,
     }
     odoo_volumes = {repo_path: {"bind": "/mnt/extra-addons", "mode": "rw"}}
-    if _ODOO_CONF_TEMPLATE.exists():
-        odoo_volumes[str(_ODOO_CONF_TEMPLATE)] = {
+    repo_odoo_conf = os.path.join(repo_path, "odoo.conf")
+    if os.path.isfile(repo_odoo_conf):
+        odoo_conf_path = repo_odoo_conf
+        logger.info("Using odoo.conf from repository")
+    elif _ODOO_CONF_TEMPLATE.exists():
+        odoo_conf_path = str(_ODOO_CONF_TEMPLATE)
+    else:
+        odoo_conf_path = None
+    if odoo_conf_path:
+        odoo_volumes[odoo_conf_path] = {
             "bind": "/etc/odoo/odoo.conf",
             "mode": "ro",
         }
 
-    _mount_filestore(settings, branch_name, env_db, odoo_volumes)
+    _mount_filestore(client, settings, branch_name, env_db, odoo_image, odoo_volumes)
 
     host_port: int | None = None
     if settings.routing_mode == "port":
@@ -434,7 +458,7 @@ def create_environment(
     os.chmod(sessions_path, 0o777)
     try:
         subprocess.run(
-            ["sudo", "-n", "chown", "-R", "101:101", sessions_path],
+            ["sudo", "-n", "chown", "-R", get_odoo_uid_gid(client, odoo_image), sessions_path],
             check=True,
             capture_output=True,
         )

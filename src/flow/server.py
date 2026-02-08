@@ -474,14 +474,14 @@ def _run_call(argv: list[str]) -> None:
 def main() -> None:
     """Entry point for the Flow MCP server."""
     parser = argparse.ArgumentParser(prog="flow", description="Flow — Odoo dev environment manager")
-    group = parser.add_mutually_exclusive_group()
-    group.add_argument("call", nargs="*", default=None, help="Call an MCP tool: flow call <tool> [args...]")
-    group.add_argument("--init", action="store_true", help="Initialize shared infrastructure (network, DB, template)")
-    group.add_argument("--destroy", action="store_true", help="Destroy all shared infrastructure")
-    group.add_argument("--reload-dump", action="store_true", help="Drop and re-restore the template DB from dump (safe while server is running)")
-    group.add_argument("--generate-ref", action="store_true", help="Generate reference dump and filestore from a clean Odoo image (requires --odoo-image)")
-    group.add_argument("--ref-up", action="store_true", help="Start a ref editor: Odoo container working directly with the template DB and filestore (requires --odoo-image)")
-    group.add_argument("--ref-down", action="store_true", help="Stop the ref editor, dump the updated DB, restore template flag")
+    subparsers = parser.add_subparsers(dest="command")
+    subparsers.add_parser("call", help="Call an MCP tool: flow call <tool> [args...]").add_argument("call_args", nargs="*", default=[], help="Tool name and arguments")
+    parser.add_argument("--init", action="store_true", help="Initialize shared infrastructure (network, DB, template)")
+    parser.add_argument("--destroy", action="store_true", help="Destroy all shared infrastructure")
+    parser.add_argument("--reload-dump", action="store_true", help="Drop and re-restore the template DB from dump (safe while server is running)")
+    parser.add_argument("--generate-ref", action="store_true", help="Generate reference dump and filestore from a clean Odoo image (requires --odoo-image)")
+    parser.add_argument("--ref-up", action="store_true", help="Start a ref editor: Odoo container working directly with the template DB and filestore (requires --odoo-image)")
+    parser.add_argument("--ref-down", action="store_true", help="Stop the ref editor, dump the updated DB, restore template flag")
     parser.add_argument("--dump-path", default="", help="Path to DB dump file (for --init / --reload-dump)")
     parser.add_argument("--version", default="15.0", help="Odoo version (for --init, default 15.0)")
     parser.add_argument("--force", action="store_true", help="Force recreate template DB (for --init)")
@@ -501,8 +501,8 @@ def main() -> None:
     _settings = Settings.from_env()
     _settings.validate()
 
-    if args.call and args.call[0] == "call":
-        _run_call(args.call[1:])
+    if args.command == "call":
+        _run_call(args.call_args)
         return
 
     if args.init:

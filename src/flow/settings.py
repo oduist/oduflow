@@ -34,10 +34,10 @@ class Settings:
 
     @staticmethod
     def from_env() -> "Settings":
-        workspaces_dir = os.getenv(
+        workspaces_dir = os.path.expanduser(os.getenv(
             "FLOW_WORKSPACES_DIR",
-            os.path.expanduser("~/.flow/workspaces"),
-        )
+            "~/.flow/workspaces",
+        ))
         return Settings(
             routing_mode=os.getenv("FLOW_ROUTING_MODE", "port").strip().lower(),
             base_domain=re.sub(r"^https?://", "", os.getenv("FLOW_BASE_DOMAIN", "")).strip(),
@@ -46,14 +46,14 @@ class Settings:
             port_range_start=int(os.getenv("PORT_RANGE_START", "50000")),
             port_range_end=int(os.getenv("PORT_RANGE_END", "50100")),
             workspaces_dir=workspaces_dir,
-            dump_file_path=os.getenv(
+            dump_file_path=os.path.expanduser(os.getenv(
                 "FLOW_DUMP_PATH",
-                os.path.expanduser("~/.flow/odoo_ref.dump"),
-            ),
-            ref_filestore_path=os.getenv(
+                "~/.flow/odoo_ref.dump",
+            )),
+            ref_filestore_path=os.path.expanduser(os.getenv(
                 "FLOW_REF_FILESTORE_PATH",
-                os.path.expanduser("~/.flow/odoo_ref_filestore"),
-            ),
+                "~/.flow/odoo_ref_data",
+            )),
             db_user=os.getenv("ODOO_DB_USER", "odoo"),
             db_password=os.getenv("ODOO_DB_PASSWORD", "odoo"),
             flow_server_port=int(os.getenv("FLOW_PORT", "8000")),

@@ -2,20 +2,23 @@ import io
 import logging
 import os
 import pathlib
+import shutil
+import subprocess
 import tarfile
 import time
 
 import docker
 from docker import DockerClient
 
-from flow.docker_ops.client import get_client
-from flow.errors import ExternalCommandError, NotFoundError, PrerequisiteNotMetError
+from flow.docker_ops.client import get_client, get_odoo_uid_gid
+from flow.errors import ConflictError, ExternalCommandError, NotFoundError, PrerequisiteNotMetError
 from flow.settings import Settings
 
 logger = logging.getLogger("flow")
 
 _PROJECT_ROOT = pathlib.Path(__file__).resolve().parents[3]
 _PG_CONF_TEMPLATE = _PROJECT_ROOT / "templates" / "postgresql.conf"
+_ODOO_CONF_TEMPLATE = _PROJECT_ROOT / "templates" / "odoo.conf"
 
 
 def _ensure_traefik(client: DockerClient, settings: Settings) -> None:
@@ -227,7 +230,7 @@ def init_system(
             settings,
             f"UPDATE pg_database SET datistemplate=false WHERE datname='{settings.template_db_name}';",
         )
-        _exec_sql(client, settings, f"DROP DATABASE {settings.template_db_name};")
+        _exec_sql(client, settings, f"DROP DATABASE {settings.template_db_name} WITH (FORCE);")
 
     resolved_dump = dump_path or settings.dump_file_path
     if not os.path.isfile(resolved_dump):
@@ -290,7 +293,7 @@ def reload_template_db(
             settings,
             f"UPDATE pg_database SET datistemplate=false WHERE datname='{settings.template_db_name}';",
         )
-        _exec_sql(client, settings, f"DROP DATABASE {settings.template_db_name};")
+        _exec_sql(client, settings, f"DROP DATABASE {settings.template_db_name} WITH (FORCE);")
         logger.info("Dropped template DB %s", settings.template_db_name)
 
     _exec_sql(client, settings, f"CREATE DATABASE {settings.template_db_name};")
@@ -330,6 +333,376 @@ def reload_template_db(
 
     logger.info("Template DB reloaded, template_db=%s, restore_time=%.1fs", settings.template_db_name, restore_elapsed)
     return {"status": "reloaded", "template_db": settings.template_db_name, "restore_seconds": round(restore_elapsed, 1)}
+
+
+def generate_ref(
+    settings: Settings,
+    odoo_image: str = "odoo:17.0",
+    modules: str = "base",
+) -> dict[str, str]:
+    client = get_client()
+    logger.info("Generating reference dump from clean Odoo", extra={"image": odoo_image, "modules": modules})
+
+    system_labels = {settings.managed_label: "true", settings.system_label: "true"}
+
+    try:
+        client.networks.get(settings.shared_network)
+    except docker.errors.NotFound:
+        client.networks.create(settings.shared_network, labels=system_labels)
+        logger.info("Created network %s", settings.shared_network)
+
+    try:
+        client.volumes.get(settings.shared_db_volume)
+    except docker.errors.NotFound:
+        client.volumes.create(settings.shared_db_volume, labels=system_labels)
+        logger.info("Created volume %s", settings.shared_db_volume)
+
+    try:
+        db_container = client.containers.get(settings.shared_db_container)
+        if db_container.status != "running":
+            db_container.start()
+    except docker.errors.NotFound:
+        client.containers.run(
+            settings.postgres_image,
+            name=settings.shared_db_container,
+            detach=True,
+            network=settings.shared_network,
+            volumes={
+                settings.shared_db_volume: {"bind": "/var/lib/postgresql/data", "mode": "rw"},
+                str(_PG_CONF_TEMPLATE): {"bind": "/etc/postgresql/postgresql.conf", "mode": "ro"},
+            },
+            command=["postgres", "-c", "config_file=/etc/postgresql/postgresql.conf"],
+            environment={
+                "POSTGRES_USER": settings.db_user,
+                "POSTGRES_PASSWORD": settings.db_password,
+            },
+            labels=system_labels,
+            restart_policy={"Name": "unless-stopped"},
+        )
+        logger.info("Created container %s", settings.shared_db_container)
+
+    _wait_pg_ready(client, settings)
+
+    build_db = "odoo_ref_build"
+    temp_container_name = "flow-ref-builder"
+
+    if _db_exists(client, settings, build_db):
+        _exec_sql(client, settings, f"DROP DATABASE {build_db} WITH (FORCE);")
+
+    _exec_sql(client, settings, f"CREATE DATABASE {build_db};")
+    logger.info("Created temporary database %s", build_db)
+
+    try:
+        old = client.containers.get(temp_container_name)
+        old.remove(force=True)
+    except docker.errors.NotFound:
+        pass
+
+    logger.info("Starting Odoo container for base init (image=%s, modules=%s)", odoo_image, modules)
+    init_start = time.monotonic()
+
+    volumes = {}
+    if _ODOO_CONF_TEMPLATE.exists():
+        volumes[str(_ODOO_CONF_TEMPLATE)] = {"bind": "/etc/odoo/odoo.conf", "mode": "ro"}
+
+    temp_container = client.containers.run(
+        odoo_image,
+        name=temp_container_name,
+        detach=True,
+        network=settings.shared_network,
+        environment={
+            "HOST": settings.shared_db_container,
+            "USER": settings.db_user,
+            "PASSWORD": settings.db_password,
+        },
+        volumes=volumes,
+        command=f"odoo -d {build_db} -i {modules} --stop-after-init --without-demo=all",
+        labels={settings.managed_label: "true"},
+    )
+
+    exit_info = temp_container.wait(timeout=600)
+    init_elapsed = time.monotonic() - init_start
+    exit_code = exit_info.get("StatusCode", -1)
+
+    if exit_code != 0:
+        logs = temp_container.logs(tail=50).decode("utf-8", errors="replace")
+        temp_container.remove(v=True)
+        _exec_sql(client, settings, f"DROP DATABASE IF EXISTS {build_db} WITH (FORCE);")
+        raise ExternalCommandError(
+            "odoo --stop-after-init", exit_code,
+            f"Odoo init failed after {init_elapsed:.1f}s.\nLast logs:\n{logs}",
+        )
+
+    logger.info("Odoo init completed in %.1fs", init_elapsed)
+
+    dump_path = settings.dump_file_path
+    os.makedirs(os.path.dirname(dump_path), exist_ok=True)
+
+    db_container = client.containers.get(settings.shared_db_container)
+    dump_cmd = [
+        "pg_dump", "-U", settings.db_user, "-Fc", "-f", f"/tmp/{build_db}.dump", build_db,
+    ]
+    exit_code_dump, output_dump = db_container.exec_run(dump_cmd)
+    if exit_code_dump != 0:
+        msg = output_dump.decode("utf-8") if isinstance(output_dump, bytes) else str(output_dump)
+        temp_container.remove(v=True)
+        _exec_sql(client, settings, f"DROP DATABASE IF EXISTS {build_db} WITH (FORCE);")
+        raise ExternalCommandError("pg_dump", exit_code_dump, msg)
+
+    logger.info("pg_dump completed, extracting dump file")
+
+    chunks, _ = db_container.get_archive(f"/tmp/{build_db}.dump")
+    raw = b"".join(chunks)
+    tar_stream = io.BytesIO(raw)
+    with tarfile.open(fileobj=tar_stream, mode="r") as tar:
+        member = tar.getmembers()[0]
+        f = tar.extractfile(member)
+        if f is None:
+            raise ExternalCommandError("get_archive", -1, "Could not extract dump from tar")
+        with open(dump_path, "wb") as out:
+            out.write(f.read())
+
+    logger.info("Dump saved to %s", dump_path)
+
+    ref_data_path = settings.ref_filestore_path
+    if os.path.exists(ref_data_path):
+        try:
+            subprocess.run(
+                ["sudo", "-n", "rm", "-rf", ref_data_path],
+                check=True,
+                capture_output=True,
+            )
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            shutil.rmtree(ref_data_path, ignore_errors=True)
+    os.makedirs(ref_data_path, exist_ok=True)
+
+    odoo_data_container_path = "/var/lib/odoo/.local/share/Odoo"
+    try:
+        chunks_fs, _ = temp_container.get_archive(odoo_data_container_path)
+        raw_fs = b"".join(chunks_fs)
+        tar_fs = io.BytesIO(raw_fs)
+        extracted = 0
+        with tarfile.open(fileobj=tar_fs, mode="r") as tar:
+            for member in tar.getmembers():
+                if member.isdir() and member.name == os.path.basename(odoo_data_container_path):
+                    continue
+                rel = member.name
+                prefix = os.path.basename(odoo_data_container_path) + "/"
+                if rel.startswith(prefix):
+                    rel = rel[len(prefix):]
+                if not rel:
+                    continue
+                member.name = rel
+                tar.extract(member, ref_data_path)
+                if not member.isdir():
+                    extracted += 1
+        logger.info("Odoo data extracted to %s (%d files)", ref_data_path, extracted)
+    except docker.errors.NotFound:
+        logger.info(
+            "Odoo did not create data dir during init (normal for --stop-after-init). "
+            "The reference data at %s is empty; environments will start with an empty filestore.",
+            ref_data_path,
+        )
+
+    odoo_uid_gid = get_odoo_uid_gid(client, odoo_image)
+    try:
+        subprocess.run(
+            ["sudo", "-n", "chown", "-R", odoo_uid_gid, ref_data_path],
+            check=True,
+            capture_output=True,
+        )
+    except (subprocess.CalledProcessError, FileNotFoundError) as e:
+        logger.warning("Could not chown ref data to %s: %s", odoo_uid_gid, e)
+
+    temp_container.remove(v=True)
+    logger.info("Temporary container removed")
+
+    _exec_sql(client, settings, f"DROP DATABASE IF EXISTS {build_db} WITH (FORCE);")
+    logger.info("Temporary database dropped")
+
+    logger.info("Reference generation complete, running init_system")
+    result = init_system(settings, dump_path=dump_path, force=True)
+    result["generated_dump"] = dump_path
+    result["generated_filestore"] = ref_data_path
+    result["filestore_files"] = sum(1 for _ in pathlib.Path(ref_data_path).rglob("*") if _.is_file())
+    return result
+
+
+_REF_EDITOR_CONTAINER = "flow-ref-editor"
+_REF_EDITOR_BRANCH = "__ref__"
+
+
+def ref_up(
+    settings: Settings,
+    odoo_image: str,
+) -> dict[str, str]:
+    client = get_client()
+
+    try:
+        existing = client.containers.get(_REF_EDITOR_CONTAINER)
+        if existing.status == "running":
+            existing.reload()
+            ports = existing.ports.get("8069/tcp")
+            host_port = ports[0]["HostPort"] if ports else "?"
+            url = f"http://{settings.external_host}:{host_port}"
+            raise ConflictError(
+                f"Reference editor is already running at {url}. "
+                f"Use --ref-down to stop it first."
+            )
+        existing.remove(force=True)
+    except docker.errors.NotFound:
+        pass
+
+    try:
+        db_container = client.containers.get(settings.shared_db_container)
+        if db_container.status != "running":
+            raise PrerequisiteNotMetError(
+                f"{settings.shared_db_container} is not running. Run --init or --generate-ref first."
+            )
+    except docker.errors.NotFound:
+        raise PrerequisiteNotMetError(
+            f"{settings.shared_db_container} not found. Run --init or --generate-ref first."
+        )
+
+    _wait_pg_ready(client, settings)
+
+    if not _db_exists(client, settings, settings.template_db_name):
+        raise PrerequisiteNotMetError(
+            f"Template database '{settings.template_db_name}' not found. "
+            f"Run --init or --generate-ref first."
+        )
+
+    _exec_sql(
+        client,
+        settings,
+        f"UPDATE pg_database SET datistemplate=false WHERE datname='{settings.template_db_name}';",
+    )
+    logger.info("Template flag removed from %s", settings.template_db_name)
+
+    ref_data_path = settings.ref_filestore_path
+    os.makedirs(ref_data_path, exist_ok=True)
+
+    odoo_uid_gid = get_odoo_uid_gid(client, odoo_image)
+    try:
+        subprocess.run(
+            ["sudo", "-n", "chown", "-R", odoo_uid_gid, ref_data_path],
+            check=True,
+            capture_output=True,
+        )
+    except (subprocess.CalledProcessError, FileNotFoundError) as e:
+        logger.warning("Could not chown ref data to %s: %s", odoo_uid_gid, e)
+
+    from flow.port_registry import allocate_port
+    from flow.docker_ops.env_ops import _get_used_ports
+
+    used_ports = _get_used_ports(client, settings)
+    host_port = allocate_port(
+        settings.port_registry_path,
+        _REF_EDITOR_BRANCH,
+        settings.port_range_start,
+        settings.port_range_end,
+        used_ports=used_ports,
+    )
+
+    odoo_env = {
+        "HOST": settings.shared_db_container,
+        "USER": settings.db_user,
+        "PASSWORD": settings.db_password,
+    }
+    odoo_volumes = {
+        ref_data_path: {
+            "bind": "/var/lib/odoo/.local/share/Odoo",
+            "mode": "rw",
+        },
+    }
+    if _ODOO_CONF_TEMPLATE.exists():
+        odoo_volumes[str(_ODOO_CONF_TEMPLATE)] = {"bind": "/etc/odoo/odoo.conf", "mode": "ro"}
+
+    container = client.containers.run(
+        odoo_image,
+        name=_REF_EDITOR_CONTAINER,
+        detach=True,
+        network=settings.shared_network,
+        ports={"8069/tcp": host_port},
+        environment=odoo_env,
+        volumes=odoo_volumes,
+        labels={settings.managed_label: "true"},
+        command=f"odoo -d {settings.template_db_name} --dev=xml",
+    )
+
+    url = f"http://{settings.external_host}:{host_port}"
+    logger.info("Reference editor started at %s (container=%s)", url, _REF_EDITOR_CONTAINER)
+
+    return {
+        "status": "running",
+        "url": url,
+        "container": _REF_EDITOR_CONTAINER,
+        "database": settings.template_db_name,
+        "filestore": ref_data_path,
+    }
+
+
+def ref_down(settings: Settings) -> dict[str, str]:
+    client = get_client()
+
+    try:
+        container = client.containers.get(_REF_EDITOR_CONTAINER)
+    except docker.errors.NotFound:
+        raise NotFoundError(
+            f"Reference editor container '{_REF_EDITOR_CONTAINER}' is not running."
+        )
+
+    if container.status == "running":
+        container.stop()
+    container.remove(v=True)
+    logger.info("Reference editor container removed")
+
+    from flow.port_registry import release_port
+    release_port(settings.port_registry_path, _REF_EDITOR_BRANCH)
+
+    _wait_pg_ready(client, settings)
+
+    dump_path = settings.dump_file_path
+    os.makedirs(os.path.dirname(dump_path), exist_ok=True)
+
+    db_container = client.containers.get(settings.shared_db_container)
+    dump_file = f"/tmp/{settings.template_db_name}.dump"
+    dump_cmd = [
+        "pg_dump", "-U", settings.db_user, "-Fc", "-f", dump_file, settings.template_db_name,
+    ]
+
+    logger.info("Dumping reference database %s", settings.template_db_name)
+    exit_code, output = db_container.exec_run(dump_cmd)
+    if exit_code != 0:
+        msg = output.decode("utf-8") if isinstance(output, bytes) else str(output)
+        raise ExternalCommandError("pg_dump", exit_code, msg)
+
+    chunks, _ = db_container.get_archive(dump_file)
+    raw = b"".join(chunks)
+    tar_stream = io.BytesIO(raw)
+    with tarfile.open(fileobj=tar_stream, mode="r") as tar:
+        member = tar.getmembers()[0]
+        f = tar.extractfile(member)
+        if f is None:
+            raise ExternalCommandError("get_archive", -1, "Could not extract dump from tar")
+        with open(dump_path, "wb") as out:
+            out.write(f.read())
+
+    logger.info("Dump saved to %s", dump_path)
+
+    _exec_sql(
+        client,
+        settings,
+        f"UPDATE pg_database SET datistemplate=true WHERE datname='{settings.template_db_name}';",
+    )
+    logger.info("Template flag restored on %s", settings.template_db_name)
+
+    return {
+        "status": "stopped",
+        "dump": dump_path,
+        "filestore": settings.ref_filestore_path,
+        "database": settings.template_db_name,
+    }
 
 
 def destroy_system(settings: Settings) -> dict[str, str]:
