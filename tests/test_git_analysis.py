@@ -2,7 +2,13 @@ import os
 import textwrap
 import pytest
 
-from flow.git_analysis import classify_changes, _get_module_name, _is_security_path
+from flow.git_analysis import (
+    classify_changes,
+    _get_module_name,
+    _is_security_path,
+    _extract_field_lines,
+    _check_field_changes,
+)
 
 
 class TestGetModuleName:
@@ -171,3 +177,145 @@ class TestClassifyChanges:
         result = classify_changes(files, str(tmp_path))
         assert result["action"] == "upgrade"
         assert result["modules_to_upgrade"] == ["sale_ext"]
+
+    def test_py_field_added_triggers_upgrade(self, tmp_path):
+        module_dir = tmp_path / "sale" / "models"
+        module_dir.mkdir(parents=True)
+        (tmp_path / "sale" / "__manifest__.py").write_text(
+            "{'name': 'Sale', 'version': '17.0.1.0.0'}"
+        )
+        (module_dir / "sale.py").write_text(textwrap.dedent("""\
+            from odoo import fields, models
+
+            class SaleOrder(models.Model):
+                name = fields.Char(string='Name')
+                customer_code = fields.Char(string='Customer Code')
+        """))
+
+        from unittest.mock import patch
+
+        old_source = textwrap.dedent("""\
+            from odoo import fields, models
+
+            class SaleOrder(models.Model):
+                name = fields.Char(string='Name')
+        """)
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = type("Result", (), {"stdout": old_source})()
+
+            files = ["sale/models/sale.py"]
+            result = classify_changes(files, str(tmp_path))
+            assert result["action"] == "upgrade"
+            assert "sale" in result["modules_to_upgrade"]
+
+    def test_py_field_removed_triggers_upgrade(self, tmp_path):
+        module_dir = tmp_path / "crm" / "models"
+        module_dir.mkdir(parents=True)
+        (tmp_path / "crm" / "__manifest__.py").write_text(
+            "{'name': 'CRM', 'version': '17.0.1.0.0'}"
+        )
+        (module_dir / "lead.py").write_text(textwrap.dedent("""\
+            from odoo import fields, models
+
+            class CrmLead(models.Model):
+                name = fields.Char(string='Name')
+        """))
+
+        from unittest.mock import patch
+
+        old_source = textwrap.dedent("""\
+            from odoo import fields, models
+
+            class CrmLead(models.Model):
+                name = fields.Char(string='Name')
+                priority = fields.Selection(string='Priority')
+        """)
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = type("Result", (), {"stdout": old_source})()
+
+            files = ["crm/models/lead.py"]
+            result = classify_changes(files, str(tmp_path))
+            assert result["action"] == "upgrade"
+            assert "crm" in result["modules_to_upgrade"]
+
+    def test_py_field_param_changed_triggers_upgrade(self, tmp_path):
+        module_dir = tmp_path / "sale" / "models"
+        module_dir.mkdir(parents=True)
+        (tmp_path / "sale" / "__manifest__.py").write_text(
+            "{'name': 'Sale', 'version': '17.0.1.0.0'}"
+        )
+        (module_dir / "sale.py").write_text(textwrap.dedent("""\
+            from odoo import fields, models
+
+            class SaleOrder(models.Model):
+                name = fields.Char(string='Name', required=True)
+        """))
+
+        from unittest.mock import patch
+
+        old_source = textwrap.dedent("""\
+            from odoo import fields, models
+
+            class SaleOrder(models.Model):
+                name = fields.Char(string='Name')
+        """)
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = type("Result", (), {"stdout": old_source})()
+
+            files = ["sale/models/sale.py"]
+            result = classify_changes(files, str(tmp_path))
+            assert result["action"] == "upgrade"
+            assert "sale" in result["modules_to_upgrade"]
+
+    def test_py_no_field_change_stays_restart(self, tmp_path):
+        module_dir = tmp_path / "sale" / "models"
+        module_dir.mkdir(parents=True)
+        (tmp_path / "sale" / "__manifest__.py").write_text(
+            "{'name': 'Sale', 'version': '17.0.1.0.0'}"
+        )
+        (module_dir / "sale.py").write_text(textwrap.dedent("""\
+            from odoo import fields, models
+
+            class SaleOrder(models.Model):
+                name = fields.Char(string='Name')
+
+                def action_confirm(self):
+                    return True
+        """))
+
+        from unittest.mock import patch
+
+        old_source = textwrap.dedent("""\
+            from odoo import fields, models
+
+            class SaleOrder(models.Model):
+                name = fields.Char(string='Name')
+
+                def action_confirm(self):
+                    pass
+        """)
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = type("Result", (), {"stdout": old_source})()
+
+            files = ["sale/models/sale.py"]
+            result = classify_changes(files, str(tmp_path))
+            assert result["action"] == "restart"
+            assert result["modules_to_upgrade"] == []
+
+
+class TestExtractFieldLines:
+    def test_basic(self):
+        source = "    name = fields.Char(string='Name')\n"
+        assert _extract_field_lines(source) == {"name = fields.Char(string='Name')"}
+
+    def test_no_spaces(self):
+        source = "customer_code=fields.Char(string='Code')\n"
+        assert _extract_field_lines(source) == {"customer_code=fields.Char(string='Code')"}
+
+    def test_many2one(self):
+        source = "    partner_id = fields.Many2one('res.partner')\n"
+        assert _extract_field_lines(source) == {"partner_id = fields.Many2one('res.partner')"}
+
+    def test_no_fields(self):
+        source = "def create(self, vals):\n    return super().create(vals)\n"
+        assert _extract_field_lines(source) == set()

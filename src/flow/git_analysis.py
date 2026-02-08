@@ -1,10 +1,14 @@
 import ast
 import logging
 import os
+import re
+import subprocess
 
 logger = logging.getLogger("flow")
 
 MANIFEST_KEYS_WITH_FILES = ("data", "demo", "assets", "qweb")
+
+_FIELD_RE = re.compile(r"^\s*\w+\s*=\s*fields\..*", re.MULTILINE)
 
 
 def _parse_manifest(path: str) -> dict:
@@ -37,6 +41,44 @@ def _get_module_name(file_path: str, repo_path: str = "") -> str | None:
                 return dir_parts[i - 1]
 
     return parts[0]
+
+
+def _extract_field_lines(source: str) -> set[str]:
+    """Return the set of normalised field-definition lines from Python source."""
+    lines = set()
+    for match in _FIELD_RE.finditer(source):
+        line = match.group(0)
+        lines.add(re.sub(r"\s+", " ", line).strip())
+    return lines
+
+
+def _check_field_changes(py_rel_path: str, repo_path: str) -> bool:
+    """Return True if any ``fields.`` definition was added, removed or modified."""
+    abs_path = os.path.join(repo_path, py_rel_path)
+
+    try:
+        new_source = open(abs_path).read() if os.path.isfile(abs_path) else ""
+    except Exception:
+        new_source = ""
+
+    try:
+        old_source = subprocess.run(
+            ["git", "-C", repo_path, "show", f"HEAD~1:{py_rel_path}"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+    except Exception:
+        old_source = ""
+
+    old_fields = _extract_field_lines(old_source)
+    new_fields = _extract_field_lines(new_source)
+
+    if old_fields != new_fields:
+        diff = (new_fields - old_fields) | (old_fields - new_fields)
+        logger.info("Field definitions changed in %s: %s", py_rel_path, diff)
+        return True
+    return False
 
 
 def _is_security_path(file_path: str) -> bool:
@@ -81,6 +123,8 @@ def classify_changes(changed_files: list[str], repo_path: str) -> dict:
 
         if ext == ".py":
             py_changed = True
+            if module and _check_field_changes(f, repo_path):
+                modules_to_upgrade.add(module)
             continue
 
         if ext == ".xml":
@@ -132,8 +176,6 @@ def _check_manifest_changes(
     Uses git to compare old vs new manifest content.
     Returns True if upgrade is needed.
     """
-    import subprocess
-
     manifest_abs = os.path.join(repo_path, manifest_rel_path)
     if not os.path.isfile(manifest_abs):
         return False

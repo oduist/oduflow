@@ -708,12 +708,15 @@ def pull_environment(settings: Settings, branch_name: str) -> dict[str, Any]:
 
         modules = analysis["modules_to_upgrade"]
         result = upgrade_odoo_modules(settings, branch_name, *modules)
+        container = client.containers.get(odoo_container_name)
+        container.restart()
+        logger.info("Container restarted after upgrade", extra={"branch": branch_name})
         return {
             "action": "upgrade",
             "modules": modules,
             "exit_code": result["exit_code"],
             "changed_files": changed_files,
-            "message": f"Upgraded modules: {','.join(modules)}",
+            "message": f"Upgraded modules: {','.join(modules)}. Container restarted.",
         }
 
     if action == "restart":
