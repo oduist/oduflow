@@ -26,7 +26,9 @@ def get_repo_path(branch_name: str, workspaces_dir: str) -> str:
 
 
 def get_env_hostname(branch_name: str, base_domain: str) -> str:
-    return f"{slugify_branch(branch_name)}.{base_domain}"
+    slug = slugify_branch(branch_name).replace("_", "-")
+    slug = re.sub(r"-+", "-", slug).strip("-")
+    return f"{slug}.{base_domain}"
 
 
 def get_filestore_paths(branch_name: str, workspaces_dir: str) -> dict[str, str]:

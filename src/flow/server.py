@@ -43,7 +43,8 @@ def handle_errors(fn):
     def wrapper(*args, **kwargs):
         try:
             result = fn(*args, **kwargs)
-            logger.info("[%s] -> %s", fn.__name__, result)
+            first_line = result.split('\n', 1)[0] if isinstance(result, str) else result
+            logger.info("[%s] -> %s", fn.__name__, first_line)
             return result
         except FlowError as e:
             logger.error("[%s] Error: %s", fn.__name__, e)
@@ -282,11 +283,11 @@ def install_odoo_modules(branch_name: str, modules: str) -> str:
     result = odoo_ops.install_odoo_modules(_get_settings(), branch_name, *modules_list)
     exit_code = result['exit_code']
     modules_str = ', '.join(result['modules'])
+    output = result.get('output', '')
     if exit_code == 0:
-        return f"Success. Modules installed: {modules_str}. Exit code: 0."
+        return f"Success. Modules installed: {modules_str}. Exit code: 0.\nOutput:\n{output}"
     return (
-        f"Error. Modules: {modules_str}. Exit code: {exit_code}. "
-        f"Call get_environment_logs with branch_name='{branch_name}', tail=20 to investigate."
+        f"Error. Modules: {modules_str}. Exit code: {exit_code}.\nOutput:\n{output}"
     )
 
 
@@ -308,11 +309,11 @@ def upgrade_odoo_modules(branch_name: str, modules: str) -> str:
     result = odoo_ops.upgrade_odoo_modules(_get_settings(), branch_name, *modules_list)
     exit_code = result['exit_code']
     modules_str = ', '.join(result['modules'])
+    output = result.get('output', '')
     if exit_code == 0:
-        return f"Success. Modules upgraded: {modules_str}. Exit code: 0."
+        return f"Success. Modules upgraded: {modules_str}. Exit code: 0.\nOutput:\n{output}"
     return (
-        f"Error. Modules: {modules_str}. Exit code: {exit_code}. "
-        f"Call get_environment_logs with branch_name='{branch_name}', tail=20 to investigate."
+        f"Error. Modules: {modules_str}. Exit code: {exit_code}.\nOutput:\n{output}"
     )
 
 

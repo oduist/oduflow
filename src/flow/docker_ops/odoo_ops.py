@@ -84,6 +84,7 @@ def install_odoo_modules(settings: Settings, branch_name: str, *modules: str) ->
     return {
         "modules": list(modules),
         "exit_code": exit_code,
+        "output": output.decode("utf-8", errors="replace") if isinstance(output, bytes) else output,
     }
 
 
@@ -114,4 +115,5 @@ def upgrade_odoo_modules(settings: Settings, branch_name: str, *modules: str) ->
     return {
         "modules": list(modules),
         "exit_code": exit_code,
+        "output": output.decode("utf-8", errors="replace") if isinstance(output, bytes) else output,
     }
