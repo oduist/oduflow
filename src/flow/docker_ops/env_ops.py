@@ -713,7 +713,7 @@ def pull_environment(settings: Settings, branch_name: str) -> dict[str, Any]:
             "modules": modules,
             "exit_code": result["exit_code"],
             "changed_files": changed_files,
-            "message": f"Upgraded modules: {', '.join(modules)}",
+            "message": f"Upgraded modules: {','.join(modules)}",
         }
 
     if action == "restart":
