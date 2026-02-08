@@ -62,7 +62,7 @@ class TestCreateEnvironmentTool:
             "database": "flow_main",
             "workspace": "/tmp/ws",
         }
-        result = _call_tool("create_environment", branch_name="main", repo_url="https://repo.url")
+        result = _call_tool("create_environment", branch_name="main", repo_url="https://repo.url", odoo_image="odoo:17.0")
         assert "Environment provisioned successfully!" in result
         assert "Database: flow_main" in result
 

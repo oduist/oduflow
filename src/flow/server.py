@@ -343,6 +343,53 @@ def _run_reload_dump(settings: Settings, args: argparse.Namespace) -> None:
     print(msg)
 
 
+def _run_generate_ref(settings: Settings, args: argparse.Namespace) -> None:
+    odoo_image = args.odoo_image
+    if not odoo_image:
+        print("Error: --odoo-image is required for --generate-ref (e.g. --odoo-image odoo:17.0)")
+        raise SystemExit(1)
+    result = system_ops.generate_ref(
+        settings,
+        odoo_image=odoo_image,
+        modules=args.modules,
+    )
+    msg = (
+        f"Reference generated and system initialized.\n"
+        f"Template DB: {result['template_db']}\n"
+        f"Dump: {result['generated_dump']}\n"
+        f"Filestore: {result['generated_filestore']}"
+    )
+    if "restore_seconds" in result:
+        msg += f"\nDB restore time: {result['restore_seconds']}s"
+    print(msg)
+
+
+def _run_ref_up(settings: Settings, args: argparse.Namespace) -> None:
+    odoo_image = args.odoo_image
+    if not odoo_image:
+        print("Error: --odoo-image is required for --ref-up (e.g. --odoo-image odoo:17.0)")
+        raise SystemExit(1)
+    result = system_ops.ref_up(settings, odoo_image=odoo_image)
+    print(
+        f"Reference editor started.\n"
+        f"URL: {result['url']}\n"
+        f"Container: {result['container']}\n"
+        f"Database: {result['database']}\n"
+        f"Filestore: {result['filestore']}\n\n"
+        f"Make your changes in the browser, then run: flow --ref-down"
+    )
+
+
+def _run_ref_down(settings: Settings) -> None:
+    result = system_ops.ref_down(settings)
+    print(
+        f"Reference editor stopped.\n"
+        f"Dump saved: {result['dump']}\n"
+        f"Filestore: {result['filestore']}\n"
+        f"Template DB '{result['database']}' restored."
+    )
+
+
 def _run_destroy(settings: Settings) -> None:
     result = system_ops.destroy_system(settings)
     print(
@@ -351,16 +398,95 @@ def _run_destroy(settings: Settings) -> None:
     )
 
 
+def _run_call(argv: list[str]) -> None:
+    """Execute an MCP tool from the CLI: flow call <tool> [args...]"""
+    import inspect
+    import json
+    import sys
+
+    if not argv or argv[0] == "--list":
+        print("Registered tools:")
+        for name in sorted(mcp._tool_manager._tools.keys()):
+            tool_fn = mcp._tool_manager._tools[name].fn
+            sig = inspect.signature(tool_fn)
+            params = []
+            for p in sig.parameters.values():
+                if p.default is inspect.Parameter.empty:
+                    params.append(f"<{p.name}>")
+                else:
+                    params.append(f"[{p.name}={p.default}]")
+            print(f"  {name} {' '.join(params)}")
+        return
+
+    tool_name = argv[0]
+    tool_argv = argv[1:]
+
+    if tool_name not in mcp._tool_manager._tools:
+        print(f"Unknown tool: {tool_name}")
+        print(f"Available: {', '.join(sorted(mcp._tool_manager._tools.keys()))}")
+        sys.exit(1)
+
+    tool_fn = mcp._tool_manager._tools[tool_name].fn
+    sig = inspect.signature(tool_fn)
+
+    if tool_argv and tool_argv[0].startswith("{"):
+        kwargs = json.loads(tool_argv[0])
+    else:
+        params = list(sig.parameters.values())
+        kwargs = {}
+        for i, value in enumerate(tool_argv):
+            if i >= len(params):
+                print(f"Warning: extra argument '{value}' ignored", file=sys.stderr)
+                continue
+            param = params[i]
+            annotation = param.annotation
+            if annotation is bool or (annotation is inspect.Parameter.empty and isinstance(param.default, bool)):
+                kwargs[param.name] = value.lower() in ("true", "1", "yes")
+            elif annotation is int or (annotation is inspect.Parameter.empty and isinstance(param.default, int)):
+                kwargs[param.name] = int(value)
+            elif annotation is float:
+                kwargs[param.name] = float(value)
+            else:
+                kwargs[param.name] = value
+
+    if not kwargs:
+        required = [p for p in sig.parameters.values() if p.default is inspect.Parameter.empty]
+        if required:
+            parts = []
+            for p in sig.parameters.values():
+                if p.default is inspect.Parameter.empty:
+                    parts.append(f"<{p.name}>")
+                else:
+                    parts.append(f"[{p.name}={p.default}]")
+            print(f"Usage: flow call {tool_name} {' '.join(parts)}")
+            return
+
+    print(f"Calling: {tool_name}({kwargs})")
+    print("-" * 60)
+    try:
+        result = tool_fn(**kwargs)
+        print(result)
+    except Exception as e:
+        print(f"ERROR: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
 def main() -> None:
     """Entry point for the Flow MCP server."""
     parser = argparse.ArgumentParser(prog="flow", description="Flow — Odoo dev environment manager")
     group = parser.add_mutually_exclusive_group()
+    group.add_argument("call", nargs="*", default=None, help="Call an MCP tool: flow call <tool> [args...]")
     group.add_argument("--init", action="store_true", help="Initialize shared infrastructure (network, DB, template)")
     group.add_argument("--destroy", action="store_true", help="Destroy all shared infrastructure")
     group.add_argument("--reload-dump", action="store_true", help="Drop and re-restore the template DB from dump (safe while server is running)")
+    group.add_argument("--generate-ref", action="store_true", help="Generate reference dump and filestore from a clean Odoo image (requires --odoo-image)")
+    group.add_argument("--ref-up", action="store_true", help="Start a ref editor: Odoo container working directly with the template DB and filestore (requires --odoo-image)")
+    group.add_argument("--ref-down", action="store_true", help="Stop the ref editor, dump the updated DB, restore template flag")
     parser.add_argument("--dump-path", default="", help="Path to DB dump file (for --init / --reload-dump)")
     parser.add_argument("--version", default="15.0", help="Odoo version (for --init, default 15.0)")
     parser.add_argument("--force", action="store_true", help="Force recreate template DB (for --init)")
+    parser.add_argument("--odoo-image", default="", help="Docker image for Odoo (for --generate-ref, e.g. odoo:17.0)")
+    parser.add_argument("--modules", default="base", help="Comma-separated modules to install during --generate-ref (default: base)")
     args = parser.parse_args()
 
     from dotenv import load_dotenv
@@ -375,6 +501,10 @@ def main() -> None:
     _settings = Settings.from_env()
     _settings.validate()
 
+    if args.call and args.call[0] == "call":
+        _run_call(args.call[1:])
+        return
+
     if args.init:
         _run_init(_settings, args)
         return
@@ -385,6 +515,18 @@ def main() -> None:
 
     if args.reload_dump:
         _run_reload_dump(_settings, args)
+        return
+
+    if args.generate_ref:
+        _run_generate_ref(_settings, args)
+        return
+
+    if args.ref_up:
+        _run_ref_up(_settings, args)
+        return
+
+    if args.ref_down:
+        _run_ref_down(_settings)
         return
 
     transport_str = os.getenv("FLOW_TRANSPORT", "http")

@@ -8,7 +8,7 @@
 #   expect_contains – list of substrings that MUST appear in the result
 #
 # Usage:
-#   CLI:    python tests/call_tool.py -s init_default
+#   CLI:    flow call <tool_name> [args...]
 #   pytest: pytest tests/test_integration.py -m integration
 ##
 

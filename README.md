@@ -207,6 +207,80 @@ flow --reload-dump --dump-path /path/to/new.dump
 flow --destroy
 ```
 
+### Calling MCP tools from the command line
+
+You can invoke any registered MCP tool directly from the terminal using `flow call`, without running the server or connecting an MCP client. This is useful for scripting, debugging, and manual operations.
+
+```bash
+# List all available tools with their parameters
+flow call
+
+# Call a tool with positional arguments (mapped to parameters in order)
+flow call create_environment dev https://github.com/owner/repo.git odoo:17.0
+flow call delete_environment dev
+flow call list_environments
+flow call get_environment_logs main 50
+
+# Call a tool with JSON-encoded arguments
+flow call create_environment '{"branch_name":"dev","repo_url":"https://github.com/owner/repo.git","odoo_image":"odoo:17.0"}'
+```
+
+## Starting from scratch (no production dump)
+
+If you don't have a production database dump — for example, you're starting a new Odoo project or just want to try Flow — you can generate a clean reference database automatically.
+
+### Generate a clean reference
+
+```bash
+flow --generate-ref --odoo-image odoo:17.0
+```
+
+This will:
+1. Start a PostgreSQL container
+2. Run a temporary Odoo container that initializes a fresh database with the `base` module
+3. Dump the database to `~/.flow/odoo_ref.dump`
+4. Extract the filestore to `~/.flow/odoo_ref_filestore/`
+5. Run `--init` automatically with the generated dump
+
+You can install additional modules during generation:
+
+```bash
+flow --generate-ref --odoo-image odoo:17.0 --modules base,web,contacts,sale
+```
+
+After this, `flow` is ready — start the server and create environments as usual.
+
+### Editing the reference database
+
+Once you have a reference database (from `--generate-ref` or from a production dump), you can modify it interactively — install modules, configure settings, create demo data — and save the result back as the new reference.
+
+**Start the reference editor:**
+
+```bash
+flow --ref-up --odoo-image odoo:17.0
+```
+
+This starts an Odoo container that works **directly** with the template database and filestore (no overlays, no copies). Open the printed URL in your browser, log in, and make any changes you need.
+
+**Save and stop:**
+
+```bash
+flow --ref-down
+```
+
+This stops the container, dumps the updated database to `~/.flow/odoo_ref.dump`, and restores the template flag. The filestore is already updated in place since it was mounted directly.
+
+All environments created after this will be based on the updated reference.
+
+### When to use what
+
+| Scenario | Command |
+|---|---|
+| New project, no existing database | `flow --generate-ref --odoo-image odoo:17.0` |
+| Have a production dump file | `flow --init --dump-path /path/to/dump` |
+| Need to install modules or configure the reference | `flow --ref-up` / `flow --ref-down` |
+| Update the reference from a newer production dump | `flow --reload-dump --dump-path /path/to/new.dump` |
+
 ## Configuration
 
 All settings are configured via environment variables. Flow uses [python-dotenv](https://pypi.org/project/python-dotenv/) and loads a `.env` file from the working directory on startup. Copy the example and edit it:
