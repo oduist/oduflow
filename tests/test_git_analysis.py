@@ -166,6 +166,38 @@ class TestClassifyChanges:
             assert result["action"] == "upgrade"
             assert result["modules_to_upgrade"] == ["customer_code"]
 
+    def test_new_module_install(self, tmp_path):
+        module_dir = tmp_path / "addons_veles" / "customer_code"
+        module_dir.mkdir(parents=True)
+        (module_dir / "__manifest__.py").write_text(
+            "{'name': 'Customer Code', 'version': '17.0.1.0.0', 'data': []}"
+        )
+        models_dir = module_dir / "models"
+        models_dir.mkdir()
+        (models_dir / "res_partner.py").write_text(
+            "from odoo import fields, models\n\n"
+            "class ResPartner(models.Model):\n"
+            "    customer_code = fields.Char(string='Customer Code')\n"
+        )
+
+        import subprocess
+        from unittest.mock import patch
+
+        def mock_subprocess_run(cmd, **kwargs):
+            raise subprocess.CalledProcessError(128, cmd)
+
+        with patch("subprocess.run", side_effect=mock_subprocess_run):
+            files = [
+                "addons_veles/customer_code/__manifest__.py",
+                "addons_veles/customer_code/__init__.py",
+                "addons_veles/customer_code/models/__init__.py",
+                "addons_veles/customer_code/models/res_partner.py",
+            ]
+            result = classify_changes(files, str(tmp_path))
+            assert result["action"] == "install"
+            assert result["modules_to_install"] == ["customer_code"]
+            assert result["modules_to_upgrade"] == []
+
     def test_nested_addon_dir_py_file(self, tmp_path):
         module_dir = tmp_path / "addons_ee" / "sale_ext"
         module_dir.mkdir(parents=True)

@@ -87,7 +87,9 @@ def install_odoo_modules(settings: Settings, branch_name: str, *modules: str) ->
     }
 
 
-def upgrade_odoo_modules(settings: Settings, branch_name: str, *modules: str) -> dict[str, Any]:
+def _run_odoo_module_command(
+    settings: Settings, branch_name: str, flag: str, *modules: str
+) -> dict[str, Any]:
     if not modules:
         raise ValueError("At least one module name is required.")
 
@@ -103,10 +105,11 @@ def upgrade_odoo_modules(settings: Settings, branch_name: str, *modules: str) ->
         )
 
     modules_str = ",".join(modules)
-    cmd = f"/entrypoint.sh odoo -d {env_db} --stop-after-init --no-http -u {modules_str}"
+    cmd = f"/entrypoint.sh odoo -d {env_db} --stop-after-init --no-http {flag} {modules_str}"
 
+    action = "Installing" if flag == "-i" else "Upgrading"
     logger.info(
-        "Upgrading modules",
+        "%s modules", action,
         extra={"branch": branch_name, "modules": modules_str},
     )
     exit_code, output = container.exec_run(cmd)
@@ -115,3 +118,11 @@ def upgrade_odoo_modules(settings: Settings, branch_name: str, *modules: str) ->
         "modules": list(modules),
         "exit_code": exit_code,
     }
+
+
+def upgrade_odoo_modules(settings: Settings, branch_name: str, *modules: str) -> dict[str, Any]:
+    return _run_odoo_module_command(settings, branch_name, "-u", *modules)
+
+
+def install_odoo_modules(settings: Settings, branch_name: str, *modules: str) -> dict[str, Any]:
+    return _run_odoo_module_command(settings, branch_name, "-i", *modules)

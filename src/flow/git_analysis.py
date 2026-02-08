@@ -91,8 +91,9 @@ def classify_changes(changed_files: list[str], repo_path: str) -> dict:
 
     Returns:
         {
-            "action": "none" | "refresh" | "restart" | "upgrade",
+            "action": "none" | "refresh" | "restart" | "upgrade" | "install",
             "modules_to_upgrade": [...],
+            "modules_to_install": [...],
             "details": {
                 "py_changed": bool,
                 "xml_hot": [...],        # xml not in security/
@@ -103,34 +104,44 @@ def classify_changes(changed_files: list[str], repo_path: str) -> dict:
         }
     """
     if not changed_files:
-        return {"action": "none", "modules_to_upgrade": [], "details": {}}
+        return {
+            "action": "none",
+            "modules_to_upgrade": [],
+            "modules_to_install": [],
+            "details": {},
+        }
 
     py_changed = False
     xml_hot = []
     xml_security = []
     js_changed = []
     modules_to_upgrade: set[str] = set()
+    modules_to_install: set[str] = set()
 
     for f in changed_files:
         ext = os.path.splitext(f)[1].lower()
         module = _get_module_name(f, repo_path)
 
         if os.path.basename(f) == "__manifest__.py" and module:
-            upgrade_needed = _check_manifest_changes(f, module, repo_path)
-            if upgrade_needed:
+            manifest_action = _check_manifest_changes(f, module, repo_path)
+            if manifest_action == "install":
+                modules_to_install.add(module)
+            elif manifest_action == "upgrade":
                 modules_to_upgrade.add(module)
             continue
 
         if ext == ".py":
             py_changed = True
-            if module and _check_field_changes(f, repo_path):
-                modules_to_upgrade.add(module)
+            if module and module not in modules_to_install:
+                if _check_field_changes(f, repo_path):
+                    modules_to_upgrade.add(module)
             continue
 
         if ext == ".xml":
             if _is_security_path(f) and module:
                 xml_security.append(f)
-                modules_to_upgrade.add(module)
+                if module not in modules_to_install:
+                    modules_to_upgrade.add(module)
             else:
                 xml_hot.append(f)
             continue
@@ -139,17 +150,21 @@ def classify_changes(changed_files: list[str], repo_path: str) -> dict:
             js_changed.append(f)
             continue
 
+    modules_to_upgrade -= modules_to_install
+
     details = {
         "py_changed": py_changed,
         "xml_hot": xml_hot,
         "xml_security": xml_security,
         "manifest_upgrade": sorted(modules_to_upgrade),
+        "manifest_install": sorted(modules_to_install),
         "js_changed": js_changed,
     }
 
-    if modules_to_upgrade:
+    if modules_to_install or modules_to_upgrade:
         return {
-            "action": "upgrade",
+            "action": "install" if modules_to_install else "upgrade",
+            "modules_to_install": sorted(modules_to_install),
             "modules_to_upgrade": sorted(modules_to_upgrade),
             "details": details,
         }
@@ -158,33 +173,36 @@ def classify_changes(changed_files: list[str], repo_path: str) -> dict:
         return {
             "action": "restart",
             "modules_to_upgrade": [],
+            "modules_to_install": [],
             "details": details,
         }
 
     return {
         "action": "refresh",
         "modules_to_upgrade": [],
+        "modules_to_install": [],
         "details": details,
     }
 
 
 def _check_manifest_changes(
     manifest_rel_path: str, module: str, repo_path: str
-) -> bool:
+) -> str | None:
     """
-    Check if __manifest__.py changes require a module upgrade.
+    Check if __manifest__.py changes require a module install or upgrade.
     Uses git to compare old vs new manifest content.
-    Returns True if upgrade is needed.
+    Returns ``"install"`` for a new module, ``"upgrade"`` for significant
+    changes to an existing module, or ``None`` if no action is needed.
     """
     manifest_abs = os.path.join(repo_path, manifest_rel_path)
     if not os.path.isfile(manifest_abs):
-        return False
+        return None
 
     try:
         new_manifest = _parse_manifest(manifest_abs)
     except Exception:
         logger.warning("Cannot parse new manifest for %s", module)
-        return True
+        return "upgrade"
 
     try:
         old_content = subprocess.run(
@@ -195,18 +213,18 @@ def _check_manifest_changes(
         ).stdout
         old_manifest = ast.literal_eval(old_content)
     except Exception:
-        logger.warning("Cannot parse old manifest for %s, assuming upgrade needed", module)
-        return True
+        logger.info("No previous manifest for %s, new module detected", module)
+        return "install"
 
     if old_manifest.get("version") != new_manifest.get("version"):
         logger.info("Module %s: version changed", module)
-        return True
+        return "upgrade"
 
     for key in MANIFEST_KEYS_WITH_FILES:
         old_val = old_manifest.get(key, [])
         new_val = new_manifest.get(key, [])
         if old_val != new_val:
             logger.info("Module %s: '%s' list changed", module, key)
-            return True
+            return "upgrade"
 
-    return False
+    return None

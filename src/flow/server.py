@@ -255,8 +255,10 @@ def pull_environment_repository(branch_name: str) -> str:
         return result["message"]
 
     lines = [result["message"]]
-    if result.get("modules"):
-        lines.append(f"Modules: {', '.join(result['modules'])}")
+    if result.get("modules_installed"):
+        lines.append(f"Installed: {', '.join(result['modules_installed'])}")
+    if result.get("modules_upgraded"):
+        lines.append(f"Upgraded: {', '.join(result['modules_upgraded'])}")
     lines.append(f"Changed files ({len(result.get('changed_files', []))}):")
     for f in result.get("changed_files", [])[:20]:
         lines.append(f"  - {f}")

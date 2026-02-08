@@ -703,20 +703,35 @@ def pull_environment(settings: Settings, branch_name: str) -> dict[str, Any]:
     analysis = classify_changes(changed_files, repo_path)
     action = analysis["action"]
 
-    if action == "upgrade":
-        from flow.docker_ops.odoo_ops import upgrade_odoo_modules
+    if action in ("install", "upgrade"):
+        from flow.docker_ops.odoo_ops import install_odoo_modules, upgrade_odoo_modules
 
-        modules = analysis["modules_to_upgrade"]
-        result = upgrade_odoo_modules(settings, branch_name, *modules)
+        to_install = analysis["modules_to_install"]
+        to_upgrade = analysis["modules_to_upgrade"]
+        messages = []
+        last_exit_code = 0
+
+        if to_install:
+            res = install_odoo_modules(settings, branch_name, *to_install)
+            last_exit_code = res["exit_code"]
+            messages.append(f"Installed modules: {','.join(to_install)}")
+
+        if to_upgrade:
+            res = upgrade_odoo_modules(settings, branch_name, *to_upgrade)
+            last_exit_code = res["exit_code"]
+            messages.append(f"Upgraded modules: {','.join(to_upgrade)}")
+
         container = client.containers.get(odoo_container_name)
         container.restart()
-        logger.info("Container restarted after upgrade", extra={"branch": branch_name})
+        logger.info("Container restarted after module update", extra={"branch": branch_name})
+        messages.append("Container restarted.")
         return {
-            "action": "upgrade",
-            "modules": modules,
-            "exit_code": result["exit_code"],
+            "action": action,
+            "modules_installed": to_install,
+            "modules_upgraded": to_upgrade,
+            "exit_code": last_exit_code,
             "changed_files": changed_files,
-            "message": f"Upgraded modules: {','.join(modules)}. Container restarted.",
+            "message": " ".join(messages),
         }
 
     if action == "restart":
