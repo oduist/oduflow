@@ -43,7 +43,8 @@ def handle_errors(fn):
     def wrapper(*args, **kwargs):
         try:
             result = fn(*args, **kwargs)
-            logger.info("[%s] -> %s", fn.__name__, result)
+            preview = (result[:200] + '...') if isinstance(result, str) and len(result) > 200 else result
+            logger.info("[%s] -> %s", fn.__name__, preview)
             return result
         except FlowError as e:
             logger.error("[%s] Error: %s", fn.__name__, e)
