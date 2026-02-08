@@ -141,3 +141,33 @@ class TestClassifyChanges:
         result = classify_changes(files, "/tmp")
         assert result["action"] == "upgrade"
         assert sorted(result["modules_to_upgrade"]) == ["crm", "sale"]
+
+    def test_nested_addon_dir(self, tmp_path):
+        module_dir = tmp_path / "addons_veles" / "customer_code"
+        module_dir.mkdir(parents=True)
+        (module_dir / "__manifest__.py").write_text(
+            "{'name': 'Customer Code', 'version': '17.0.1.0.0', 'data': []}"
+        )
+
+        from unittest.mock import patch
+
+        old_manifest = "{'name': 'Customer Code', 'version': '17.0.0.0.0', 'data': []}"
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = type("Result", (), {"stdout": old_manifest})()
+
+            files = ["addons_veles/customer_code/__manifest__.py"]
+            result = classify_changes(files, str(tmp_path))
+            assert result["action"] == "upgrade"
+            assert result["modules_to_upgrade"] == ["customer_code"]
+
+    def test_nested_addon_dir_py_file(self, tmp_path):
+        module_dir = tmp_path / "addons_ee" / "sale_ext"
+        module_dir.mkdir(parents=True)
+        (module_dir / "__manifest__.py").write_text(
+            "{'name': 'Sale Ext', 'version': '17.0.1.0.0'}"
+        )
+
+        files = ["addons_ee/sale_ext/security/ir.model.access.xml"]
+        result = classify_changes(files, str(tmp_path))
+        assert result["action"] == "upgrade"
+        assert result["modules_to_upgrade"] == ["sale_ext"]

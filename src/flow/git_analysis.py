@@ -12,11 +12,30 @@ def _parse_manifest(path: str) -> dict:
         return ast.literal_eval(f.read())
 
 
-def _get_module_name(file_path: str) -> str | None:
-    """Extract Odoo module name from a relative file path (first directory component)."""
+def _get_module_name(file_path: str, repo_path: str = "") -> str | None:
+    """Extract Odoo module name from a relative file path.
+
+    Walks up from the file's directory to find the nearest ancestor
+    that contains a ``__manifest__.py``, which marks an Odoo module.
+    Falls back to the first directory component when *repo_path* is
+    not provided or no manifest is found.
+    """
     parts = file_path.split("/")
     if len(parts) < 2:
         return None
+
+    if repo_path:
+        if os.path.basename(file_path) == "__manifest__.py":
+            dir_parts = parts[:-1]
+        else:
+            dir_parts = parts[:-1]
+
+        for i in range(len(dir_parts), 0, -1):
+            candidate = "/".join(dir_parts[:i])
+            manifest = os.path.join(repo_path, candidate, "__manifest__.py")
+            if os.path.isfile(manifest):
+                return dir_parts[i - 1]
+
     return parts[0]
 
 
@@ -52,7 +71,7 @@ def classify_changes(changed_files: list[str], repo_path: str) -> dict:
 
     for f in changed_files:
         ext = os.path.splitext(f)[1].lower()
-        module = _get_module_name(f)
+        module = _get_module_name(f, repo_path)
 
         if os.path.basename(f) == "__manifest__.py" and module:
             upgrade_needed = _check_manifest_changes(f, module, repo_path)

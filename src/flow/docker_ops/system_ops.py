@@ -1,6 +1,7 @@
 import io
 import logging
 import os
+import pathlib
 import tarfile
 import time
 
@@ -12,6 +13,9 @@ from flow.errors import ExternalCommandError, NotFoundError, PrerequisiteNotMetE
 from flow.settings import Settings
 
 logger = logging.getLogger("flow")
+
+_PROJECT_ROOT = pathlib.Path(__file__).resolve().parents[3]
+_PG_CONF_TEMPLATE = _PROJECT_ROOT / "templates" / "postgresql.conf"
 
 
 def _ensure_traefik(client: DockerClient, settings: Settings) -> None:
@@ -199,7 +203,11 @@ def init_system(
             name=settings.shared_db_container,
             detach=True,
             network=settings.shared_network,
-            volumes={settings.shared_db_volume: {"bind": "/var/lib/postgresql/data", "mode": "rw"}},
+            volumes={
+                settings.shared_db_volume: {"bind": "/var/lib/postgresql/data", "mode": "rw"},
+                str(_PG_CONF_TEMPLATE): {"bind": "/etc/postgresql/postgresql.conf", "mode": "ro"},
+            },
+            command=["postgres", "-c", "config_file=/etc/postgresql/postgresql.conf"],
             environment={
                 "POSTGRES_USER": settings.db_user,
                 "POSTGRES_PASSWORD": settings.db_password,
