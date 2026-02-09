@@ -96,14 +96,12 @@ def _mount_filestore(
         os.chmod(d, 0o777)
 
     odoo_uid_gid = get_odoo_uid_gid(client, odoo_image)
-    try:
-        subprocess.run(
-            ["sudo", "-n", "chown", "-R", odoo_uid_gid, paths["upper"], paths["work"], paths["merged"]],
-            check=True,
-            capture_output=True,
-        )
-    except (subprocess.CalledProcessError, FileNotFoundError) as e:
-        logger.warning("Could not chown filestore dirs to %s: %s", odoo_uid_gid, e)
+    uid_str, gid_str = odoo_uid_gid.split(":")
+    for d in (paths["upper"], paths["work"], paths["merged"]):
+        for root, dirs, files in os.walk(d):
+            os.chown(root, int(uid_str), int(gid_str))
+            for name in dirs + files:
+                os.chown(os.path.join(root, name), int(uid_str), int(gid_str))
 
     if not shutil.which("fuse-overlayfs"):
         raise PrerequisiteNotMetError(
@@ -113,7 +111,6 @@ def _mount_filestore(
 
     result = subprocess.run(
         [
-            "sudo", "-n",
             "fuse-overlayfs",
             "-o", f"lowerdir={ref},upperdir={paths['upper']},workdir={paths['work']},allow_other",
             paths["merged"],
@@ -158,8 +155,6 @@ def _unmount_filestore(branch_name: str, settings: Settings) -> None:
         return
 
     for cmd in (
-        ["sudo", "-n", "fusermount", "-u", merged],
-        ["sudo", "-n", "umount", "-l", merged],
         ["fusermount", "-u", merged],
         ["umount", "-l", merged],
     ):
@@ -253,17 +248,7 @@ def _cleanup_old_environment(
     workspace_path = get_workspace_path(branch_name, settings.workspaces_dir)
     if os.path.exists(workspace_path):
         _unmount_filestore(branch_name, settings)
-        try:
-            shutil.rmtree(workspace_path)
-        except (PermissionError, OSError):
-            try:
-                subprocess.run(
-                    ["sudo", "-n", "rm", "-rf", workspace_path],
-                    check=True,
-                    capture_output=True,
-                )
-            except (subprocess.CalledProcessError, FileNotFoundError) as e:
-                logger.warning("Could not fully remove workspace %s: %s", workspace_path, e)
+        shutil.rmtree(workspace_path)
 
 
 def create_environment(
@@ -456,14 +441,11 @@ def create_environment(
     sessions_path = os.path.join(workspace_path, "sessions")
     os.makedirs(sessions_path, mode=0o777, exist_ok=True)
     os.chmod(sessions_path, 0o777)
-    try:
-        subprocess.run(
-            ["sudo", "-n", "chown", "-R", get_odoo_uid_gid(client, odoo_image), sessions_path],
-            check=True,
-            capture_output=True,
-        )
-    except (subprocess.CalledProcessError, FileNotFoundError):
-        pass
+    uid_str, gid_str = get_odoo_uid_gid(client, odoo_image).split(":")
+    for root_dir, dirs, files in os.walk(sessions_path):
+        os.chown(root_dir, int(uid_str), int(gid_str))
+        for name in dirs + files:
+            os.chown(os.path.join(root_dir, name), int(uid_str), int(gid_str))
     odoo_volumes[sessions_path] = {
         "bind": "/var/lib/odoo/.local/share/Odoo/sessions",
         "mode": "rw",
@@ -537,17 +519,7 @@ def delete_environment(settings: Settings, branch_name: str) -> None:
     workspace_path = get_workspace_path(branch_name, settings.workspaces_dir)
     if os.path.exists(workspace_path):
         _unmount_filestore(branch_name, settings)
-        try:
-            shutil.rmtree(workspace_path)
-        except (PermissionError, OSError):
-            try:
-                subprocess.run(
-                    ["sudo", "-n", "rm", "-rf", workspace_path],
-                    check=True,
-                    capture_output=True,
-                )
-            except (subprocess.CalledProcessError, FileNotFoundError) as e:
-                logger.warning("Could not fully remove workspace %s: %s", workspace_path, e)
+        shutil.rmtree(workspace_path)
 
     logger.info("Environment deleted", extra={"branch": branch_name})
 

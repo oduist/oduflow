@@ -3,7 +3,6 @@ import logging
 import os
 import pathlib
 import shutil
-import subprocess
 import tarfile
 import time
 
@@ -466,14 +465,7 @@ def generate_ref(
 
     ref_data_path = settings.ref_filestore_path
     if os.path.exists(ref_data_path):
-        try:
-            subprocess.run(
-                ["sudo", "-n", "rm", "-rf", ref_data_path],
-                check=True,
-                capture_output=True,
-            )
-        except (subprocess.CalledProcessError, FileNotFoundError):
-            shutil.rmtree(ref_data_path, ignore_errors=True)
+        shutil.rmtree(ref_data_path)
     os.makedirs(ref_data_path, exist_ok=True)
 
     odoo_data_container_path = "/var/lib/odoo/.local/share/Odoo"
@@ -497,6 +489,15 @@ def generate_ref(
                 if not member.isdir():
                     extracted += 1
         logger.info("Odoo data extracted to %s (%d files)", ref_data_path, extracted)
+
+        build_fs = os.path.join(ref_data_path, "filestore", build_db)
+        ref_fs = os.path.join(ref_data_path, "filestore", settings.template_db_name)
+        if os.path.isdir(build_fs) and build_fs != ref_fs:
+            if os.path.exists(ref_fs):
+                shutil.rmtree(ref_fs, ignore_errors=True)
+            os.rename(build_fs, ref_fs)
+            logger.info("Renamed filestore %s -> %s", build_db, settings.template_db_name)
+
     except docker.errors.NotFound:
         logger.info(
             "Odoo did not create data dir during init (normal for --stop-after-init). "
@@ -505,14 +506,12 @@ def generate_ref(
         )
 
     odoo_uid_gid = get_odoo_uid_gid(client, odoo_image)
-    try:
-        subprocess.run(
-            ["sudo", "-n", "chown", "-R", odoo_uid_gid, ref_data_path],
-            check=True,
-            capture_output=True,
-        )
-    except (subprocess.CalledProcessError, FileNotFoundError) as e:
-        logger.warning("Could not chown ref data to %s: %s", odoo_uid_gid, e)
+    uid_str, gid_str = odoo_uid_gid.split(":")
+    uid, gid = int(uid_str), int(gid_str)
+    for root, dirs, files in os.walk(ref_data_path):
+        os.chown(root, uid, gid)
+        for name in dirs + files:
+            os.chown(os.path.join(root, name), uid, gid)
 
     temp_container.remove(v=True)
     logger.info("Temporary container removed")
@@ -583,14 +582,12 @@ def ref_up(
     os.makedirs(ref_data_path, exist_ok=True)
 
     odoo_uid_gid = get_odoo_uid_gid(client, odoo_image)
-    try:
-        subprocess.run(
-            ["sudo", "-n", "chown", "-R", odoo_uid_gid, ref_data_path],
-            check=True,
-            capture_output=True,
-        )
-    except (subprocess.CalledProcessError, FileNotFoundError) as e:
-        logger.warning("Could not chown ref data to %s: %s", odoo_uid_gid, e)
+    uid_str, gid_str = odoo_uid_gid.split(":")
+    uid, gid = int(uid_str), int(gid_str)
+    for root, dirs, files in os.walk(ref_data_path):
+        os.chown(root, uid, gid)
+        for name in dirs + files:
+            os.chown(os.path.join(root, name), uid, gid)
 
     from flow.port_registry import allocate_port
     from flow.docker_ops.env_ops import _get_used_ports
@@ -702,6 +699,155 @@ def ref_down(settings: Settings) -> dict[str, str]:
         "dump": dump_path,
         "filestore": settings.ref_filestore_path,
         "database": settings.template_db_name,
+    }
+
+
+def promote_env(settings: Settings, branch_name: str) -> dict[str, str]:
+    from flow.docker_ops import env_ops
+    from flow.naming import get_db_name, get_filestore_paths
+
+    client = get_client()
+    env_db = get_db_name(branch_name)
+
+    if not _db_exists(client, settings, env_db):
+        raise NotFoundError(f"Database '{env_db}' for branch '{branch_name}' not found.")
+
+    _wait_pg_ready(client, settings)
+    db_container = client.containers.get(settings.shared_db_container)
+
+    # 1. pg_dump branch DB → new ref dump
+    dump_path = settings.dump_file_path
+    dump_file = f"/tmp/{env_db}.dump"
+    dump_cmd = ["pg_dump", "-U", settings.db_user, "-Fc", "-f", dump_file, env_db]
+
+    logger.info("Dumping branch database %s", env_db)
+    exit_code, output = db_container.exec_run(dump_cmd)
+    if exit_code != 0:
+        msg = output.decode("utf-8") if isinstance(output, bytes) else str(output)
+        raise ExternalCommandError("pg_dump", exit_code, msg)
+
+    chunks, _ = db_container.get_archive(dump_file)
+    raw = b"".join(chunks)
+    tar_stream = io.BytesIO(raw)
+    with tarfile.open(fileobj=tar_stream, mode="r") as tar:
+        member = tar.getmembers()[0]
+        f = tar.extractfile(member)
+        if f is None:
+            raise ExternalCommandError("get_archive", -1, "Could not extract dump from tar")
+        with open(dump_path, "wb") as out:
+            out.write(f.read())
+
+    logger.info("Branch dump saved to %s", dump_path)
+
+    # 2. Reload template DB from new dump
+    reload_template_db(settings, dump_path=dump_path)
+
+    # 3. Collect active branches (excluding the promoted one is fine, it keeps working)
+    active_envs = env_ops.list_environments(settings)
+    active_branches = [e["branch"] for e in active_envs]
+
+    # 4. Snapshot the promoted branch's merged filestore (while overlay is still mounted)
+    branch_paths = get_filestore_paths(branch_name, settings.workspaces_dir)
+    branch_merged = branch_paths["merged"]
+    ref_data_path = settings.ref_filestore_path
+    ref_filestore = os.path.join(ref_data_path, "filestore", settings.template_db_name)
+
+    if os.path.isdir(branch_merged) and os.path.ismount(branch_merged):
+        snapshot_dir = branch_merged + "_snapshot"
+        if os.path.exists(snapshot_dir):
+            shutil.rmtree(snapshot_dir)
+        shutil.copytree(branch_merged, snapshot_dir)
+        logger.info("Snapshot of merged filestore created for branch %s", branch_name)
+    else:
+        snapshot_dir = None
+        logger.warning("Branch filestore %s not mounted, skipping filestore update", branch_merged)
+
+    # 5. Unmount all overlays
+    for branch in active_branches:
+        try:
+            env_ops._unmount_filestore(branch, settings)
+            logger.info("Unmounted overlay for branch %s", branch)
+        except Exception as e:
+            logger.warning("Could not unmount overlay for %s: %s", branch, e)
+
+    # 6. Replace ref filestore with snapshot
+    if snapshot_dir and os.path.isdir(snapshot_dir):
+        if os.path.exists(ref_filestore):
+            shutil.rmtree(ref_filestore)
+
+        os.makedirs(os.path.dirname(ref_filestore), exist_ok=True)
+        try:
+            os.rename(snapshot_dir, ref_filestore)
+        except OSError:
+            shutil.copytree(snapshot_dir, ref_filestore)
+            shutil.rmtree(snapshot_dir)
+        logger.info("Ref filestore replaced from branch %s", branch_name)
+
+        promoted_container_name = f"{settings.prefix}{branch_name.replace('/', '-')}-odoo"
+        try:
+            pc = client.containers.get(promoted_container_name)
+            promoted_image = pc.image.tags[0] if pc.image.tags else "odoo:17.0"
+        except (docker.errors.NotFound, IndexError):
+            promoted_image = "odoo:17.0"
+        odoo_uid_gid = get_odoo_uid_gid(client, promoted_image)
+        uid_str, gid_str = odoo_uid_gid.split(":")
+        uid, gid = int(uid_str), int(gid_str)
+        for root, dirs, files in os.walk(ref_filestore):
+            os.chown(root, uid, gid)
+            for name in dirs + files:
+                os.chown(os.path.join(root, name), uid, gid)
+        logger.info("Ref filestore chowned to %s", odoo_uid_gid)
+
+    # 7. Remount overlays (clear upper dirs so branches start fresh from new ref)
+    for branch in active_branches:
+        try:
+            bp = get_filestore_paths(branch, settings.workspaces_dir)
+
+            if os.path.ismount(bp["merged"]):
+                env_ops._unmount_filestore(branch, settings)
+                deadline = time.time() + 3.0
+                while time.time() < deadline and os.path.ismount(bp["merged"]):
+                    time.sleep(0.1)
+                if os.path.ismount(bp["merged"]):
+                    logger.warning(
+                        "Overlay for %s still mounted after retry, skipping remount",
+                        branch,
+                    )
+                    continue
+
+            for key in ("upper", "work"):
+                d = bp[key]
+                if os.path.isdir(d):
+                    shutil.rmtree(d)
+                    os.makedirs(d, mode=0o777, exist_ok=True)
+
+            # Find odoo image from running container
+            odoo_container_name = f"{settings.prefix}{branch.replace('/', '-')}-odoo"
+            try:
+                container = client.containers.get(odoo_container_name)
+                image = container.image.tags[0] if container.image.tags else "odoo:17.0"
+            except (docker.errors.NotFound, IndexError):
+                image = "odoo:17.0"
+
+            env_db = get_db_name(branch)
+            env_ops._mount_filestore(client, settings, branch, env_db, image, {})
+            logger.info("Remounted overlay for branch %s", branch)
+
+            try:
+                container = client.containers.get(odoo_container_name)
+                container.restart(timeout=10)
+                logger.info("Restarted container %s", odoo_container_name)
+            except docker.errors.NotFound:
+                pass
+        except Exception as e:
+            logger.warning("Could not remount overlay for %s: %s", branch, e)
+
+    return {
+        "status": "promoted",
+        "branch": branch_name,
+        "dump": dump_path,
+        "filestore": ref_data_path,
+        "template_db": settings.template_db_name,
     }
 
 

@@ -34,10 +34,7 @@ class Settings:
 
     @staticmethod
     def from_env() -> "Settings":
-        workspaces_dir = os.path.expanduser(os.getenv(
-            "FLOW_WORKSPACES_DIR",
-            "~/.flow/workspaces",
-        ))
+        flow_home = os.getenv("FLOW_HOME", "/srv/flow_data")
         return Settings(
             routing_mode=os.getenv("FLOW_ROUTING_MODE", "port").strip().lower(),
             base_domain=re.sub(r"^https?://", "", os.getenv("FLOW_BASE_DOMAIN", "")).strip(),
@@ -45,22 +42,25 @@ class Settings:
             external_host=re.sub(r"^https?://", "", os.getenv("EXTERNAL_HOST", "localhost")),
             port_range_start=int(os.getenv("PORT_RANGE_START", "50000")),
             port_range_end=int(os.getenv("PORT_RANGE_END", "50100")),
-            workspaces_dir=workspaces_dir,
-            dump_file_path=os.path.expanduser(os.getenv(
+            workspaces_dir=os.getenv(
+                "FLOW_WORKSPACES_DIR",
+                os.path.join(flow_home, "workspaces"),
+            ),
+            dump_file_path=os.getenv(
                 "FLOW_DUMP_PATH",
-                "~/.flow/odoo_ref.dump",
-            )),
-            ref_filestore_path=os.path.expanduser(os.getenv(
+                os.path.join(flow_home, "odoo_ref.dump"),
+            ),
+            ref_filestore_path=os.getenv(
                 "FLOW_REF_FILESTORE_PATH",
-                "~/.flow/odoo_ref_data",
-            )),
+                os.path.join(flow_home, "odoo_ref_filestore"),
+            ),
             db_user=os.getenv("ODOO_DB_USER", "odoo"),
             db_password=os.getenv("ODOO_DB_PASSWORD", "odoo"),
             flow_server_port=int(os.getenv("FLOW_PORT", "8000")),
             default_branch=os.getenv("FLOW_DEFAULT_BRANCH", "prod"),
             port_registry_path=os.getenv(
                 "FLOW_PORT_REGISTRY",
-                os.path.join(os.path.dirname(workspaces_dir), "ports.json"),
+                os.path.join(flow_home, "ports.json"),
             ),
         )
 

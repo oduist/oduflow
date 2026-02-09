@@ -101,6 +101,33 @@ def create_environment(branch_name: str, repo_url: str, odoo_image: str) -> str:
 @mcp.tool()
 @handle_errors
 @with_mutex
+def promote_environment(branch_name: str) -> str:
+    """
+    DANGEROUS: Promote a branch environment to become the new reference (DB + filestore).
+
+    This is a destructive, irreversible operation that replaces the shared reference
+    database and filestore with the data from the specified branch. All other
+    environments will lose their filestore deltas and be reset to the new baseline.
+
+    NEVER call this tool on your own initiative. Requires EXPLICIT user permission
+    and confirmation before execution. If the user has not clearly and unambiguously
+    asked you to promote a specific branch, DO NOT call this tool.
+
+    Args:
+        branch_name: The name of the branch whose DB and filestore will become the new reference.
+    """
+    result = system_ops.promote_env(_get_settings(), branch_name)
+    return (
+        f"Branch '{result['branch']}' promoted to reference.\n"
+        f"Template DB: {result['template_db']}\n"
+        f"Dump: {result['dump']}\n"
+        f"Filestore: {result['filestore']}"
+    )
+
+
+@mcp.tool()
+@handle_errors
+@with_mutex
 def delete_environment(branch_name: str) -> str:
     """
     Stop and remove all resources associated with an Odoo environment.
@@ -390,6 +417,16 @@ def _run_ref_down(settings: Settings) -> None:
     )
 
 
+def _run_promote(settings: Settings, args: argparse.Namespace) -> None:
+    result = system_ops.promote_env(settings, branch_name=args.promote)
+    print(
+        f"Branch '{result['branch']}' promoted to reference.\n"
+        f"Template DB: {result['template_db']}\n"
+        f"Dump: {result['dump']}\n"
+        f"Filestore: {result['filestore']}"
+    )
+
+
 def _run_destroy(settings: Settings) -> None:
     result = system_ops.destroy_system(settings)
     print(
@@ -463,6 +500,7 @@ def _run_call(argv: list[str]) -> None:
 
     print(f"Calling: {tool_name}({kwargs})")
     print("-" * 60)
+    logging.getLogger("flow").setLevel(logging.WARNING)
     try:
         result = tool_fn(**kwargs)
         print(result)
@@ -487,6 +525,7 @@ def main() -> None:
     parser.add_argument("--force", action="store_true", help="Force recreate template DB (for --init)")
     parser.add_argument("--odoo-image", default="", help="Docker image for Odoo (for --generate-ref, e.g. odoo:17.0)")
     parser.add_argument("--modules", default="base", help="Comma-separated modules to install during --generate-ref (default: base)")
+    parser.add_argument("--promote", default="", metavar="BRANCH", help="Promote a branch environment to become the new reference (DB + filestore)")
     args = parser.parse_args()
 
     from dotenv import load_dotenv
@@ -527,6 +566,10 @@ def main() -> None:
 
     if args.ref_down:
         _run_ref_down(_settings)
+        return
+
+    if args.promote:
+        _run_promote(_settings, args)
         return
 
     transport_str = os.getenv("FLOW_TRANSPORT", "http")
