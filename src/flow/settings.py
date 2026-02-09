@@ -29,6 +29,8 @@ class Settings:
     branch_label: str = "flow.branch"
     managed_label: str = "flow.managed"
     system_label: str = "flow.system"
+    repo_label: str = "flow.repo"
+    image_label: str = "flow.image"
     default_branch: str = "prod"
     port_registry_path: str = ""
 

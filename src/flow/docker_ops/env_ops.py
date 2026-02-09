@@ -291,7 +291,12 @@ def create_environment(
     repo_path = get_repo_path(branch_name, settings.workspaces_dir)
     env_db = get_db_name(branch_name)
 
-    labels = {settings.managed_label: "true", settings.branch_label: branch_name}
+    labels = {
+        settings.managed_label: "true",
+        settings.branch_label: branch_name,
+        settings.repo_label: repo_url,
+        settings.image_label: odoo_image,
+    }
 
     if settings.routing_mode == "traefik":
         slug = slugify_branch(branch_name)
@@ -541,6 +546,8 @@ def list_environments(settings: Settings) -> list[dict[str, Any]]:
                 "containers": [],
                 "status": "running",
                 "url": None,
+                "odoo_image": container.labels.get(settings.image_label, ""),
+                "repo_url": container.labels.get(settings.repo_label, ""),
             }
 
         try:

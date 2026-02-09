@@ -155,6 +155,10 @@ def list_environments() -> str:
         if env.get("url"):
             status_line += f" - {env['url']}"
         output += status_line + "\n"
+        if env.get("odoo_image"):
+            output += f"  Image: {env['odoo_image']}\n"
+        if env.get("repo_url"):
+            output += f"  Repo: {env['repo_url']}\n"
         for container in env["containers"]:
             output += f"  * {container['name']} [{container['status']}] ({container['image']})\n"
     return output

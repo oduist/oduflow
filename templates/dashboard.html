@@ -88,6 +88,14 @@
     font-size: 13px;
   }
   .env-url a:hover { text-decoration: underline; }
+  .env-meta {
+    display: flex;
+    gap: 24px;
+    font-size: 12px;
+    color: var(--text-dim);
+    margin-bottom: 10px;
+  }
+  .env-meta strong { color: var(--text); font-weight: 500; }
   .containers {
     font-size: 12px;
     color: var(--text-dim);
@@ -317,6 +325,13 @@ function renderEnvironments(envs) {
       ? '<div class="env-url"><a href="' + esc(env.url) + '" target="_blank">' + esc(env.url) + '</a></div>'
       : '';
 
+    const metaHtml = (env.odoo_image || env.repo_url)
+      ? '<div class="env-meta">' +
+          (env.odoo_image ? '<span>Image: <strong>' + esc(env.odoo_image) + '</strong></span>' : '') +
+          (env.repo_url ? '<span>Repo: <strong>' + esc(env.repo_url) + '</strong></span>' : '') +
+        '</div>'
+      : '';
+
     return '<div class="env-card" data-branch="' + esc(env.branch) + '">' +
       '<div class="env-header">' +
         '<div class="left">' +
@@ -335,6 +350,7 @@ function renderEnvironments(envs) {
         '</div>' +
       '</div>' +
       urlHtml +
+      metaHtml +
       '<div class="containers">' + containerHtml + '</div>' +
     '</div>';
   }).join('');
