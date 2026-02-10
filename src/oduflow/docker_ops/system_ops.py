@@ -172,7 +172,6 @@ def _copy_file_to_container(container: docker.models.containers.Container, src_p
 
 def init_system(
     settings: Settings,
-    dump_path: str | None = None,
     version: str = "15.0",
     force: bool = False,
 ) -> dict[str, str]:
@@ -231,7 +230,7 @@ def init_system(
         )
         _exec_sql(client, settings, f"DROP DATABASE {settings.template_db_name} WITH (FORCE);")
 
-    resolved_dump = dump_path or settings.get_dump_sql_path()
+    resolved_dump = settings.get_dump_sql_path()
     if not os.path.isfile(resolved_dump):
         raise NotFoundError(f"Dump file not found: {resolved_dump}")
 
@@ -439,7 +438,7 @@ def init_dump(
 
     db_container = client.containers.get(settings.shared_db_container)
     dump_cmd = [
-        "pg_dump", "-U", settings.db_user, "-Fc", "-f", f"/tmp/{build_db}.dump", build_db,
+        "pg_dump", "-U", settings.db_user, "-Fp", "-f", f"/tmp/{build_db}.dump", build_db,
     ]
     exit_code_dump, output_dump = db_container.exec_run(dump_cmd)
     if exit_code_dump != 0:
@@ -510,7 +509,7 @@ def init_dump(
     logger.info("Temporary database dropped")
 
     logger.info("Reference generation complete, running init_system")
-    result = init_system(settings, dump_path=dump_sql_path, force=True)
+    result = init_system(settings, force=True)
     result["generated_dump"] = dump_sql_path
     result["generated_filestore"] = dump_filestore_path
     result["filestore_files"] = sum(1 for _ in pathlib.Path(dump_filestore_path).rglob("*") if _.is_file())
