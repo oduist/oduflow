@@ -9,6 +9,7 @@ dependencies = [
     "fastmcp==2.14.3",
     "docker",
     "python-dotenv",
+    "packaging",
 ]
 requires-python = ">=3.10"
 license = { text = "MIT" }

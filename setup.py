@@ -9,6 +9,7 @@ setup(
         "fastmcp",
         "docker",
         "python-dotenv",
+        "packaging",
     ],
     entry_points={
         "console_scripts": [

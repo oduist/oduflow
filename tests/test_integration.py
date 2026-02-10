@@ -13,6 +13,7 @@ Run them explicitly:  pytest tests/test_integration.py -m heavyweight -v
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 import yaml
@@ -46,11 +47,19 @@ def _build_params():
 
 @pytest.mark.integration
 @pytest.mark.parametrize("scenario", _build_params())
-def test_scenario(scenario):
-    if "cli" in scenario:
-        result = call_cli(scenario["cli"], **scenario.get("args", {}))
+def test_scenario(scenario, live_environment):
+    if scenario.get("needs_env"):
+        settings = live_environment
+        with patch("oduflow.server._get_settings", return_value=settings):
+            if "cli" in scenario:
+                result = call_cli(scenario["cli"], **scenario.get("args", {}))
+            else:
+                result = call_tool(scenario["tool"], **scenario.get("args", {}))
     else:
-        result = call_tool(scenario["tool"], **scenario.get("args", {}))
+        if "cli" in scenario:
+            result = call_cli(scenario["cli"], **scenario.get("args", {}))
+        else:
+            result = call_tool(scenario["tool"], **scenario.get("args", {}))
     assert isinstance(result, str), f"Expected str, got {type(result)}"
     for expected in scenario.get("expect_contains", []):
         assert expected in result, (

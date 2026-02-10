@@ -231,7 +231,7 @@ def init_system(
         )
         _exec_sql(client, settings, f"DROP DATABASE {settings.template_db_name} WITH (FORCE);")
 
-    resolved_dump = dump_path or settings.dump_file_path
+    resolved_dump = dump_path or settings.get_dump_sql_path()
     if not os.path.isfile(resolved_dump):
         raise NotFoundError(f"Dump file not found: {resolved_dump}")
 
@@ -279,7 +279,7 @@ def reload_template_db(
     dump_path: str | None = None,
 ) -> dict[str, str]:
     client = get_client()
-    resolved_dump = dump_path or settings.dump_file_path
+    resolved_dump = dump_path or settings.get_dump_sql_path()
 
     if not os.path.isfile(resolved_dump):
         raise NotFoundError(f"Dump file not found: {resolved_dump}")
@@ -334,7 +334,7 @@ def reload_template_db(
     return {"status": "reloaded", "template_db": settings.template_db_name, "restore_seconds": round(restore_elapsed, 1)}
 
 
-def generate_ref(
+def init_dump(
     settings: Settings,
     odoo_image: str = "odoo:17.0",
     modules: str = "base",
@@ -434,8 +434,8 @@ def generate_ref(
 
     logger.info("Odoo init completed in %.1fs", init_elapsed)
 
-    dump_path = settings.dump_file_path
-    os.makedirs(os.path.dirname(dump_path), exist_ok=True)
+    dump_sql_path = settings.get_dump_sql_path()
+    os.makedirs(os.path.dirname(dump_sql_path), exist_ok=True)
 
     db_container = client.containers.get(settings.shared_db_container)
     dump_cmd = [
@@ -458,15 +458,15 @@ def generate_ref(
         f = tar.extractfile(member)
         if f is None:
             raise ExternalCommandError("get_archive", -1, "Could not extract dump from tar")
-        with open(dump_path, "wb") as out:
+        with open(dump_sql_path, "wb") as out:
             out.write(f.read())
 
-    logger.info("Dump saved to %s", dump_path)
+    logger.info("Dump saved to %s", dump_sql_path)
 
-    ref_data_path = settings.ref_filestore_path
-    if os.path.exists(ref_data_path):
-        shutil.rmtree(ref_data_path)
-    os.makedirs(ref_data_path, exist_ok=True)
+    dump_filestore_path = settings.get_dump_filestore_path()
+    if os.path.exists(dump_filestore_path):
+        shutil.rmtree(dump_filestore_path)
+    os.makedirs(dump_filestore_path, exist_ok=True)
 
     odoo_data_container_path = "/var/lib/odoo/.local/share/Odoo"
     try:
@@ -474,41 +474,31 @@ def generate_ref(
         raw_fs = b"".join(chunks_fs)
         tar_fs = io.BytesIO(raw_fs)
         extracted = 0
+        src_fs_prefix = f"Odoo/filestore/{build_db}/"
         with tarfile.open(fileobj=tar_fs, mode="r") as tar:
             for member in tar.getmembers():
-                if member.isdir() and member.name == os.path.basename(odoo_data_container_path):
+                if not member.name.startswith(src_fs_prefix) and member.name != f"Odoo/filestore/{build_db}":
                     continue
-                rel = member.name
-                prefix = os.path.basename(odoo_data_container_path) + "/"
-                if rel.startswith(prefix):
-                    rel = rel[len(prefix):]
+                rel = member.name[len(src_fs_prefix):]
                 if not rel:
                     continue
                 member.name = rel
-                tar.extract(member, ref_data_path)
+                tar.extract(member, dump_filestore_path)
                 if not member.isdir():
                     extracted += 1
-        logger.info("Odoo data extracted to %s (%d files)", ref_data_path, extracted)
-
-        build_fs = os.path.join(ref_data_path, "filestore", build_db)
-        ref_fs = os.path.join(ref_data_path, "filestore", settings.template_db_name)
-        if os.path.isdir(build_fs) and build_fs != ref_fs:
-            if os.path.exists(ref_fs):
-                shutil.rmtree(ref_fs, ignore_errors=True)
-            os.rename(build_fs, ref_fs)
-            logger.info("Renamed filestore %s -> %s", build_db, settings.template_db_name)
+        logger.info("Filestore extracted to %s (%d files)", dump_filestore_path, extracted)
 
     except docker.errors.NotFound:
         logger.info(
             "Odoo did not create data dir during init (normal for --stop-after-init). "
-            "The reference data at %s is empty; environments will start with an empty filestore.",
-            ref_data_path,
+            "The dump filestore at %s is empty; environments will start with an empty filestore.",
+            dump_filestore_path,
         )
 
     odoo_uid_gid = get_odoo_uid_gid(client, odoo_image)
     uid_str, gid_str = odoo_uid_gid.split(":")
     uid, gid = int(uid_str), int(gid_str)
-    for root, dirs, files in os.walk(ref_data_path):
+    for root, dirs, files in os.walk(dump_filestore_path):
         os.chown(root, uid, gid)
         for name in dirs + files:
             os.chown(os.path.join(root, name), uid, gid)
@@ -520,10 +510,10 @@ def generate_ref(
     logger.info("Temporary database dropped")
 
     logger.info("Reference generation complete, running init_system")
-    result = init_system(settings, dump_path=dump_path, force=True)
-    result["generated_dump"] = dump_path
-    result["generated_filestore"] = ref_data_path
-    result["filestore_files"] = sum(1 for _ in pathlib.Path(ref_data_path).rglob("*") if _.is_file())
+    result = init_system(settings, dump_path=dump_sql_path, force=True)
+    result["generated_dump"] = dump_sql_path
+    result["generated_filestore"] = dump_filestore_path
+    result["filestore_files"] = sum(1 for _ in pathlib.Path(dump_filestore_path).rglob("*") if _.is_file())
     return result
 
 
@@ -556,11 +546,11 @@ def ref_up(
         db_container = client.containers.get(settings.shared_db_container)
         if db_container.status != "running":
             raise PrerequisiteNotMetError(
-                f"{settings.shared_db_container} is not running. Run --init or --generate-ref first."
+                f"{settings.shared_db_container} is not running. Run --init or --init-dump first."
             )
     except docker.errors.NotFound:
         raise PrerequisiteNotMetError(
-            f"{settings.shared_db_container} not found. Run --init or --generate-ref first."
+            f"{settings.shared_db_container} not found. Run --init or --init-dump first."
         )
 
     _wait_pg_ready(client, settings)
@@ -568,7 +558,7 @@ def ref_up(
     if not _db_exists(client, settings, settings.template_db_name):
         raise PrerequisiteNotMetError(
             f"Template database '{settings.template_db_name}' not found. "
-            f"Run --init or --generate-ref first."
+            f"Run --init or --init-dump first."
         )
 
     _exec_sql(
@@ -578,13 +568,13 @@ def ref_up(
     )
     logger.info("Template flag removed from %s", settings.template_db_name)
 
-    ref_data_path = settings.ref_filestore_path
-    os.makedirs(ref_data_path, exist_ok=True)
+    dump_filestore_path = settings.get_dump_filestore_path()
+    os.makedirs(dump_filestore_path, exist_ok=True)
 
     odoo_uid_gid = get_odoo_uid_gid(client, odoo_image)
     uid_str, gid_str = odoo_uid_gid.split(":")
     uid, gid = int(uid_str), int(gid_str)
-    for root, dirs, files in os.walk(ref_data_path):
+    for root, dirs, files in os.walk(dump_filestore_path):
         os.chown(root, uid, gid)
         for name in dirs + files:
             os.chown(os.path.join(root, name), uid, gid)
@@ -607,8 +597,8 @@ def ref_up(
         "PASSWORD": settings.db_password,
     }
     odoo_volumes = {
-        ref_data_path: {
-            "bind": "/var/lib/odoo/.local/share/Odoo",
+        dump_filestore_path: {
+            "bind": f"/var/lib/odoo/.local/share/Odoo/filestore/{settings.template_db_name}",
             "mode": "rw",
         },
     }
@@ -635,7 +625,7 @@ def ref_up(
         "url": url,
         "container": _REF_EDITOR_CONTAINER,
         "database": settings.template_db_name,
-        "filestore": ref_data_path,
+        "filestore": dump_filestore_path,
     }
 
 
@@ -659,8 +649,8 @@ def ref_down(settings: Settings) -> dict[str, str]:
 
     _wait_pg_ready(client, settings)
 
-    dump_path = settings.dump_file_path
-    os.makedirs(os.path.dirname(dump_path), exist_ok=True)
+    dump_sql_path = settings.get_dump_sql_path()
+    os.makedirs(os.path.dirname(dump_sql_path), exist_ok=True)
 
     db_container = client.containers.get(settings.shared_db_container)
     dump_file = f"/tmp/{settings.template_db_name}.dump"
@@ -682,10 +672,10 @@ def ref_down(settings: Settings) -> dict[str, str]:
         f = tar.extractfile(member)
         if f is None:
             raise ExternalCommandError("get_archive", -1, "Could not extract dump from tar")
-        with open(dump_path, "wb") as out:
+        with open(dump_sql_path, "wb") as out:
             out.write(f.read())
 
-    logger.info("Dump saved to %s", dump_path)
+    logger.info("Dump saved to %s", dump_sql_path)
 
     _exec_sql(
         client,
@@ -696,8 +686,8 @@ def ref_down(settings: Settings) -> dict[str, str]:
 
     return {
         "status": "stopped",
-        "dump": dump_path,
-        "filestore": settings.ref_filestore_path,
+        "dump": dump_sql_path,
+        "filestore": settings.get_dump_filestore_path(),
         "database": settings.template_db_name,
     }
 
@@ -716,7 +706,7 @@ def promote_env(settings: Settings, branch_name: str) -> dict[str, str]:
     db_container = client.containers.get(settings.shared_db_container)
 
     # 1. pg_dump branch DB → new ref dump
-    dump_path = settings.dump_file_path
+    dump_path = settings.get_dump_sql_path()
     dump_file = f"/tmp/{env_db}.dump"
     dump_cmd = ["pg_dump", "-U", settings.db_user, "-Fc", "-f", dump_file, env_db]
 
@@ -749,8 +739,7 @@ def promote_env(settings: Settings, branch_name: str) -> dict[str, str]:
     # 4. Snapshot the promoted branch's merged filestore (while overlay is still mounted)
     branch_paths = get_filestore_paths(branch_name, settings.workspaces_dir)
     branch_merged = branch_paths["merged"]
-    ref_data_path = settings.ref_filestore_path
-    ref_filestore = os.path.join(ref_data_path, "filestore", settings.template_db_name)
+    dump_filestore_path = settings.get_dump_filestore_path()
 
     if os.path.isdir(branch_merged) and os.path.ismount(branch_merged):
         snapshot_dir = branch_merged + "_snapshot"
@@ -770,18 +759,18 @@ def promote_env(settings: Settings, branch_name: str) -> dict[str, str]:
         except Exception as e:
             logger.warning("Could not unmount overlay for %s: %s", branch, e)
 
-    # 6. Replace ref filestore with snapshot
+    # 6. Replace dump filestore with snapshot
     if snapshot_dir and os.path.isdir(snapshot_dir):
-        if os.path.exists(ref_filestore):
-            shutil.rmtree(ref_filestore)
+        if os.path.exists(dump_filestore_path):
+            shutil.rmtree(dump_filestore_path)
 
-        os.makedirs(os.path.dirname(ref_filestore), exist_ok=True)
+        os.makedirs(os.path.dirname(dump_filestore_path), exist_ok=True)
         try:
-            os.rename(snapshot_dir, ref_filestore)
+            os.rename(snapshot_dir, dump_filestore_path)
         except OSError:
-            shutil.copytree(snapshot_dir, ref_filestore)
+            shutil.copytree(snapshot_dir, dump_filestore_path)
             shutil.rmtree(snapshot_dir)
-        logger.info("Ref filestore replaced from branch %s", branch_name)
+        logger.info("Dump filestore replaced from branch %s", branch_name)
 
         promoted_container_name = f"{settings.prefix}{branch_name.replace('/', '-')}-odoo"
         try:
@@ -792,11 +781,11 @@ def promote_env(settings: Settings, branch_name: str) -> dict[str, str]:
         odoo_uid_gid = get_odoo_uid_gid(client, promoted_image)
         uid_str, gid_str = odoo_uid_gid.split(":")
         uid, gid = int(uid_str), int(gid_str)
-        for root, dirs, files in os.walk(ref_filestore):
+        for root, dirs, files in os.walk(dump_filestore_path):
             os.chown(root, uid, gid)
             for name in dirs + files:
                 os.chown(os.path.join(root, name), uid, gid)
-        logger.info("Ref filestore chowned to %s", odoo_uid_gid)
+        logger.info("Dump filestore chowned to %s", odoo_uid_gid)
 
     # 7. Remount overlays (clear upper dirs so branches start fresh from new ref)
     for branch in active_branches:
@@ -846,7 +835,7 @@ def promote_env(settings: Settings, branch_name: str) -> dict[str, str]:
         "status": "promoted",
         "branch": branch_name,
         "dump": dump_path,
-        "filestore": ref_data_path,
+        "filestore": dump_filestore_path,
         "template_db": settings.template_db_name,
     }
 

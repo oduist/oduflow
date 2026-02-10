@@ -84,10 +84,9 @@ def _mount_filestore(
     odoo_image: str,
     odoo_volumes: dict,
 ) -> None:
-    ref_data = settings.ref_filestore_path
-    ref = os.path.join(ref_data, "filestore", settings.template_db_name)
-    if not ref_data or not os.path.isdir(ref):
-        logger.debug("Reference filestore not found at %s, skipping overlay mount", ref)
+    ref = settings.get_dump_filestore_path()
+    if not ref or not os.path.isdir(ref):
+        logger.debug("Dump filestore not found at %s, skipping overlay mount", ref)
         return
 
     paths = get_filestore_paths(branch_name, settings.workspaces_dir)

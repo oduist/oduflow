@@ -372,6 +372,11 @@ def exec_in_environment(branch_name: str, command: str, user: str = "odoo") -> s
 
 
 def _run_init(settings: Settings, args: argparse.Namespace) -> None:
+    resolved_dump = args.dump_path or settings.get_dump_sql_path()
+    if not os.path.isfile(resolved_dump):
+        print(f"Dump file not found at {resolved_dump}, running --init-dump first...")
+        _run_init_dump(settings, args)
+        return
     result = system_ops.init_system(
         settings,
         dump_path=args.dump_path or None,
@@ -395,12 +400,12 @@ def _run_reload_dump(settings: Settings, args: argparse.Namespace) -> None:
     print(msg)
 
 
-def _run_generate_ref(settings: Settings, args: argparse.Namespace) -> None:
+def _run_init_dump(settings: Settings, args: argparse.Namespace) -> None:
     odoo_image = args.odoo_image
     if not odoo_image:
-        print("Error: --odoo-image is required for --generate-ref (e.g. --odoo-image odoo:17.0)")
+        print("Error: --odoo-image is required for --init-dump (e.g. --odoo-image odoo:17.0)")
         raise SystemExit(1)
-    result = system_ops.generate_ref(
+    result = system_ops.init_dump(
         settings,
         odoo_image=odoo_image,
         modules=args.modules,
@@ -542,14 +547,14 @@ def main() -> None:
     parser.add_argument("--init", action="store_true", help="Initialize shared infrastructure (network, DB, template)")
     parser.add_argument("--destroy", action="store_true", help="Destroy all shared infrastructure")
     parser.add_argument("--reload-dump", action="store_true", help="Drop and re-restore the template DB from dump (safe while server is running)")
-    parser.add_argument("--generate-ref", action="store_true", help="Generate reference dump and filestore from a clean Odoo image (requires --odoo-image)")
+    parser.add_argument("--init-dump", action="store_true", help="Generate reference dump and filestore from a clean Odoo image (requires --odoo-image)")
     parser.add_argument("--ref-up", action="store_true", help="Start a ref editor: Odoo container working directly with the template DB and filestore (requires --odoo-image)")
     parser.add_argument("--ref-down", action="store_true", help="Stop the ref editor, dump the updated DB, restore template flag")
     parser.add_argument("--dump-path", default="", help="Path to DB dump file (for --init / --reload-dump)")
     parser.add_argument("--version", default="15.0", help="Odoo version (for --init, default 15.0)")
     parser.add_argument("--force", action="store_true", help="Force recreate template DB (for --init)")
-    parser.add_argument("--odoo-image", default="", help="Docker image for Odoo (for --generate-ref, e.g. odoo:17.0)")
-    parser.add_argument("--modules", default="base", help="Comma-separated modules to install during --generate-ref (default: base)")
+    parser.add_argument("--odoo-image", default="", help="Docker image for Odoo (for --init-dump, e.g. odoo:17.0)")
+    parser.add_argument("--modules", default="base", help="Comma-separated modules to install during --init-dump (default: base)")
     parser.add_argument("--promote", default="", metavar="BRANCH", help="Promote a branch environment to become the new reference (DB + filestore)")
     args = parser.parse_args()
 
@@ -581,8 +586,8 @@ def main() -> None:
         _run_reload_dump(_settings, args)
         return
 
-    if args.generate_ref:
-        _run_generate_ref(_settings, args)
+    if args.init_dump:
+        _run_init_dump(_settings, args)
         return
 
     if args.ref_up:

@@ -6,6 +6,7 @@
 #   cli             – CLI command name ("init" or "destroy")
 #   args            – keyword arguments
 #   expect_contains – list of substrings that MUST appear in the result
+#   needs_env       – if true, a live Docker environment is set up automatically
 #
 # Usage:
 #   CLI:    flow call <tool_name> [args...]
@@ -91,6 +92,7 @@ scenarios:
 
   status_main:
     tool: get_environment_status
+    needs_env: true
     args:
       branch_name: "main"
     expect_contains:
@@ -98,6 +100,7 @@ scenarios:
 
   restart_main:
     tool: restart_environment
+    needs_env: true
     args:
       branch_name: "main"
     expect_contains:
@@ -105,6 +108,7 @@ scenarios:
 
   stop_main:
     tool: stop_environment
+    needs_env: true
     args:
       branch_name: "main"
     expect_contains:
@@ -112,6 +116,7 @@ scenarios:
 
   start_main:
     tool: start_environment
+    needs_env: true
     args:
       branch_name: "main"
     expect_contains:
@@ -120,6 +125,7 @@ scenarios:
   # ── Odoo operations ──────────────────────────────────────────────
   logs_main:
     tool: get_environment_logs
+    needs_env: true
     args:
       branch_name: "main"
       n_lines: 50
@@ -127,6 +133,7 @@ scenarios:
 
   test_modules:
     tool: test_environment
+    needs_env: true
     args:
       branch_name: "main"
       modules: "sale"
@@ -135,6 +142,8 @@ scenarios:
 
   install_modules:
     tool: install_odoo_modules
+    marks: [heavyweight]
+    needs_env: true
     args:
       branch_name: "main"
       modules: "sale,crm"
@@ -143,6 +152,8 @@ scenarios:
 
   upgrade_modules:
     tool: upgrade_odoo_modules
+    marks: [heavyweight]
+    needs_env: true
     args:
       branch_name: "main"
       modules: "sale"

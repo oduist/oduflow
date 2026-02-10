@@ -12,8 +12,7 @@ class Settings:
     port_range_start: int = 50000
     port_range_end: int = 50100
     workspaces_dir: str = ""
-    dump_file_path: str = ""
-    ref_filestore_path: str = ""
+    home: str = "/srv/oduflow_data"
     db_user: str = "odoo"
     db_password: str = "odoo"
     odoo_image: str = "odoo"
@@ -34,6 +33,12 @@ class Settings:
     default_branch: str = "prod"
     port_registry_path: str = ""
 
+    def get_dump_sql_path(self) -> str:
+        return os.path.join(self.home, "dump", "dump.sql")
+
+    def get_dump_filestore_path(self) -> str:
+        return os.path.join(self.home, "dump", "filestore")
+
     @staticmethod
     def from_env() -> "Settings":
         flow_home = os.getenv("ODUFLOW_HOME", "/srv/oduflow_data")
@@ -48,14 +53,7 @@ class Settings:
                 "ODUFLOW_WORKSPACES_DIR",
                 os.path.join(flow_home, "workspaces"),
             ),
-            dump_file_path=os.getenv(
-                "ODUFLOW_DUMP_PATH",
-                os.path.join(flow_home, "odoo_ref.dump"),
-            ),
-            ref_filestore_path=os.getenv(
-                "ODUFLOW_REF_DATA_PATH",
-                os.path.join(flow_home, "odoo_ref_data"),
-            ),
+            home=flow_home,
             db_user=os.getenv("ODOO_DB_USER", "odoo"),
             db_password=os.getenv("ODOO_DB_PASSWORD", "odoo"),
             flow_server_port=int(os.getenv("ODUFLOW_PORT", "8000")),

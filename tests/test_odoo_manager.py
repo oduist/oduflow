@@ -11,7 +11,7 @@ TEST_SETTINGS = Settings(
     port_range_start=50000,
     port_range_end=50100,
     workspaces_dir="/tmp/flow-test/workspaces",
-    dump_file_path="/tmp/flow-test/odoo_ref.dump",
+    home="/tmp/flow-test",
     db_user="odoo",
     db_password="odoo",
     port_registry_path="/tmp/flow-test/ports.json",
@@ -113,6 +113,7 @@ class TestDestroySystem:
 
 class TestCreateEnvironment:
     @patch("oduflow.docker_ops.env_ops._ensure_system_ready")
+    @patch("oduflow.docker_ops.env_ops.get_odoo_uid_gid", return_value="100:101")
     @patch("oduflow.docker_ops.env_ops._exec_sql")
     @patch("oduflow.docker_ops.env_ops._db_exists", return_value=False)
     @patch("oduflow.docker_ops.env_ops._mount_filestore")
@@ -122,7 +123,7 @@ class TestCreateEnvironment:
     @patch("oduflow.docker_ops.env_ops.os.chmod")
     @patch("oduflow.docker_ops.env_ops.os.makedirs")
     @patch("oduflow.docker_ops.env_ops.os.path.exists", return_value=False)
-    def test_create(self, mock_exists, mock_makedirs, mock_chmod, mock_run, mock_alloc, mock_used, mock_mount, mock_db_exists, mock_sql, mock_ready, mock_docker_client):
+    def test_create(self, mock_exists, mock_makedirs, mock_chmod, mock_run, mock_alloc, mock_used, mock_mount, mock_db_exists, mock_sql, mock_uid_gid, mock_ready, mock_docker_client):
         mock_odoo = MagicMock()
         mock_docker_client.containers.run.return_value = mock_odoo
         mock_docker_client.containers.get.side_effect = docker.errors.NotFound("nf")
@@ -185,7 +186,7 @@ class TestRestartEnvironment:
     def test_restart_not_found(self, mock_docker_client):
         mock_docker_client.containers.get.side_effect = docker.errors.NotFound("nf")
 
-        with pytest.raises(NotFoundError, match="not found"):
+        with pytest.raises(NotFoundError, match="does not exist"):
             env_ops.restart_environment(TEST_SETTINGS, "main")
 
 

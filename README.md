@@ -232,7 +232,7 @@ If you don't have a production database dump — for example, you're starting a 
 ### Generate a clean reference
 
 ```bash
-oduflow --generate-ref --odoo-image odoo:17.0
+oduflow --init-dump --odoo-image odoo:17.0
 ```
 
 This will:
@@ -245,14 +245,14 @@ This will:
 You can install additional modules during generation:
 
 ```bash
-oduflow --generate-ref --odoo-image odoo:17.0 --modules base,web,contacts,sale
+oduflow --init-dump --odoo-image odoo:17.0 --modules base,web,contacts,sale
 ```
 
 After this, `oduflow` is ready — start the server and create environments as usual.
 
 ### Editing the reference database
 
-Once you have a reference database (from `--generate-ref` or from a production dump), you can modify it interactively — install modules, configure settings, create demo data — and save the result back as the new reference.
+Once you have a reference database (from `--init-dump` or from a production dump), you can modify it interactively — install modules, configure settings, create demo data — and save the result back as the new reference.
 
 **Start the reference editor:**
 
@@ -276,7 +276,7 @@ All environments created after this will be based on the updated reference.
 
 | Scenario | Command |
 |---|---|
-| New project, no existing database | `oduflow --generate-ref --odoo-image odoo:17.0` |
+| New project, no existing database | `oduflow --init-dump --odoo-image odoo:17.0` |
 | Have a production dump file | `oduflow --init --dump-path /path/to/dump` |
 | Need to install modules or configure the reference | `oduflow --ref-up` / `oduflow --ref-down` |
 | Update the reference from a newer production dump | `oduflow --reload-dump --dump-path /path/to/new.dump` |
