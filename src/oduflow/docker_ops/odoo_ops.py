@@ -3,12 +3,12 @@ from typing import Any
 
 import docker
 
-from flow.docker_ops.client import get_client
-from flow.errors import NotFoundError
-from flow.naming import get_db_name, get_resource_name
-from flow.settings import Settings
+from oduflow.docker_ops.client import get_client
+from oduflow.errors import NotFoundError
+from oduflow.naming import get_db_name, get_resource_name
+from oduflow.settings import Settings
 
-logger = logging.getLogger("flow")
+logger = logging.getLogger("oduflow")
 
 
 def run_environment_tests(settings: Settings, branch_name: str, modules: str) -> str:

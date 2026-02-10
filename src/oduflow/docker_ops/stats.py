@@ -3,10 +3,10 @@ import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 
-from flow.docker_ops.client import get_client
-from flow.settings import Settings
+from oduflow.docker_ops.client import get_client
+from oduflow.settings import Settings
 
-logger = logging.getLogger("flow")
+logger = logging.getLogger("oduflow")
 
 
 def _calc_cpu_percent(stats: dict) -> float:

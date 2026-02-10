@@ -6,14 +6,14 @@ import threading
 
 from fastmcp import FastMCP
 
-from flow.docker_ops import env_ops, odoo_ops, system_ops
-from flow import git_ops
-from flow.errors import BusyError, FlowError
-from flow.settings import Settings
+from oduflow.docker_ops import env_ops, odoo_ops, system_ops
+from oduflow import git_ops
+from oduflow.errors import BusyError, FlowError
+from oduflow.settings import Settings
 
-logger = logging.getLogger("flow")
+logger = logging.getLogger("oduflow")
 
-mcp = FastMCP("Flow")
+mcp = FastMCP("Oduflow")
 _busy = threading.Lock()
 _settings: Settings | None = None
 
@@ -428,7 +428,7 @@ def _run_ref_up(settings: Settings, args: argparse.Namespace) -> None:
         f"Container: {result['container']}\n"
         f"Database: {result['database']}\n"
         f"Filestore: {result['filestore']}\n\n"
-        f"Make your changes in the browser, then run: flow --ref-down"
+        f"Make your changes in the browser, then run: oduflow --ref-down"
     )
 
 
@@ -461,7 +461,7 @@ def _run_destroy(settings: Settings) -> None:
 
 
 def _run_call(argv: list[str]) -> None:
-    """Execute an MCP tool from the CLI: flow call <tool> [args...]"""
+    """Execute an MCP tool from the CLI: oduflow call <tool> [args...]"""
     import inspect
     import json
     import sys
@@ -520,12 +520,12 @@ def _run_call(argv: list[str]) -> None:
                     parts.append(f"<{p.name}>")
                 else:
                     parts.append(f"[{p.name}={p.default}]")
-            print(f"Usage: flow call {tool_name} {' '.join(parts)}")
+            print(f"Usage: oduflow call {tool_name} {' '.join(parts)}")
             return
 
     print(f"Calling: {tool_name}({kwargs})")
     print("-" * 60)
-    logging.getLogger("flow").setLevel(logging.WARNING)
+    logging.getLogger("oduflow").setLevel(logging.WARNING)
     try:
         result = tool_fn(**kwargs)
         print(result)
@@ -535,10 +535,10 @@ def _run_call(argv: list[str]) -> None:
 
 
 def main() -> None:
-    """Entry point for the Flow MCP server."""
-    parser = argparse.ArgumentParser(prog="flow", description="Flow — Odoo dev environment manager")
+    """Entry point for the Oduflow MCP server."""
+    parser = argparse.ArgumentParser(prog="oduflow", description="Oduflow — Odoo dev environment manager")
     subparsers = parser.add_subparsers(dest="command")
-    subparsers.add_parser("call", help="Call an MCP tool: flow call <tool> [args...]").add_argument("call_args", nargs="*", default=[], help="Tool name and arguments")
+    subparsers.add_parser("call", help="Call an MCP tool: oduflow call <tool> [args...]").add_argument("call_args", nargs="*", default=[], help="Tool name and arguments")
     parser.add_argument("--init", action="store_true", help="Initialize shared infrastructure (network, DB, template)")
     parser.add_argument("--destroy", action="store_true", help="Destroy all shared infrastructure")
     parser.add_argument("--reload-dump", action="store_true", help="Drop and re-restore the template DB from dump (safe while server is running)")
@@ -597,29 +597,29 @@ def main() -> None:
         _run_promote(_settings, args)
         return
 
-    transport_str = os.getenv("FLOW_TRANSPORT", "http")
+    transport_str = os.getenv("ODUFLOW_TRANSPORT", "http")
 
     if transport_str == "http":
         from fastmcp.server.http import create_streamable_http_app
 
-        host = os.getenv("FLOW_HOST", "0.0.0.0")
-        port = int(os.getenv("FLOW_PORT", "8000"))
+        host = os.getenv("ODUFLOW_HOST", "0.0.0.0")
+        port = int(os.getenv("ODUFLOW_PORT", "8000"))
 
-        auth_token = (os.getenv("FLOW_AUTH_TOKEN") or "").strip()
+        auth_token = (os.getenv("ODUFLOW_AUTH_TOKEN") or "").strip()
         auth = None
         if auth_token:
             from fastmcp.server.auth.providers.jwt import StaticTokenVerifier
 
             auth = StaticTokenVerifier(
-                tokens={auth_token: {"client_id": "flow-user", "scopes": []}}
+                tokens={auth_token: {"client_id": "oduflow-user", "scopes": []}}
             )
             logger.info("HTTP Bearer token auth ENABLED")
         else:
-            logger.warning("HTTP auth DISABLED (FLOW_AUTH_TOKEN not set)")
+            logger.warning("HTTP auth DISABLED (ODUFLOW_AUTH_TOKEN not set)")
 
         app = create_streamable_http_app(mcp, "/mcp", auth=auth)
 
-        from flow.web_ui import mount_web_ui
+        from oduflow.web_ui import mount_web_ui
         mount_web_ui(app, _get_settings, _busy)
         logger.info("Web UI available at http://%s:%d/", host, port)
 

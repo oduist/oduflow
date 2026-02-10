@@ -4,7 +4,7 @@ import os
 import re
 import subprocess
 
-logger = logging.getLogger("flow")
+logger = logging.getLogger("oduflow")
 
 MANIFEST_KEYS_WITH_FILES = ("data", "demo", "assets", "qweb")
 

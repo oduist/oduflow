@@ -3,7 +3,7 @@ import logging
 import docker
 from docker import DockerClient
 
-logger = logging.getLogger("flow")
+logger = logging.getLogger("oduflow")
 
 _uid_gid_cache: dict[str, str] = {}
 

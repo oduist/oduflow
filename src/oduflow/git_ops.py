@@ -5,9 +5,9 @@ import subprocess
 import tempfile
 from urllib.parse import urlparse
 
-from flow.errors import ExternalCommandError, FlowError
+from oduflow.errors import ExternalCommandError, FlowError
 
-logger = logging.getLogger("flow")
+logger = logging.getLogger("oduflow")
 
 GIT_ENV = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
 

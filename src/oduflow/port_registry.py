@@ -2,7 +2,7 @@ import json
 import os
 import logging
 
-logger = logging.getLogger("flow")
+logger = logging.getLogger("oduflow")
 
 
 def _load_registry(registry_path: str) -> dict[str, int]:
@@ -54,7 +54,7 @@ def allocate_port(
     Raises:
         FlowError if no free ports available.
     """
-    from flow.errors import FlowError
+    from oduflow.errors import FlowError
 
     if used_ports is None:
         used_ports = set()

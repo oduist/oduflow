@@ -1,7 +1,7 @@
 import pytest
 from unittest.mock import patch, MagicMock
 
-from flow.settings import Settings
+from oduflow.settings import Settings
 
 TEST_SETTINGS = Settings(
     external_host="localhost",
@@ -17,58 +17,58 @@ TEST_SETTINGS = Settings(
 
 @pytest.fixture(autouse=True)
 def inject_settings():
-    import flow.server
-    flow.server._settings = TEST_SETTINGS
+    import oduflow.server
+    oduflow.server._settings = TEST_SETTINGS
     yield
-    flow.server._settings = None
+    oduflow.server._settings = None
 
 
 from tool_helpers import call_tool as _call_tool
 
 
 class TestCLIInitDestroy:
-    @patch("flow.docker_ops.system_ops.init_system")
+    @patch("oduflow.docker_ops.system_ops.init_system")
     def test_cli_init(self, mock_init):
         import argparse
-        from flow.server import _run_init
+        from oduflow.server import _run_init
         mock_init.return_value = {"status": "initialized", "template_db": "odoo_ref", "restore_seconds": 5.2}
         args = argparse.Namespace(dump_path="/tmp/dump.dump", version="15.0", force=False)
         _run_init(TEST_SETTINGS, args)
         mock_init.assert_called_once_with(TEST_SETTINGS, dump_path="/tmp/dump.dump", version="15.0", force=False)
 
-    @patch("flow.docker_ops.system_ops.init_system")
+    @patch("oduflow.docker_ops.system_ops.init_system")
     def test_cli_init_empty_path(self, mock_init):
         import argparse
-        from flow.server import _run_init
+        from oduflow.server import _run_init
         mock_init.return_value = {"status": "initialized", "template_db": "odoo_ref"}
         args = argparse.Namespace(dump_path="", version="15.0", force=False)
         _run_init(TEST_SETTINGS, args)
         mock_init.assert_called_once_with(TEST_SETTINGS, dump_path=None, version="15.0", force=False)
 
-    @patch("flow.docker_ops.system_ops.destroy_system")
+    @patch("oduflow.docker_ops.system_ops.destroy_system")
     def test_cli_destroy(self, mock_destroy):
-        from flow.server import _run_destroy
+        from oduflow.server import _run_destroy
         mock_destroy.return_value = {"status": "destroyed", "removed": "flow-db, flow-db-data, flow-net"}
         _run_destroy(TEST_SETTINGS)
         mock_destroy.assert_called_once_with(TEST_SETTINGS)
 
 
 class TestCreateEnvironmentTool:
-    @patch("flow.docker_ops.env_ops.create_environment")
+    @patch("oduflow.docker_ops.env_ops.create_environment")
     def test_create(self, mock_create):
         mock_create.return_value = {
             "url": "http://localhost:50000",
-            "odoo_container": "flow-main-odoo",
-            "database": "flow_main",
+            "odoo_container": "oduflow-main-odoo",
+            "database": "oduflow_main",
             "workspace": "/tmp/ws",
         }
         result = _call_tool("create_environment", branch_name="main", repo_url="https://repo.url", odoo_image="odoo:17.0")
         assert "Environment provisioned successfully!" in result
-        assert "Database: flow_main" in result
+        assert "Database: oduflow_main" in result
 
 
 class TestDeleteEnvironmentTool:
-    @patch("flow.docker_ops.env_ops.delete_environment")
+    @patch("oduflow.docker_ops.env_ops.delete_environment")
     def test_delete(self, mock_delete):
         result = _call_tool("delete_environment", branch_name="main")
         assert "torn down" in result
@@ -76,21 +76,21 @@ class TestDeleteEnvironmentTool:
 
 
 class TestListEnvironmentsTool:
-    @patch("flow.docker_ops.env_ops.list_environments")
+    @patch("oduflow.docker_ops.env_ops.list_environments")
     def test_list(self, mock_list):
         mock_list.return_value = [
             {
                 "branch": "main",
                 "status": "running",
                 "url": "http://localhost:50000",
-                "containers": [{"name": "flow-main-odoo", "status": "running", "image": "odoo:15.0"}],
+                "containers": [{"name": "oduflow-main-odoo", "status": "running", "image": "odoo:15.0"}],
             }
         ]
         result = _call_tool("list_environments")
         assert "main" in result
-        assert "flow-main-odoo" in result
+        assert "oduflow-main-odoo" in result
 
-    @patch("flow.docker_ops.env_ops.list_environments")
+    @patch("oduflow.docker_ops.env_ops.list_environments")
     def test_list_empty(self, mock_list):
         mock_list.return_value = []
         result = _call_tool("list_environments")
@@ -98,7 +98,7 @@ class TestListEnvironmentsTool:
 
 
 class TestStatusTool:
-    @patch("flow.docker_ops.env_ops.get_environment_status")
+    @patch("oduflow.docker_ops.env_ops.get_environment_status")
     def test_status(self, mock_status):
         mock_status.return_value = {
             "branch": "main",
@@ -112,21 +112,21 @@ class TestStatusTool:
 
 
 class TestErrorHandling:
-    @patch("flow.docker_ops.env_ops.restart_environment")
+    @patch("oduflow.docker_ops.env_ops.restart_environment")
     def test_flow_error_raises_value_error(self, mock_restart):
-        from flow.errors import NotFoundError
+        from oduflow.errors import NotFoundError
         mock_restart.side_effect = NotFoundError("container not found")
         with pytest.raises(ValueError, match="container not found"):
             _call_tool("restart_environment", branch_name="main")
 
 
 class TestMutex:
-    @patch("flow.docker_ops.env_ops.create_environment")
+    @patch("oduflow.docker_ops.env_ops.create_environment")
     def test_busy_raises_value_error(self, mock_create):
-        import flow.server
-        flow.server._busy.acquire()
+        import oduflow.server
+        oduflow.server._busy.acquire()
         try:
             with pytest.raises(ValueError, match="Another operation is in progress"):
                 _call_tool("create_environment", branch_name="main", repo_url="https://x.git")
         finally:
-            flow.server._busy.release()
+            oduflow.server._busy.release()

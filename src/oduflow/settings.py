@@ -18,50 +18,50 @@ class Settings:
     db_password: str = "odoo"
     odoo_image: str = "odoo"
     postgres_image: str = "postgres:15"
-    shared_network: str = "flow-net"
-    shared_db_container: str = "flow-db"
-    shared_db_volume: str = "flow-db-data"
-    traefik_container: str = "flow-traefik"
-    traefik_acme_volume: str = "flow-traefik-acme"
+    shared_network: str = "oduflow-net"
+    shared_db_container: str = "oduflow-db"
+    shared_db_volume: str = "oduflow-db-data"
+    traefik_container: str = "oduflow-traefik"
+    traefik_acme_volume: str = "oduflow-traefik-acme"
     flow_server_port: int = 8000
     template_db_name: str = "odoo_ref"
-    prefix: str = "flow-"
-    branch_label: str = "flow.branch"
-    managed_label: str = "flow.managed"
-    system_label: str = "flow.system"
-    repo_label: str = "flow.repo"
-    image_label: str = "flow.image"
+    prefix: str = "oduflow-"
+    branch_label: str = "oduflow.branch"
+    managed_label: str = "oduflow.managed"
+    system_label: str = "oduflow.system"
+    repo_label: str = "oduflow.repo"
+    image_label: str = "oduflow.image"
     default_branch: str = "prod"
     port_registry_path: str = ""
 
     @staticmethod
     def from_env() -> "Settings":
-        flow_home = os.getenv("FLOW_HOME", "/srv/flow_data")
+        flow_home = os.getenv("ODUFLOW_HOME", "/srv/oduflow_data")
         return Settings(
-            routing_mode=os.getenv("FLOW_ROUTING_MODE", "port").strip().lower(),
-            base_domain=re.sub(r"^https?://", "", os.getenv("FLOW_BASE_DOMAIN", "")).strip(),
-            acme_email=os.getenv("FLOW_ACME_EMAIL", "").strip(),
+            routing_mode=os.getenv("ODUFLOW_ROUTING_MODE", "port").strip().lower(),
+            base_domain=re.sub(r"^https?://", "", os.getenv("ODUFLOW_BASE_DOMAIN", "")).strip(),
+            acme_email=os.getenv("ODUFLOW_ACME_EMAIL", "").strip(),
             external_host=re.sub(r"^https?://", "", os.getenv("EXTERNAL_HOST", "localhost")),
             port_range_start=int(os.getenv("PORT_RANGE_START", "50000")),
             port_range_end=int(os.getenv("PORT_RANGE_END", "50100")),
             workspaces_dir=os.getenv(
-                "FLOW_WORKSPACES_DIR",
+                "ODUFLOW_WORKSPACES_DIR",
                 os.path.join(flow_home, "workspaces"),
             ),
             dump_file_path=os.getenv(
-                "FLOW_DUMP_PATH",
+                "ODUFLOW_DUMP_PATH",
                 os.path.join(flow_home, "odoo_ref.dump"),
             ),
             ref_filestore_path=os.getenv(
-                "FLOW_REF_FILESTORE_PATH",
+                "ODUFLOW_REF_FILESTORE_PATH",
                 os.path.join(flow_home, "odoo_ref_filestore"),
             ),
             db_user=os.getenv("ODOO_DB_USER", "odoo"),
             db_password=os.getenv("ODOO_DB_PASSWORD", "odoo"),
-            flow_server_port=int(os.getenv("FLOW_PORT", "8000")),
-            default_branch=os.getenv("FLOW_DEFAULT_BRANCH", "prod"),
+            flow_server_port=int(os.getenv("ODUFLOW_PORT", "8000")),
+            default_branch=os.getenv("ODUFLOW_DEFAULT_BRANCH", "prod"),
             port_registry_path=os.getenv(
-                "FLOW_PORT_REGISTRY",
+                "ODUFLOW_PORT_REGISTRY",
                 os.path.join(flow_home, "ports.json"),
             ),
         )

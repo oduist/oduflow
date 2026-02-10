@@ -9,20 +9,20 @@ from typing import Any
 import docker
 from docker import DockerClient
 
-from flow.docker_ops.client import get_client, get_odoo_uid_gid
-from flow.docker_ops.system_ops import _db_exists, _exec_sql
-from flow.errors import (
+from oduflow.docker_ops.client import get_client, get_odoo_uid_gid
+from oduflow.docker_ops.system_ops import _db_exists, _exec_sql
+from oduflow.errors import (
     ConflictError,
     ExternalCommandError,
     NotFoundError,
     PrerequisiteNotMetError,
 )
-from flow.git_ops import RepoAuthError
-from flow.naming import get_db_name, get_env_hostname, get_filestore_paths, get_repo_path, get_resource_name, get_workspace_path, slugify_branch
-from flow.port_registry import allocate_port, release_port
-from flow.settings import Settings
+from oduflow.git_ops import RepoAuthError
+from oduflow.naming import get_db_name, get_env_hostname, get_filestore_paths, get_repo_path, get_resource_name, get_workspace_path, slugify_branch
+from oduflow.port_registry import allocate_port, release_port
+from oduflow.settings import Settings
 
-logger = logging.getLogger("flow")
+logger = logging.getLogger("oduflow")
 
 _PROJECT_ROOT = pathlib.Path(__file__).resolve().parents[3]
 _ODOO_CONF_TEMPLATE = _PROJECT_ROOT / "templates" / "odoo.conf"
@@ -300,7 +300,7 @@ def create_environment(
 
     if settings.routing_mode == "traefik":
         slug = slugify_branch(branch_name)
-        traefik_router = f"flow-{slug}"
+        traefik_router = f"oduflow-{slug}"
         traefik_host = get_env_hostname(branch_name, settings.base_domain)
         labels.update({
             "traefik.enable": "true",
@@ -642,7 +642,7 @@ def start_environment(settings: Settings, branch_name: str) -> dict[str, str]:
 
 
 def get_environment_status(settings: Settings, branch_name: str) -> dict[str, Any]:
-    from flow.docker_ops.stats import _get_one_container_stats
+    from oduflow.docker_ops.stats import _get_one_container_stats
 
     client = get_client()
     odoo_container_name = get_resource_name(branch_name, "odoo", settings.prefix)
@@ -682,8 +682,8 @@ def get_environment_status(settings: Settings, branch_name: str) -> dict[str, An
 
 
 def pull_environment(settings: Settings, branch_name: str) -> dict[str, Any]:
-    from flow.git_analysis import classify_changes
-    from flow.git_ops import pull_repo
+    from oduflow.git_analysis import classify_changes
+    from oduflow.git_ops import pull_repo
 
     client = get_client()
     odoo_container_name = get_resource_name(branch_name, "odoo", settings.prefix)
@@ -707,7 +707,7 @@ def pull_environment(settings: Settings, branch_name: str) -> dict[str, Any]:
     action = analysis["action"]
 
     if action in ("install", "upgrade"):
-        from flow.docker_ops.odoo_ops import install_odoo_modules, upgrade_odoo_modules
+        from oduflow.docker_ops.odoo_ops import install_odoo_modules, upgrade_odoo_modules
 
         to_install = analysis["modules_to_install"]
         to_upgrade = analysis["modules_to_upgrade"]

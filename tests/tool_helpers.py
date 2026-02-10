@@ -7,7 +7,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from flow.server import mcp  # noqa: E402
+from oduflow.server import mcp  # noqa: E402
 
 
 def call_tool(name: str, **kwargs):
@@ -23,8 +23,8 @@ def list_tools() -> list[str]:
 
 def call_cli(command: str, **kwargs) -> str:
     """Run a CLI command (init / destroy) and return formatted output."""
-    from flow.docker_ops import system_ops
-    from flow.settings import Settings
+    from oduflow.docker_ops import system_ops
+    from oduflow.settings import Settings
 
     settings = Settings.from_env()
 

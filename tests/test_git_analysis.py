@@ -2,7 +2,7 @@ import os
 import textwrap
 import pytest
 
-from flow.git_analysis import (
+from oduflow.git_analysis import (
     classify_changes,
     _get_module_name,
     _is_security_path,

@@ -12,13 +12,13 @@ from starlette.responses import HTMLResponse, JSONResponse, Response
 from starlette.routing import Route
 from starlette.types import ASGIApp, Receive, Scope, Send
 
-from flow.docker_ops import env_ops
-from flow.docker_ops.odoo_ops import get_environment_logs
-from flow.docker_ops.stats import get_container_stats, get_system_stats
-from flow.errors import BusyError, FlowError, NotFoundError
-from flow.settings import Settings
+from oduflow.docker_ops import env_ops
+from oduflow.docker_ops.odoo_ops import get_environment_logs
+from oduflow.docker_ops.stats import get_container_stats, get_system_stats
+from oduflow.errors import BusyError, FlowError, NotFoundError
+from oduflow.settings import Settings
 
-logger = logging.getLogger("flow")
+logger = logging.getLogger("oduflow")
 
 _AUTH_REALM = "Flow Dashboard"
 _AUTH_USER = "admin"
@@ -225,12 +225,12 @@ def mount_web_ui(
     routes = _build_routes(get_settings, busy_lock)
     sub_app: ASGIApp = Router(routes=routes)
 
-    auth_token = (os.getenv("FLOW_AUTH_TOKEN") or "").strip()
+    auth_token = (os.getenv("ODUFLOW_AUTH_TOKEN") or "").strip()
     if auth_token:
         sub_app = BasicAuthMiddleware(sub_app, auth_token)
         logger.info("Web UI Basic Auth ENABLED (user: %s)", _AUTH_USER)
     else:
-        logger.warning("Web UI auth DISABLED (FLOW_AUTH_TOKEN not set)")
+        logger.warning("Web UI auth DISABLED (ODUFLOW_AUTH_TOKEN not set)")
 
     from starlette.routing import Mount
     app.routes.append(Mount("/", app=sub_app))

@@ -1,4 +1,4 @@
-from flow.naming import slugify_branch, get_db_name, get_resource_name, get_workspace_path, get_repo_path, get_filestore_paths
+from oduflow.naming import slugify_branch, get_db_name, get_resource_name, get_workspace_path, get_repo_path, get_filestore_paths
 
 
 class TestSlugifyBranch:
@@ -33,21 +33,21 @@ class TestSlugifyBranch:
 
 class TestGetDbName:
     def test_main(self):
-        assert get_db_name("main") == "flow_main"
+        assert get_db_name("main") == "oduflow_main"
 
     def test_feature(self):
-        assert get_db_name("feature/payments") == "flow_feature-payments"
+        assert get_db_name("feature/payments") == "oduflow_feature-payments"
 
     def test_complex(self):
-        assert get_db_name("hotfix/CRM-123/fix") == "flow_hotfix-crm-123-fix"
+        assert get_db_name("hotfix/CRM-123/fix") == "oduflow_hotfix-crm-123-fix"
 
 
 class TestGetResourceName:
     def test_odoo(self):
-        assert get_resource_name("main", "odoo") == "flow-main-odoo"
+        assert get_resource_name("main", "odoo") == "oduflow-main-odoo"
 
     def test_slash_branch(self):
-        assert get_resource_name("feature/payments", "odoo") == "flow-feature-payments-odoo"
+        assert get_resource_name("feature/payments", "odoo") == "oduflow-feature-payments-odoo"
 
     def test_custom_prefix(self):
         assert get_resource_name("main", "odoo", prefix="test-") == "test-main-odoo"

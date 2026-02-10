@@ -10,10 +10,10 @@ def slugify_branch(branch_name: str) -> str:
 
 
 def get_db_name(branch_name: str) -> str:
-    return f"flow_{slugify_branch(branch_name)}"
+    return f"oduflow_{slugify_branch(branch_name)}"
 
 
-def get_resource_name(branch_name: str, resource_type: str, prefix: str = "flow-") -> str:
+def get_resource_name(branch_name: str, resource_type: str, prefix: str = "oduflow-") -> str:
     return f"{prefix}{branch_name.replace('/', '-')}-{resource_type}"
 
 

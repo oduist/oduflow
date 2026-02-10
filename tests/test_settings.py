@@ -1,5 +1,5 @@
 import pytest
-from flow.settings import Settings
+from oduflow.settings import Settings
 
 
 class TestSettings:

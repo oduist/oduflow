@@ -1,14 +1,14 @@
-# Flow
+# Oduflow
 
-A git-flow oriented tool for Odoo development built around a **single production database**. Flow provisions isolated, ephemeral Odoo environments on Docker — one per git branch — so you can develop and test against a real copy of production data without duplicating hundreds of gigabytes for each branch.
+A git-flow oriented tool for Odoo development built around a **single production database**. Oduflow provisions isolated, ephemeral Odoo environments on Docker — one per git branch — so you can develop and test against a real copy of production data without duplicating hundreds of gigabytes for each branch.
 
 ### The problem
 
 Production Odoo databases can grow to tens or hundreds of gigabytes. The filestore (attachments, images, assets) is often even larger. Naively copying the full database and filestore for every feature branch is slow, wastes disk space, and doesn't scale.
 
-### How Flow solves it
+### How Oduflow solves it
 
-Flow uses a **reference architecture**: one database dump is restored once as a PostgreSQL template, and one filestore directory serves as a shared read-only layer.
+Oduflow uses a **reference architecture**: one database dump is restored once as a PostgreSQL template, and one filestore directory serves as a shared read-only layer.
 
 - **Reference database** (`odoo_ref`): the production dump is restored into a PostgreSQL template database. Creating a new environment is a `CREATE DATABASE ... TEMPLATE odoo_ref` — an instant, copy-on-write operation at the PostgreSQL level, regardless of database size.
 - **Reference filestore** via **fuse-overlayfs**: the production filestore is mounted as a read-only lower layer. Each environment gets a thin upper layer that stores only its own changes. A 50 GB filestore shared across 10 branches still takes ~50 GB on disk, not 500 GB.
@@ -56,7 +56,7 @@ The result: provisioning a new environment from a 30+ GB production database tak
                      │
      ┌───────────────┼───────────────┐
      ▼               ▼               ▼
-  flow-net       flow-db         flow-{branch}-odoo
+  oduflow-net    oduflow-db      oduflow-{branch}-odoo
   (network)      (PostgreSQL)    (Odoo containers)
 ```
 
@@ -75,7 +75,7 @@ The result: provisioning a new environment from a 30+ GB production database tak
 ## Project structure
 
 ```
-src/flow/
+src/oduflow/
   server.py            # MCP transport: tool definitions, error handler, mutex, CLI
   settings.py          # @dataclass Settings with from_env() and validate()
   errors.py            # FlowError hierarchy
@@ -167,7 +167,7 @@ pip install -e .
 
 ```bash
 cp .env.example .env
-# Edit .env — at minimum set paths and optionally FLOW_AUTH_TOKEN
+# Edit .env — at minimum set paths and optionally ODUFLOW_AUTH_TOKEN
 ```
 
 ### 2. Initialize the system
@@ -175,80 +175,80 @@ cp .env.example .env
 Create the shared Docker network, PostgreSQL container, and template database:
 
 ```bash
-flow --init --dump-path /path/to/your/odoo_ref.dump
+oduflow --init --dump-path /path/to/your/odoo_ref.dump
 ```
 
 Options:
-- `--dump-path` — path to the PostgreSQL dump file (overrides `FLOW_DUMP_PATH`)
+- `--dump-path` — path to the PostgreSQL dump file (overrides `ODUFLOW_DUMP_PATH`)
 - `--version` — Odoo version, default `15.0`
 - `--force` — recreate the template DB even if it already exists
 
 ### 3. Start the MCP server
 
 ```bash
-flow
+oduflow
 ```
 
-The server starts on `http://0.0.0.0:8000` by default (configurable via `FLOW_HOST` / `FLOW_PORT`).
+The server starts on `http://0.0.0.0:8000` by default (configurable via `ODUFLOW_HOST` / `ODUFLOW_PORT`).
 
 ### 4. Connect an MCP client
 
 Point your MCP client (Cursor, Cline, etc.) to `http://<host>:8000/mcp`.
 
-For stdio transport, set `FLOW_TRANSPORT=stdio` and run `flow` as a subprocess.
+For stdio transport, set `ODUFLOW_TRANSPORT=stdio` and run `oduflow` as a subprocess.
 
 ### Other CLI commands
 
 ```bash
 # Reload the template DB from a new dump (safe while environments are running)
-flow --reload-dump --dump-path /path/to/new.dump
+oduflow --reload-dump --dump-path /path/to/new.dump
 
 # Destroy all shared infrastructure (requires all environments to be deleted first)
-flow --destroy
+oduflow --destroy
 ```
 
 ### Calling MCP tools from the command line
 
-You can invoke any registered MCP tool directly from the terminal using `flow call`, without running the server or connecting an MCP client. This is useful for scripting, debugging, and manual operations.
+You can invoke any registered MCP tool directly from the terminal using `oduflow call`, without running the server or connecting an MCP client. This is useful for scripting, debugging, and manual operations.
 
 ```bash
 # List all available tools with their parameters
-flow call
+oduflow call
 
 # Call a tool with positional arguments (mapped to parameters in order)
-flow call create_environment dev https://github.com/owner/repo.git odoo:17.0
-flow call delete_environment dev
-flow call list_environments
-flow call get_environment_logs main 50
+oduflow call create_environment dev https://github.com/owner/repo.git odoo:17.0
+oduflow call delete_environment dev
+oduflow call list_environments
+oduflow call get_environment_logs main 50
 
 # Call a tool with JSON-encoded arguments
-flow call create_environment '{"branch_name":"dev","repo_url":"https://github.com/owner/repo.git","odoo_image":"odoo:17.0"}'
+oduflow call create_environment '{"branch_name":"dev","repo_url":"https://github.com/owner/repo.git","odoo_image":"odoo:17.0"}'
 ```
 
 ## Starting from scratch (no production dump)
 
-If you don't have a production database dump — for example, you're starting a new Odoo project or just want to try Flow — you can generate a clean reference database automatically.
+If you don't have a production database dump — for example, you're starting a new Odoo project or just want to try Oduflow — you can generate a clean reference database automatically.
 
 ### Generate a clean reference
 
 ```bash
-flow --generate-ref --odoo-image odoo:17.0
+oduflow --generate-ref --odoo-image odoo:17.0
 ```
 
 This will:
 1. Start a PostgreSQL container
 2. Run a temporary Odoo container that initializes a fresh database with the `base` module
-3. Dump the database to `~/.flow/odoo_ref.dump`
-4. Extract the filestore to `~/.flow/odoo_ref_filestore/`
+3. Dump the database to `~/.oduflow/odoo_ref.dump`
+4. Extract the filestore to `~/.oduflow/odoo_ref_filestore/`
 5. Run `--init` automatically with the generated dump
 
 You can install additional modules during generation:
 
 ```bash
-flow --generate-ref --odoo-image odoo:17.0 --modules base,web,contacts,sale
+oduflow --generate-ref --odoo-image odoo:17.0 --modules base,web,contacts,sale
 ```
 
-After this, `flow` is ready — start the server and create environments as usual.
+After this, `oduflow` is ready — start the server and create environments as usual.
 
 ### Editing the reference database
 
@@ -257,7 +257,7 @@ Once you have a reference database (from `--generate-ref` or from a production d
 **Start the reference editor:**
 
 ```bash
-flow --ref-up --odoo-image odoo:17.0
+oduflow --ref-up --odoo-image odoo:17.0
 ```
 
 This starts an Odoo container that works **directly** with the template database and filestore (no overlays, no copies). Open the printed URL in your browser, log in, and make any changes you need.
@@ -265,10 +265,10 @@ This starts an Odoo container that works **directly** with the template database
 **Save and stop:**
 
 ```bash
-flow --ref-down
+oduflow --ref-down
 ```
 
-This stops the container, dumps the updated database to `~/.flow/odoo_ref.dump`, and restores the template flag. The filestore is already updated in place since it was mounted directly.
+This stops the container, dumps the updated database to `~/.oduflow/odoo_ref.dump`, and restores the template flag. The filestore is already updated in place since it was mounted directly.
 
 All environments created after this will be based on the updated reference.
 
@@ -276,14 +276,14 @@ All environments created after this will be based on the updated reference.
 
 | Scenario | Command |
 |---|---|
-| New project, no existing database | `flow --generate-ref --odoo-image odoo:17.0` |
-| Have a production dump file | `flow --init --dump-path /path/to/dump` |
-| Need to install modules or configure the reference | `flow --ref-up` / `flow --ref-down` |
-| Update the reference from a newer production dump | `flow --reload-dump --dump-path /path/to/new.dump` |
+| New project, no existing database | `oduflow --generate-ref --odoo-image odoo:17.0` |
+| Have a production dump file | `oduflow --init --dump-path /path/to/dump` |
+| Need to install modules or configure the reference | `oduflow --ref-up` / `oduflow --ref-down` |
+| Update the reference from a newer production dump | `oduflow --reload-dump --dump-path /path/to/new.dump` |
 
 ## Configuration
 
-All settings are configured via environment variables. Flow uses [python-dotenv](https://pypi.org/project/python-dotenv/) and loads a `.env` file from the working directory on startup. Copy the example and edit it:
+All settings are configured via environment variables. Oduflow uses [python-dotenv](https://pypi.org/project/python-dotenv/) and loads a `.env` file from the working directory on startup. Copy the example and edit it:
 
 ```bash
 cp .env.example .env
@@ -293,25 +293,25 @@ cp .env.example .env
 
 | Variable | Default | Description |
 |---|---|---|
-| `FLOW_TRANSPORT` | `http` | Transport mode: `http` or `stdio` |
-| `FLOW_HOST` | `0.0.0.0` | HTTP server bind address |
-| `FLOW_PORT` | `8000` | HTTP server port |
-| `FLOW_AUTH_TOKEN` | *(empty)* | Bearer token for MCP HTTP auth and Basic auth password for the web dashboard. Empty = auth disabled |
+| `ODUFLOW_TRANSPORT` | `http` | Transport mode: `http` or `stdio` |
+| `ODUFLOW_HOST` | `0.0.0.0` | HTTP server bind address |
+| `ODUFLOW_PORT` | `8000` | HTTP server port |
+| `ODUFLOW_AUTH_TOKEN` | *(empty)* | Bearer token for MCP HTTP auth and Basic auth password for the web dashboard. Empty = auth disabled |
 
 ### Paths
 
 | Variable | Default | Description |
 |---|---|---|
-| `FLOW_WORKSPACES_DIR` | `~/.flow/workspaces` | Root directory for environment workspaces |
-| `FLOW_DUMP_PATH` | `~/.flow/odoo_ref.dump` | Path to the reference database dump file |
-| `FLOW_REF_FILESTORE_PATH` | `~/.flow/odoo_ref_filestore` | Directory with the reference filestore (read-only lower layer for overlay) |
-| `FLOW_PORT_REGISTRY` | `~/.flow/ports.json` | JSON file for stable port assignments |
+| `ODUFLOW_WORKSPACES_DIR` | `~/.oduflow/workspaces` | Root directory for environment workspaces |
+| `ODUFLOW_DUMP_PATH` | `~/.oduflow/odoo_ref.dump` | Path to the reference database dump file |
+| `ODUFLOW_REF_FILESTORE_PATH` | `~/.oduflow/odoo_ref_filestore` | Directory with the reference filestore (read-only lower layer for overlay) |
+| `ODUFLOW_PORT_REGISTRY` | `~/.oduflow/ports.json` | JSON file for stable port assignments |
 
 ### Git
 
 | Variable | Default | Description |
 |---|---|---|
-| `FLOW_DEFAULT_BRANCH` | `prod` | Base branch to clone from when the requested branch does not exist on the remote |
+| `ODUFLOW_DEFAULT_BRANCH` | `prod` | Base branch to clone from when the requested branch does not exist on the remote |
 
 ### Network / Host
 
@@ -325,9 +325,9 @@ cp .env.example .env
 
 | Variable | Default | Description |
 |---|---|---|
-| `FLOW_ROUTING_MODE` | `port` | `port` — direct host port mapping; `traefik` — reverse proxy with auto-HTTPS |
-| `FLOW_BASE_DOMAIN` | *(empty)* | Base domain for Traefik routing (e.g. `dev.example.com`). Required when `FLOW_ROUTING_MODE=traefik` |
-| `FLOW_ACME_EMAIL` | *(empty)* | Let's Encrypt email for TLS certificates. Required when `FLOW_ROUTING_MODE=traefik` |
+| `ODUFLOW_ROUTING_MODE` | `port` | `port` — direct host port mapping; `traefik` — reverse proxy with auto-HTTPS |
+| `ODUFLOW_BASE_DOMAIN` | *(empty)* | Base domain for Traefik routing (e.g. `dev.example.com`). Required when `ODUFLOW_ROUTING_MODE=traefik` |
+| `ODUFLOW_ACME_EMAIL` | *(empty)* | Let's Encrypt email for TLS certificates. Required when `ODUFLOW_ROUTING_MODE=traefik` |
 
 ### Database
 
@@ -338,9 +338,9 @@ cp .env.example .env
 
 ## Traefik routing (auto-HTTPS)
 
-By default Flow uses **port mode**: each environment gets a dedicated host port (e.g. `http://server:50001`). This is simple and works well for local or single-developer setups.
+By default Oduflow uses **port mode**: each environment gets a dedicated host port (e.g. `http://server:50001`). This is simple and works well for local or single-developer setups.
 
-For production-like access with HTTPS, Flow can deploy a **Traefik** reverse proxy that gives every environment its own subdomain with an automatically issued Let's Encrypt certificate.
+For production-like access with HTTPS, Oduflow can deploy a **Traefik** reverse proxy that gives every environment its own subdomain with an automatically issued Let's Encrypt certificate.
 
 ### Setup
 
@@ -355,33 +355,33 @@ For production-like access with HTTPS, Flow can deploy a **Traefik** reverse pro
 2. **Set the environment variables** in `.env`:
 
    ```bash
-   FLOW_ROUTING_MODE=traefik
-   FLOW_BASE_DOMAIN=dev.example.com
-   FLOW_ACME_EMAIL=admin@example.com
+   ODUFLOW_ROUTING_MODE=traefik
+   ODUFLOW_BASE_DOMAIN=dev.example.com
+   ODUFLOW_ACME_EMAIL=admin@example.com
    ```
 
-3. **Run `flow --init`** (or restart the server). Flow will create a Traefik container that listens on ports 80 and 443, automatically redirects HTTP to HTTPS, and obtains a separate TLS certificate from Let's Encrypt for each environment subdomain via HTTP-01 challenge.
+3. **Run `oduflow --init`** (or restart the server). Oduflow will create a Traefik container that listens on ports 80 and 443, automatically redirects HTTP to HTTPS, and obtains a separate TLS certificate from Let's Encrypt for each environment subdomain via HTTP-01 challenge.
 
 ### How certificates work
 
 Traefik requests a **per-subdomain certificate** from Let's Encrypt each time a new environment is created. This works out of the box with any DNS provider since it uses HTTP-01 validation (Traefik responds to the ACME challenge on port 80).
 
-It is also possible to use a **wildcard certificate** (`*.dev.example.com`) instead of per-subdomain certificates. However, wildcard certificates require **DNS-01 validation**, which means Traefik must be able to create TXT records in your DNS zone via API. This depends on your DNS provider's support and requires additional Traefik configuration (`dnsChallenge` with a provider-specific plugin). The current Flow setup does not include this, but it can be added if needed.
+It is also possible to use a **wildcard certificate** (`*.dev.example.com`) instead of per-subdomain certificates. However, wildcard certificates require **DNS-01 validation**, which means Traefik must be able to create TXT records in your DNS zone via API. This depends on your DNS provider's support and requires additional Traefik configuration (`dnsChallenge` with a provider-specific plugin). The current Oduflow setup does not include this, but it can be added if needed.
 
 ### Traefik variables summary
 
 | Variable | Required | Description |
 |---|:---:|---|
-| `FLOW_ROUTING_MODE` | yes | Set to `traefik` |
-| `FLOW_BASE_DOMAIN` | yes | Your base domain (e.g. `dev.example.com`) |
-| `FLOW_ACME_EMAIL` | yes | Email for Let's Encrypt registration |
+| `ODUFLOW_ROUTING_MODE` | yes | Set to `traefik` |
+| `ODUFLOW_BASE_DOMAIN` | yes | Your base domain (e.g. `dev.example.com`) |
+| `ODUFLOW_ACME_EMAIL` | yes | Email for Let's Encrypt registration |
 
 ## Environment workspace structure
 
 Each branch gets an isolated workspace:
 
 ```
-~/.flow/workspaces/{branch}/
+~/.oduflow/workspaces/{branch}/
   repo/                ← shallow git clone
   filestore_upper/     ← overlay upper layer (branch-specific changes)
   filestore_work/      ← overlay work directory
@@ -391,11 +391,11 @@ Each branch gets an isolated workspace:
 
 ## Docker resources
 
-- **Network**: `flow-net` — shared bridge network for all containers
-- **DB container**: `flow-db` — PostgreSQL 15, shared across all environments
-- **DB volume**: `flow-db-data` — persistent database storage
+- **Network**: `oduflow-net` — shared bridge network for all containers
+- **DB container**: `oduflow-db` — PostgreSQL 15, shared across all environments
+- **DB volume**: `oduflow-db-data` — persistent database storage
 - **Template DB**: `odoo_ref` — created from the dump file, used as a PostgreSQL template for new environments
-- **Traefik** (optional): `flow-traefik` container with `flow-traefik-acme` volume for TLS certificates
+- **Traefik** (optional): `oduflow-traefik` container with `oduflow-traefik-acme` volume for TLS certificates
 
 ## License
 

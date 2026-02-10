@@ -9,11 +9,11 @@ import time
 import docker
 from docker import DockerClient
 
-from flow.docker_ops.client import get_client, get_odoo_uid_gid
-from flow.errors import ConflictError, ExternalCommandError, NotFoundError, PrerequisiteNotMetError
-from flow.settings import Settings
+from oduflow.docker_ops.client import get_client, get_odoo_uid_gid
+from oduflow.errors import ConflictError, ExternalCommandError, NotFoundError, PrerequisiteNotMetError
+from oduflow.settings import Settings
 
-logger = logging.getLogger("flow")
+logger = logging.getLogger("oduflow")
 
 _PROJECT_ROOT = pathlib.Path(__file__).resolve().parents[3]
 _PG_CONF_TEMPLATE = _PROJECT_ROOT / "templates" / "postgresql.conf"
@@ -43,14 +43,14 @@ def _ensure_traefik(client: DockerClient, settings: Settings) -> None:
     dynamic_cfg = (
         "http:\n"
         "  routers:\n"
-        "    flow-server:\n"
+        "    oduflow-server:\n"
         "      rule: \"Host(`{host}`)\"\n"
         "      entryPoints: [websecure]\n"
-        "      service: flow-server\n"
+        "      service: oduflow-server\n"
         "      tls:\n"
         "        certResolver: le\n"
         "  services:\n"
-        "    flow-server:\n"
+        "    oduflow-server:\n"
         "      loadBalancer:\n"
         "        servers:\n"
         "          - url: \"http://host.docker.internal:{port}\"\n"
@@ -58,7 +58,7 @@ def _ensure_traefik(client: DockerClient, settings: Settings) -> None:
 
     import tempfile
     dynamic_file = os.path.join(
-        tempfile.gettempdir(), "flow-traefik-dynamic.yml"
+        tempfile.gettempdir(), "oduflow-traefik-dynamic.yml"
     )
     with open(dynamic_file, "w") as f:
         f.write(dynamic_cfg)
@@ -589,8 +589,8 @@ def ref_up(
         for name in dirs + files:
             os.chown(os.path.join(root, name), uid, gid)
 
-    from flow.port_registry import allocate_port
-    from flow.docker_ops.env_ops import _get_used_ports
+    from oduflow.port_registry import allocate_port
+    from oduflow.docker_ops.env_ops import _get_used_ports
 
     used_ports = _get_used_ports(client, settings)
     host_port = allocate_port(
@@ -654,7 +654,7 @@ def ref_down(settings: Settings) -> dict[str, str]:
     container.remove(v=True)
     logger.info("Reference editor container removed")
 
-    from flow.port_registry import release_port
+    from oduflow.port_registry import release_port
     release_port(settings.port_registry_path, _REF_EDITOR_BRANCH)
 
     _wait_pg_ready(client, settings)
@@ -703,8 +703,8 @@ def ref_down(settings: Settings) -> dict[str, str]:
 
 
 def promote_env(settings: Settings, branch_name: str) -> dict[str, str]:
-    from flow.docker_ops import env_ops
-    from flow.naming import get_db_name, get_filestore_paths
+    from oduflow.docker_ops import env_ops
+    from oduflow.naming import get_db_name, get_filestore_paths
 
     client = get_client()
     env_db = get_db_name(branch_name)
@@ -864,7 +864,7 @@ def destroy_system(settings: Settings) -> dict[str, str]:
     ]
     if env_containers:
         names = [c.name for c in env_containers]
-        from flow.errors import ConflictError
+        from oduflow.errors import ConflictError
         raise ConflictError(
             f"Active environments exist: {', '.join(names)}. Delete them first."
         )
