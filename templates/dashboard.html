@@ -126,6 +126,39 @@
   .btn-delete:hover { background: rgba(248,81,73,0.1); }
   .btn-logs { border-color: var(--accent); color: var(--accent); }
   .btn-logs:hover { background: rgba(88,166,255,0.1); }
+  .btn-create {
+    background: var(--accent);
+    color: #fff;
+    border: 1px solid var(--accent);
+    padding: 6px 14px;
+    border-radius: var(--radius);
+    cursor: pointer;
+    font-size: 13px;
+    font-weight: 600;
+  }
+  .btn-create:hover { opacity: 0.85; }
+  .btn-create:disabled { opacity: 0.4; cursor: not-allowed; }
+  .form-group { margin-bottom: 14px; }
+  .form-group label {
+    display: block;
+    font-size: 13px;
+    font-weight: 500;
+    margin-bottom: 4px;
+    color: var(--text);
+  }
+  .form-group input {
+    width: 100%;
+    padding: 8px 10px;
+    font-size: 13px;
+    background: var(--bg);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    outline: none;
+  }
+  .form-group input:focus { border-color: var(--accent); }
+  .form-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 18px; }
+  .form-error { color: var(--red); font-size: 12px; margin-bottom: 10px; display: none; }
   .modal-overlay {
     position: fixed; top: 0; left: 0; right: 0; bottom: 0;
     background: rgba(0,0,0,0.6); z-index: 200;
@@ -238,11 +271,39 @@
              style="width:48px;background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:2px 4px;font-size:12px;text-align:center;">s
     </label>
     <button id="refresh-btn" onclick="loadEnvironments()">Refresh</button>
+    <button class="btn-create" onclick="openCreateModal()">+ Create</button>
   </div>
 </header>
 
 <div id="env-list"></div>
 <div class="toast" id="toast"></div>
+<div class="modal-overlay" id="create-modal" onclick="closeCreateModal(event)">
+  <div class="modal" style="max-width:500px;">
+    <div class="modal-header">
+      <h2>Create Environment</h2>
+      <button class="modal-close" onclick="closeCreateModal()">&times;</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-error" id="create-error"></div>
+      <div class="form-group">
+        <label for="cr-branch">Branch name</label>
+        <input type="text" id="cr-branch" placeholder="e.g. feature/my-branch">
+      </div>
+      <div class="form-group">
+        <label for="cr-repo">Repository URL</label>
+        <input type="text" id="cr-repo" placeholder="https://github.com/owner/repo.git">
+      </div>
+      <div class="form-group">
+        <label for="cr-image">Odoo image</label>
+        <input type="text" id="cr-image" placeholder="e.g. odoo:17.0">
+      </div>
+      <div class="form-actions">
+        <button class="btn" onclick="closeCreateModal()">Cancel</button>
+        <button class="btn-create" id="cr-submit" onclick="submitCreate()">Create</button>
+      </div>
+    </div>
+  </div>
+</div>
 <div class="modal-overlay" id="logs-modal" onclick="closeLogsModal(event)">
   <div class="modal">
     <div class="modal-header">
@@ -442,6 +503,64 @@ async function showLogs(branch) {
 function closeLogsModal(event) {
   if (event && event.target !== event.currentTarget) return;
   document.getElementById('logs-modal').classList.remove('show');
+}
+
+function openCreateModal() {
+  document.getElementById('cr-branch').value = '';
+  document.getElementById('cr-repo').value = '';
+  document.getElementById('cr-image').value = '';
+  var errEl = document.getElementById('create-error');
+  errEl.style.display = 'none';
+  errEl.textContent = '';
+  document.getElementById('cr-submit').disabled = false;
+  document.getElementById('create-modal').classList.add('show');
+  document.getElementById('cr-branch').focus();
+}
+
+function closeCreateModal(event) {
+  if (event && event.target !== event.currentTarget) return;
+  document.getElementById('create-modal').classList.remove('show');
+}
+
+async function submitCreate() {
+  var branch = document.getElementById('cr-branch').value.trim();
+  var repo = document.getElementById('cr-repo').value.trim();
+  var image = document.getElementById('cr-image').value.trim();
+  var errEl = document.getElementById('create-error');
+
+  if (!branch || !repo || !image) {
+    errEl.textContent = 'All fields are required.';
+    errEl.style.display = 'block';
+    return;
+  }
+
+  errEl.style.display = 'none';
+  var btn = document.getElementById('cr-submit');
+  btn.disabled = true;
+  btn.textContent = 'Creating...';
+
+  try {
+    var r = await fetch(API + '/create', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({branch_name: branch, repo_url: repo, odoo_image: image})
+    });
+    var data = await r.json();
+    if (data.ok) {
+      closeCreateModal();
+      showToast('Environment "' + branch + '" created');
+      await loadEnvironments();
+    } else {
+      errEl.textContent = data.error || 'Creation failed';
+      errEl.style.display = 'block';
+    }
+  } catch (e) {
+    errEl.textContent = 'Connection error: ' + e.message;
+    errEl.style.display = 'block';
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Create';
+  }
 }
 
 async function doAction(branch, action) {

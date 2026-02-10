@@ -153,6 +153,29 @@ def _build_routes(
         finally:
             busy_lock.release()
 
+    async def api_create(request: Request) -> JSONResponse:
+        if not busy_lock.acquire(blocking=False):
+            return _error_response(BusyError("Another operation is in progress."))
+        try:
+            body = await request.json()
+            branch_name = (body.get("branch_name") or "").strip()
+            repo_url = (body.get("repo_url") or "").strip()
+            odoo_image = (body.get("odoo_image") or "").strip()
+            if not branch_name or not repo_url or not odoo_image:
+                return JSONResponse(
+                    {"ok": False, "error": "branch_name, repo_url and odoo_image are required."},
+                    status_code=400,
+                )
+            result = env_ops.create_environment(get_settings(), branch_name, repo_url, odoo_image)
+            return JSONResponse({"ok": True, "result": result})
+        except FlowError as e:
+            return _error_response(e)
+        except Exception as e:
+            logger.exception("Unexpected error in api_create")
+            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+        finally:
+            busy_lock.release()
+
     def api_logs(request: Request) -> JSONResponse:
         branch = request.path_params["branch"]
         try:
@@ -182,6 +205,7 @@ def _build_routes(
         Route("/", dashboard, methods=["GET"]),
         Route("/favicon.ico", favicon, methods=["GET"]),
         Route("/api/environments", api_list, methods=["GET"]),
+        Route("/api/environments/create", api_create, methods=["POST"]),
         Route("/api/stats", api_stats, methods=["GET"]),
         Route("/api/environments/{branch:path}/start", api_start, methods=["POST"]),
         Route("/api/environments/{branch:path}/stop", api_stop, methods=["POST"]),
