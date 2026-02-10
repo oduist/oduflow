@@ -352,6 +352,25 @@ def upgrade_odoo_modules(branch_name: str, modules: str) -> str:
     )
 
 
+@mcp.tool()
+@handle_errors
+@with_mutex
+def exec_in_environment(branch_name: str, command: str, user: str = "odoo") -> str:
+    """
+    Execute an arbitrary shell command inside the Odoo container for a specific branch.
+
+    Args:
+        branch_name: The name of the branch/environment.
+        command: The shell command to execute (e.g. "ls /mnt/extra-addons", "python3 -c 'print(1)'").
+        user: The OS user to run the command as (default "odoo"). Use "root" for privileged operations.
+    """
+    result = odoo_ops.exec_in_environment(_get_settings(), branch_name, command, user)
+    exit_code = result["exit_code"]
+    output = result.get("output", "")
+    status = "Success" if exit_code == 0 else "Error"
+    return f"{status}. Exit code: {exit_code}.\n\nOutput:\n{output}"
+
+
 def _run_init(settings: Settings, args: argparse.Namespace) -> None:
     result = system_ops.init_system(
         settings,

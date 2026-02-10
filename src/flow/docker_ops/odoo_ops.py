@@ -98,3 +98,29 @@ def upgrade_odoo_modules(settings: Settings, branch_name: str, *modules: str) ->
 
 def install_odoo_modules(settings: Settings, branch_name: str, *modules: str) -> dict[str, Any]:
     return _run_odoo_module_command(settings, branch_name, "-i", *modules)
+
+
+def exec_in_environment(
+    settings: Settings, branch_name: str, command: str, user: str = "odoo"
+) -> dict[str, Any]:
+    client = get_client()
+    odoo_container_name = get_resource_name(branch_name, "odoo", settings.prefix)
+
+    try:
+        container = client.containers.get(odoo_container_name)
+    except docker.errors.NotFound:
+        raise NotFoundError(
+            f"Environment '{branch_name}' does not exist. Use create_environment first."
+        )
+
+    logger.info(
+        "Executing command in environment",
+        extra={"branch": branch_name, "command": command, "user": user},
+    )
+    exit_code, output = container.exec_run(command, user=user)
+    output_str = output.decode("utf-8") if isinstance(output, bytes) else str(output)
+
+    return {
+        "exit_code": exit_code,
+        "output": output_str,
+    }
