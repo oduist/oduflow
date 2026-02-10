@@ -175,13 +175,14 @@ cp .env.example .env
 Create the shared Docker network, PostgreSQL container, and template database:
 
 ```bash
-oduflow --init --dump-path /path/to/your/odoo_ref.dump
+oduflow init
 ```
 
 Options:
-- `--dump-path` — path to the PostgreSQL dump file (overrides `ODUFLOW_DUMP_PATH`)
 - `--version` — Odoo version, default `15.0`
 - `--force` — recreate the template DB even if it already exists
+
+The dump file is expected at `$ODUFLOW_HOME/dump/dump.sql`. To generate one from scratch, use `oduflow init-dump`.
 
 ### 3. Start the MCP server
 
@@ -201,10 +202,10 @@ For stdio transport, set `ODUFLOW_TRANSPORT=stdio` and run `oduflow` as a subpro
 
 ```bash
 # Reload the template DB from a new dump (safe while environments are running)
-oduflow --reload-dump --dump-path /path/to/new.dump
+oduflow reload-dump --dump-path /path/to/new.dump
 
 # Destroy all shared infrastructure (requires all environments to be deleted first)
-oduflow --destroy
+oduflow destroy
 ```
 
 ### Calling MCP tools from the command line
@@ -232,7 +233,13 @@ If you don't have a production database dump — for example, you're starting a 
 ### Generate a clean reference
 
 ```bash
-oduflow --init-dump --odoo-image odoo:17.0
+oduflow init-dump --odoo-image odoo:17.0
+```
+
+If a `dump.sql` or filestore already exists, the command will refuse to run. Use `--force` to overwrite:
+
+```bash
+oduflow init-dump --odoo-image odoo:17.0 --force
 ```
 
 This will:
@@ -245,7 +252,7 @@ This will:
 You can install additional modules during generation:
 
 ```bash
-oduflow --init-dump --odoo-image odoo:17.0 --modules base,web,contacts,sale
+oduflow init-dump --odoo-image odoo:17.0 --modules base,web,contacts,sale
 ```
 
 After this, `oduflow` is ready — start the server and create environments as usual.
@@ -257,7 +264,7 @@ Once you have a reference database (from `--init-dump` or from a production dump
 **Start the reference editor:**
 
 ```bash
-oduflow --ref-up --odoo-image odoo:17.0
+oduflow ref-up --odoo-image odoo:17.0
 ```
 
 This starts an Odoo container that works **directly** with the template database and filestore (no overlays, no copies). Open the printed URL in your browser, log in, and make any changes you need.
@@ -265,7 +272,7 @@ This starts an Odoo container that works **directly** with the template database
 **Save and stop:**
 
 ```bash
-oduflow --ref-down
+oduflow ref-down
 ```
 
 This stops the container, dumps the updated database to `~/.oduflow/odoo_ref.dump`, and restores the template flag. The filestore is already updated in place since it was mounted directly.
@@ -276,10 +283,11 @@ All environments created after this will be based on the updated reference.
 
 | Scenario | Command |
 |---|---|
-| New project, no existing database | `oduflow --init-dump --odoo-image odoo:17.0` |
-| Have a production dump file | `oduflow --init --dump-path /path/to/dump` |
-| Need to install modules or configure the reference | `oduflow --ref-up` / `oduflow --ref-down` |
-| Update the reference from a newer production dump | `oduflow --reload-dump --dump-path /path/to/new.dump` |
+| New project, no existing database | `oduflow init-dump --odoo-image odoo:17.0` |
+| Regenerate reference from scratch | `oduflow init-dump --odoo-image odoo:17.0 --force` |
+| Have a production dump file | Place dump at `$ODUFLOW_HOME/dump/dump.sql` and run `oduflow init` |
+| Need to install modules or configure the reference | `oduflow ref-up --odoo-image odoo:17.0` / `oduflow ref-down` |
+| Update the reference from a newer production dump | `oduflow reload-dump --dump-path /path/to/new.dump` |
 
 ## Configuration
 
@@ -302,10 +310,11 @@ cp .env.example .env
 
 | Variable | Default | Description |
 |---|---|---|
-| `ODUFLOW_WORKSPACES_DIR` | `~/.oduflow/workspaces` | Root directory for environment workspaces |
-| `ODUFLOW_DUMP_PATH` | `~/.oduflow/odoo_ref.dump` | Path to the reference database dump file |
-| `ODUFLOW_REF_DATA_PATH` | `~/.oduflow/odoo_ref_data` | Directory with the reference filestore (read-only lower layer for overlay) |
-| `ODUFLOW_PORT_REGISTRY` | `~/.oduflow/ports.json` | JSON file for stable port assignments |
+| `ODUFLOW_HOME` | `/srv/oduflow_data` | Base directory for all data (dump, workspaces, ports) |
+| `ODUFLOW_WORKSPACES_DIR` | `$ODUFLOW_HOME/workspaces` | Root directory for environment workspaces |
+| `ODUFLOW_PORT_REGISTRY` | `$ODUFLOW_HOME/ports.json` | JSON file for stable port assignments |
+
+Dump folder structure: `$ODUFLOW_HOME/dump/dump.sql` and `$ODUFLOW_HOME/dump/filestore/`.
 
 ### Git
 
@@ -360,7 +369,7 @@ For production-like access with HTTPS, Oduflow can deploy a **Traefik** reverse 
    ODUFLOW_ACME_EMAIL=admin@example.com
    ```
 
-3. **Run `oduflow --init`** (or restart the server). Oduflow will create a Traefik container that listens on ports 80 and 443, automatically redirects HTTP to HTTPS, and obtains a separate TLS certificate from Let's Encrypt for each environment subdomain via HTTP-01 challenge.
+3. **Run `oduflow init`** (or restart the server). Oduflow will create a Traefik container that listens on ports 80 and 443, automatically redirects HTTP to HTTPS, and obtains a separate TLS certificate from Let's Encrypt for each environment subdomain via HTTP-01 challenge.
 
 ### How certificates work
 

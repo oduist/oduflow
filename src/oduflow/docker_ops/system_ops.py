@@ -337,7 +337,36 @@ def init_dump(
     settings: Settings,
     odoo_image: str = "odoo:17.0",
     modules: str = "base",
+    force: bool = False,
 ) -> dict[str, str]:
+    dump_sql_path = settings.get_dump_sql_path()
+    dump_filestore_path = settings.get_dump_filestore_path()
+
+    existing_dump = os.path.exists(dump_sql_path)
+    existing_filestore = (
+        os.path.exists(dump_filestore_path)
+        and any(True for _ in pathlib.Path(dump_filestore_path).rglob("*") if _.is_file())
+    )
+
+    if (existing_dump or existing_filestore) and not force:
+        parts = []
+        if existing_dump:
+            parts.append(f"dump.sql ({dump_sql_path})")
+        if existing_filestore:
+            parts.append(f"filestore ({dump_filestore_path})")
+        raise RuntimeError(
+            f"Existing data found: {', '.join(parts)}. "
+            "Use --force to overwrite."
+        )
+
+    if force:
+        if existing_dump:
+            os.remove(dump_sql_path)
+            logger.info("Removed existing %s", dump_sql_path)
+        if existing_filestore:
+            shutil.rmtree(dump_filestore_path)
+            logger.info("Removed existing %s", dump_filestore_path)
+
     client = get_client()
     logger.info("Generating reference dump from clean Odoo", extra={"image": odoo_image, "modules": modules})
 

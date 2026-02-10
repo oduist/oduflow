@@ -371,28 +371,18 @@ def exec_in_environment(branch_name: str, command: str, user: str = "odoo") -> s
     return f"{status}. Exit code: {exit_code}.\n\nOutput:\n{output}"
 
 
-def _run_init(settings: Settings, args: argparse.Namespace) -> None:
-    resolved_dump = args.dump_path or settings.get_dump_sql_path()
-    if not os.path.isfile(resolved_dump):
-        print(f"Dump file not found at {resolved_dump}, running --init-dump first...")
-        _run_init_dump(settings, args)
-        return
-    result = system_ops.init_system(
-        settings,
-        dump_path=args.dump_path or None,
-        version=args.version,
-        force=args.force,
-    )
+def _run_init(settings: Settings, version: str = "15.0", force: bool = False) -> None:
+    result = system_ops.init_system(settings, version=version, force=force)
     msg = f"System {result['status']}.\nTemplate DB: {result['template_db']}"
     if "restore_seconds" in result:
         msg += f"\nDB restore time: {result['restore_seconds']}s"
     print(msg)
 
 
-def _run_reload_dump(settings: Settings, args: argparse.Namespace) -> None:
+def _run_reload_dump(settings: Settings, dump_path: str = "") -> None:
     result = system_ops.reload_template_db(
         settings,
-        dump_path=args.dump_path or None,
+        dump_path=dump_path or None,
     )
     msg = f"Template DB {result['status']}.\nTemplate DB: {result['template_db']}"
     if "restore_seconds" in result:
@@ -400,15 +390,12 @@ def _run_reload_dump(settings: Settings, args: argparse.Namespace) -> None:
     print(msg)
 
 
-def _run_init_dump(settings: Settings, args: argparse.Namespace) -> None:
-    odoo_image = args.odoo_image
-    if not odoo_image:
-        print("Error: --odoo-image is required for --init-dump (e.g. --odoo-image odoo:17.0)")
-        raise SystemExit(1)
+def _run_init_dump(settings: Settings, odoo_image: str, modules: str = "base", force: bool = False) -> None:
     result = system_ops.init_dump(
         settings,
         odoo_image=odoo_image,
-        modules=args.modules,
+        modules=modules,
+        force=force,
     )
     msg = (
         f"Reference generated and system initialized.\n"
@@ -421,11 +408,7 @@ def _run_init_dump(settings: Settings, args: argparse.Namespace) -> None:
     print(msg)
 
 
-def _run_ref_up(settings: Settings, args: argparse.Namespace) -> None:
-    odoo_image = args.odoo_image
-    if not odoo_image:
-        print("Error: --odoo-image is required for --ref-up (e.g. --odoo-image odoo:17.0)")
-        raise SystemExit(1)
+def _run_ref_up(settings: Settings, odoo_image: str) -> None:
     result = system_ops.ref_up(settings, odoo_image=odoo_image)
     print(
         f"Reference editor started.\n"
@@ -433,7 +416,7 @@ def _run_ref_up(settings: Settings, args: argparse.Namespace) -> None:
         f"Container: {result['container']}\n"
         f"Database: {result['database']}\n"
         f"Filestore: {result['filestore']}\n\n"
-        f"Make your changes in the browser, then run: oduflow --ref-down"
+        f"Make your changes in the browser, then run: oduflow ref-down"
     )
 
 
@@ -447,8 +430,8 @@ def _run_ref_down(settings: Settings) -> None:
     )
 
 
-def _run_promote(settings: Settings, args: argparse.Namespace) -> None:
-    result = system_ops.promote_env(settings, branch_name=args.promote)
+def _run_promote(settings: Settings, branch: str) -> None:
+    result = system_ops.promote_env(settings, branch_name=branch)
     print(
         f"Branch '{result['branch']}' promoted to reference.\n"
         f"Template DB: {result['template_db']}\n"
@@ -541,21 +524,35 @@ def _run_call(argv: list[str]) -> None:
 
 def main() -> None:
     """Entry point for the Oduflow MCP server."""
-    parser = argparse.ArgumentParser(prog="oduflow", description="Oduflow — Odoo dev environment manager")
-    subparsers = parser.add_subparsers(dest="command")
-    subparsers.add_parser("call", help="Call an MCP tool: oduflow call <tool> [args...]").add_argument("call_args", nargs="*", default=[], help="Tool name and arguments")
-    parser.add_argument("--init", action="store_true", help="Initialize shared infrastructure (network, DB, template)")
-    parser.add_argument("--destroy", action="store_true", help="Destroy all shared infrastructure")
-    parser.add_argument("--reload-dump", action="store_true", help="Drop and re-restore the template DB from dump (safe while server is running)")
-    parser.add_argument("--init-dump", action="store_true", help="Generate reference dump and filestore from a clean Odoo image (requires --odoo-image)")
-    parser.add_argument("--ref-up", action="store_true", help="Start a ref editor: Odoo container working directly with the template DB and filestore (requires --odoo-image)")
-    parser.add_argument("--ref-down", action="store_true", help="Stop the ref editor, dump the updated DB, restore template flag")
-    parser.add_argument("--dump-path", default="", help="Path to DB dump file (for --init / --reload-dump)")
-    parser.add_argument("--version", default="15.0", help="Odoo version (for --init, default 15.0)")
-    parser.add_argument("--force", action="store_true", help="Force recreate template DB (for --init)")
-    parser.add_argument("--odoo-image", default="", help="Docker image for Odoo (for --init-dump, e.g. odoo:17.0)")
-    parser.add_argument("--modules", default="base", help="Comma-separated modules to install during --init-dump (default: base)")
-    parser.add_argument("--promote", default="", metavar="BRANCH", help="Promote a branch environment to become the new reference (DB + filestore)")
+    parser = argparse.ArgumentParser(prog="oduflow", description="Oduflow — Odoo dev environment manager",
+                                     usage="oduflow [-h] <command> ...")
+    sub = parser.add_subparsers(dest="command", title="commands", metavar="")
+
+    p_init = sub.add_parser("init", help="Initialize shared infrastructure (network, DB, template)")
+    p_init.add_argument("--version", default="15.0", help="Odoo version (default: 15.0)")
+    p_init.add_argument("--force", action="store_true", help="Force recreate template DB")
+
+    sub.add_parser("destroy", help="Destroy all shared infrastructure")
+
+    p_reload = sub.add_parser("reload-dump", help="Drop and re-restore the template DB from dump")
+    p_reload.add_argument("--dump-path", default="", help="Path to dump file (default: $ODUFLOW_HOME/dump/dump.sql)")
+
+    p_initdump = sub.add_parser("init-dump", help="Generate reference dump and filestore from a clean Odoo image")
+    p_initdump.add_argument("--odoo-image", required=True, help="Docker image for Odoo (e.g. odoo:17.0)")
+    p_initdump.add_argument("--modules", default="base", help="Comma-separated modules to install (default: base)")
+    p_initdump.add_argument("--force", action="store_true", help="Overwrite existing dump.sql and filestore")
+
+    p_refup = sub.add_parser("ref-up", help="Start a ref editor: Odoo working directly with template DB and filestore")
+    p_refup.add_argument("--odoo-image", required=True, help="Docker image for Odoo (e.g. odoo:17.0)")
+
+    sub.add_parser("ref-down", help="Stop the ref editor, dump the updated DB, restore template flag")
+
+    p_promote = sub.add_parser("promote", help="Promote a branch environment to become the new reference")
+    p_promote.add_argument("branch", help="Branch name to promote")
+
+    p_call = sub.add_parser("call", help="Call an MCP tool: oduflow call <tool> [args...]")
+    p_call.add_argument("call_args", nargs="*", default=[], help="Tool name and arguments")
+
     args = parser.parse_args()
 
     from dotenv import load_dotenv
@@ -574,32 +571,32 @@ def main() -> None:
         _run_call(args.call_args)
         return
 
-    if args.init:
-        _run_init(_settings, args)
+    if args.command == "init":
+        _run_init(_settings, version=args.version, force=args.force)
         return
 
-    if args.destroy:
+    if args.command == "destroy":
         _run_destroy(_settings)
         return
 
-    if args.reload_dump:
-        _run_reload_dump(_settings, args)
+    if args.command == "reload-dump":
+        _run_reload_dump(_settings, dump_path=args.dump_path)
         return
 
-    if args.init_dump:
-        _run_init_dump(_settings, args)
+    if args.command == "init-dump":
+        _run_init_dump(_settings, odoo_image=args.odoo_image, modules=args.modules, force=args.force)
         return
 
-    if args.ref_up:
-        _run_ref_up(_settings, args)
+    if args.command == "ref-up":
+        _run_ref_up(_settings, odoo_image=args.odoo_image)
         return
 
-    if args.ref_down:
+    if args.command == "ref-down":
         _run_ref_down(_settings)
         return
 
-    if args.promote:
-        _run_promote(_settings, args)
+    if args.command == "promote":
+        _run_promote(_settings, branch=args.branch)
         return
 
     transport_str = os.getenv("ODUFLOW_TRANSPORT", "http")

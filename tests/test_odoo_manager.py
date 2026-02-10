@@ -50,7 +50,7 @@ class TestInitSystem:
 
         mock_docker_client.containers.get.side_effect = get_container
 
-        result = system_ops.init_system(TEST_SETTINGS, dump_path="/tmp/test.dump")
+        result = system_ops.init_system(TEST_SETTINGS)
 
         assert result["status"] == "initialized"
         assert result["template_db"] == "odoo_ref"

@@ -29,21 +29,10 @@ from tool_helpers import call_tool as _call_tool
 class TestCLIInitDestroy:
     @patch("oduflow.docker_ops.system_ops.init_system")
     def test_cli_init(self, mock_init):
-        import argparse
         from oduflow.server import _run_init
         mock_init.return_value = {"status": "initialized", "template_db": "odoo_ref", "restore_seconds": 5.2}
-        args = argparse.Namespace(dump_path="/tmp/dump.dump", version="15.0", force=False)
-        _run_init(TEST_SETTINGS, args)
-        mock_init.assert_called_once_with(TEST_SETTINGS, dump_path="/tmp/dump.dump", version="15.0", force=False)
-
-    @patch("oduflow.docker_ops.system_ops.init_system")
-    def test_cli_init_empty_path(self, mock_init):
-        import argparse
-        from oduflow.server import _run_init
-        mock_init.return_value = {"status": "initialized", "template_db": "odoo_ref"}
-        args = argparse.Namespace(dump_path="", version="15.0", force=False)
-        _run_init(TEST_SETTINGS, args)
-        mock_init.assert_called_once_with(TEST_SETTINGS, dump_path=None, version="15.0", force=False)
+        _run_init(TEST_SETTINGS, version="15.0", force=False)
+        mock_init.assert_called_once_with(TEST_SETTINGS, version="15.0", force=False)
 
     @patch("oduflow.docker_ops.system_ops.destroy_system")
     def test_cli_destroy(self, mock_destroy):

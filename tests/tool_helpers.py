@@ -31,7 +31,6 @@ def call_cli(command: str, **kwargs) -> str:
     if command == "init":
         result = system_ops.init_system(
             settings,
-            dump_path=kwargs.get("dump_path") or None,
             version=kwargs.get("version", "15.0"),
             force=kwargs.get("force", False),
         )

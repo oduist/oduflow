@@ -20,7 +20,6 @@ scenarios:
     cli: init
     marks: [heavyweight]
     args:
-      dump_path: ""
       version: "15.0"
       force: false
     expect_contains:
@@ -31,7 +30,6 @@ scenarios:
     cli: init
     marks: [heavyweight]
     args:
-      dump_path: ""
       version: "16.0"
       force: false
     expect_contains:
@@ -41,7 +39,6 @@ scenarios:
     cli: init
     marks: [heavyweight]
     args:
-      dump_path: ""
       version: "15.0"
       force: true
     expect_contains:
