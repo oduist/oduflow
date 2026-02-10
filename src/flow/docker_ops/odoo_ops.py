@@ -57,36 +57,6 @@ def get_environment_logs(settings: Settings, branch_name: str, n_lines: int = 10
         )
 
 
-def install_odoo_modules(settings: Settings, branch_name: str, *modules: str) -> dict[str, Any]:
-    if not modules:
-        raise ValueError("At least one module name is required.")
-
-    client = get_client()
-    odoo_container_name = get_resource_name(branch_name, "odoo", settings.prefix)
-    env_db = get_db_name(branch_name)
-
-    try:
-        container = client.containers.get(odoo_container_name)
-    except docker.errors.NotFound:
-        raise NotFoundError(
-            f"Environment '{branch_name}' does not exist. Use create_environment first."
-        )
-
-    modules_str = ",".join(modules)
-    cmd = f"/entrypoint.sh odoo -d {env_db} --no-http --stop-after-init -i {modules_str}"
-
-    logger.info(
-        "Installing modules",
-        extra={"branch": branch_name, "modules": modules_str},
-    )
-    exit_code, output = container.exec_run(cmd)
-
-    return {
-        "modules": list(modules),
-        "exit_code": exit_code,
-    }
-
-
 def _run_odoo_module_command(
     settings: Settings, branch_name: str, flag: str, *modules: str
 ) -> dict[str, Any]:
@@ -113,10 +83,12 @@ def _run_odoo_module_command(
         extra={"branch": branch_name, "modules": modules_str},
     )
     exit_code, output = container.exec_run(cmd)
+    output_str = output.decode("utf-8") if isinstance(output, bytes) else str(output)
 
     return {
         "modules": list(modules),
         "exit_code": exit_code,
+        "output": output_str,
     }
 
 

@@ -295,6 +295,8 @@ def pull_environment_repository(branch_name: str) -> str:
         lines.append(f"  - {f}")
     if len(result.get("changed_files", [])) > 20:
         lines.append(f"  ... and {len(result['changed_files']) - 20} more")
+    if result.get("output"):
+        lines.append(f"\nOutput:\n{result['output']}")
     return "\n".join(lines)
 
 
@@ -316,11 +318,11 @@ def install_odoo_modules(branch_name: str, modules: str) -> str:
     result = odoo_ops.install_odoo_modules(_get_settings(), branch_name, *modules_list)
     exit_code = result['exit_code']
     modules_str = ', '.join(result['modules'])
+    output = result.get('output', '')
     if exit_code == 0:
-        return f"Success. Modules installed: {modules_str}. Exit code: 0."
+        return f"Success. Modules installed: {modules_str}. Exit code: 0.\n\nOutput:\n{output}"
     return (
-        f"Error. Modules: {modules_str}. Exit code: {exit_code}. "
-        f"Call get_environment_logs with branch_name='{branch_name}', tail=20 to investigate."
+        f"Error. Modules: {modules_str}. Exit code: {exit_code}.\n\nOutput:\n{output}"
     )
 
 
@@ -342,11 +344,11 @@ def upgrade_odoo_modules(branch_name: str, modules: str) -> str:
     result = odoo_ops.upgrade_odoo_modules(_get_settings(), branch_name, *modules_list)
     exit_code = result['exit_code']
     modules_str = ', '.join(result['modules'])
+    output = result.get('output', '')
     if exit_code == 0:
-        return f"Success. Modules upgraded: {modules_str}. Exit code: 0."
+        return f"Success. Modules upgraded: {modules_str}. Exit code: 0.\n\nOutput:\n{output}"
     return (
-        f"Error. Modules: {modules_str}. Exit code: {exit_code}. "
-        f"Call get_environment_logs with branch_name='{branch_name}', tail=20 to investigate."
+        f"Error. Modules: {modules_str}. Exit code: {exit_code}.\n\nOutput:\n{output}"
     )
 
 

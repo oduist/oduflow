@@ -713,16 +713,21 @@ def pull_environment(settings: Settings, branch_name: str) -> dict[str, Any]:
         to_upgrade = analysis["modules_to_upgrade"]
         messages = []
         last_exit_code = 0
+        odoo_output_parts: list[str] = []
 
         if to_install:
             res = install_odoo_modules(settings, branch_name, *to_install)
             last_exit_code = res["exit_code"]
             messages.append(f"Installed modules: {','.join(to_install)}")
+            if res.get("output"):
+                odoo_output_parts.append(res["output"])
 
         if to_upgrade:
             res = upgrade_odoo_modules(settings, branch_name, *to_upgrade)
             last_exit_code = res["exit_code"]
             messages.append(f"Upgraded modules: {','.join(to_upgrade)}")
+            if res.get("output"):
+                odoo_output_parts.append(res["output"])
 
         container = client.containers.get(odoo_container_name)
         container.restart()
@@ -735,6 +740,7 @@ def pull_environment(settings: Settings, branch_name: str) -> dict[str, Any]:
             "exit_code": last_exit_code,
             "changed_files": changed_files,
             "message": " ".join(messages),
+            "output": "\n".join(odoo_output_parts),
         }
 
     if action == "restart":
