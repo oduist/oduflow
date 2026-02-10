@@ -53,8 +53,8 @@ class Settings:
                 os.path.join(flow_home, "odoo_ref.dump"),
             ),
             ref_filestore_path=os.getenv(
-                "ODUFLOW_REF_FILESTORE_PATH",
-                os.path.join(flow_home, "odoo_ref_filestore"),
+                "ODUFLOW_REF_DATA_PATH",
+                os.path.join(flow_home, "odoo_ref_data"),
             ),
             db_user=os.getenv("ODOO_DB_USER", "odoo"),
             db_password=os.getenv("ODOO_DB_PASSWORD", "odoo"),

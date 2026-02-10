@@ -239,7 +239,7 @@ This will:
 1. Start a PostgreSQL container
 2. Run a temporary Odoo container that initializes a fresh database with the `base` module
 3. Dump the database to `~/.oduflow/odoo_ref.dump`
-4. Extract the filestore to `~/.oduflow/odoo_ref_filestore/`
+4. Extract the filestore to `~/.oduflow/odoo_ref_data/`
 5. Run `--init` automatically with the generated dump
 
 You can install additional modules during generation:
@@ -304,7 +304,7 @@ cp .env.example .env
 |---|---|---|
 | `ODUFLOW_WORKSPACES_DIR` | `~/.oduflow/workspaces` | Root directory for environment workspaces |
 | `ODUFLOW_DUMP_PATH` | `~/.oduflow/odoo_ref.dump` | Path to the reference database dump file |
-| `ODUFLOW_REF_FILESTORE_PATH` | `~/.oduflow/odoo_ref_filestore` | Directory with the reference filestore (read-only lower layer for overlay) |
+| `ODUFLOW_REF_DATA_PATH` | `~/.oduflow/odoo_ref_data` | Directory with the reference filestore (read-only lower layer for overlay) |
 | `ODUFLOW_PORT_REGISTRY` | `~/.oduflow/ports.json` | JSON file for stable port assignments |
 
 ### Git
