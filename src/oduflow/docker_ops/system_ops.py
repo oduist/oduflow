@@ -568,6 +568,14 @@ def template_up(
         for name in dirs + files:
             os.chown(os.path.join(root, name), uid, gid)
 
+    sessions_path = os.path.join(settings.get_template_dir(template_name), "sessions")
+    os.makedirs(sessions_path, mode=0o777, exist_ok=True)
+    os.chmod(sessions_path, 0o777)
+    for root_dir, dirs, files in os.walk(sessions_path):
+        os.chown(root_dir, uid, gid)
+        for name in dirs + files:
+            os.chown(os.path.join(root_dir, name), uid, gid)
+
     from oduflow.port_registry import allocate_port
     from oduflow.docker_ops.env_ops import _get_used_ports
 
@@ -588,6 +596,10 @@ def template_up(
     odoo_volumes = {
         template_filestore_path: {
             "bind": f"/var/lib/odoo/.local/share/Odoo/filestore/{tpl_db}",
+            "mode": "rw",
+        },
+        sessions_path: {
+            "bind": "/var/lib/odoo/.local/share/Odoo/sessions",
             "mode": "rw",
         },
     }
