@@ -18,7 +18,7 @@ from oduflow.errors import (
     PrerequisiteNotMetError,
 )
 from oduflow.git_ops import RepoAuthError
-from oduflow.naming import get_db_name, get_env_hostname, get_filestore_paths, get_repo_path, get_resource_name, get_workspace_path, slugify_branch
+from oduflow.naming import get_db_name, get_env_hostname, get_filestore_paths, get_repo_path, get_resource_name, get_template_db_name, get_workspace_path, slugify_branch
 from oduflow.port_registry import allocate_port, release_port
 from oduflow.settings import Settings
 
@@ -46,7 +46,7 @@ def _get_used_ports(client: DockerClient, settings: Settings, exclude_branch: st
     return used
 
 
-def _ensure_system_ready(client: DockerClient, settings: Settings) -> None:
+def _ensure_system_ready(client: DockerClient, settings: Settings, ref_name: str = "default") -> None:
     try:
         db_container = client.containers.get(settings.shared_db_container)
         if db_container.status != "running":
@@ -58,9 +58,10 @@ def _ensure_system_ready(client: DockerClient, settings: Settings) -> None:
             f"{settings.shared_db_container} not found. Run init_system first."
         )
 
-    if not _db_exists(client, settings, settings.template_db_name):
+    tpl_db = get_template_db_name(ref_name)
+    if not _db_exists(client, settings, tpl_db):
         raise PrerequisiteNotMetError(
-            f"Template database '{settings.template_db_name}' not found. Run init_system first."
+            f"Template database '{tpl_db}' not found. Run init_ref first."
         )
 
     if settings.routing_mode == "traefik":
@@ -83,8 +84,10 @@ def _mount_filestore(
     env_db: str,
     odoo_image: str,
     odoo_volumes: dict,
+    *,
+    ref_name: str = "default",
 ) -> None:
-    ref = settings.get_dump_filestore_path()
+    ref = settings.get_ref_filestore_path(ref_name)
     if not ref or not os.path.isdir(ref):
         logger.debug("Dump filestore not found at %s, skipping overlay mount", ref)
         return
@@ -255,6 +258,7 @@ def create_environment(
     branch_name: str,
     repo_url: str,
     odoo_image: str = "odoo:15.0",
+    ref_name: str = "default",
 ) -> dict[str, str]:
     try:
         client = get_client()
@@ -263,7 +267,7 @@ def create_environment(
             f"Failed to connect to Docker daemon: {e}. Ensure Docker is running."
         )
 
-    _ensure_system_ready(client, settings)
+    _ensure_system_ready(client, settings, ref_name)
 
     odoo_container_name = get_resource_name(branch_name, "odoo", settings.prefix)
     try:
@@ -295,6 +299,7 @@ def create_environment(
         settings.branch_label: branch_name,
         settings.repo_label: repo_url,
         settings.image_label: odoo_image,
+        "oduflow.ref": ref_name,
     }
 
     if settings.routing_mode == "traefik":
@@ -403,10 +408,11 @@ def create_environment(
             "Repository clone timed out (60s). Repository may be too large or network is slow.",
         )
 
+    tpl_db = get_template_db_name(ref_name)
     _exec_sql(
         client,
         settings,
-        f'CREATE DATABASE "{env_db}" TEMPLATE {settings.template_db_name};',
+        f'CREATE DATABASE "{env_db}" TEMPLATE {tpl_db};',
     )
 
     odoo_env = {
@@ -429,7 +435,7 @@ def create_environment(
             "mode": "ro",
         }
 
-    _mount_filestore(client, settings, branch_name, env_db, odoo_image, odoo_volumes)
+    _mount_filestore(client, settings, branch_name, env_db, odoo_image, odoo_volumes, ref_name=ref_name)
 
     host_port: int | None = None
     if settings.routing_mode == "port":
@@ -547,6 +553,7 @@ def list_environments(settings: Settings) -> list[dict[str, Any]]:
                 "url": None,
                 "odoo_image": container.labels.get(settings.image_label, ""),
                 "repo_url": container.labels.get(settings.repo_label, ""),
+                "ref_name": container.labels.get("oduflow.ref", "default"),
             }
 
         try:

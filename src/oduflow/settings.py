@@ -33,11 +33,29 @@ class Settings:
     default_branch: str = "prod"
     port_registry_path: str = ""
 
+    def get_ref_dir(self, ref_name: str = "default") -> str:
+        return os.path.join(self.home, "refs", ref_name)
+
+    def get_ref_sql_path(self, ref_name: str = "default") -> str:
+        return os.path.join(self.get_ref_dir(ref_name), "dump.sql")
+
+    def get_ref_filestore_path(self, ref_name: str = "default") -> str:
+        return os.path.join(self.get_ref_dir(ref_name), "filestore")
+
     def get_dump_sql_path(self) -> str:
-        return os.path.join(self.home, "dump", "dump.sql")
+        return self.get_ref_sql_path("default")
 
     def get_dump_filestore_path(self) -> str:
-        return os.path.join(self.home, "dump", "filestore")
+        return self.get_ref_filestore_path("default")
+
+    def list_refs(self) -> list[str]:
+        refs_dir = os.path.join(self.home, "refs")
+        if not os.path.isdir(refs_dir):
+            return []
+        return sorted(
+            entry for entry in os.listdir(refs_dir)
+            if os.path.isdir(os.path.join(refs_dir, entry))
+        )
 
     @staticmethod
     def from_env() -> "Settings":

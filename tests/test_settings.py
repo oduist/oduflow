@@ -37,3 +37,38 @@ class TestSettings:
         s = Settings()
         with pytest.raises(AttributeError):
             s.external_host = "changed"  # type: ignore[misc]
+
+
+class TestRefPaths:
+    def test_get_ref_dir_default(self):
+        s = Settings(home="/srv/data")
+        assert s.get_ref_dir() == "/srv/data/refs/default"
+
+    def test_get_ref_dir_named(self):
+        s = Settings(home="/srv/data")
+        assert s.get_ref_dir("myproject") == "/srv/data/refs/myproject"
+
+    def test_get_ref_sql_path(self):
+        s = Settings(home="/srv/data")
+        assert s.get_ref_sql_path("v17") == "/srv/data/refs/v17/dump.sql"
+
+    def test_get_ref_filestore_path(self):
+        s = Settings(home="/srv/data")
+        assert s.get_ref_filestore_path("v17") == "/srv/data/refs/v17/filestore"
+
+    def test_dump_methods_delegate_to_ref(self):
+        s = Settings(home="/srv/data")
+        assert s.get_dump_sql_path() == s.get_ref_sql_path("default")
+        assert s.get_dump_filestore_path() == s.get_ref_filestore_path("default")
+
+    def test_list_refs_empty(self, tmp_path):
+        s = Settings(home=str(tmp_path))
+        assert s.list_refs() == []
+
+    def test_list_refs(self, tmp_path):
+        refs_dir = tmp_path / "refs"
+        (refs_dir / "alpha").mkdir(parents=True)
+        (refs_dir / "beta").mkdir(parents=True)
+        (refs_dir / "not-a-dir").touch()  # should be ignored
+        s = Settings(home=str(tmp_path))
+        assert s.list_refs() == ["alpha", "beta"]

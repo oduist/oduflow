@@ -31,6 +31,11 @@ def get_env_hostname(branch_name: str, base_domain: str) -> str:
     return f"{slug}.{base_domain}"
 
 
+def get_template_db_name(ref_name: str = "default") -> str:
+    slug = ref_name.replace("/", "-")
+    return f"odoo_ref_{slug}"
+
+
 def get_filestore_paths(branch_name: str, workspaces_dir: str) -> dict[str, str]:
     base = get_workspace_path(branch_name, workspaces_dir)
     return {

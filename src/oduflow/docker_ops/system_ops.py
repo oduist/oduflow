@@ -11,6 +11,7 @@ from docker import DockerClient
 
 from oduflow.docker_ops.client import get_client, get_odoo_uid_gid
 from oduflow.errors import ConflictError, ExternalCommandError, NotFoundError, PrerequisiteNotMetError
+from oduflow.naming import get_template_db_name
 from oduflow.settings import Settings
 
 logger = logging.getLogger("oduflow")
@@ -220,81 +221,34 @@ def init_system(
 
     _wait_pg_ready(client, settings)
 
-    if _db_exists(client, settings, settings.template_db_name):
-        if not force:
-            return {"status": "already initialized", "template_db": settings.template_db_name}
-        _exec_sql(
-            client,
-            settings,
-            f"UPDATE pg_database SET datistemplate=false WHERE datname='{settings.template_db_name}';",
-        )
-        _exec_sql(client, settings, f"DROP DATABASE {settings.template_db_name} WITH (FORCE);")
-
-    resolved_dump = settings.get_dump_sql_path()
-    if not os.path.isfile(resolved_dump):
-        raise NotFoundError(f"Dump file not found: {resolved_dump}")
-
-    _exec_sql(client, settings, f"CREATE DATABASE {settings.template_db_name};")
-
-    db_container = client.containers.get(settings.shared_db_container)
-    tmp_name = os.path.basename(resolved_dump)
-
-    _copy_file_to_container(db_container, resolved_dump, "/tmp")
-
-    use_psql = resolved_dump.endswith(".sql") or _is_text_dump(resolved_dump)
-
-    if use_psql:
-        restore_cmd = ["psql", "-U", settings.db_user, "-d", settings.template_db_name, "-f", f"/tmp/{tmp_name}"]
-    else:
-        restore_cmd = ["pg_restore", "-U", settings.db_user, "-d", settings.template_db_name, f"/tmp/{tmp_name}"]
-
-    logger.info("DB restore started, template_db=%s, dump=%s", settings.template_db_name, resolved_dump)
-    restore_start = time.monotonic()
-
-    exit_code, output = db_container.exec_run(restore_cmd)
-
-    restore_elapsed = time.monotonic() - restore_start
-
-    if exit_code != 0:
-        logger.error("DB restore failed after %.1fs", restore_elapsed)
-        msg = output.decode("utf-8") if isinstance(output, bytes) else str(output)
-        cmd_name = "psql" if use_psql else "pg_restore"
-        raise ExternalCommandError(cmd_name, exit_code, msg)
-
-    logger.info("DB restore finished in %.1fs", restore_elapsed)
-
-    _exec_sql(
-        client,
-        settings,
-        f"UPDATE pg_database SET datistemplate=true WHERE datname='{settings.template_db_name}';",
-    )
-
-    logger.info("System initialized, template_db=%s, restore_time=%.1fs", settings.template_db_name, restore_elapsed)
-    return {"status": "initialized", "template_db": settings.template_db_name, "restore_seconds": round(restore_elapsed, 1)}
+    logger.info("System initialized")
+    return {"status": "initialized"}
 
 
-def reload_template_db(
+def reload_ref(
     settings: Settings,
+    ref_name: str = "default",
     dump_path: str | None = None,
 ) -> dict[str, str]:
     client = get_client()
-    resolved_dump = dump_path or settings.get_dump_sql_path()
+    tpl_db = get_template_db_name(ref_name)
+    resolved_dump = dump_path or settings.get_ref_sql_path(ref_name)
 
     if not os.path.isfile(resolved_dump):
         raise NotFoundError(f"Dump file not found: {resolved_dump}")
 
     _wait_pg_ready(client, settings)
 
-    if _db_exists(client, settings, settings.template_db_name):
+    if _db_exists(client, settings, tpl_db):
         _exec_sql(
             client,
             settings,
-            f"UPDATE pg_database SET datistemplate=false WHERE datname='{settings.template_db_name}';",
+            f"UPDATE pg_database SET datistemplate=false WHERE datname='{tpl_db}';",
         )
-        _exec_sql(client, settings, f"DROP DATABASE {settings.template_db_name} WITH (FORCE);")
-        logger.info("Dropped template DB %s", settings.template_db_name)
+        _exec_sql(client, settings, f'DROP DATABASE "{tpl_db}" WITH (FORCE);')
+        logger.info("Dropped template DB %s", tpl_db)
 
-    _exec_sql(client, settings, f"CREATE DATABASE {settings.template_db_name};")
+    _exec_sql(client, settings, f'CREATE DATABASE "{tpl_db}";')
 
     db_container = client.containers.get(settings.shared_db_container)
     tmp_name = os.path.basename(resolved_dump)
@@ -304,11 +258,11 @@ def reload_template_db(
     use_psql = resolved_dump.endswith(".sql") or _is_text_dump(resolved_dump)
 
     if use_psql:
-        restore_cmd = ["psql", "-U", settings.db_user, "-d", settings.template_db_name, "-f", f"/tmp/{tmp_name}"]
+        restore_cmd = ["psql", "-U", settings.db_user, "-d", tpl_db, "-f", f"/tmp/{tmp_name}"]
     else:
-        restore_cmd = ["pg_restore", "-U", settings.db_user, "-d", settings.template_db_name, f"/tmp/{tmp_name}"]
+        restore_cmd = ["pg_restore", "-U", settings.db_user, "-d", tpl_db, f"/tmp/{tmp_name}"]
 
-    logger.info("DB restore started, template_db=%s, dump=%s", settings.template_db_name, resolved_dump)
+    logger.info("DB restore started, template_db=%s, dump=%s", tpl_db, resolved_dump)
     restore_start = time.monotonic()
 
     exit_code, output = db_container.exec_run(restore_cmd)
@@ -326,21 +280,22 @@ def reload_template_db(
     _exec_sql(
         client,
         settings,
-        f"UPDATE pg_database SET datistemplate=true WHERE datname='{settings.template_db_name}';",
+        f"UPDATE pg_database SET datistemplate=true WHERE datname='{tpl_db}';",
     )
 
-    logger.info("Template DB reloaded, template_db=%s, restore_time=%.1fs", settings.template_db_name, restore_elapsed)
-    return {"status": "reloaded", "template_db": settings.template_db_name, "restore_seconds": round(restore_elapsed, 1)}
+    logger.info("Template DB reloaded, template_db=%s, restore_time=%.1fs", tpl_db, restore_elapsed)
+    return {"status": "reloaded", "template_db": tpl_db, "restore_seconds": round(restore_elapsed, 1)}
 
 
-def init_dump(
+def init_ref(
     settings: Settings,
     odoo_image: str = "odoo:17.0",
     modules: str = "base",
+    ref_name: str = "default",
     force: bool = False,
 ) -> dict[str, str]:
-    dump_sql_path = settings.get_dump_sql_path()
-    dump_filestore_path = settings.get_dump_filestore_path()
+    dump_sql_path = settings.get_ref_sql_path(ref_name)
+    dump_filestore_path = settings.get_ref_filestore_path(ref_name)
 
     existing_dump = os.path.exists(dump_sql_path)
     existing_filestore = (
@@ -462,7 +417,6 @@ def init_dump(
 
     logger.info("Odoo init completed in %.1fs", init_elapsed)
 
-    dump_sql_path = settings.get_dump_sql_path()
     os.makedirs(os.path.dirname(dump_sql_path), exist_ok=True)
 
     db_container = client.containers.get(settings.shared_db_container)
@@ -491,7 +445,6 @@ def init_dump(
 
     logger.info("Dump saved to %s", dump_sql_path)
 
-    dump_filestore_path = settings.get_dump_filestore_path()
     if os.path.exists(dump_filestore_path):
         shutil.rmtree(dump_filestore_path)
     os.makedirs(dump_filestore_path, exist_ok=True)
@@ -537,8 +490,8 @@ def init_dump(
     _exec_sql(client, settings, f"DROP DATABASE IF EXISTS {build_db} WITH (FORCE);")
     logger.info("Temporary database dropped")
 
-    logger.info("Reference generation complete, running init_system")
-    result = init_system(settings, force=True)
+    logger.info("Reference generation complete, loading into template DB")
+    result = reload_ref(settings, ref_name=ref_name)
     result["generated_dump"] = dump_sql_path
     result["generated_filestore"] = dump_filestore_path
     result["filestore_files"] = sum(1 for _ in pathlib.Path(dump_filestore_path).rglob("*") if _.is_file())
@@ -552,8 +505,10 @@ _REF_EDITOR_BRANCH = "__ref__"
 def ref_up(
     settings: Settings,
     odoo_image: str,
+    ref_name: str = "default",
 ) -> dict[str, str]:
     client = get_client()
+    tpl_db = get_template_db_name(ref_name)
 
     try:
         existing = client.containers.get(_REF_EDITOR_CONTAINER)
@@ -574,35 +529,35 @@ def ref_up(
         db_container = client.containers.get(settings.shared_db_container)
         if db_container.status != "running":
             raise PrerequisiteNotMetError(
-                f"{settings.shared_db_container} is not running. Run --init or --init-dump first."
+                f"{settings.shared_db_container} is not running. Run init first."
             )
     except docker.errors.NotFound:
         raise PrerequisiteNotMetError(
-            f"{settings.shared_db_container} not found. Run --init or --init-dump first."
+            f"{settings.shared_db_container} not found. Run init first."
         )
 
     _wait_pg_ready(client, settings)
 
-    if not _db_exists(client, settings, settings.template_db_name):
+    if not _db_exists(client, settings, tpl_db):
         raise PrerequisiteNotMetError(
-            f"Template database '{settings.template_db_name}' not found. "
-            f"Run --init or --init-dump first."
+            f"Template database '{tpl_db}' not found. "
+            f"Run init-ref first."
         )
 
     _exec_sql(
         client,
         settings,
-        f"UPDATE pg_database SET datistemplate=false WHERE datname='{settings.template_db_name}';",
+        f"UPDATE pg_database SET datistemplate=false WHERE datname='{tpl_db}';",
     )
-    logger.info("Template flag removed from %s", settings.template_db_name)
+    logger.info("Template flag removed from %s", tpl_db)
 
-    dump_filestore_path = settings.get_dump_filestore_path()
-    os.makedirs(dump_filestore_path, exist_ok=True)
+    ref_filestore_path = settings.get_ref_filestore_path(ref_name)
+    os.makedirs(ref_filestore_path, exist_ok=True)
 
     odoo_uid_gid = get_odoo_uid_gid(client, odoo_image)
     uid_str, gid_str = odoo_uid_gid.split(":")
     uid, gid = int(uid_str), int(gid_str)
-    for root, dirs, files in os.walk(dump_filestore_path):
+    for root, dirs, files in os.walk(ref_filestore_path):
         os.chown(root, uid, gid)
         for name in dirs + files:
             os.chown(os.path.join(root, name), uid, gid)
@@ -625,8 +580,8 @@ def ref_up(
         "PASSWORD": settings.db_password,
     }
     odoo_volumes = {
-        dump_filestore_path: {
-            "bind": f"/var/lib/odoo/.local/share/Odoo/filestore/{settings.template_db_name}",
+        ref_filestore_path: {
+            "bind": f"/var/lib/odoo/.local/share/Odoo/filestore/{tpl_db}",
             "mode": "rw",
         },
     }
@@ -642,7 +597,7 @@ def ref_up(
         environment=odoo_env,
         volumes=odoo_volumes,
         labels={settings.managed_label: "true"},
-        command=f"odoo -d {settings.template_db_name} --dev=xml",
+        command=f"odoo -d {tpl_db} --dev=xml",
     )
 
     url = f"http://{settings.external_host}:{host_port}"
@@ -652,13 +607,14 @@ def ref_up(
         "status": "running",
         "url": url,
         "container": _REF_EDITOR_CONTAINER,
-        "database": settings.template_db_name,
-        "filestore": dump_filestore_path,
+        "database": tpl_db,
+        "filestore": ref_filestore_path,
     }
 
 
-def ref_down(settings: Settings) -> dict[str, str]:
+def ref_down(settings: Settings, ref_name: str = "default") -> dict[str, str]:
     client = get_client()
+    tpl_db = get_template_db_name(ref_name)
 
     try:
         container = client.containers.get(_REF_EDITOR_CONTAINER)
@@ -677,16 +633,16 @@ def ref_down(settings: Settings) -> dict[str, str]:
 
     _wait_pg_ready(client, settings)
 
-    dump_sql_path = settings.get_dump_sql_path()
+    dump_sql_path = settings.get_ref_sql_path(ref_name)
     os.makedirs(os.path.dirname(dump_sql_path), exist_ok=True)
 
     db_container = client.containers.get(settings.shared_db_container)
-    dump_file = f"/tmp/{settings.template_db_name}.dump"
+    dump_file = f"/tmp/{tpl_db}.dump"
     dump_cmd = [
-        "pg_dump", "-U", settings.db_user, "-Fc", "-f", dump_file, settings.template_db_name,
+        "pg_dump", "-U", settings.db_user, "-Fc", "-f", dump_file, tpl_db,
     ]
 
-    logger.info("Dumping reference database %s", settings.template_db_name)
+    logger.info("Dumping reference database %s", tpl_db)
     exit_code, output = db_container.exec_run(dump_cmd)
     if exit_code != 0:
         msg = output.decode("utf-8") if isinstance(output, bytes) else str(output)
@@ -708,23 +664,24 @@ def ref_down(settings: Settings) -> dict[str, str]:
     _exec_sql(
         client,
         settings,
-        f"UPDATE pg_database SET datistemplate=true WHERE datname='{settings.template_db_name}';",
+        f"UPDATE pg_database SET datistemplate=true WHERE datname='{tpl_db}';",
     )
-    logger.info("Template flag restored on %s", settings.template_db_name)
+    logger.info("Template flag restored on %s", tpl_db)
 
     return {
         "status": "stopped",
         "dump": dump_sql_path,
-        "filestore": settings.get_dump_filestore_path(),
-        "database": settings.template_db_name,
+        "filestore": settings.get_ref_filestore_path(ref_name),
+        "database": tpl_db,
     }
 
 
-def promote_env(settings: Settings, branch_name: str) -> dict[str, str]:
+def promote_env(settings: Settings, branch_name: str, ref_name: str = "default") -> dict[str, str]:
     from oduflow.docker_ops import env_ops
     from oduflow.naming import get_db_name, get_filestore_paths
 
     client = get_client()
+    tpl_db = get_template_db_name(ref_name)
     env_db = get_db_name(branch_name)
 
     if not _db_exists(client, settings, env_db):
@@ -734,7 +691,8 @@ def promote_env(settings: Settings, branch_name: str) -> dict[str, str]:
     db_container = client.containers.get(settings.shared_db_container)
 
     # 1. pg_dump branch DB → new ref dump
-    dump_path = settings.get_dump_sql_path()
+    dump_path = settings.get_ref_sql_path(ref_name)
+    os.makedirs(os.path.dirname(dump_path), exist_ok=True)
     dump_file = f"/tmp/{env_db}.dump"
     dump_cmd = ["pg_dump", "-U", settings.db_user, "-Fc", "-f", dump_file, env_db]
 
@@ -758,7 +716,7 @@ def promote_env(settings: Settings, branch_name: str) -> dict[str, str]:
     logger.info("Branch dump saved to %s", dump_path)
 
     # 2. Reload template DB from new dump
-    reload_template_db(settings, dump_path=dump_path)
+    reload_ref(settings, ref_name=ref_name, dump_path=dump_path)
 
     # 3. Collect active branches (excluding the promoted one is fine, it keeps working)
     active_envs = env_ops.list_environments(settings)
@@ -767,7 +725,7 @@ def promote_env(settings: Settings, branch_name: str) -> dict[str, str]:
     # 4. Snapshot the promoted branch's merged filestore (while overlay is still mounted)
     branch_paths = get_filestore_paths(branch_name, settings.workspaces_dir)
     branch_merged = branch_paths["merged"]
-    dump_filestore_path = settings.get_dump_filestore_path()
+    ref_filestore_path = settings.get_ref_filestore_path(ref_name)
 
     if os.path.isdir(branch_merged) and os.path.ismount(branch_merged):
         snapshot_dir = branch_merged + "_snapshot"
@@ -787,18 +745,18 @@ def promote_env(settings: Settings, branch_name: str) -> dict[str, str]:
         except Exception as e:
             logger.warning("Could not unmount overlay for %s: %s", branch, e)
 
-    # 6. Replace dump filestore with snapshot
+    # 6. Replace ref filestore with snapshot
     if snapshot_dir and os.path.isdir(snapshot_dir):
-        if os.path.exists(dump_filestore_path):
-            shutil.rmtree(dump_filestore_path)
+        if os.path.exists(ref_filestore_path):
+            shutil.rmtree(ref_filestore_path)
 
-        os.makedirs(os.path.dirname(dump_filestore_path), exist_ok=True)
+        os.makedirs(os.path.dirname(ref_filestore_path), exist_ok=True)
         try:
-            os.rename(snapshot_dir, dump_filestore_path)
+            os.rename(snapshot_dir, ref_filestore_path)
         except OSError:
-            shutil.copytree(snapshot_dir, dump_filestore_path)
+            shutil.copytree(snapshot_dir, ref_filestore_path)
             shutil.rmtree(snapshot_dir)
-        logger.info("Dump filestore replaced from branch %s", branch_name)
+        logger.info("Ref filestore replaced from branch %s", branch_name)
 
         promoted_container_name = f"{settings.prefix}{branch_name.replace('/', '-')}-odoo"
         try:
@@ -809,11 +767,11 @@ def promote_env(settings: Settings, branch_name: str) -> dict[str, str]:
         odoo_uid_gid = get_odoo_uid_gid(client, promoted_image)
         uid_str, gid_str = odoo_uid_gid.split(":")
         uid, gid = int(uid_str), int(gid_str)
-        for root, dirs, files in os.walk(dump_filestore_path):
+        for root, dirs, files in os.walk(ref_filestore_path):
             os.chown(root, uid, gid)
             for name in dirs + files:
                 os.chown(os.path.join(root, name), uid, gid)
-        logger.info("Dump filestore chowned to %s", odoo_uid_gid)
+        logger.info("Ref filestore chowned to %s", odoo_uid_gid)
 
     # 7. Remount overlays (clear upper dirs so branches start fresh from new ref)
     for branch in active_branches:
@@ -838,7 +796,6 @@ def promote_env(settings: Settings, branch_name: str) -> dict[str, str]:
                     shutil.rmtree(d)
                     os.makedirs(d, mode=0o777, exist_ok=True)
 
-            # Find odoo image from running container
             odoo_container_name = f"{settings.prefix}{branch.replace('/', '-')}-odoo"
             try:
                 container = client.containers.get(odoo_container_name)
@@ -847,7 +804,7 @@ def promote_env(settings: Settings, branch_name: str) -> dict[str, str]:
                 image = "odoo:17.0"
 
             env_db = get_db_name(branch)
-            env_ops._mount_filestore(client, settings, branch, env_db, image, {})
+            env_ops._mount_filestore(client, settings, branch, env_db, image, {}, ref_name=ref_name)
             logger.info("Remounted overlay for branch %s", branch)
 
             try:
@@ -863,8 +820,8 @@ def promote_env(settings: Settings, branch_name: str) -> dict[str, str]:
         "status": "promoted",
         "branch": branch_name,
         "dump": dump_path,
-        "filestore": dump_filestore_path,
-        "template_db": settings.template_db_name,
+        "filestore": ref_filestore_path,
+        "template_db": tpl_db,
     }
 
 
@@ -914,3 +871,40 @@ def destroy_system(settings: Settings) -> dict[str, str]:
 
     logger.info("System destroyed, removed=%s", removed)
     return {"status": "destroyed", "removed": ", ".join(removed)}
+
+
+def drop_ref(settings: Settings, ref_name: str) -> dict[str, str]:
+    client = get_client()
+    tpl_db = get_template_db_name(ref_name)
+
+    if _db_exists(client, settings, tpl_db):
+        _wait_pg_ready(client, settings)
+        _exec_sql(client, settings, f"UPDATE pg_database SET datistemplate=false WHERE datname='{tpl_db}';")
+        _exec_sql(client, settings, f'DROP DATABASE IF EXISTS "{tpl_db}" WITH (FORCE);')
+        logger.info("Dropped template DB %s", tpl_db)
+
+    ref_dir = settings.get_ref_dir(ref_name)
+    if os.path.isdir(ref_dir):
+        shutil.rmtree(ref_dir)
+        logger.info("Removed ref directory %s", ref_dir)
+
+    return {"status": "dropped", "ref_name": ref_name, "template_db": tpl_db}
+
+
+def list_refs(settings: Settings) -> list[dict]:
+    client = get_client()
+    refs = settings.list_refs()
+    result = []
+    for ref_name in refs:
+        tpl_db = get_template_db_name(ref_name)
+        has_sql = os.path.isfile(settings.get_ref_sql_path(ref_name))
+        has_filestore = os.path.isdir(settings.get_ref_filestore_path(ref_name))
+        db_loaded = _db_exists(client, settings, tpl_db)
+        result.append({
+            "ref_name": ref_name,
+            "template_db": tpl_db,
+            "has_sql": has_sql,
+            "has_filestore": has_filestore,
+            "db_loaded": db_loaded,
+        })
+    return result

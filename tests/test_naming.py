@@ -1,4 +1,4 @@
-from oduflow.naming import slugify_branch, get_db_name, get_resource_name, get_workspace_path, get_repo_path, get_filestore_paths
+from oduflow.naming import slugify_branch, get_db_name, get_resource_name, get_template_db_name, get_workspace_path, get_repo_path, get_filestore_paths
 
 
 class TestSlugifyBranch:
@@ -83,3 +83,17 @@ class TestGetFilestorePaths:
     def test_slash_branch(self):
         paths = get_filestore_paths("feature/payments", "/tmp/ws")
         assert paths["merged"] == "/tmp/ws/feature-payments/filestore"
+
+
+class TestGetTemplateDbName:
+    def test_default(self):
+        assert get_template_db_name("default") == "odoo_ref_default"
+
+    def test_named(self):
+        assert get_template_db_name("myproject-v17") == "odoo_ref_myproject-v17"
+
+    def test_slash(self):
+        assert get_template_db_name("client/prod") == "odoo_ref_client-prod"
+
+    def test_default_arg(self):
+        assert get_template_db_name() == "odoo_ref_default"

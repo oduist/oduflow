@@ -79,7 +79,7 @@ def setup_repo_auth(repo_url: str) -> str:
 @mcp.tool()
 @handle_errors
 @with_mutex
-def create_environment(branch_name: str, repo_url: str, odoo_image: str) -> str:
+def create_environment(branch_name: str, repo_url: str, odoo_image: str, ref_name: str = "default") -> str:
     """
     Provision a new ephemeral Odoo environment for a specific branch.
 
@@ -87,21 +87,23 @@ def create_environment(branch_name: str, repo_url: str, odoo_image: str) -> str:
         branch_name: The name of the git branch (will be used for resource naming).
         repo_url: URL of the git repository to clone.
         odoo_image: Full Docker image name with tag (e.g. "odoo:17.0"). Use a pre-built image with all dependencies for faster startup.
+        ref_name: Name of the reference profile to use as database template (default: "default").
     """
-    result = env_ops.create_environment(_get_settings(), branch_name, repo_url, odoo_image)
+    result = env_ops.create_environment(_get_settings(), branch_name, repo_url, odoo_image, ref_name=ref_name)
     return (
         f"Environment provisioned successfully!\n"
         f"URL: {result['url']}\n"
         f"Odoo Container: {result['odoo_container']}\n"
         f"Database: {result['database']}\n"
-        f"Workspace: {result['workspace']}"
+        f"Workspace: {result['workspace']}\n"
+        f"Ref: {ref_name}"
     )
 
 
 @mcp.tool()
 @handle_errors
 @with_mutex
-def promote_environment(branch_name: str) -> str:
+def promote_environment(branch_name: str, ref_name: str = "default") -> str:
     """
     DANGEROUS: Promote a branch environment to become the new reference (DB + filestore).
 
@@ -115,14 +117,43 @@ def promote_environment(branch_name: str) -> str:
 
     Args:
         branch_name: The name of the branch whose DB and filestore will become the new reference.
+        ref_name: Name of the reference profile to promote into (default: "default").
     """
-    result = system_ops.promote_env(_get_settings(), branch_name)
+    result = system_ops.promote_env(_get_settings(), branch_name, ref_name=ref_name)
     return (
-        f"Branch '{result['branch']}' promoted to reference.\n"
+        f"Branch '{result['branch']}' promoted to reference '{ref_name}'.\n"
         f"Template DB: {result['template_db']}\n"
         f"Dump: {result['dump']}\n"
         f"Filestore: {result['filestore']}"
     )
+
+
+@mcp.tool()
+@handle_errors
+def list_refs() -> str:
+    """List available reference profiles (database + filestore snapshots)."""
+    refs = system_ops.list_refs(_get_settings())
+    if not refs:
+        return "No reference profiles found."
+    output = "Reference profiles:\n"
+    for r in refs:
+        db_status = "loaded" if r["db_loaded"] else "not loaded"
+        output += f"- {r['ref_name']}: DB={db_status}, SQL={r['has_sql']}, Filestore={r['has_filestore']}\n"
+    return output
+
+
+@mcp.tool()
+@handle_errors
+@with_mutex
+def drop_ref(ref_name: str) -> str:
+    """
+    Drop a reference profile: remove its template database and files from disk.
+
+    Args:
+        ref_name: Name of the reference profile to drop.
+    """
+    result = system_ops.drop_ref(_get_settings(), ref_name)
+    return f"Reference '{result['ref_name']}' dropped. Template DB '{result['template_db']}' removed."
 
 
 @mcp.tool()
@@ -159,6 +190,8 @@ def list_environments() -> str:
             output += f"  Image: {env['odoo_image']}\n"
         if env.get("repo_url"):
             output += f"  Repo: {env['repo_url']}\n"
+        if env.get("ref_name") and env["ref_name"] != "default":
+            output += f"  Ref: {env['ref_name']}\n"
         for container in env["containers"]:
             output += f"  * {container['name']} [{container['status']}] ({container['image']})\n"
     return output
@@ -373,15 +406,13 @@ def exec_in_environment(branch_name: str, command: str, user: str = "odoo") -> s
 
 def _run_init(settings: Settings, version: str = "15.0", force: bool = False) -> None:
     result = system_ops.init_system(settings, version=version, force=force)
-    msg = f"System {result['status']}.\nTemplate DB: {result['template_db']}"
-    if "restore_seconds" in result:
-        msg += f"\nDB restore time: {result['restore_seconds']}s"
-    print(msg)
+    print(f"System {result['status']}.")
 
 
-def _run_reload_dump(settings: Settings, dump_path: str = "") -> None:
-    result = system_ops.reload_template_db(
+def _run_reload_ref(settings: Settings, ref_name: str = "default", dump_path: str = "") -> None:
+    result = system_ops.reload_ref(
         settings,
+        ref_name=ref_name,
         dump_path=dump_path or None,
     )
     msg = f"Template DB {result['status']}.\nTemplate DB: {result['template_db']}"
@@ -390,15 +421,16 @@ def _run_reload_dump(settings: Settings, dump_path: str = "") -> None:
     print(msg)
 
 
-def _run_init_dump(settings: Settings, odoo_image: str, modules: str = "base", force: bool = False) -> None:
-    result = system_ops.init_dump(
+def _run_init_ref(settings: Settings, odoo_image: str, modules: str = "base", ref_name: str = "default", force: bool = False) -> None:
+    result = system_ops.init_ref(
         settings,
         odoo_image=odoo_image,
         modules=modules,
+        ref_name=ref_name,
         force=force,
     )
     msg = (
-        f"Reference generated and system initialized.\n"
+        f"Reference '{ref_name}' generated and loaded.\n"
         f"Template DB: {result['template_db']}\n"
         f"Dump: {result['generated_dump']}\n"
         f"Filestore: {result['generated_filestore']}"
@@ -408,8 +440,8 @@ def _run_init_dump(settings: Settings, odoo_image: str, modules: str = "base", f
     print(msg)
 
 
-def _run_ref_up(settings: Settings, odoo_image: str) -> None:
-    result = system_ops.ref_up(settings, odoo_image=odoo_image)
+def _run_ref_up(settings: Settings, odoo_image: str, ref_name: str = "default") -> None:
+    result = system_ops.ref_up(settings, odoo_image=odoo_image, ref_name=ref_name)
     print(
         f"Reference editor started.\n"
         f"URL: {result['url']}\n"
@@ -420,8 +452,8 @@ def _run_ref_up(settings: Settings, odoo_image: str) -> None:
     )
 
 
-def _run_ref_down(settings: Settings) -> None:
-    result = system_ops.ref_down(settings)
+def _run_ref_down(settings: Settings, ref_name: str = "default") -> None:
+    result = system_ops.ref_down(settings, ref_name=ref_name)
     print(
         f"Reference editor stopped.\n"
         f"Dump saved: {result['dump']}\n"
@@ -430,14 +462,30 @@ def _run_ref_down(settings: Settings) -> None:
     )
 
 
-def _run_promote(settings: Settings, branch: str) -> None:
-    result = system_ops.promote_env(settings, branch_name=branch)
+def _run_promote(settings: Settings, branch: str, ref_name: str = "default") -> None:
+    result = system_ops.promote_env(settings, branch_name=branch, ref_name=ref_name)
     print(
-        f"Branch '{result['branch']}' promoted to reference.\n"
+        f"Branch '{result['branch']}' promoted to reference '{ref_name}'.\n"
         f"Template DB: {result['template_db']}\n"
         f"Dump: {result['dump']}\n"
         f"Filestore: {result['filestore']}"
     )
+
+
+def _run_drop_ref(settings: Settings, ref_name: str) -> None:
+    result = system_ops.drop_ref(settings, ref_name)
+    print(f"Reference '{result['ref_name']}' dropped.\nTemplate DB '{result['template_db']}' removed.")
+
+
+def _run_list_refs(settings: Settings) -> None:
+    refs = system_ops.list_refs(settings)
+    if not refs:
+        print("No reference profiles found.")
+        return
+    print("Reference profiles:")
+    for r in refs:
+        db_status = "loaded" if r["db_loaded"] else "not loaded"
+        print(f"  {r['ref_name']}: DB={db_status}, SQL={'yes' if r['has_sql'] else 'no'}, Filestore={'yes' if r['has_filestore'] else 'no'}")
 
 
 def _run_destroy(settings: Settings) -> None:
@@ -534,21 +582,31 @@ def main() -> None:
 
     sub.add_parser("destroy", help="Destroy all shared infrastructure")
 
-    p_reload = sub.add_parser("reload-dump", help="Drop and re-restore the template DB from dump")
-    p_reload.add_argument("--dump-path", default="", help="Path to dump file (default: $ODUFLOW_HOME/dump/dump.sql)")
+    p_reload = sub.add_parser("reload-ref", help="Drop and re-restore a template DB from ref profile")
+    p_reload.add_argument("--ref-name", default="default", help="Reference profile name (default: default)")
+    p_reload.add_argument("--dump-path", default="", help="Path to dump file (overrides ref profile path)")
 
-    p_initdump = sub.add_parser("init-dump", help="Generate reference dump and filestore from a clean Odoo image")
-    p_initdump.add_argument("--odoo-image", required=True, help="Docker image for Odoo (e.g. odoo:17.0)")
-    p_initdump.add_argument("--modules", default="base", help="Comma-separated modules to install (default: base)")
-    p_initdump.add_argument("--force", action="store_true", help="Overwrite existing dump.sql and filestore")
+    p_initref = sub.add_parser("init-ref", help="Generate reference dump and filestore from a clean Odoo image")
+    p_initref.add_argument("--odoo-image", required=True, help="Docker image for Odoo (e.g. odoo:17.0)")
+    p_initref.add_argument("--modules", default="base", help="Comma-separated modules to install (default: base)")
+    p_initref.add_argument("--ref-name", default="default", help="Reference profile name (default: default)")
+    p_initref.add_argument("--force", action="store_true", help="Overwrite existing dump.sql and filestore")
 
     p_refup = sub.add_parser("ref-up", help="Start a ref editor: Odoo working directly with template DB and filestore")
     p_refup.add_argument("--odoo-image", required=True, help="Docker image for Odoo (e.g. odoo:17.0)")
+    p_refup.add_argument("--ref-name", default="default", help="Reference profile name (default: default)")
 
-    sub.add_parser("ref-down", help="Stop the ref editor, dump the updated DB, restore template flag")
+    p_refdown = sub.add_parser("ref-down", help="Stop the ref editor, dump the updated DB, restore template flag")
+    p_refdown.add_argument("--ref-name", default="default", help="Reference profile name (default: default)")
 
     p_promote = sub.add_parser("promote", help="Promote a branch environment to become the new reference")
     p_promote.add_argument("branch", help="Branch name to promote")
+    p_promote.add_argument("--ref-name", default="default", help="Reference profile name (default: default)")
+
+    p_dropref = sub.add_parser("drop-ref", help="Drop a reference profile (template DB + files)")
+    p_dropref.add_argument("ref_name", help="Reference profile name to drop")
+
+    sub.add_parser("list-refs", help="List available reference profiles")
 
     p_call = sub.add_parser("call", help="Call an MCP tool: oduflow call <tool> [args...]")
     p_call.add_argument("call_args", nargs="*", default=[], help="Tool name and arguments")
@@ -579,24 +637,32 @@ def main() -> None:
         _run_destroy(_settings)
         return
 
-    if args.command == "reload-dump":
-        _run_reload_dump(_settings, dump_path=args.dump_path)
+    if args.command == "reload-ref":
+        _run_reload_ref(_settings, ref_name=args.ref_name, dump_path=args.dump_path)
         return
 
-    if args.command == "init-dump":
-        _run_init_dump(_settings, odoo_image=args.odoo_image, modules=args.modules, force=args.force)
+    if args.command == "init-ref":
+        _run_init_ref(_settings, odoo_image=args.odoo_image, modules=args.modules, ref_name=args.ref_name, force=args.force)
         return
 
     if args.command == "ref-up":
-        _run_ref_up(_settings, odoo_image=args.odoo_image)
+        _run_ref_up(_settings, odoo_image=args.odoo_image, ref_name=args.ref_name)
         return
 
     if args.command == "ref-down":
-        _run_ref_down(_settings)
+        _run_ref_down(_settings, ref_name=args.ref_name)
         return
 
     if args.command == "promote":
-        _run_promote(_settings, branch=args.branch)
+        _run_promote(_settings, branch=args.branch, ref_name=args.ref_name)
+        return
+
+    if args.command == "drop-ref":
+        _run_drop_ref(_settings, ref_name=args.ref_name)
+        return
+
+    if args.command == "list-refs":
+        _run_list_refs(_settings)
         return
 
     transport_str = os.getenv("ODUFLOW_TRANSPORT", "http")

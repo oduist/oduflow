@@ -34,10 +34,7 @@ def call_cli(command: str, **kwargs) -> str:
             version=kwargs.get("version", "15.0"),
             force=kwargs.get("force", False),
         )
-        msg = f"System {result['status']}.\nTemplate DB: {result['template_db']}"
-        if "restore_seconds" in result:
-            msg += f"\nDB restore time: {result['restore_seconds']}s"
-        return msg
+        return f"System {result['status']}."
 
     if command == "destroy":
         result = system_ops.destroy_system(settings)
