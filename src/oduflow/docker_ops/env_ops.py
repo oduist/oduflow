@@ -18,7 +18,7 @@ from oduflow.errors import (
     PrerequisiteNotMetError,
 )
 from oduflow.git_ops import RepoAuthError
-from oduflow.naming import get_db_name, get_env_hostname, get_filestore_paths, get_repo_path, get_resource_name, get_template_db_name, get_workspace_path, slugify_branch
+from oduflow.naming import get_db_name, get_env_hostname, get_filestore_paths, get_repo_path, get_resource_name, get_template_db_name, get_workspace_path, sanitize_repo_url, slugify_branch
 from oduflow.port_registry import allocate_port, release_port
 from oduflow.settings import Settings
 
@@ -325,7 +325,7 @@ def create_environment(
         "Creating environment",
         extra={
             "branch": branch_name,
-            "repo": repo_url,
+            "repo": sanitize_repo_url(repo_url),
             "image": odoo_image,
             "prefix": settings.prefix,
             "routing_mode": settings.routing_mode,
@@ -558,7 +558,7 @@ def list_environments(settings: Settings) -> list[dict[str, Any]]:
                 "status": "running",
                 "url": None,
                 "odoo_image": container.labels.get(settings.image_label, ""),
-                "repo_url": container.labels.get(settings.repo_label, ""),
+                "repo_url": sanitize_repo_url(container.labels.get(settings.repo_label, "")),
                 "template_name": container.labels.get("oduflow.template", "default"),
             }
 

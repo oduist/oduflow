@@ -1,5 +1,6 @@
 import os
 import re
+from urllib.parse import urlparse, urlunparse
 
 
 def slugify_branch(branch_name: str) -> str:
@@ -43,3 +44,16 @@ def get_filestore_paths(branch_name: str, workspaces_dir: str) -> dict[str, str]
         "work": os.path.join(base, "filestore_work"),
         "merged": os.path.join(base, "filestore"),
     }
+
+
+def sanitize_repo_url(url: str) -> str:
+    if not url:
+        return url
+    try:
+        parsed = urlparse(url)
+        if parsed.username or parsed.password:
+            clean = parsed._replace(netloc=parsed.hostname or "")
+            return urlunparse(clean)
+    except Exception:
+        pass
+    return url
