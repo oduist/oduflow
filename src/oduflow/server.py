@@ -153,7 +153,14 @@ def list_templates() -> str:
 @with_mutex
 def drop_template(template_name: str) -> str:
     """
-    Drop a template profile: remove its template database and files from disk.
+    DANGEROUS: Drop a template profile — permanently removes its template database and files from disk.
+
+    This is a destructive, irreversible operation. All environments that depend on this
+    template will lose their baseline and cannot be recreated until a new template is set up.
+
+    NEVER call this tool on your own initiative. Requires EXPLICIT user permission
+    and confirmation before execution. If the user has not clearly and unambiguously
+    asked you to drop a specific template, DO NOT call this tool.
 
     Args:
         template_name: Name of the template profile to drop.
@@ -508,24 +515,34 @@ def _run_destroy(settings: Settings) -> None:
     )
 
 
+def _print_tools(verbose: bool = False) -> None:
+    import inspect
+
+    print("Registered tools:")
+    for name in sorted(mcp._tool_manager._tools.keys()):
+        tool_fn = mcp._tool_manager._tools[name].fn
+        sig = inspect.signature(tool_fn)
+        params = []
+        for p in sig.parameters.values():
+            if p.default is inspect.Parameter.empty:
+                params.append(f"<{p.name}>")
+            else:
+                params.append(f"[{p.name}={p.default}]")
+        print(f"  {name} {' '.join(params)}")
+        if verbose:
+            desc = (tool_fn.__doc__ or "").strip().split("\n")[0]
+            if desc:
+                print(f"    {desc}")
+
+
 def _run_call(argv: list[str]) -> None:
     """Execute an MCP tool from the CLI: oduflow call <tool> [args...]"""
     import inspect
     import json
     import sys
 
-    if not argv or argv[0] == "--list":
-        print("Registered tools:")
-        for name in sorted(mcp._tool_manager._tools.keys()):
-            tool_fn = mcp._tool_manager._tools[name].fn
-            sig = inspect.signature(tool_fn)
-            params = []
-            for p in sig.parameters.values():
-                if p.default is inspect.Parameter.empty:
-                    params.append(f"<{p.name}>")
-                else:
-                    params.append(f"[{p.name}={p.default}]")
-            print(f"  {name} {' '.join(params)}")
+    if not argv:
+        _print_tools(verbose=False)
         return
 
     tool_name = argv[0]
@@ -620,6 +637,9 @@ def main() -> None:
 
     sub.add_parser("list-templates", help="List available template profiles")
 
+    p_list = sub.add_parser("list", help="List registered MCP tools")
+    p_list.add_argument("--verbose", "-v", action="store_true", help="Show tool descriptions")
+
     p_call = sub.add_parser("call", help="Call an MCP tool: oduflow call <tool> [args...]")
     p_call.add_argument("call_args", nargs="*", default=[], help="Tool name and arguments")
 
@@ -636,6 +656,10 @@ def main() -> None:
     global _settings
     _settings = Settings.from_env()
     _settings.validate()
+
+    if args.command == "list":
+        _print_tools(verbose=args.verbose)
+        return
 
     if args.command == "call":
         _run_call(args.call_args)
