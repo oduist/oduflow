@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="icon" href="/favicon.ico" type="image/x-icon">
-<title>Odoo Flow — Environments</title>
+<title>Odoo Flow</title>
 <style>
   :root {
     --bg: #0d1117;
@@ -259,12 +259,75 @@
     transition: width 0.4s ease, background 0.4s ease;
     min-width: 2px;
   }
+  .tabs {
+    display: flex;
+    gap: 0;
+    margin-bottom: 20px;
+    border-bottom: 1px solid var(--border);
+  }
+  .tab-btn {
+    background: none;
+    border: none;
+    color: var(--text-dim);
+    font-size: 14px;
+    font-weight: 500;
+    padding: 8px 18px;
+    cursor: pointer;
+    border-bottom: 2px solid transparent;
+    transition: all 0.15s;
+  }
+  .tab-btn:hover { color: var(--text); }
+  .tab-btn.active {
+    color: var(--accent);
+    border-bottom-color: var(--accent);
+  }
+  .tab-content { display: none; }
+  .tab-content.active { display: block; }
+  .tpl-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 16px 20px;
+    margin-bottom: 12px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .tpl-name { font-weight: 600; font-size: 15px; }
+  .tpl-meta {
+    display: flex;
+    gap: 16px;
+    font-size: 12px;
+    color: var(--text-dim);
+  }
+  .tpl-meta .tag {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 12px;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+  .tag-ok { background: rgba(63,185,80,0.15); color: var(--green); }
+  .tag-missing { background: rgba(248,81,73,0.15); color: var(--red); }
+  .form-group select {
+    width: 100%;
+    padding: 8px 10px;
+    font-size: 13px;
+    background: var(--bg);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    outline: none;
+  }
+  .form-group select:focus { border-color: var(--accent); }
 </style>
 </head>
 <body>
 
 <header>
-  <h1>Odoo Flow Environments</h1>
+  <h1>Odoo Flow</h1>
   <div class="actions">
     <label class="auto-label" for="refresh-interval">Refresh
       <input type="number" id="refresh-interval" value="60" min="5" step="5"
@@ -275,7 +338,18 @@
   </div>
 </header>
 
-<div id="env-list"></div>
+<div class="tabs">
+  <button class="tab-btn active" data-tab="environments" onclick="switchTab('environments')">Environments</button>
+  <button class="tab-btn" data-tab="templates" onclick="switchTab('templates')">Templates</button>
+</div>
+
+<div id="tab-environments" class="tab-content active">
+  <div id="env-list"></div>
+</div>
+
+<div id="tab-templates" class="tab-content">
+  <div id="tpl-list"></div>
+</div>
 <div class="toast" id="toast"></div>
 <div class="modal-overlay" id="create-modal" onclick="closeCreateModal(event)">
   <div class="modal" style="max-width:500px;">
@@ -296,6 +370,12 @@
       <div class="form-group">
         <label for="cr-image">Odoo image</label>
         <input type="text" id="cr-image" placeholder="e.g. odoo:17.0">
+      </div>
+      <div class="form-group">
+        <label for="cr-template">Template</label>
+        <select id="cr-template">
+          <option value="">Default</option>
+        </select>
       </div>
       <div class="form-actions">
         <button class="btn" onclick="closeCreateModal()">Cancel</button>
@@ -322,11 +402,13 @@
 
 <script>
 const API = '/api/environments';
+const API_TEMPLATES = '/api/templates';
 const MIN_INTERVAL = 5;
 let refreshInterval = 60;
 let refreshTimer = null;
 let statsTimer = null;
 let containerStatsMap = {};
+let cachedTemplates = [];
 
 function showToast(msg, isError) {
   const t = document.getElementById('toast');
@@ -505,14 +587,72 @@ function closeLogsModal(event) {
   document.getElementById('logs-modal').classList.remove('show');
 }
 
+function switchTab(name) {
+  document.querySelectorAll('.tab-btn').forEach(function(b) {
+    b.classList.toggle('active', b.getAttribute('data-tab') === name);
+  });
+  document.querySelectorAll('.tab-content').forEach(function(el) {
+    el.classList.toggle('active', el.id === 'tab-' + name);
+  });
+  if (name === 'templates') loadTemplates();
+}
+
+async function loadTemplates() {
+  try {
+    var r = await fetch(API_TEMPLATES);
+    var data = await r.json();
+    if (data.ok) {
+      cachedTemplates = data.templates || [];
+      renderTemplates(cachedTemplates);
+    } else {
+      showToast(data.error || 'Failed to load templates', true);
+    }
+  } catch (e) {
+    showToast('Connection error: ' + e.message, true);
+  }
+}
+
+function renderTemplates(templates) {
+  var el = document.getElementById('tpl-list');
+  if (!templates || templates.length === 0) {
+    el.innerHTML = '<div class="empty">No template profiles found.</div>';
+    return;
+  }
+  el.innerHTML = templates.map(function(t) {
+    var dbTag = t.db_loaded
+      ? '<span class="tag tag-ok">DB Loaded</span>'
+      : '<span class="tag tag-missing">DB Not Loaded</span>';
+    var sqlTag = t.has_sql
+      ? '<span class="tag tag-ok">SQL</span>'
+      : '<span class="tag tag-missing">No SQL</span>';
+    var fsTag = t.has_filestore
+      ? '<span class="tag tag-ok">Filestore</span>'
+      : '<span class="tag tag-missing">No Filestore</span>';
+    return '<div class="tpl-card">' +
+      '<span class="tpl-name">' + esc(t.template_name) + '</span>' +
+      '<div class="tpl-meta">' + dbTag + sqlTag + fsTag + '</div>' +
+    '</div>';
+  }).join('');
+}
+
+function populateTemplateSelect() {
+  var sel = document.getElementById('cr-template');
+  sel.innerHTML = '<option value="">Default</option>';
+  cachedTemplates.forEach(function(t) {
+    sel.innerHTML += '<option value="' + esc(t.template_name) + '">' + esc(t.template_name) + '</option>';
+  });
+}
+
 function openCreateModal() {
   document.getElementById('cr-branch').value = '';
   document.getElementById('cr-repo').value = '';
   document.getElementById('cr-image').value = '';
+  document.getElementById('cr-template').value = '';
   var errEl = document.getElementById('create-error');
   errEl.style.display = 'none';
   errEl.textContent = '';
   document.getElementById('cr-submit').disabled = false;
+  loadTemplates().then(populateTemplateSelect);
   document.getElementById('create-modal').classList.add('show');
   document.getElementById('cr-branch').focus();
 }
@@ -526,10 +666,11 @@ async function submitCreate() {
   var branch = document.getElementById('cr-branch').value.trim();
   var repo = document.getElementById('cr-repo').value.trim();
   var image = document.getElementById('cr-image').value.trim();
+  var template = document.getElementById('cr-template').value;
   var errEl = document.getElementById('create-error');
 
   if (!branch || !repo || !image) {
-    errEl.textContent = 'All fields are required.';
+    errEl.textContent = 'Branch name, repository URL and Odoo image are required.';
     errEl.style.display = 'block';
     return;
   }
@@ -540,10 +681,12 @@ async function submitCreate() {
   btn.textContent = 'Creating...';
 
   try {
+    var payload = {branch_name: branch, repo_url: repo, odoo_image: image};
+    if (template) payload.template_name = template;
     var r = await fetch(API + '/create', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({branch_name: branch, repo_url: repo, odoo_image: image})
+      body: JSON.stringify(payload)
     });
     var data = await r.json();
     if (data.ok) {

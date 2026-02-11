@@ -12,7 +12,7 @@ from starlette.responses import HTMLResponse, JSONResponse, Response
 from starlette.routing import Route
 from starlette.types import ASGIApp, Receive, Scope, Send
 
-from oduflow.docker_ops import env_ops
+from oduflow.docker_ops import env_ops, system_ops
 from oduflow.docker_ops.odoo_ops import get_environment_logs
 from oduflow.docker_ops.stats import get_container_stats, get_system_stats
 from oduflow.errors import BusyError, FlowError, NotFoundError
@@ -161,12 +161,13 @@ def _build_routes(
             branch_name = (body.get("branch_name") or "").strip()
             repo_url = (body.get("repo_url") or "").strip()
             odoo_image = (body.get("odoo_image") or "").strip()
+            template_name = (body.get("template_name") or "").strip()
             if not branch_name or not repo_url or not odoo_image:
                 return JSONResponse(
                     {"ok": False, "error": "branch_name, repo_url and odoo_image are required."},
                     status_code=400,
                 )
-            result = env_ops.create_environment(get_settings(), branch_name, repo_url, odoo_image)
+            result = env_ops.create_environment(get_settings(), branch_name, repo_url, odoo_image, template_name=template_name)
             return JSONResponse({"ok": True, "result": result})
         except FlowError as e:
             return _error_response(e)
@@ -201,9 +202,20 @@ def _build_routes(
             logger.exception("Unexpected error in api_stats")
             return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
 
+    def api_templates(request: Request) -> JSONResponse:
+        try:
+            templates = system_ops.list_templates(get_settings())
+            return JSONResponse({"ok": True, "templates": templates})
+        except FlowError as e:
+            return _error_response(e)
+        except Exception as e:
+            logger.exception("Unexpected error in api_templates")
+            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+
     return [
         Route("/", dashboard, methods=["GET"]),
         Route("/favicon.ico", favicon, methods=["GET"]),
+        Route("/api/templates", api_templates, methods=["GET"]),
         Route("/api/environments", api_list, methods=["GET"]),
         Route("/api/environments/create", api_create, methods=["POST"]),
         Route("/api/stats", api_stats, methods=["GET"]),
