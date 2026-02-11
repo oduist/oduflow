@@ -268,6 +268,35 @@ def restart_environment(branch_name: str) -> str:
 
 @mcp.tool()
 @handle_errors
+@with_mutex
+def rebuild_environment(branch_name: str) -> str:
+    """
+    Rebuild the Odoo container for an environment without losing the database or filestore.
+
+    Use this when the container is broken (e.g. packages were accidentally removed,
+    system files corrupted) and you need a fresh container from the same image,
+    reconnected to the existing database and filestore.
+
+    Args:
+        branch_name: The name of the branch/environment to rebuild.
+    """
+    result = env_ops.rebuild_environment(_get_settings(), branch_name)
+    lines = [
+        "Environment rebuilt successfully!",
+        f"URL: {result['url']}",
+        f"Odoo Container: {result['odoo_container']}",
+        f"Database: {result['database']}",
+        f"Workspace: {result['workspace']}",
+    ]
+    setup_logs = result.get("setup_logs", [])
+    if setup_logs:
+        lines.append("\n--- Setup Log ---")
+        lines.extend(setup_logs)
+    return "\n".join(lines)
+
+
+@mcp.tool()
+@handle_errors
 def get_environment_status(branch_name: str) -> str:
     """
     Check if containers are running for a specific branch.

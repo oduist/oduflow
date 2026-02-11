@@ -849,3 +849,158 @@ def pull_environment(settings: Settings, branch_name: str) -> dict[str, Any]:
         "changed_files": changed_files,
         "message": "Only XML/JS changes detected. Refresh your browser (--dev=xml is active).",
     }
+
+
+def rebuild_environment(settings: Settings, branch_name: str) -> dict[str, str]:
+    """Rebuild an environment by re-creating its container while preserving DB, repo and filestore."""
+    client = get_client()
+    odoo_container_name = get_resource_name(branch_name, "odoo", settings.prefix)
+
+    # ------------------------------------------------------------------
+    # 1. Look up existing container and extract its configuration
+    # ------------------------------------------------------------------
+    try:
+        container = client.containers.get(odoo_container_name)
+    except docker.errors.NotFound:
+        raise NotFoundError(
+            f"Environment '{branch_name}' does not exist. Use create_environment first."
+        )
+
+    # Image
+    try:
+        odoo_image = container.image.tags[0]
+    except (IndexError, Exception):
+        odoo_image = container.attrs["Config"]["Image"]
+
+    # Labels
+    labels = dict(container.labels)
+
+    # Environment – parse "KEY=VALUE" list into a dict
+    raw_env = container.attrs["Config"].get("Env") or []
+    env_dict: dict[str, str] = {}
+    for entry in raw_env:
+        key, _, value = entry.partition("=")
+        env_dict[key] = value
+
+    # Volumes / bind mounts – parse "host:container:mode" strings
+    raw_binds = container.attrs.get("HostConfig", {}).get("Binds") or []
+    volumes: dict[str, dict[str, str]] = {}
+    for bind in raw_binds:
+        parts = bind.split(":")
+        if len(parts) >= 3:
+            volumes[parts[0]] = {"bind": parts[1], "mode": parts[2]}
+        elif len(parts) == 2:
+            volumes[parts[0]] = {"bind": parts[1], "mode": "rw"}
+
+    # Command
+    raw_cmd = container.attrs["Config"].get("Cmd") or []
+    command = " ".join(raw_cmd) if raw_cmd else None
+
+    # Port bindings (only relevant in port mode)
+    host_port: int | None = None
+    if settings.routing_mode == "port":
+        port_bindings = container.attrs.get("HostConfig", {}).get("PortBindings") or {}
+        tcp_bindings = port_bindings.get("8069/tcp")
+        if tcp_bindings:
+            try:
+                host_port = int(tcp_bindings[0]["HostPort"])
+            except (KeyError, IndexError, ValueError, TypeError):
+                pass
+
+    logger.info(
+        "Rebuilding environment – stopping old container",
+        extra={"branch": branch_name, "container": odoo_container_name},
+    )
+
+    # ------------------------------------------------------------------
+    # 2. Stop and remove ONLY the container
+    # ------------------------------------------------------------------
+    try:
+        container.stop()
+    except Exception:
+        pass
+    try:
+        container.remove(v=True)
+    except docker.errors.APIError:
+        try:
+            container.remove(v=True, force=True)
+        except Exception:
+            pass
+
+    # ------------------------------------------------------------------
+    # 3. Re-mount filestore overlay if needed
+    # ------------------------------------------------------------------
+    fs_paths = get_filestore_paths(branch_name, settings.workspaces_dir)
+    merged = fs_paths["merged"]
+    if os.path.isdir(merged) and not os.path.ismount(merged):
+        env_db = get_db_name(branch_name)
+        template_name = labels.get("oduflow.template", settings.default_template)
+        if template_name and template_name != "none":
+            try:
+                _tmp_vols: dict = {}
+                _mount_filestore(
+                    client,
+                    settings,
+                    branch_name,
+                    env_db,
+                    odoo_image,
+                    _tmp_vols,
+                    template_name=template_name,
+                )
+            except Exception as exc:
+                logger.warning("Could not re-mount filestore overlay: %s", exc)
+
+    # ------------------------------------------------------------------
+    # 4. Re-create the container with the same settings
+    # ------------------------------------------------------------------
+    run_kwargs: dict = dict(
+        image=odoo_image,
+        name=odoo_container_name,
+        detach=True,
+        network=settings.shared_network,
+        environment=env_dict,
+        labels=labels,
+        volumes=volumes,
+        restart_policy={"Name": "unless-stopped"},
+    )
+    if command:
+        run_kwargs["command"] = command
+    if settings.routing_mode == "port" and host_port is not None:
+        run_kwargs["ports"] = {"8069/tcp": host_port}
+
+    new_container = client.containers.run(**run_kwargs)
+
+    # ------------------------------------------------------------------
+    # 5. Re-install apt packages and pip requirements
+    # ------------------------------------------------------------------
+    repo_path = get_repo_path(branch_name, settings.workspaces_dir)
+    setup_logs: list[str] = []
+    apt_log = _install_apt_packages(new_container, repo_path)
+    if apt_log:
+        setup_logs.append(apt_log)
+    _, pip_log = _install_pip_requirements(new_container, repo_path)
+    if pip_log:
+        setup_logs.append(pip_log)
+
+    # ------------------------------------------------------------------
+    # 6. Build URL and return result
+    # ------------------------------------------------------------------
+    if settings.routing_mode == "traefik":
+        url = f"https://{get_env_hostname(branch_name, settings.base_domain)}"
+    else:
+        url = f"http://{settings.external_host}:{host_port}"
+
+    env_db = get_db_name(branch_name)
+    workspace = get_workspace_path(branch_name, settings.workspaces_dir)
+    logger.info(
+        "Environment rebuilt",
+        extra={"branch": branch_name, "url": url, "container": odoo_container_name},
+    )
+
+    return {
+        "url": url,
+        "odoo_container": odoo_container_name,
+        "database": env_db,
+        "workspace": workspace,
+        "setup_logs": setup_logs,
+    }

@@ -156,7 +156,7 @@ The result: provisioning a new environment from a 30+ GB production database tak
                      │  MCP (Streamable HTTP / stdio)
 ┌────────────────────▼─────────────────────────────┐
 │  server.py — FastMCP transport layer             │
-│  • MCP tool definitions (21 tools)               │
+│  • MCP tool definitions (22 tools)               │
 │  • Global mutex for heavy operations             │
 │  • Unified error handler (FlowError → ValueError)│
 │  • Web UI mount (Starlette)                      │
@@ -223,7 +223,7 @@ src/oduflow/
     client.py           # docker.from_env() wrapper + UID/GID auto-detection
     system_ops.py       # init_system / destroy_system / reload_template / init_template /
                         # template_up / template_down / promote_env / drop_template / list_templates
-    env_ops.py          # create / delete / start / stop / restart / list / status / pull /
+    env_ops.py          # create / delete / start / stop / restart / rebuild / list / status / pull /
                         # apt/pip auto-install / filestore overlay mount
     odoo_ops.py         # install / upgrade / test / logs / exec_in_environment
     service_ops.py      # create / delete / update / list / logs for auxiliary services
@@ -576,6 +576,9 @@ oduflow call start_environment feature-login
 # Restart the Odoo container
 oduflow call restart_environment feature-login
 
+# Rebuild the container from scratch (keeps database and filestore)
+oduflow call rebuild_environment feature-login
+
 # Tear down everything (container, database, filestore, workspace)
 oduflow call delete_environment feature-login
 ```
@@ -782,6 +785,7 @@ All tools are accessible via MCP clients (Cursor, Cline, Amp, etc.), the REST AP
 | `start_environment` | | Start a stopped environment |
 | `stop_environment` | | Stop a running environment |
 | `restart_environment` | | Restart the Odoo container |
+| `rebuild_environment` | ✓ | Re-create the container from the same image, preserving DB and filestore |
 | **Odoo Operations** | | |
 | `pull_environment_repository` | ✓ | Git pull + smart analysis → auto install/upgrade/restart |
 | `install_odoo_modules` | ✓ | Install Odoo modules (`-i`) |
