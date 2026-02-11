@@ -173,11 +173,9 @@ def _copy_file_to_container(container: docker.models.containers.Container, src_p
 
 def init_system(
     settings: Settings,
-    version: str = "15.0",
-    force: bool = False,
 ) -> dict[str, str]:
     client = get_client()
-    logger.info("Initializing system", extra={"version": version, "force": force})
+    logger.info("Initializing system")
 
     system_labels = {settings.managed_label: "true", settings.system_label: "true"}
 
@@ -257,7 +255,7 @@ def reload_template(
 
     _copy_file_to_container(db_container, resolved_dump, "/tmp")
 
-    use_psql = resolved_dump.endswith(".sql") or _is_text_dump(resolved_dump)
+    use_psql = _is_text_dump(resolved_dump)
 
     if use_psql:
         restore_cmd = ["psql", "-U", settings.db_user, "-d", tpl_db, "-f", f"/tmp/{tmp_name}"]
@@ -750,14 +748,22 @@ def promote_env(settings: Settings, branch_name: str, template_name: str = "") -
     template_filestore_path = settings.get_template_filestore_path(template_name)
 
     if os.path.isdir(branch_merged) and os.path.ismount(branch_merged):
+        # Overlay-mounted filestore — snapshot while still mounted
         snapshot_dir = branch_merged + "_snapshot"
         if os.path.exists(snapshot_dir):
             shutil.rmtree(snapshot_dir)
         shutil.copytree(branch_merged, snapshot_dir)
         logger.info("Snapshot of merged filestore created for branch %s", branch_name)
+    elif os.path.isdir(branch_merged) and not os.path.ismount(branch_merged):
+        # Plain (non-overlay) filestore — e.g. env created with template=none
+        snapshot_dir = branch_merged + "_snapshot"
+        if os.path.exists(snapshot_dir):
+            shutil.rmtree(snapshot_dir)
+        shutil.copytree(branch_merged, snapshot_dir)
+        logger.info("Snapshot of plain filestore created for branch %s", branch_name)
     else:
         snapshot_dir = None
-        logger.warning("Branch filestore %s not mounted, skipping filestore update", branch_merged)
+        logger.warning("Branch filestore %s not found, skipping filestore update", branch_merged)
 
     # 5. Unmount all overlays
     for branch in active_branches:

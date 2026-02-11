@@ -87,20 +87,31 @@ def create_environment(branch_name: str, repo_url: str, odoo_image: str, templat
         branch_name: The name of the git branch (will be used for resource naming).
         repo_url: URL of the git repository to clone.
         odoo_image: Full Docker image name with tag (e.g. "odoo:17.0"). Use a pre-built image with all dependencies for faster startup.
-        template_name: Name of the template profile to use as database template (default: from ODUFLOW_DEFAULT_TEMPLATE).
+        template_name: Name of the template profile to use as database template (default: from ODUFLOW_DEFAULT_TEMPLATE). Pass "none" to skip template and initialise Odoo from scratch with -i base.
     """
     settings = _get_settings()
-    if not template_name:
-        template_name = settings.default_template
-    result = env_ops.create_environment(settings, branch_name, repo_url, odoo_image, template_name=template_name)
-    return (
-        f"Environment provisioned successfully!\n"
-        f"URL: {result['url']}\n"
-        f"Odoo Container: {result['odoo_container']}\n"
-        f"Database: {result['database']}\n"
-        f"Workspace: {result['workspace']}\n"
-        f"Template: {template_name}"
-    )
+    resolved_template: str | None
+    if template_name.lower() == "none":
+        resolved_template = None
+    elif not template_name:
+        resolved_template = settings.default_template
+    else:
+        resolved_template = template_name
+    result = env_ops.create_environment(settings, branch_name, repo_url, odoo_image, template_name=resolved_template)
+    display_template = resolved_template if resolved_template is not None else "none (init from scratch)"
+    lines = [
+        "Environment provisioned successfully!",
+        f"URL: {result['url']}",
+        f"Odoo Container: {result['odoo_container']}",
+        f"Database: {result['database']}",
+        f"Workspace: {result['workspace']}",
+        f"Template: {display_template}",
+    ]
+    setup_logs = result.get("setup_logs", [])
+    if setup_logs:
+        lines.append("\n--- Setup Log ---")
+        lines.extend(setup_logs)
+    return "\n".join(lines)
 
 
 @mcp.tool()
@@ -452,6 +463,30 @@ def create_service(name: str, image: str, port: int, hostname: str = "", env_var
 @mcp.tool()
 @handle_errors
 @with_mutex
+def update_service(name: str) -> str:
+    """
+    Update a managed auxiliary service container by pulling the latest image and re-creating the container with the same settings.
+
+    Args:
+        name: The name of the service to update (e.g. "redis", "meilisearch").
+    """
+    result = service_ops.update_service(_get_settings(), name)
+    status = "Image updated (new image pulled, container recreated)" if result.get("image_updated") else "Already up-to-date (no changes)"
+    digest_short = (result.get("new_digest") or "")[:19]
+    return (
+        f"Service updated successfully!\n"
+        f"Status: {status}\n"
+        f"Name: {result['name']}\n"
+        f"Container: {result['container_name']}\n"
+        f"Image: {result['image']}\n"
+        f"Digest: {digest_short}\n"
+        f"URL: {result['url']}"
+    )
+
+
+@mcp.tool()
+@handle_errors
+@with_mutex
 def delete_service(name: str) -> str:
     """
     Stop and remove a managed auxiliary service container.
@@ -498,8 +533,8 @@ def get_service_logs(name: str, n_lines: int = 100) -> str:
     return f"Recent logs for service '{name}':\n\n{output}"
 
 
-def _run_init(settings: Settings, version: str = "15.0", force: bool = False) -> None:
-    result = system_ops.init_system(settings, version=version, force=force)
+def _run_init(settings: Settings) -> None:
+    result = system_ops.init_system(settings)
     print(f"System {result['status']}.")
 
 
@@ -706,9 +741,7 @@ def main() -> None:
                                      usage="oduflow [-h] <command> ...")
     sub = parser.add_subparsers(dest="command", title="commands", metavar="")
 
-    p_init = sub.add_parser("init", help="Initialize shared infrastructure (network, DB, template)")
-    p_init.add_argument("--version", default="15.0", help="Odoo version (default: 15.0)")
-    p_init.add_argument("--force", action="store_true", help="Force recreate template DB")
+    sub.add_parser("init", help="Initialize shared infrastructure (network, DB)")
 
     sub.add_parser("destroy", help="Destroy all shared infrastructure")
 
@@ -769,7 +802,7 @@ def main() -> None:
         return
 
     if args.command == "init":
-        _run_init(_settings, version=args.version, force=args.force)
+        _run_init(_settings)
         return
 
     if args.command == "destroy":

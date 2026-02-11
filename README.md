@@ -227,17 +227,13 @@ cp .env.example .env
 
 ### 2. Initialize the system
 
-Create the shared Docker network, PostgreSQL container, and template database:
+Create the shared Docker network, PostgreSQL container, and Traefik reverse proxy:
 
 ```bash
 oduflow init
 ```
 
-Options:
-- `--version` — Odoo version, default `15.0`
-- `--force` — recreate the template DB even if it already exists
-
-The dump file is expected at `$ODUFLOW_HOME/templates/default/dump.sql` (or `dump.pgdump` for binary format). To generate one from scratch, use `oduflow init-template`.
+To set up a template database, use `oduflow init-template` (see below).
 
 ### 3. Start the MCP server
 
