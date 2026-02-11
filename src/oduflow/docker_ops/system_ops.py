@@ -858,12 +858,26 @@ def destroy_system(settings: Settings) -> dict[str, str]:
         c for c in containers
         if c.labels.get(settings.branch_label) and c.name not in system_names
     ]
-    if env_containers:
-        names = [c.name for c in env_containers]
+    svc_containers = [
+        c for c in containers
+        if c.labels.get("oduflow.service") and c.name not in system_names
+    ]
+    blocking = env_containers + svc_containers
+    if blocking:
+        names = [c.name for c in blocking]
         from oduflow.errors import ConflictError
-        raise ConflictError(
-            f"Active environments exist: {', '.join(names)}. Delete them first."
-        )
+        if svc_containers and not env_containers:
+            raise ConflictError(
+                f"Active environments/services exist: {', '.join(names)}. Delete them first."
+            )
+        elif env_containers and not svc_containers:
+            raise ConflictError(
+                f"Active environments exist: {', '.join(names)}. Delete them first."
+            )
+        else:
+            raise ConflictError(
+                f"Active environments/services exist: {', '.join(names)}. Delete them first."
+            )
 
     removed: list[str] = []
 

@@ -322,6 +322,30 @@
     outline: none;
   }
   .form-group select:focus { border-color: var(--accent); }
+  .svc-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 16px 20px;
+    margin-bottom: 12px;
+  }
+  .svc-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 8px;
+  }
+  .svc-header .left { display: flex; align-items: center; gap: 10px; }
+  .svc-name { font-weight: 600; font-size: 15px; }
+  .svc-meta {
+    display: flex;
+    gap: 24px;
+    font-size: 12px;
+    color: var(--text-dim);
+    margin-bottom: 6px;
+  }
+  .svc-meta strong { color: var(--text); font-weight: 500; }
+  .svc-actions { display: flex; gap: 8px; }
 </style>
 </head>
 <body>
@@ -340,6 +364,7 @@
 
 <div class="tabs">
   <button class="tab-btn active" data-tab="environments" onclick="switchTab('environments')">Environments</button>
+  <button class="tab-btn" data-tab="services" onclick="switchTab('services')">Services</button>
   <button class="tab-btn" data-tab="templates" onclick="switchTab('templates')">Templates</button>
 </div>
 
@@ -350,6 +375,14 @@
 <div id="tab-templates" class="tab-content">
   <div id="tpl-list"></div>
 </div>
+
+<div id="tab-services" class="tab-content">
+  <div style="display:flex;justify-content:flex-end;margin-bottom:12px;">
+    <button class="btn-create" onclick="openCreateServiceModal()">+ Create Service</button>
+  </div>
+  <div id="svc-list"></div>
+</div>
+
 <div class="toast" id="toast"></div>
 <div class="modal-overlay" id="create-modal" onclick="closeCreateModal(event)">
   <div class="modal" style="max-width:500px;">
@@ -391,6 +424,41 @@
       <button class="modal-close" onclick="closeLogsModal()">&times;</button>
     </div>
     <div class="modal-body"><pre id="logs-content">Loading...</pre></div>
+  </div>
+</div>
+<div class="modal-overlay" id="create-svc-modal" onclick="closeCreateServiceModal(event)">
+  <div class="modal" style="max-width:500px;">
+    <div class="modal-header">
+      <h2>Create Service</h2>
+      <button class="modal-close" onclick="closeCreateServiceModal()">&times;</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-error" id="create-svc-error"></div>
+      <div class="form-group">
+        <label for="svc-name">Service name</label>
+        <input type="text" id="svc-name" placeholder="e.g. redis, meilisearch">
+      </div>
+      <div class="form-group">
+        <label for="svc-image">Docker image</label>
+        <input type="text" id="svc-image" placeholder="e.g. redis:7, getmeili/meilisearch:v1.6">
+      </div>
+      <div class="form-group">
+        <label for="svc-port">Container port</label>
+        <input type="number" id="svc-port" placeholder="e.g. 6379">
+      </div>
+      <div class="form-group">
+        <label for="svc-hostname">Hostname (optional, traefik mode)</label>
+        <input type="text" id="svc-hostname" placeholder="e.g. redis.example.com">
+      </div>
+      <div class="form-group">
+        <label for="svc-envvars">Environment variables (optional)</label>
+        <input type="text" id="svc-envvars" placeholder="KEY1=val1,KEY2=val2">
+      </div>
+      <div class="form-actions">
+        <button class="btn" onclick="closeCreateServiceModal()">Cancel</button>
+        <button class="btn-create" id="svc-submit" onclick="submitCreateService()">Create</button>
+      </div>
+    </div>
   </div>
 </div>
 <div class="system-bar" id="system-bar">
@@ -595,6 +663,7 @@ function switchTab(name) {
     el.classList.toggle('active', el.id === 'tab-' + name);
   });
   if (name === 'templates') loadTemplates();
+  if (name === 'services') loadServices();
 }
 
 async function loadTemplates() {
@@ -740,6 +809,160 @@ document.getElementById('refresh-interval').addEventListener('change', function(
   refreshInterval = v;
   resetTimers();
 });
+
+const API_SERVICES = '/api/services';
+
+async function loadServices() {
+  try {
+    var r = await fetch(API_SERVICES);
+    var data = await r.json();
+    if (data.ok) {
+      renderServices(data.services || []);
+    } else {
+      showToast(data.error || 'Failed to load services', true);
+    }
+  } catch (e) {
+    showToast('Connection error: ' + e.message, true);
+  }
+}
+
+function renderServices(services) {
+  var el = document.getElementById('svc-list');
+  if (!services || services.length === 0) {
+    el.innerHTML = '<div class="empty">No services found.<br>Create one to get started.</div>';
+    return;
+  }
+  el.innerHTML = services.map(function(svc) {
+    var urlHtml = svc.url
+      ? '<div class="svc-meta"><span>URL: <a href="' + esc(svc.url) + '" target="_blank" style="color:var(--accent);text-decoration:none;">' + esc(svc.url) + '</a></span></div>'
+      : '';
+    var envHtml = '';
+    if (svc.env_vars && Object.keys(svc.env_vars).length > 0) {
+      var envStr = Object.keys(svc.env_vars).map(function(k) { return esc(k) + '=' + esc(svc.env_vars[k]); }).join(', ');
+      envHtml = '<div class="svc-meta"><span>Env: <strong>' + envStr + '</strong></span></div>';
+    }
+    return '<div class="svc-card" data-svc="' + esc(svc.name) + '">' +
+      '<div class="svc-header">' +
+        '<div class="left">' +
+          '<span class="svc-name">' + esc(svc.name) + '</span>' +
+          '<span class="badge ' + badgeClass(svc.status) + '">' + esc(svc.status) + '</span>' +
+        '</div>' +
+        '<div class="svc-actions">' +
+          '<button class="btn btn-logs" onclick="showServiceLogs(\'' + escAttr(svc.name) + '\')">Logs</button>' +
+          '<button class="btn btn-delete" onclick="doDeleteService(\'' + escAttr(svc.name) + '\')">Delete</button>' +
+        '</div>' +
+      '</div>' +
+      '<div class="svc-meta">' +
+        '<span>Image: <strong>' + esc(svc.image) + '</strong></span>' +
+        '<span>Container: <strong>' + esc(svc.container_name) + '</strong></span>' +
+        (svc.port ? '<span>Port: <strong>' + svc.port + '</strong></span>' : '') +
+      '</div>' +
+      urlHtml +
+      envHtml +
+    '</div>';
+  }).join('');
+}
+
+async function doDeleteService(name) {
+  if (!confirm('Delete service "' + name + '"? This will remove the container and its data.')) return;
+  var card = document.querySelector('[data-svc="' + name + '"]');
+  if (card) card.querySelectorAll('.btn').forEach(function(b) { b.disabled = true; });
+  try {
+    var r = await fetch(API_SERVICES + '/' + encodeURIComponent(name) + '/delete', { method: 'POST' });
+    var data = await r.json();
+    if (data.ok) {
+      showToast('Service "' + name + '" deleted');
+    } else {
+      showToast(data.error || 'Delete failed', true);
+    }
+  } catch (e) {
+    showToast('Connection error: ' + e.message, true);
+  }
+  await loadServices();
+}
+
+async function showServiceLogs(name) {
+  var modal = document.getElementById('logs-modal');
+  document.getElementById('logs-title').textContent = 'Service Logs — ' + name;
+  document.getElementById('logs-content').textContent = 'Loading...';
+  modal.classList.add('show');
+  try {
+    var r = await fetch(API_SERVICES + '/' + encodeURIComponent(name) + '/logs?n=300');
+    var data = await r.json();
+    if (data.ok) {
+      document.getElementById('logs-content').textContent = data.logs || '(empty)';
+    } else {
+      document.getElementById('logs-content').textContent = 'Error: ' + (data.error || 'Failed to load logs');
+    }
+  } catch (e) {
+    document.getElementById('logs-content').textContent = 'Connection error: ' + e.message;
+  }
+}
+
+function openCreateServiceModal() {
+  document.getElementById('svc-name').value = '';
+  document.getElementById('svc-image').value = '';
+  document.getElementById('svc-port').value = '';
+  document.getElementById('svc-hostname').value = '';
+  document.getElementById('svc-envvars').value = '';
+  var errEl = document.getElementById('create-svc-error');
+  errEl.style.display = 'none';
+  errEl.textContent = '';
+  document.getElementById('svc-submit').disabled = false;
+  document.getElementById('create-svc-modal').classList.add('show');
+  document.getElementById('svc-name').focus();
+}
+
+function closeCreateServiceModal(event) {
+  if (event && event.target !== event.currentTarget) return;
+  document.getElementById('create-svc-modal').classList.remove('show');
+}
+
+async function submitCreateService() {
+  var name = document.getElementById('svc-name').value.trim();
+  var image = document.getElementById('svc-image').value.trim();
+  var port = document.getElementById('svc-port').value.trim();
+  var hostname = document.getElementById('svc-hostname').value.trim();
+  var envvars = document.getElementById('svc-envvars').value.trim();
+  var errEl = document.getElementById('create-svc-error');
+
+  if (!name || !image || !port) {
+    errEl.textContent = 'Service name, Docker image and port are required.';
+    errEl.style.display = 'block';
+    return;
+  }
+
+  errEl.style.display = 'none';
+  var btn = document.getElementById('svc-submit');
+  btn.disabled = true;
+  btn.textContent = 'Creating...';
+
+  try {
+    var payload = { name: name, image: image, port: parseInt(port, 10) };
+    if (hostname) payload.hostname = hostname;
+    if (envvars) payload.env_vars = envvars;
+    var r = await fetch(API_SERVICES + '/create', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(payload)
+    });
+    var data = await r.json();
+    if (data.ok) {
+      closeCreateServiceModal();
+      showToast('Service "' + name + '" created');
+      await loadServices();
+    } else {
+      errEl.textContent = data.error || 'Creation failed';
+      errEl.style.display = 'block';
+    }
+  } catch (e) {
+    errEl.textContent = 'Connection error: ' + e.message;
+    errEl.style.display = 'block';
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Create';
+  }
+}
 
 loadEnvironments();
 loadStats();

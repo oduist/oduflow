@@ -6,7 +6,7 @@ import threading
 
 from fastmcp import FastMCP
 
-from oduflow.docker_ops import env_ops, odoo_ops, system_ops
+from oduflow.docker_ops import env_ops, odoo_ops, service_ops, system_ops
 from oduflow import git_ops
 from oduflow.errors import BusyError, FlowError
 from oduflow.settings import Settings
@@ -417,6 +417,87 @@ def exec_in_environment(branch_name: str, command: str, user: str = "odoo") -> s
     return f"{status}. Exit code: {exit_code}.\n\nOutput:\n{output}"
 
 
+@mcp.tool()
+@handle_errors
+@with_mutex
+def create_service(name: str, image: str, port: int, hostname: str = "", env_vars: str = "") -> str:
+    """
+    Create a managed auxiliary service container (e.g. Redis, Meilisearch).
+
+    Args:
+        name: Short name for the service (e.g. "redis", "meilisearch").
+        image: Docker image with tag (e.g. "redis:7", "getmeili/meilisearch:v1.6").
+        port: The container port the service listens on.
+        hostname: Custom hostname for traefik routing (optional, traefik mode only).
+        env_vars: Comma-separated KEY=VALUE pairs (e.g. "MEILI_MASTER_KEY=abc,MEILI_ENV=production").
+    """
+    settings = _get_settings()
+    parsed_env = None
+    if env_vars:
+        parsed_env = dict(item.split("=", 1) for item in env_vars.split(",") if "=" in item)
+    result = service_ops.create_service(
+        settings, name, image, port,
+        hostname=hostname or None,
+        env_vars=parsed_env,
+    )
+    return (
+        f"Service created successfully!\n"
+        f"Name: {result['name']}\n"
+        f"Container: {result['container_name']}\n"
+        f"Image: {result['image']}\n"
+        f"URL: {result['url']}"
+    )
+
+
+@mcp.tool()
+@handle_errors
+@with_mutex
+def delete_service(name: str) -> str:
+    """
+    Stop and remove a managed auxiliary service container.
+
+    Args:
+        name: The name of the service to delete.
+    """
+    result = service_ops.delete_service(_get_settings(), name)
+    return f"Service '{result['name']}' deleted. Container '{result['container_name']}' removed."
+
+
+@mcp.tool()
+@handle_errors
+def list_services() -> str:
+    """List all managed auxiliary service containers."""
+    services = service_ops.list_services(_get_settings())
+    if not services:
+        return "No active services found."
+    output = "Active Services:\n"
+    for svc in services:
+        output += f"- {svc['name']} ({svc['container_name']}): {svc['status']}\n"
+        output += f"  Image: {svc['image']}\n"
+        if svc.get("port"):
+            output += f"  Port: {svc['port']}\n"
+        if svc.get("url"):
+            output += f"  URL: {svc['url']}\n"
+        if svc.get("env_vars"):
+            env_str = ", ".join(f"{k}={v}" for k, v in svc["env_vars"].items())
+            output += f"  Env: {env_str}\n"
+    return output
+
+
+@mcp.tool()
+@handle_errors
+def get_service_logs(name: str, n_lines: int = 100) -> str:
+    """
+    Get logs from a managed auxiliary service container.
+
+    Args:
+        name: The name of the service.
+        n_lines: Number of recent log lines to retrieve (default 100).
+    """
+    output = service_ops.get_service_logs(_get_settings(), name, n_lines)
+    return f"Recent logs for service '{name}':\n\n{output}"
+
+
 def _run_init(settings: Settings, version: str = "15.0", force: bool = False) -> None:
     result = system_ops.init_system(settings, version=version, force=force)
     print(f"System {result['status']}.")
@@ -505,6 +586,26 @@ def _run_list_templates(settings: Settings) -> None:
     for r in templates:
         db_status = "loaded" if r["db_loaded"] else "not loaded"
         print(f"  {r['template_name']}: DB={db_status}, SQL={'yes' if r['has_sql'] else 'no'}, Filestore={'yes' if r['has_filestore'] else 'no'}")
+
+
+def _run_list_services(settings: Settings) -> None:
+    from oduflow.docker_ops import service_ops
+    services = service_ops.list_services(settings)
+    if not services:
+        print("No active services found.")
+        return
+    print("Active services:")
+    for svc in services:
+        status_icon = "●" if svc["status"] == "running" else "○"
+        print(f"  {status_icon} {svc['name']} ({svc['container_name']}): {svc['status']}")
+        print(f"    Image: {svc['image']}")
+        if svc.get("port"):
+            print(f"    Port: {svc['port']}")
+        if svc.get("url"):
+            print(f"    URL: {svc['url']}")
+        if svc.get("env_vars"):
+            env_str = ", ".join(f"{k}={v}" for k, v in svc["env_vars"].items())
+            print(f"    Env: {env_str}")
 
 
 def _run_destroy(settings: Settings) -> None:
@@ -637,6 +738,8 @@ def main() -> None:
 
     sub.add_parser("list-templates", help="List available template profiles")
 
+    sub.add_parser("list-services", help="List managed auxiliary service containers")
+
     p_list = sub.add_parser("list", help="List registered MCP tools")
     p_list.add_argument("--verbose", "-v", action="store_true", help="Show tool descriptions")
 
@@ -699,6 +802,10 @@ def main() -> None:
 
     if args.command == "list-templates":
         _run_list_templates(_settings)
+        return
+
+    if args.command == "list-services":
+        _run_list_services(_settings)
         return
 
     transport_str = os.getenv("ODUFLOW_TRANSPORT", "http")

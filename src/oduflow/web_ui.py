@@ -12,7 +12,7 @@ from starlette.responses import HTMLResponse, JSONResponse, Response
 from starlette.routing import Route
 from starlette.types import ASGIApp, Receive, Scope, Send
 
-from oduflow.docker_ops import env_ops, system_ops
+from oduflow.docker_ops import env_ops, service_ops, system_ops
 from oduflow.docker_ops.odoo_ops import get_environment_logs
 from oduflow.docker_ops.stats import get_container_stats, get_system_stats
 from oduflow.errors import BusyError, FlowError, NotFoundError
@@ -212,6 +212,78 @@ def _build_routes(
             logger.exception("Unexpected error in api_templates")
             return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
 
+    def api_services(request: Request) -> JSONResponse:
+        try:
+            services = service_ops.list_services(get_settings())
+            return JSONResponse({"ok": True, "services": services})
+        except FlowError as e:
+            return _error_response(e)
+        except Exception as e:
+            logger.exception("Unexpected error in api_services")
+            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+
+    async def api_service_create(request: Request) -> JSONResponse:
+        if not busy_lock.acquire(blocking=False):
+            return _error_response(BusyError("Another operation is in progress."))
+        try:
+            body = await request.json()
+            name = (body.get("name") or "").strip()
+            image = (body.get("image") or "").strip()
+            port = body.get("port")
+            hostname = (body.get("hostname") or "").strip() or None
+            env_vars_raw = (body.get("env_vars") or "").strip()
+            if not name or not image or not port:
+                return JSONResponse(
+                    {"ok": False, "error": "name, image and port are required."},
+                    status_code=400,
+                )
+            env_vars = None
+            if env_vars_raw:
+                env_vars = dict(
+                    item.split("=", 1) for item in env_vars_raw.split(",") if "=" in item
+                )
+            result = service_ops.create_service(
+                get_settings(), name, image, int(port), hostname=hostname, env_vars=env_vars
+            )
+            return JSONResponse({"ok": True, "result": result})
+        except FlowError as e:
+            return _error_response(e)
+        except Exception as e:
+            logger.exception("Unexpected error in api_service_create")
+            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+        finally:
+            busy_lock.release()
+
+    def api_service_delete(request: Request) -> JSONResponse:
+        name = request.path_params["name"]
+        if not busy_lock.acquire(blocking=False):
+            return _error_response(BusyError("Another operation is in progress."))
+        try:
+            result = service_ops.delete_service(get_settings(), name)
+            return JSONResponse({"ok": True, "result": result})
+        except FlowError as e:
+            return _error_response(e)
+        except Exception as e:
+            logger.exception("Unexpected error in api_service_delete")
+            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+        finally:
+            busy_lock.release()
+
+    def api_service_logs(request: Request) -> JSONResponse:
+        name = request.path_params["name"]
+        try:
+            n = int(request.query_params.get("n", "200"))
+        except (ValueError, TypeError):
+            n = 200
+        try:
+            logs = service_ops.get_service_logs(get_settings(), name, n)
+            return JSONResponse({"ok": True, "logs": logs})
+        except FlowError as e:
+            return _error_response(e)
+        except Exception as e:
+            logger.exception("Unexpected error in api_service_logs")
+            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+
     return [
         Route("/", dashboard, methods=["GET"]),
         Route("/favicon.ico", favicon, methods=["GET"]),
@@ -223,6 +295,10 @@ def _build_routes(
         Route("/api/environments/{branch:path}/stop", api_stop, methods=["POST"]),
         Route("/api/environments/{branch:path}/restart", api_restart, methods=["POST"]),
         Route("/api/environments/{branch:path}/delete", api_delete, methods=["POST"]),
+        Route("/api/services", api_services, methods=["GET"]),
+        Route("/api/services/create", api_service_create, methods=["POST"]),
+        Route("/api/services/{name}/delete", api_service_delete, methods=["POST"]),
+        Route("/api/services/{name}/logs", api_service_logs, methods=["GET"]),
         Route("/api/environments/{branch:path}/logs", api_logs, methods=["GET"]),
     ]
 
