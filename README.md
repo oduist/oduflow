@@ -1058,6 +1058,39 @@ The agent will call the appropriate MCP tools in sequence:
 3. `test_environment` → run the test suite
 4. Report results back
 
+#### Recommended Agent Rule (Cursor / Windsurf / Amp)
+
+You can add the following rule to your AI coding agent to automate environment lifecycle management:
+
+```
+---
+description: "Manage Odoo dev environments via the Flow MCP server"
+alwaysApply: true
+---
+```
+
+**Initialization**
+1. **Check**: Call `list_environments`. If an environment matching the current branch already exists, use it.
+2. **Create**: If not, use `create_environment`:
+   - `branch_name`: `<current branch>`
+   - `repo_url`: `<repository URL>` (HTTPS)
+   - `odoo_image`: `odoo19_prod` (IMPORTANT: always use this image)
+3. **Auth**: On a 401/403 error, suggest `setup_repo_auth`.
+4. When creating or finding an existing environment, add the environment URL to `{@artifacts_path}/report.md`.
+
+**Sync & Work Cycle**
+1. **Push**: Run `git push` when the task is complete.
+2. **Pull**: After every `push` (yours or user-requested), ALWAYS call `pull_environment_repository`.
+3. **Automation**: The Flow server decides whether a restart or module upgrade is needed. You do NOT need to call `restart_environment` or `upgrade_odoo_modules`.
+
+**Teardown**
+- Only delete the environment via `delete_environment` if the task status is **Done** or **Canceled**.
+- Do not recreate the environment to fix errors without the user's consent.
+
+**Important**
+- One task = one branch = one environment.
+- Always display the environment URL to the user when creating an environment.
+
 ### 📊 Environment with Auxiliary Services
 
 Set up a full-stack development environment:
