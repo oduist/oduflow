@@ -39,11 +39,11 @@ def live_environment(tmp_path_factory):
     tmp_dir = str(tmp_path_factory.mktemp("oduflow"))
     settings = _test_settings(tmp_dir)
 
-    ref_dir = os.path.join(tmp_dir, "refs", "default")
-    os.makedirs(ref_dir, exist_ok=True)
-    dump_sql = os.path.join(ref_dir, "dump.sql")
+    template_dir = os.path.join(tmp_dir, "templates", "default")
+    os.makedirs(template_dir, exist_ok=True)
+    dump_sql = os.path.join(template_dir, "dump.sql")
 
-    real_dump = "/srv/oduflow_data/refs/default/dump.sql"
+    real_dump = "/srv/oduflow_data/templates/default/dump.sql"
     alt_dump = "/srv/oduflow_data/dump/dump.sql"
     if os.path.isfile(real_dump):
         import shutil

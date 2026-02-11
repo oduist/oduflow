@@ -23,7 +23,6 @@ class Settings:
     traefik_container: str = "oduflow-traefik"
     traefik_acme_volume: str = "oduflow-traefik-acme"
     flow_server_port: int = 8000
-    template_db_name: str = "odoo_ref"
     prefix: str = "oduflow-"
     branch_label: str = "oduflow.branch"
     managed_label: str = "oduflow.managed"
@@ -31,30 +30,33 @@ class Settings:
     repo_label: str = "oduflow.repo"
     image_label: str = "oduflow.image"
     default_branch: str = "prod"
+    default_template: str = "default"
     port_registry_path: str = ""
 
-    def get_ref_dir(self, ref_name: str = "default") -> str:
-        return os.path.join(self.home, "refs", ref_name)
+    def get_template_dir(self, template_name: str = "") -> str:
+        if not template_name:
+            template_name = self.default_template
+        return os.path.join(self.home, "templates", template_name)
 
-    def get_ref_sql_path(self, ref_name: str = "default") -> str:
-        return os.path.join(self.get_ref_dir(ref_name), "dump.sql")
+    def get_template_sql_path(self, template_name: str = "") -> str:
+        return os.path.join(self.get_template_dir(template_name), "dump.sql")
 
-    def get_ref_filestore_path(self, ref_name: str = "default") -> str:
-        return os.path.join(self.get_ref_dir(ref_name), "filestore")
+    def get_template_filestore_path(self, template_name: str = "") -> str:
+        return os.path.join(self.get_template_dir(template_name), "filestore")
 
     def get_dump_sql_path(self) -> str:
-        return self.get_ref_sql_path("default")
+        return self.get_template_sql_path(self.default_template)
 
     def get_dump_filestore_path(self) -> str:
-        return self.get_ref_filestore_path("default")
+        return self.get_template_filestore_path(self.default_template)
 
-    def list_refs(self) -> list[str]:
-        refs_dir = os.path.join(self.home, "refs")
-        if not os.path.isdir(refs_dir):
+    def list_templates(self) -> list[str]:
+        templates_dir = os.path.join(self.home, "templates")
+        if not os.path.isdir(templates_dir):
             return []
         return sorted(
-            entry for entry in os.listdir(refs_dir)
-            if os.path.isdir(os.path.join(refs_dir, entry))
+            entry for entry in os.listdir(templates_dir)
+            if os.path.isdir(os.path.join(templates_dir, entry))
         )
 
     @staticmethod
@@ -76,6 +78,7 @@ class Settings:
             db_password=os.getenv("ODOO_DB_PASSWORD", "odoo"),
             flow_server_port=int(os.getenv("ODUFLOW_PORT", "8000")),
             default_branch=os.getenv("ODUFLOW_DEFAULT_BRANCH", "prod"),
+            default_template=os.getenv("ODUFLOW_DEFAULT_TEMPLATE", "default"),
             port_registry_path=os.getenv(
                 "ODUFLOW_PORT_REGISTRY",
                 os.path.join(flow_home, "ports.json"),

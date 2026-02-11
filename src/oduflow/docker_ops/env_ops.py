@@ -46,7 +46,9 @@ def _get_used_ports(client: DockerClient, settings: Settings, exclude_branch: st
     return used
 
 
-def _ensure_system_ready(client: DockerClient, settings: Settings, ref_name: str = "default") -> None:
+def _ensure_system_ready(client: DockerClient, settings: Settings, template_name: str = "") -> None:
+    if not template_name:
+        template_name = settings.default_template
     try:
         db_container = client.containers.get(settings.shared_db_container)
         if db_container.status != "running":
@@ -58,10 +60,10 @@ def _ensure_system_ready(client: DockerClient, settings: Settings, ref_name: str
             f"{settings.shared_db_container} not found. Run init_system first."
         )
 
-    tpl_db = get_template_db_name(ref_name)
+    tpl_db = get_template_db_name(template_name)
     if not _db_exists(client, settings, tpl_db):
         raise PrerequisiteNotMetError(
-            f"Template database '{tpl_db}' not found. Run init_ref first."
+            f"Template database '{tpl_db}' not found. Run init_template first."
         )
 
     if settings.routing_mode == "traefik":
@@ -85,11 +87,13 @@ def _mount_filestore(
     odoo_image: str,
     odoo_volumes: dict,
     *,
-    ref_name: str = "default",
+    template_name: str = "",
 ) -> None:
-    ref = settings.get_ref_filestore_path(ref_name)
-    if not ref or not os.path.isdir(ref):
-        logger.debug("Dump filestore not found at %s, skipping overlay mount", ref)
+    if not template_name:
+        template_name = settings.default_template
+    template_filestore = settings.get_template_filestore_path(template_name)
+    if not template_filestore or not os.path.isdir(template_filestore):
+        logger.debug("Dump filestore not found at %s, skipping overlay mount", template_filestore)
         return
 
     paths = get_filestore_paths(branch_name, settings.workspaces_dir)
@@ -114,7 +118,7 @@ def _mount_filestore(
     result = subprocess.run(
         [
             "fuse-overlayfs",
-            "-o", f"lowerdir={ref},upperdir={paths['upper']},workdir={paths['work']},allow_other",
+            "-o", f"lowerdir={template_filestore},upperdir={paths['upper']},workdir={paths['work']},allow_other",
             paths["merged"],
         ],
         capture_output=True,
@@ -258,8 +262,10 @@ def create_environment(
     branch_name: str,
     repo_url: str,
     odoo_image: str = "odoo:15.0",
-    ref_name: str = "default",
+    template_name: str = "",
 ) -> dict[str, str]:
+    if not template_name:
+        template_name = settings.default_template
     try:
         client = get_client()
     except Exception as e:
@@ -267,7 +273,7 @@ def create_environment(
             f"Failed to connect to Docker daemon: {e}. Ensure Docker is running."
         )
 
-    _ensure_system_ready(client, settings, ref_name)
+    _ensure_system_ready(client, settings, template_name)
 
     odoo_container_name = get_resource_name(branch_name, "odoo", settings.prefix)
     try:
@@ -299,7 +305,7 @@ def create_environment(
         settings.branch_label: branch_name,
         settings.repo_label: repo_url,
         settings.image_label: odoo_image,
-        "oduflow.ref": ref_name,
+        "oduflow.template": template_name,
     }
 
     if settings.routing_mode == "traefik":
@@ -408,7 +414,7 @@ def create_environment(
             "Repository clone timed out (60s). Repository may be too large or network is slow.",
         )
 
-    tpl_db = get_template_db_name(ref_name)
+    tpl_db = get_template_db_name(template_name)
     _exec_sql(
         client,
         settings,
@@ -435,7 +441,7 @@ def create_environment(
             "mode": "ro",
         }
 
-    _mount_filestore(client, settings, branch_name, env_db, odoo_image, odoo_volumes, ref_name=ref_name)
+    _mount_filestore(client, settings, branch_name, env_db, odoo_image, odoo_volumes, template_name=template_name)
 
     host_port: int | None = None
     if settings.routing_mode == "port":
@@ -553,7 +559,7 @@ def list_environments(settings: Settings) -> list[dict[str, Any]]:
                 "url": None,
                 "odoo_image": container.labels.get(settings.image_label, ""),
                 "repo_url": container.labels.get(settings.repo_label, ""),
-                "ref_name": container.labels.get("oduflow.ref", "default"),
+                "template_name": container.labels.get("oduflow.template", "default"),
             }
 
         try:

@@ -31,8 +31,8 @@ def get_env_hostname(branch_name: str, base_domain: str) -> str:
     return f"{slug}.{base_domain}"
 
 
-def get_template_db_name(ref_name: str = "default") -> str:
-    slug = ref_name.replace("/", "-")
+def get_template_db_name(template_name: str = "default") -> str:
+    slug = template_name.replace("/", "-")
     return f"odoo_ref_{slug}"
 
 

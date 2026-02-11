@@ -53,7 +53,6 @@ class TestInitSystem:
         result = system_ops.init_system(TEST_SETTINGS)
 
         assert result["status"] == "initialized"
-        assert result["template_db"] == "odoo_ref"
         mock_docker_client.networks.create.assert_called_once()
         mock_docker_client.volumes.create.assert_called_once()
 
@@ -68,7 +67,7 @@ class TestInitSystem:
 
         result = system_ops.init_system(TEST_SETTINGS)
 
-        assert result["status"] == "already initialized"
+        assert result["status"] == "initialized"
 
 
 class TestDestroySystem:

@@ -225,14 +225,16 @@ def init_system(
     return {"status": "initialized"}
 
 
-def reload_ref(
+def reload_template(
     settings: Settings,
-    ref_name: str = "default",
+    template_name: str = "",
     dump_path: str | None = None,
 ) -> dict[str, str]:
+    if not template_name:
+        template_name = settings.default_template
     client = get_client()
-    tpl_db = get_template_db_name(ref_name)
-    resolved_dump = dump_path or settings.get_ref_sql_path(ref_name)
+    tpl_db = get_template_db_name(template_name)
+    resolved_dump = dump_path or settings.get_template_sql_path(template_name)
 
     if not os.path.isfile(resolved_dump):
         raise NotFoundError(f"Dump file not found: {resolved_dump}")
@@ -287,28 +289,30 @@ def reload_ref(
     return {"status": "reloaded", "template_db": tpl_db, "restore_seconds": round(restore_elapsed, 1)}
 
 
-def init_ref(
+def init_template(
     settings: Settings,
     odoo_image: str = "odoo:17.0",
     modules: str = "base",
-    ref_name: str = "default",
+    template_name: str = "",
     force: bool = False,
 ) -> dict[str, str]:
-    dump_sql_path = settings.get_ref_sql_path(ref_name)
-    dump_filestore_path = settings.get_ref_filestore_path(ref_name)
+    if not template_name:
+        template_name = settings.default_template
+    template_sql_path = settings.get_template_sql_path(template_name)
+    template_filestore_path = settings.get_template_filestore_path(template_name)
 
-    existing_dump = os.path.exists(dump_sql_path)
+    existing_dump = os.path.exists(template_sql_path)
     existing_filestore = (
-        os.path.exists(dump_filestore_path)
-        and any(True for _ in pathlib.Path(dump_filestore_path).rglob("*") if _.is_file())
+        os.path.exists(template_filestore_path)
+        and any(True for _ in pathlib.Path(template_filestore_path).rglob("*") if _.is_file())
     )
 
     if (existing_dump or existing_filestore) and not force:
         parts = []
         if existing_dump:
-            parts.append(f"dump.sql ({dump_sql_path})")
+            parts.append(f"dump.sql ({template_sql_path})")
         if existing_filestore:
-            parts.append(f"filestore ({dump_filestore_path})")
+            parts.append(f"filestore ({template_filestore_path})")
         raise RuntimeError(
             f"Existing data found: {', '.join(parts)}. "
             "Use --force to overwrite."
@@ -316,14 +320,14 @@ def init_ref(
 
     if force:
         if existing_dump:
-            os.remove(dump_sql_path)
-            logger.info("Removed existing %s", dump_sql_path)
+            os.remove(template_sql_path)
+            logger.info("Removed existing %s", template_sql_path)
         if existing_filestore:
-            shutil.rmtree(dump_filestore_path)
-            logger.info("Removed existing %s", dump_filestore_path)
+            shutil.rmtree(template_filestore_path)
+            logger.info("Removed existing %s", template_filestore_path)
 
     client = get_client()
-    logger.info("Generating reference dump from clean Odoo", extra={"image": odoo_image, "modules": modules})
+    logger.info("Generating template dump from clean Odoo", extra={"image": odoo_image, "modules": modules})
 
     system_labels = {settings.managed_label: "true", settings.system_label: "true"}
 
@@ -366,7 +370,7 @@ def init_ref(
     _wait_pg_ready(client, settings)
 
     build_db = "odoo_ref_build"
-    temp_container_name = "flow-ref-builder"
+    temp_container_name = "flow-template-builder"
 
     if _db_exists(client, settings, build_db):
         _exec_sql(client, settings, f"DROP DATABASE {build_db} WITH (FORCE);")
@@ -417,7 +421,7 @@ def init_ref(
 
     logger.info("Odoo init completed in %.1fs", init_elapsed)
 
-    os.makedirs(os.path.dirname(dump_sql_path), exist_ok=True)
+    os.makedirs(os.path.dirname(template_sql_path), exist_ok=True)
 
     db_container = client.containers.get(settings.shared_db_container)
     dump_cmd = [
@@ -440,14 +444,14 @@ def init_ref(
         f = tar.extractfile(member)
         if f is None:
             raise ExternalCommandError("get_archive", -1, "Could not extract dump from tar")
-        with open(dump_sql_path, "wb") as out:
+        with open(template_sql_path, "wb") as out:
             out.write(f.read())
 
-    logger.info("Dump saved to %s", dump_sql_path)
+    logger.info("Dump saved to %s", template_sql_path)
 
-    if os.path.exists(dump_filestore_path):
-        shutil.rmtree(dump_filestore_path)
-    os.makedirs(dump_filestore_path, exist_ok=True)
+    if os.path.exists(template_filestore_path):
+        shutil.rmtree(template_filestore_path)
+    os.makedirs(template_filestore_path, exist_ok=True)
 
     odoo_data_container_path = "/var/lib/odoo/.local/share/Odoo"
     try:
@@ -464,22 +468,22 @@ def init_ref(
                 if not rel:
                     continue
                 member.name = rel
-                tar.extract(member, dump_filestore_path)
+                tar.extract(member, template_filestore_path)
                 if not member.isdir():
                     extracted += 1
-        logger.info("Filestore extracted to %s (%d files)", dump_filestore_path, extracted)
+        logger.info("Filestore extracted to %s (%d files)", template_filestore_path, extracted)
 
     except docker.errors.NotFound:
         logger.info(
             "Odoo did not create data dir during init (normal for --stop-after-init). "
-            "The dump filestore at %s is empty; environments will start with an empty filestore.",
-            dump_filestore_path,
+            "The template filestore at %s is empty; environments will start with an empty filestore.",
+            template_filestore_path,
         )
 
     odoo_uid_gid = get_odoo_uid_gid(client, odoo_image)
     uid_str, gid_str = odoo_uid_gid.split(":")
     uid, gid = int(uid_str), int(gid_str)
-    for root, dirs, files in os.walk(dump_filestore_path):
+    for root, dirs, files in os.walk(template_filestore_path):
         os.chown(root, uid, gid)
         for name in dirs + files:
             os.chown(os.path.join(root, name), uid, gid)
@@ -490,36 +494,38 @@ def init_ref(
     _exec_sql(client, settings, f"DROP DATABASE IF EXISTS {build_db} WITH (FORCE);")
     logger.info("Temporary database dropped")
 
-    logger.info("Reference generation complete, loading into template DB")
-    result = reload_ref(settings, ref_name=ref_name)
-    result["generated_dump"] = dump_sql_path
-    result["generated_filestore"] = dump_filestore_path
-    result["filestore_files"] = sum(1 for _ in pathlib.Path(dump_filestore_path).rglob("*") if _.is_file())
+    logger.info("Template generation complete, loading into template DB")
+    result = reload_template(settings, template_name=template_name)
+    result["generated_dump"] = template_sql_path
+    result["generated_filestore"] = template_filestore_path
+    result["filestore_files"] = sum(1 for _ in pathlib.Path(template_filestore_path).rglob("*") if _.is_file())
     return result
 
 
-_REF_EDITOR_CONTAINER = "flow-ref-editor"
-_REF_EDITOR_BRANCH = "__ref__"
+_TEMPLATE_EDITOR_CONTAINER = "flow-template-editor"
+_TEMPLATE_EDITOR_BRANCH = "__template__"
 
 
-def ref_up(
+def template_up(
     settings: Settings,
     odoo_image: str,
-    ref_name: str = "default",
+    template_name: str = "",
 ) -> dict[str, str]:
+    if not template_name:
+        template_name = settings.default_template
     client = get_client()
-    tpl_db = get_template_db_name(ref_name)
+    tpl_db = get_template_db_name(template_name)
 
     try:
-        existing = client.containers.get(_REF_EDITOR_CONTAINER)
+        existing = client.containers.get(_TEMPLATE_EDITOR_CONTAINER)
         if existing.status == "running":
             existing.reload()
             ports = existing.ports.get("8069/tcp")
             host_port = ports[0]["HostPort"] if ports else "?"
             url = f"http://{settings.external_host}:{host_port}"
             raise ConflictError(
-                f"Reference editor is already running at {url}. "
-                f"Use --ref-down to stop it first."
+                f"Template editor is already running at {url}. "
+                f"Use --template-down to stop it first."
             )
         existing.remove(force=True)
     except docker.errors.NotFound:
@@ -541,7 +547,7 @@ def ref_up(
     if not _db_exists(client, settings, tpl_db):
         raise PrerequisiteNotMetError(
             f"Template database '{tpl_db}' not found. "
-            f"Run init-ref first."
+            f"Run init-template first."
         )
 
     _exec_sql(
@@ -551,13 +557,13 @@ def ref_up(
     )
     logger.info("Template flag removed from %s", tpl_db)
 
-    ref_filestore_path = settings.get_ref_filestore_path(ref_name)
-    os.makedirs(ref_filestore_path, exist_ok=True)
+    template_filestore_path = settings.get_template_filestore_path(template_name)
+    os.makedirs(template_filestore_path, exist_ok=True)
 
     odoo_uid_gid = get_odoo_uid_gid(client, odoo_image)
     uid_str, gid_str = odoo_uid_gid.split(":")
     uid, gid = int(uid_str), int(gid_str)
-    for root, dirs, files in os.walk(ref_filestore_path):
+    for root, dirs, files in os.walk(template_filestore_path):
         os.chown(root, uid, gid)
         for name in dirs + files:
             os.chown(os.path.join(root, name), uid, gid)
@@ -568,7 +574,7 @@ def ref_up(
     used_ports = _get_used_ports(client, settings)
     host_port = allocate_port(
         settings.port_registry_path,
-        _REF_EDITOR_BRANCH,
+        _TEMPLATE_EDITOR_BRANCH,
         settings.port_range_start,
         settings.port_range_end,
         used_ports=used_ports,
@@ -580,7 +586,7 @@ def ref_up(
         "PASSWORD": settings.db_password,
     }
     odoo_volumes = {
-        ref_filestore_path: {
+        template_filestore_path: {
             "bind": f"/var/lib/odoo/.local/share/Odoo/filestore/{tpl_db}",
             "mode": "rw",
         },
@@ -590,7 +596,7 @@ def ref_up(
 
     container = client.containers.run(
         odoo_image,
-        name=_REF_EDITOR_CONTAINER,
+        name=_TEMPLATE_EDITOR_CONTAINER,
         detach=True,
         network=settings.shared_network,
         ports={"8069/tcp": host_port},
@@ -601,40 +607,42 @@ def ref_up(
     )
 
     url = f"http://{settings.external_host}:{host_port}"
-    logger.info("Reference editor started at %s (container=%s)", url, _REF_EDITOR_CONTAINER)
+    logger.info("Template editor started at %s (container=%s)", url, _TEMPLATE_EDITOR_CONTAINER)
 
     return {
         "status": "running",
         "url": url,
-        "container": _REF_EDITOR_CONTAINER,
+        "container": _TEMPLATE_EDITOR_CONTAINER,
         "database": tpl_db,
-        "filestore": ref_filestore_path,
+        "filestore": template_filestore_path,
     }
 
 
-def ref_down(settings: Settings, ref_name: str = "default") -> dict[str, str]:
+def template_down(settings: Settings, template_name: str = "") -> dict[str, str]:
+    if not template_name:
+        template_name = settings.default_template
     client = get_client()
-    tpl_db = get_template_db_name(ref_name)
+    tpl_db = get_template_db_name(template_name)
 
     try:
-        container = client.containers.get(_REF_EDITOR_CONTAINER)
+        container = client.containers.get(_TEMPLATE_EDITOR_CONTAINER)
     except docker.errors.NotFound:
         raise NotFoundError(
-            f"Reference editor container '{_REF_EDITOR_CONTAINER}' is not running."
+            f"Template editor container '{_TEMPLATE_EDITOR_CONTAINER}' is not running."
         )
 
     if container.status == "running":
         container.stop()
     container.remove(v=True)
-    logger.info("Reference editor container removed")
+    logger.info("Template editor container removed")
 
     from oduflow.port_registry import release_port
-    release_port(settings.port_registry_path, _REF_EDITOR_BRANCH)
+    release_port(settings.port_registry_path, _TEMPLATE_EDITOR_BRANCH)
 
     _wait_pg_ready(client, settings)
 
-    dump_sql_path = settings.get_ref_sql_path(ref_name)
-    os.makedirs(os.path.dirname(dump_sql_path), exist_ok=True)
+    template_sql_path = settings.get_template_sql_path(template_name)
+    os.makedirs(os.path.dirname(template_sql_path), exist_ok=True)
 
     db_container = client.containers.get(settings.shared_db_container)
     dump_file = f"/tmp/{tpl_db}.dump"
@@ -642,7 +650,7 @@ def ref_down(settings: Settings, ref_name: str = "default") -> dict[str, str]:
         "pg_dump", "-U", settings.db_user, "-Fc", "-f", dump_file, tpl_db,
     ]
 
-    logger.info("Dumping reference database %s", tpl_db)
+    logger.info("Dumping template database %s", tpl_db)
     exit_code, output = db_container.exec_run(dump_cmd)
     if exit_code != 0:
         msg = output.decode("utf-8") if isinstance(output, bytes) else str(output)
@@ -656,10 +664,10 @@ def ref_down(settings: Settings, ref_name: str = "default") -> dict[str, str]:
         f = tar.extractfile(member)
         if f is None:
             raise ExternalCommandError("get_archive", -1, "Could not extract dump from tar")
-        with open(dump_sql_path, "wb") as out:
+        with open(template_sql_path, "wb") as out:
             out.write(f.read())
 
-    logger.info("Dump saved to %s", dump_sql_path)
+    logger.info("Dump saved to %s", template_sql_path)
 
     _exec_sql(
         client,
@@ -670,18 +678,20 @@ def ref_down(settings: Settings, ref_name: str = "default") -> dict[str, str]:
 
     return {
         "status": "stopped",
-        "dump": dump_sql_path,
-        "filestore": settings.get_ref_filestore_path(ref_name),
+        "dump": template_sql_path,
+        "filestore": settings.get_template_filestore_path(template_name),
         "database": tpl_db,
     }
 
 
-def promote_env(settings: Settings, branch_name: str, ref_name: str = "default") -> dict[str, str]:
+def promote_env(settings: Settings, branch_name: str, template_name: str = "") -> dict[str, str]:
+    if not template_name:
+        template_name = settings.default_template
     from oduflow.docker_ops import env_ops
     from oduflow.naming import get_db_name, get_filestore_paths
 
     client = get_client()
-    tpl_db = get_template_db_name(ref_name)
+    tpl_db = get_template_db_name(template_name)
     env_db = get_db_name(branch_name)
 
     if not _db_exists(client, settings, env_db):
@@ -690,8 +700,8 @@ def promote_env(settings: Settings, branch_name: str, ref_name: str = "default")
     _wait_pg_ready(client, settings)
     db_container = client.containers.get(settings.shared_db_container)
 
-    # 1. pg_dump branch DB → new ref dump
-    dump_path = settings.get_ref_sql_path(ref_name)
+    # 1. pg_dump branch DB → new template dump
+    dump_path = settings.get_template_sql_path(template_name)
     os.makedirs(os.path.dirname(dump_path), exist_ok=True)
     dump_file = f"/tmp/{env_db}.dump"
     dump_cmd = ["pg_dump", "-U", settings.db_user, "-Fc", "-f", dump_file, env_db]
@@ -716,7 +726,7 @@ def promote_env(settings: Settings, branch_name: str, ref_name: str = "default")
     logger.info("Branch dump saved to %s", dump_path)
 
     # 2. Reload template DB from new dump
-    reload_ref(settings, ref_name=ref_name, dump_path=dump_path)
+    reload_template(settings, template_name=template_name, dump_path=dump_path)
 
     # 3. Collect active branches (excluding the promoted one is fine, it keeps working)
     active_envs = env_ops.list_environments(settings)
@@ -725,7 +735,7 @@ def promote_env(settings: Settings, branch_name: str, ref_name: str = "default")
     # 4. Snapshot the promoted branch's merged filestore (while overlay is still mounted)
     branch_paths = get_filestore_paths(branch_name, settings.workspaces_dir)
     branch_merged = branch_paths["merged"]
-    ref_filestore_path = settings.get_ref_filestore_path(ref_name)
+    template_filestore_path = settings.get_template_filestore_path(template_name)
 
     if os.path.isdir(branch_merged) and os.path.ismount(branch_merged):
         snapshot_dir = branch_merged + "_snapshot"
@@ -745,18 +755,18 @@ def promote_env(settings: Settings, branch_name: str, ref_name: str = "default")
         except Exception as e:
             logger.warning("Could not unmount overlay for %s: %s", branch, e)
 
-    # 6. Replace ref filestore with snapshot
+    # 6. Replace template filestore with snapshot
     if snapshot_dir and os.path.isdir(snapshot_dir):
-        if os.path.exists(ref_filestore_path):
-            shutil.rmtree(ref_filestore_path)
+        if os.path.exists(template_filestore_path):
+            shutil.rmtree(template_filestore_path)
 
-        os.makedirs(os.path.dirname(ref_filestore_path), exist_ok=True)
+        os.makedirs(os.path.dirname(template_filestore_path), exist_ok=True)
         try:
-            os.rename(snapshot_dir, ref_filestore_path)
+            os.rename(snapshot_dir, template_filestore_path)
         except OSError:
-            shutil.copytree(snapshot_dir, ref_filestore_path)
+            shutil.copytree(snapshot_dir, template_filestore_path)
             shutil.rmtree(snapshot_dir)
-        logger.info("Ref filestore replaced from branch %s", branch_name)
+        logger.info("Template filestore replaced from branch %s", branch_name)
 
         promoted_container_name = f"{settings.prefix}{branch_name.replace('/', '-')}-odoo"
         try:
@@ -767,13 +777,13 @@ def promote_env(settings: Settings, branch_name: str, ref_name: str = "default")
         odoo_uid_gid = get_odoo_uid_gid(client, promoted_image)
         uid_str, gid_str = odoo_uid_gid.split(":")
         uid, gid = int(uid_str), int(gid_str)
-        for root, dirs, files in os.walk(ref_filestore_path):
+        for root, dirs, files in os.walk(template_filestore_path):
             os.chown(root, uid, gid)
             for name in dirs + files:
                 os.chown(os.path.join(root, name), uid, gid)
-        logger.info("Ref filestore chowned to %s", odoo_uid_gid)
+        logger.info("Template filestore chowned to %s", odoo_uid_gid)
 
-    # 7. Remount overlays (clear upper dirs so branches start fresh from new ref)
+    # 7. Remount overlays (clear upper dirs so branches start fresh from new template)
     for branch in active_branches:
         try:
             bp = get_filestore_paths(branch, settings.workspaces_dir)
@@ -804,7 +814,7 @@ def promote_env(settings: Settings, branch_name: str, ref_name: str = "default")
                 image = "odoo:17.0"
 
             env_db = get_db_name(branch)
-            env_ops._mount_filestore(client, settings, branch, env_db, image, {}, ref_name=ref_name)
+            env_ops._mount_filestore(client, settings, branch, env_db, image, {}, template_name=template_name)
             logger.info("Remounted overlay for branch %s", branch)
 
             try:
@@ -820,7 +830,7 @@ def promote_env(settings: Settings, branch_name: str, ref_name: str = "default")
         "status": "promoted",
         "branch": branch_name,
         "dump": dump_path,
-        "filestore": ref_filestore_path,
+        "filestore": template_filestore_path,
         "template_db": tpl_db,
     }
 
@@ -873,9 +883,9 @@ def destroy_system(settings: Settings) -> dict[str, str]:
     return {"status": "destroyed", "removed": ", ".join(removed)}
 
 
-def drop_ref(settings: Settings, ref_name: str) -> dict[str, str]:
+def drop_template(settings: Settings, template_name: str) -> dict[str, str]:
     client = get_client()
-    tpl_db = get_template_db_name(ref_name)
+    tpl_db = get_template_db_name(template_name)
 
     if _db_exists(client, settings, tpl_db):
         _wait_pg_ready(client, settings)
@@ -883,25 +893,25 @@ def drop_ref(settings: Settings, ref_name: str) -> dict[str, str]:
         _exec_sql(client, settings, f'DROP DATABASE IF EXISTS "{tpl_db}" WITH (FORCE);')
         logger.info("Dropped template DB %s", tpl_db)
 
-    ref_dir = settings.get_ref_dir(ref_name)
-    if os.path.isdir(ref_dir):
-        shutil.rmtree(ref_dir)
-        logger.info("Removed ref directory %s", ref_dir)
+    template_dir_path = settings.get_template_dir(template_name)
+    if os.path.isdir(template_dir_path):
+        shutil.rmtree(template_dir_path)
+        logger.info("Removed template directory %s", template_dir_path)
 
-    return {"status": "dropped", "ref_name": ref_name, "template_db": tpl_db}
+    return {"status": "dropped", "template_name": template_name, "template_db": tpl_db}
 
 
-def list_refs(settings: Settings) -> list[dict]:
+def list_templates(settings: Settings) -> list[dict]:
     client = get_client()
-    refs = settings.list_refs()
+    templates = settings.list_templates()
     result = []
-    for ref_name in refs:
-        tpl_db = get_template_db_name(ref_name)
-        has_sql = os.path.isfile(settings.get_ref_sql_path(ref_name))
-        has_filestore = os.path.isdir(settings.get_ref_filestore_path(ref_name))
+    for template_name in templates:
+        tpl_db = get_template_db_name(template_name)
+        has_sql = os.path.isfile(settings.get_template_sql_path(template_name))
+        has_filestore = os.path.isdir(settings.get_template_filestore_path(template_name))
         db_loaded = _db_exists(client, settings, tpl_db)
         result.append({
-            "ref_name": ref_name,
+            "template_name": template_name,
             "template_db": tpl_db,
             "has_sql": has_sql,
             "has_filestore": has_filestore,

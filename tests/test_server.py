@@ -54,7 +54,7 @@ class TestCreateEnvironmentTool:
         result = _call_tool("create_environment", branch_name="main", repo_url="https://repo.url", odoo_image="odoo:17.0")
         assert "Environment provisioned successfully!" in result
         assert "Database: oduflow_main" in result
-        assert "Ref: default" in result
+        assert "Template: default" in result
 
 
 class TestDeleteEnvironmentTool:

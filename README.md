@@ -8,10 +8,10 @@ Production Odoo databases can grow to tens or hundreds of gigabytes. The filesto
 
 ### How Oduflow solves it
 
-Oduflow uses a **reference architecture**: one database dump is restored once as a PostgreSQL template, and one filestore directory serves as a shared read-only layer.
+Oduflow uses a **template architecture**: one database dump is restored once as a PostgreSQL template, and one filestore directory serves as a shared read-only layer.
 
-- **Reference database** (`odoo_ref`): the production dump is restored into a PostgreSQL template database. Creating a new environment is a `CREATE DATABASE ... TEMPLATE odoo_ref` — an instant, copy-on-write operation at the PostgreSQL level, regardless of database size.
-- **Reference filestore** via **fuse-overlayfs**: the production filestore is mounted as a read-only lower layer. Each environment gets a thin upper layer that stores only its own changes. A 50 GB filestore shared across 10 branches still takes ~50 GB on disk, not 500 GB.
+- **Template database** (`odoo_ref_default`): the production dump is restored into a PostgreSQL template database. Creating a new environment is a `CREATE DATABASE ... TEMPLATE odoo_ref_default` — an instant, copy-on-write operation at the PostgreSQL level, regardless of database size. Multiple named templates are supported (e.g. `odoo_ref_myproject`, `odoo_ref_v17`).
+- **Template filestore** via **fuse-overlayfs**: the production filestore is mounted as a read-only lower layer. Each environment gets a thin upper layer that stores only its own changes. A 50 GB filestore shared across 10 branches still takes ~50 GB on disk, not 500 GB.
 - **Shallow git clones**: each branch gets a `--depth 1` clone, so even large repositories are cloned in seconds.
 
 The result: provisioning a new environment from a 30+ GB production database takes seconds, not hours, and disk usage grows only by the delta of actual changes.
@@ -20,7 +20,7 @@ The result: provisioning a new environment from a 30+ GB production database tak
 
 - **One command to provision** a fully working Odoo instance for any git branch.
 - **Instant environment creation** from large production databases via PostgreSQL templates and overlayfs.
-- **Minimal disk footprint**: environments share the reference DB and filestore; only per-branch changes consume additional space.
+- **Minimal disk footprint**: environments share the template DB and filestore; only per-branch changes consume additional space.
 - **Smart pull**: `pull_environment_repository` analyzes changed files (manifest, Python fields, security XML, JS) and automatically decides whether to install, upgrade, restart, or do nothing.
 - **AI-agent friendly**: the server exposes tools via [Model Context Protocol (MCP)](https://modelcontextprotocol.io/), so LLM-based coding agents (Cursor, Cline, Amp, etc.) can provision and manage Odoo environments programmatically.
 - **Web dashboard**: a built-in HTML dashboard for managing environments from a browser (start / stop / restart / delete / logs / stats).
@@ -67,7 +67,7 @@ The result: provisioning a new environment from a 30+ GB production database tak
 | Single process, single uvicorn worker | Designed for a single developer; no shared-state problems |
 | `threading.Lock` mutex | Heavy operations (create/delete env, install modules) reject concurrent requests with `BusyError` instead of queuing |
 | Docker SDK only (no subprocess for Docker) | Consistent error handling; `put_archive` replaces `docker cp` |
-| fuse-overlayfs for filestore | Copy-on-write sharing of a large reference filestore across all environments |
+| fuse-overlayfs for filestore | Copy-on-write sharing of a large template filestore across all environments |
 | Stable port registry (`ports.json`) | Port assignments survive container restarts; eliminates TOCTOU race conditions |
 | Typed error hierarchy | `FlowError` base with `NotFoundError`, `BusyError`, `ConflictError`, etc. — clients can distinguish error types |
 | Traefik routing mode (optional) | Automatic HTTPS with Let's Encrypt for production-like setups |
@@ -88,7 +88,7 @@ src/oduflow/
 
   docker_ops/
     client.py           # docker.from_env() wrapper
-    system_ops.py       # init_system / destroy_system / reload_template_db
+    system_ops.py       # init_system / destroy_system / reload_template / init_template
     env_ops.py          # create / delete / start / stop / restart / list / status / pull
     odoo_ops.py         # install / upgrade / test / logs
     stats.py            # Container and system CPU/RAM stats
@@ -118,6 +118,9 @@ tests/                  # Unit and integration tests (pytest)
 | `upgrade_odoo_modules` | ✓ | Upgrade Odoo modules (`-u`) |
 | `test_environment` | ✓ | Run Odoo tests for specific modules |
 | `get_environment_logs` | | Retrieve recent container logs |
+| `promote_environment` | ✓ | Promote a branch DB + filestore to become a new template |
+| `list_templates` | | List available template profiles |
+| `drop_template` | ✓ | Drop a template profile (DB + files) |
 
 ## Web Dashboard
 
@@ -182,7 +185,7 @@ Options:
 - `--version` — Odoo version, default `15.0`
 - `--force` — recreate the template DB even if it already exists
 
-The dump file is expected at `$ODUFLOW_HOME/dump/dump.sql`. To generate one from scratch, use `oduflow init-dump`.
+The dump file is expected at `$ODUFLOW_HOME/templates/default/dump.sql`. To generate one from scratch, use `oduflow init-template`.
 
 ### 3. Start the MCP server
 
@@ -202,7 +205,10 @@ For stdio transport, set `ODUFLOW_TRANSPORT=stdio` and run `oduflow` as a subpro
 
 ```bash
 # Reload the template DB from a new dump (safe while environments are running)
-oduflow reload-dump --dump-path /path/to/new.dump
+oduflow reload-template --dump-path /path/to/new.dump
+
+# List available template profiles
+oduflow list-templates
 
 # Destroy all shared infrastructure (requires all environments to be deleted first)
 oduflow destroy
@@ -228,43 +234,50 @@ oduflow call create_environment '{"branch_name":"dev","repo_url":"https://github
 
 ## Starting from scratch (no production dump)
 
-If you don't have a production database dump — for example, you're starting a new Odoo project or just want to try Oduflow — you can generate a clean reference database automatically.
+If you don't have a production database dump — for example, you're starting a new Odoo project or just want to try Oduflow — you can generate a clean template automatically.
 
-### Generate a clean reference
+### Generate a clean template
 
 ```bash
-oduflow init-dump --odoo-image odoo:17.0
+oduflow init-template --odoo-image odoo:17.0
 ```
 
 If a `dump.sql` or filestore already exists, the command will refuse to run. Use `--force` to overwrite:
 
 ```bash
-oduflow init-dump --odoo-image odoo:17.0 --force
+oduflow init-template --odoo-image odoo:17.0 --force
 ```
 
 This will:
 1. Start a PostgreSQL container
 2. Run a temporary Odoo container that initializes a fresh database with the `base` module
-3. Dump the database to `~/.oduflow/odoo_ref.dump`
-4. Extract the filestore to `~/.oduflow/odoo_ref_data/`
-5. Run `--init` automatically with the generated dump
+3. Dump the database to `$ODUFLOW_HOME/templates/default/dump.sql`
+4. Extract the filestore to `$ODUFLOW_HOME/templates/default/filestore/`
+5. Load the dump into the template database automatically
 
 You can install additional modules during generation:
 
 ```bash
-oduflow init-dump --odoo-image odoo:17.0 --modules base,web,contacts,sale
+oduflow init-template --odoo-image odoo:17.0 --modules base,web,contacts,sale
+```
+
+You can also create **named templates** for different projects or Odoo versions:
+
+```bash
+oduflow init-template --odoo-image odoo:17.0 --template-name myproject-v17
+oduflow init-template --odoo-image odoo:15.0 --template-name legacy-v15
 ```
 
 After this, `oduflow` is ready — start the server and create environments as usual.
 
-### Editing the reference database
+### Editing the template database
 
-Once you have a reference database (from `--init-dump` or from a production dump), you can modify it interactively — install modules, configure settings, create demo data — and save the result back as the new reference.
+Once you have a template (from `init-template` or from a production dump), you can modify it interactively — install modules, configure settings, create demo data — and save the result back as the new template.
 
-**Start the reference editor:**
+**Start the template editor:**
 
 ```bash
-oduflow ref-up --odoo-image odoo:17.0
+oduflow template-up --odoo-image odoo:17.0
 ```
 
 This starts an Odoo container that works **directly** with the template database and filestore (no overlays, no copies). Open the printed URL in your browser, log in, and make any changes you need.
@@ -272,22 +285,26 @@ This starts an Odoo container that works **directly** with the template database
 **Save and stop:**
 
 ```bash
-oduflow ref-down
+oduflow template-down
 ```
 
-This stops the container, dumps the updated database to `~/.oduflow/odoo_ref.dump`, and restores the template flag. The filestore is already updated in place since it was mounted directly.
+This stops the container, dumps the updated database to `$ODUFLOW_HOME/templates/default/dump.sql`, and restores the template flag. The filestore is already updated in place since it was mounted directly.
 
-All environments created after this will be based on the updated reference.
+All environments created after this will be based on the updated template.
 
 ### When to use what
 
 | Scenario | Command |
 |---|---|
-| New project, no existing database | `oduflow init-dump --odoo-image odoo:17.0` |
-| Regenerate reference from scratch | `oduflow init-dump --odoo-image odoo:17.0 --force` |
-| Have a production dump file | Place dump at `$ODUFLOW_HOME/dump/dump.sql` and run `oduflow init` |
-| Need to install modules or configure the reference | `oduflow ref-up --odoo-image odoo:17.0` / `oduflow ref-down` |
-| Update the reference from a newer production dump | `oduflow reload-dump --dump-path /path/to/new.dump` |
+| New project, no existing database | `oduflow init-template --odoo-image odoo:17.0` |
+| Regenerate template from scratch | `oduflow init-template --odoo-image odoo:17.0 --force` |
+| Named template for a specific project | `oduflow init-template --odoo-image odoo:17.0 --template-name myproject` |
+| Have a production dump file | Place dump at `$ODUFLOW_HOME/templates/default/dump.sql` and run `oduflow init` |
+| Need to install modules or configure the template | `oduflow template-up --odoo-image odoo:17.0` / `oduflow template-down` |
+| Update the template from a newer production dump | `oduflow reload-template --dump-path /path/to/new.dump` |
+| Promote a branch environment to template | `oduflow promote my-branch` |
+| List all templates | `oduflow list-templates` |
+| Drop a named template | `oduflow drop-template myproject` |
 
 ## Configuration
 
@@ -314,7 +331,7 @@ cp .env.example .env
 | `ODUFLOW_WORKSPACES_DIR` | `$ODUFLOW_HOME/workspaces` | Root directory for environment workspaces |
 | `ODUFLOW_PORT_REGISTRY` | `$ODUFLOW_HOME/ports.json` | JSON file for stable port assignments |
 
-Dump folder structure: `$ODUFLOW_HOME/dump/dump.sql` and `$ODUFLOW_HOME/dump/filestore/`.
+Template folder structure: `$ODUFLOW_HOME/templates/<name>/dump.sql` and `$ODUFLOW_HOME/templates/<name>/filestore/`.
 
 ### Git
 
@@ -403,7 +420,7 @@ Each branch gets an isolated workspace:
 - **Network**: `oduflow-net` — shared bridge network for all containers
 - **DB container**: `oduflow-db` — PostgreSQL 15, shared across all environments
 - **DB volume**: `oduflow-db-data` — persistent database storage
-- **Template DB**: `odoo_ref` — created from the dump file, used as a PostgreSQL template for new environments
+- **Template DB**: `odoo_ref_<name>` (e.g. `odoo_ref_default`) — created from the dump file, used as a PostgreSQL template for new environments
 - **Traefik** (optional): `oduflow-traefik` container with `oduflow-traefik-acme` volume for TLS certificates
 
 ## License

@@ -39,36 +39,36 @@ class TestSettings:
             s.external_host = "changed"  # type: ignore[misc]
 
 
-class TestRefPaths:
-    def test_get_ref_dir_default(self):
+class TestTemplatePaths:
+    def test_get_template_dir_default(self):
         s = Settings(home="/srv/data")
-        assert s.get_ref_dir() == "/srv/data/refs/default"
+        assert s.get_template_dir() == "/srv/data/templates/default"
 
-    def test_get_ref_dir_named(self):
+    def test_get_template_dir_named(self):
         s = Settings(home="/srv/data")
-        assert s.get_ref_dir("myproject") == "/srv/data/refs/myproject"
+        assert s.get_template_dir("myproject") == "/srv/data/templates/myproject"
 
-    def test_get_ref_sql_path(self):
+    def test_get_template_sql_path(self):
         s = Settings(home="/srv/data")
-        assert s.get_ref_sql_path("v17") == "/srv/data/refs/v17/dump.sql"
+        assert s.get_template_sql_path("v17") == "/srv/data/templates/v17/dump.sql"
 
-    def test_get_ref_filestore_path(self):
+    def test_get_template_filestore_path(self):
         s = Settings(home="/srv/data")
-        assert s.get_ref_filestore_path("v17") == "/srv/data/refs/v17/filestore"
+        assert s.get_template_filestore_path("v17") == "/srv/data/templates/v17/filestore"
 
-    def test_dump_methods_delegate_to_ref(self):
+    def test_dump_methods_delegate_to_template(self):
         s = Settings(home="/srv/data")
-        assert s.get_dump_sql_path() == s.get_ref_sql_path("default")
-        assert s.get_dump_filestore_path() == s.get_ref_filestore_path("default")
+        assert s.get_dump_sql_path() == s.get_template_sql_path("default")
+        assert s.get_dump_filestore_path() == s.get_template_filestore_path("default")
 
-    def test_list_refs_empty(self, tmp_path):
+    def test_list_templates_empty(self, tmp_path):
         s = Settings(home=str(tmp_path))
-        assert s.list_refs() == []
+        assert s.list_templates() == []
 
-    def test_list_refs(self, tmp_path):
-        refs_dir = tmp_path / "refs"
-        (refs_dir / "alpha").mkdir(parents=True)
-        (refs_dir / "beta").mkdir(parents=True)
-        (refs_dir / "not-a-dir").touch()  # should be ignored
+    def test_list_templates(self, tmp_path):
+        templates_dir = tmp_path / "templates"
+        (templates_dir / "alpha").mkdir(parents=True)
+        (templates_dir / "beta").mkdir(parents=True)
+        (templates_dir / "not-a-dir").touch()  # should be ignored
         s = Settings(home=str(tmp_path))
-        assert s.list_refs() == ["alpha", "beta"]
+        assert s.list_templates() == ["alpha", "beta"]
