@@ -8,7 +8,26 @@
 
 # Oduflow
 
-A git-flow oriented tool for Odoo development built around a **single production database**. Oduflow provisions isolated, ephemeral Odoo environments on Docker — one per git branch — so you can develop and test against a real copy of production data without duplicating hundreds of gigabytes for each branch.
+A **git-flow oriented** development and CI tool for Odoo, powered by **reusable database templates**. Oduflow provisions isolated, ephemeral Odoo environments on Docker — one per git branch — so you can develop, test, and run CI pipelines against real production data without duplicating hundreds of gigabytes for each branch.
+
+Create templates from production dumps, staging snapshots, or from scratch. Maintain **multiple named templates** side-by-side (e.g. per Odoo version, per client, per project phase) and spin up any combination of branch + database in seconds.
+
+### Why not just use odoo.sh?
+
+Odoo.sh is a great hosting platform, but its development workflow has real limitations:
+
+| | odoo.sh | Oduflow |
+|---|---|---|
+| **Branch model** | Dev branches must be created manually in the UI; limited count on paid plans | Follows **GitFlow** — push a branch, get an environment automatically |
+| **Database on dev branches** | Dev branches start **empty** (no data) | Every branch starts from a **real database template** — production dump, staging snapshot, or custom |
+| **Staging** | Paid staging branches (copy of production); limited slots | Unlimited environments, each from **any template** — any combination of branch × database |
+| **Provisioning speed** | Minutes to create a staging copy of a large DB | **Seconds**, regardless of DB size (PostgreSQL `CREATE DATABASE ... TEMPLATE` + overlayfs) |
+| **Disk usage** | Full copy per staging branch | **Copy-on-write** — 10 branches sharing a 50 GB DB + filestore ≈ 50 GB total |
+| **CI / testing** | Basic CI on push | **Smart pull** analyzes changed files and auto-installs/upgrades/restarts only what's needed |
+| **AI integration** | None | **MCP-native** — AI coding agents (Cursor, Cline, Amp) can provision and manage environments programmatically |
+| **Infrastructure** | Odoo SA cloud only | **Your machine** — local, VPS, or CI runner via Docker |
+
+Oduflow is not a replacement for production hosting — it's the **developer workbench and CI layer** that platforms like odoo.sh don't provide.
 
 ---
 
