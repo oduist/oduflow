@@ -50,3 +50,7 @@ dmypy.json
 # OS
 .DS_Store
 .tmp
+
+# Zenflow / worktrees
+.zenflow/
+.worktrees/

@@ -1,6 +1,0 @@
-{
-  "setup_script": "python3.12 -m venv .venv && .venv/bin/pip install -e . ruff mypy pytest",
-  "dev_script": ".venv/bin/fastmcp dev src/flow/server.py",
-  "verification_script": ".venv/bin/ruff check src tests && .venv/bin/mypy src && .venv/bin/pytest",
-  "copy_files": [".env"]
-}
