@@ -67,6 +67,8 @@ def create_service(
     if settings.routing_mode == "traefik":
         if not hostname:
             hostname = f"{name}.{settings.base_domain}"
+        elif "." not in hostname:
+            hostname = f"{hostname}.{settings.base_domain}"
         labels["traefik.enable"] = "true"
         labels[f"traefik.http.routers.{container_name}.rule"] = f"Host(`{hostname}`)"
         labels[f"traefik.http.routers.{container_name}.entrypoints"] = "websecure"
@@ -179,6 +181,111 @@ def list_services(settings: Settings) -> list[dict]:
             "env_vars": env_vars,
         })
 
+    return result
+
+
+def update_service(settings: Settings, name: str) -> dict[str, str]:
+    """Pull the latest image for a service and re-create it with the same settings."""
+    client = get_client()
+    container_name = f"oduflow-svc-{name}"
+
+    try:
+        container = client.containers.get(container_name)
+    except docker.errors.NotFound:
+        raise NotFoundError(f"Service '{name}' not found")
+
+    # Capture current image name
+    old_image = container.image.tags[0] if container.image.tags else None
+    if not old_image:
+        # Fall back to Config.Image (may be a digest reference)
+        old_image = container.attrs.get("Config", {}).get("Image")
+    if not old_image:
+        raise NotFoundError(
+            f"Cannot determine image for service '{name}'. "
+            "The container has no image tag or Config.Image."
+        )
+
+    # Capture current environment variables (filtering system keys)
+    raw_env = container.attrs.get("Config", {}).get("Env", [])
+    env_vars: dict[str, str] = {}
+    for entry in raw_env:
+        if "=" in entry:
+            key, value = entry.split("=", 1)
+            if key not in _SYSTEM_ENV_KEYS:
+                env_vars[key] = value
+
+    # Capture port and hostname depending on routing mode
+    port: int | None = None
+    hostname: str | None = None
+
+    if settings.routing_mode == "traefik":
+        rule_label = f"traefik.http.routers.{container_name}.rule"
+        port_label = f"traefik.http.services.{container_name}.loadbalancer.server.port"
+
+        rule_value = container.labels.get(rule_label, "")
+        match = re.search(r"Host\(`([^`]+)`\)", rule_value)
+        if match:
+            hostname = match.group(1)
+
+        label_port = container.labels.get(port_label)
+        if label_port:
+            port = int(label_port)
+    else:
+        ports_dict = container.attrs.get("NetworkSettings", {}).get("Ports", {})
+        if ports_dict:
+            for port_key in ports_dict:
+                port_match = re.match(r"(\d+)/", port_key)
+                if port_match:
+                    port = int(port_match.group(1))
+                    break
+
+    if port is None:
+        raise NotFoundError(
+            f"Cannot determine port for service '{name}'."
+        )
+
+    # Capture old image digest
+    old_digest = container.image.id  # e.g. sha256:abc...
+
+    # Pull the latest image
+    logger.info("Pulling latest image %s for service %s", old_image, name)
+    new_image_obj = client.images.pull(old_image)
+    new_digest = new_image_obj.id
+    image_updated = old_digest != new_digest
+
+    if not image_updated:
+        logger.info("Image unchanged for service %s: %s", name, new_digest[:19])
+        return {
+            "name": name,
+            "container_name": container_name,
+            "image": old_image,
+            "image_updated": False,
+            "old_digest": old_digest,
+            "new_digest": new_digest,
+        }
+
+    logger.info("Image changed for service %s: %s -> %s", name, old_digest[:19], new_digest[:19])
+
+    # Stop and remove the old container
+    container.stop()
+    container.remove(v=True)
+    logger.info("Removed old container %s for update", container_name)
+
+    # Re-create with the same settings
+    result = create_service(
+        settings,
+        name=name,
+        image=old_image,
+        port=port,
+        hostname=hostname,
+        env_vars=env_vars or None,
+    )
+
+    result["image_updated"] = True
+    result["old_digest"] = old_digest
+    result["new_digest"] = new_digest
+
+    logger.info("Service %s updated with image %s", name, old_image)
     return result
 
 

@@ -162,6 +162,29 @@ class TestCreateServiceTool:
         assert call_kwargs[1]["env_vars"] is None
 
 
+class TestUpdateServiceTool:
+    @patch("oduflow.docker_ops.service_ops.update_service")
+    def test_update(self, mock_update):
+        mock_update.return_value = {
+            "name": "redis",
+            "container_name": "oduflow-svc-redis",
+            "url": "http://localhost:6379",
+            "image": "redis:7",
+        }
+        result = _get_tool_fn("update_service")(name="redis")
+        assert "Service updated successfully!" in result
+        assert "redis" in result
+        assert "oduflow-svc-redis" in result
+        mock_update.assert_called_once_with(TEST_SETTINGS, "redis")
+
+    @patch("oduflow.docker_ops.service_ops.update_service")
+    def test_update_not_found(self, mock_update):
+        from oduflow.errors import NotFoundError
+        mock_update.side_effect = NotFoundError("Service 'redis' not found")
+        with pytest.raises(ValueError, match="Service 'redis' not found"):
+            _get_tool_fn("update_service")(name="redis")
+
+
 class TestDeleteServiceTool:
     @patch("oduflow.docker_ops.service_ops.delete_service")
     def test_delete(self, mock_delete):

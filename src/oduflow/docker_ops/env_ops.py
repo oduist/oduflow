@@ -46,8 +46,8 @@ def _get_used_ports(client: DockerClient, settings: Settings, exclude_branch: st
     return used
 
 
-def _ensure_system_ready(client: DockerClient, settings: Settings, template_name: str = "") -> None:
-    if not template_name:
+def _ensure_system_ready(client: DockerClient, settings: Settings, template_name: str | None = "") -> None:
+    if template_name is not None and not template_name:
         template_name = settings.default_template
     try:
         db_container = client.containers.get(settings.shared_db_container)
@@ -60,11 +60,12 @@ def _ensure_system_ready(client: DockerClient, settings: Settings, template_name
             f"{settings.shared_db_container} not found. Run init_system first."
         )
 
-    tpl_db = get_template_db_name(template_name)
-    if not _db_exists(client, settings, tpl_db):
-        raise PrerequisiteNotMetError(
-            f"Template database '{tpl_db}' not found. Run init_template first."
-        )
+    if template_name is not None:
+        tpl_db = get_template_db_name(template_name)
+        if not _db_exists(client, settings, tpl_db):
+            raise PrerequisiteNotMetError(
+                f"Template database '{tpl_db}' not found. Run init_template first."
+            )
 
     if settings.routing_mode == "traefik":
         try:
@@ -174,38 +175,49 @@ def _unmount_filestore(branch_name: str, settings: Settings) -> None:
     logger.warning("Could not unmount filestore overlay at %s", merged)
 
 
-def _install_apt_packages(container, repo_path: str) -> None:
+def _install_apt_packages(container, repo_path: str) -> str:
+    """Install apt packages. Returns a human-readable log of what happened."""
     apt_file = os.path.join(repo_path, "apt_packages.txt")
     if not os.path.isfile(apt_file):
         logger.debug("No apt_packages.txt in repo, skipping apt install")
-        return
+        return ""
 
     with open(apt_file) as f:
         packages = [line.strip() for line in f if line.strip() and not line.startswith("#")]
     if not packages:
-        return
+        return ""
 
     logger.info("Updating apt and installing packages: %s", " ".join(packages))
     exit_code, output = container.exec_run("apt-get update", user="root")
     output_str = output.decode("utf-8") if isinstance(output, bytes) else str(output)
     if exit_code != 0:
         logger.warning("apt-get update failed (exit %d): %s", exit_code, output_str)
-        return
+        return f"[APT] apt-get update FAILED (exit {exit_code}): {output_str}"
 
     cmd = "apt-get install -y " + " ".join(packages)
     exit_code, output = container.exec_run(cmd, user="root")
     output_str = output.decode("utf-8") if isinstance(output, bytes) else str(output)
     if exit_code != 0:
         logger.warning("apt install failed (exit %d): %s", exit_code, output_str)
+        return f"[APT] install FAILED (exit {exit_code}): {output_str}"
     else:
         logger.info("apt packages installed")
+        return f"[APT] Installed: {' '.join(packages)}"
 
 
-def _install_pip_requirements(container, repo_path: str) -> None:
+def _install_pip_requirements(container, repo_path: str, *, restart: bool = True) -> tuple[bool, str]:
+    """Install pip requirements from repo.
+
+    Returns (installed, log) — *installed* is True when packages were
+    installed, *log* is a human-readable summary of what happened.
+
+    When *restart* is False the caller is responsible for restarting the
+    container after all setup steps are done.
+    """
     req_file = os.path.join(repo_path, "requirements.txt")
     if not os.path.isfile(req_file):
         logger.debug("No requirements.txt in repo, skipping pip install")
-        return
+        return False, ""
 
     cmd = "pip3 install --break-system-packages -r /mnt/extra-addons/requirements.txt"
     logger.info("Installing pip requirements from requirements.txt")
@@ -218,10 +230,13 @@ def _install_pip_requirements(container, repo_path: str) -> None:
         output_str = output.decode("utf-8") if isinstance(output, bytes) else str(output)
     if exit_code != 0:
         logger.warning("pip install failed (exit %d): %s", exit_code, output_str)
+        return False, f"[PIP] install FAILED (exit {exit_code}):\n{output_str}"
     else:
         logger.info("pip requirements installed")
-        container.restart()
-        logger.info("Container restarted after pip install")
+        if restart:
+            container.restart()
+            logger.info("Container restarted after pip install")
+        return True, f"[PIP] Requirements installed successfully:\n{output_str}"
 
 
 def _cleanup_old_environment(
@@ -262,9 +277,9 @@ def create_environment(
     branch_name: str,
     repo_url: str,
     odoo_image: str = "odoo:15.0",
-    template_name: str = "",
+    template_name: str | None = "",
 ) -> dict[str, str]:
-    if not template_name:
+    if template_name is not None and not template_name:
         template_name = settings.default_template
     try:
         client = get_client()
@@ -305,7 +320,7 @@ def create_environment(
         settings.branch_label: branch_name,
         settings.repo_label: repo_url,
         settings.image_label: odoo_image,
-        "oduflow.template": template_name,
+        "oduflow.template": template_name if template_name is not None else "none",
     }
 
     if settings.routing_mode == "traefik":
@@ -414,12 +429,19 @@ def create_environment(
             "Repository clone timed out (60s). Repository may be too large or network is slow.",
         )
 
-    tpl_db = get_template_db_name(template_name)
-    _exec_sql(
-        client,
-        settings,
-        f'CREATE DATABASE "{env_db}" TEMPLATE {tpl_db};',
-    )
+    if template_name is not None:
+        tpl_db = get_template_db_name(template_name)
+        _exec_sql(
+            client,
+            settings,
+            f'CREATE DATABASE "{env_db}" TEMPLATE {tpl_db};',
+        )
+    else:
+        _exec_sql(
+            client,
+            settings,
+            f'CREATE DATABASE "{env_db}";',
+        )
 
     odoo_env = {
         "HOST": settings.shared_db_container,
@@ -441,7 +463,23 @@ def create_environment(
             "mode": "ro",
         }
 
-    _mount_filestore(client, settings, branch_name, env_db, odoo_image, odoo_volumes, template_name=template_name)
+    if template_name is not None:
+        _mount_filestore(client, settings, branch_name, env_db, odoo_image, odoo_volumes, template_name=template_name)
+    else:
+        # No template — create a plain filestore directory on the host so data
+        # survives container restarts (no overlay needed).
+        filestore_path = os.path.join(workspace_path, "filestore")
+        os.makedirs(filestore_path, mode=0o777, exist_ok=True)
+        os.chmod(filestore_path, 0o777)
+        _uid, _gid = get_odoo_uid_gid(client, odoo_image).split(":")
+        for _root, _dirs, _files in os.walk(filestore_path):
+            os.chown(_root, int(_uid), int(_gid))
+            for _name in _dirs + _files:
+                os.chown(os.path.join(_root, _name), int(_uid), int(_gid))
+        odoo_volumes[filestore_path] = {
+            "bind": f"/var/lib/odoo/.local/share/Odoo/filestore/{env_db}",
+            "mode": "rw",
+        }
 
     host_port: int | None = None
     if settings.routing_mode == "port":
@@ -483,8 +521,36 @@ def create_environment(
 
     container = client.containers.run(**run_kwargs)
 
-    _install_apt_packages(container, repo_path)
-    _install_pip_requirements(container, repo_path)
+    setup_logs: list[str] = []
+
+    if template_name is None:
+        logger.info("No template — initialising Odoo with -i base", extra={"branch": branch_name})
+        apt_log = _install_apt_packages(container, repo_path)
+        if apt_log:
+            setup_logs.append(apt_log)
+        _, pip_log = _install_pip_requirements(container, repo_path, restart=False)
+        if pip_log:
+            setup_logs.append(pip_log)
+        init_cmd = f"/entrypoint.sh odoo -d {env_db} -i base --stop-after-init --no-http"
+        exit_code, output = container.exec_run(init_cmd)
+        output_str = output.decode("utf-8") if isinstance(output, bytes) else str(output)
+        if exit_code != 0:
+            logger.error(
+                "Odoo base init failed (exit %d): %s", exit_code, output_str,
+                extra={"branch": branch_name},
+            )
+            setup_logs.append(f"[INIT] odoo -i base FAILED (exit {exit_code}):\n{output_str}")
+        else:
+            setup_logs.append("[INIT] odoo -i base completed successfully")
+        container.restart()
+        logger.info("Container restarted after base init", extra={"branch": branch_name})
+    else:
+        apt_log = _install_apt_packages(container, repo_path)
+        if apt_log:
+            setup_logs.append(apt_log)
+        _, pip_log = _install_pip_requirements(container, repo_path)
+        if pip_log:
+            setup_logs.append(pip_log)
 
     if settings.routing_mode == "traefik":
         url = f"https://{get_env_hostname(branch_name, settings.base_domain)}"
@@ -500,6 +566,7 @@ def create_environment(
         "odoo_container": odoo_container_name,
         "database": env_db,
         "workspace": workspace_path,
+        "setup_logs": setup_logs,
     }
     if branch_created:
         result["branch_created_from"] = settings.default_branch

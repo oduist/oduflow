@@ -161,13 +161,18 @@ def _build_routes(
             branch_name = (body.get("branch_name") or "").strip()
             repo_url = (body.get("repo_url") or "").strip()
             odoo_image = (body.get("odoo_image") or "").strip()
-            template_name = (body.get("template_name") or "").strip()
+            template_name_raw = (body.get("template_name") or "").strip()
             if not branch_name or not repo_url or not odoo_image:
                 return JSONResponse(
                     {"ok": False, "error": "branch_name, repo_url and odoo_image are required."},
                     status_code=400,
                 )
-            result = env_ops.create_environment(get_settings(), branch_name, repo_url, odoo_image, template_name=template_name)
+            resolved_template: str | None
+            if template_name_raw.lower() == "none":
+                resolved_template = None
+            else:
+                resolved_template = template_name_raw
+            result = env_ops.create_environment(get_settings(), branch_name, repo_url, odoo_image, template_name=resolved_template)
             return JSONResponse({"ok": True, "result": result})
         except FlowError as e:
             return _error_response(e)
@@ -239,8 +244,11 @@ def _build_routes(
                 )
             env_vars = None
             if env_vars_raw:
+                import re
                 env_vars = dict(
-                    item.split("=", 1) for item in env_vars_raw.split(",") if "=" in item
+                    item.split("=", 1)
+                    for item in re.split(r"[\n,]+", env_vars_raw)
+                    if "=" in item
                 )
             result = service_ops.create_service(
                 get_settings(), name, image, int(port), hostname=hostname, env_vars=env_vars
@@ -250,6 +258,21 @@ def _build_routes(
             return _error_response(e)
         except Exception as e:
             logger.exception("Unexpected error in api_service_create")
+            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+        finally:
+            busy_lock.release()
+
+    def api_service_update(request: Request) -> JSONResponse:
+        name = request.path_params["name"]
+        if not busy_lock.acquire(blocking=False):
+            return _error_response(BusyError("Another operation is in progress."))
+        try:
+            result = service_ops.update_service(get_settings(), name)
+            return JSONResponse({"ok": True, "result": result})
+        except FlowError as e:
+            return _error_response(e)
+        except Exception as e:
+            logger.exception("Unexpected error in api_service_update")
             return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
         finally:
             busy_lock.release()
@@ -297,6 +320,7 @@ def _build_routes(
         Route("/api/environments/{branch:path}/delete", api_delete, methods=["POST"]),
         Route("/api/services", api_services, methods=["GET"]),
         Route("/api/services/create", api_service_create, methods=["POST"]),
+        Route("/api/services/{name}/update", api_service_update, methods=["POST"]),
         Route("/api/services/{name}/delete", api_service_delete, methods=["POST"]),
         Route("/api/services/{name}/logs", api_service_logs, methods=["GET"]),
         Route("/api/environments/{branch:path}/logs", api_logs, methods=["GET"]),

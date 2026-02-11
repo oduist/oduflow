@@ -154,6 +154,40 @@ class TestCreateEnvironment:
             env_ops.create_environment(TEST_SETTINGS, "main", "https://github.com/org/repo.git")
 
 
+    @patch("oduflow.docker_ops.env_ops._ensure_system_ready")
+    @patch("oduflow.docker_ops.env_ops.get_odoo_uid_gid", return_value="100:101")
+    @patch("oduflow.docker_ops.env_ops._exec_sql")
+    @patch("oduflow.docker_ops.env_ops._db_exists", return_value=False)
+    @patch("oduflow.docker_ops.env_ops._mount_filestore")
+    @patch("oduflow.docker_ops.env_ops._get_used_ports", return_value=set())
+    @patch("oduflow.docker_ops.env_ops.allocate_port", return_value=50001)
+    @patch("oduflow.docker_ops.env_ops.subprocess.run")
+    @patch("oduflow.docker_ops.env_ops.os.chmod")
+    @patch("oduflow.docker_ops.env_ops.os.makedirs")
+    @patch("oduflow.docker_ops.env_ops.os.path.exists", return_value=False)
+    def test_create_no_template(self, mock_exists, mock_makedirs, mock_chmod, mock_run, mock_alloc, mock_used, mock_mount, mock_db_exists, mock_sql, mock_uid_gid, mock_ready, mock_docker_client):
+        mock_odoo = MagicMock()
+        mock_odoo.exec_run.return_value = (0, b"OK")
+        mock_docker_client.containers.run.return_value = mock_odoo
+        mock_docker_client.containers.get.side_effect = docker.errors.NotFound("nf")
+
+        result = env_ops.create_environment(TEST_SETTINGS, "feature/no-tpl", "https://github.com/org/repo.git", template_name=None)
+
+        assert result["url"] == "http://localhost:50001"
+        assert result["database"] == "oduflow_feature-no-tpl"
+        # Should create empty DB (no TEMPLATE clause)
+        create_db_call = mock_sql.call_args_list[0]
+        assert "TEMPLATE" not in create_db_call[0][2]
+        # Should NOT mount filestore
+        mock_mount.assert_not_called()
+        # Should run -i base --stop-after-init
+        init_cmd = mock_odoo.exec_run.call_args[0][0]
+        assert "-i base" in init_cmd
+        assert "--stop-after-init" in init_cmd
+        # Should restart after init
+        mock_odoo.restart.assert_called_once()
+
+
 class TestDeleteEnvironment:
     @patch("oduflow.docker_ops.env_ops.release_port")
     @patch("oduflow.docker_ops.env_ops._exec_sql")

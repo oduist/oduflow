@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="icon" href="/favicon.ico" type="image/x-icon">
-<title>Odoo Flow</title>
+<title>Oduist Oduflow Platform</title>
 <style>
   :root {
     --bg: #0d1117;
@@ -124,6 +124,8 @@
   .btn-restart:hover { background: rgba(210,153,34,0.1); }
   .btn-delete { border-color: var(--red); color: var(--red); }
   .btn-delete:hover { background: rgba(248,81,73,0.1); }
+  .btn-update { border-color: var(--yellow); color: var(--yellow); }
+  .btn-update:hover { background: rgba(210,153,34,0.1); }
   .btn-logs { border-color: var(--accent); color: var(--accent); }
   .btn-logs:hover { background: rgba(88,166,255,0.1); }
   .btn-create {
@@ -146,17 +148,20 @@
     margin-bottom: 4px;
     color: var(--text);
   }
-  .form-group input {
+  .form-group input, .form-group textarea {
     width: 100%;
     padding: 8px 10px;
     font-size: 13px;
+    font-family: inherit;
     background: var(--bg);
     color: var(--text);
     border: 1px solid var(--border);
     border-radius: var(--radius);
     outline: none;
+    box-sizing: border-box;
   }
-  .form-group input:focus { border-color: var(--accent); }
+  .form-group textarea { resize: vertical; }
+  .form-group input:focus, .form-group textarea:focus { border-color: var(--accent); }
   .form-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 18px; }
   .form-error { color: var(--red); font-size: 12px; margin-bottom: 10px; display: none; }
   .modal-overlay {
@@ -351,7 +356,7 @@
 <body>
 
 <header>
-  <h1>Odoo Flow</h1>
+  <h1>Oduist Oduflow Platform</h1>
   <div class="actions">
     <label class="auto-label" for="refresh-interval">Refresh
       <input type="number" id="refresh-interval" value="60" min="5" step="5"
@@ -452,7 +457,7 @@
       </div>
       <div class="form-group">
         <label for="svc-envvars">Environment variables (optional)</label>
-        <input type="text" id="svc-envvars" placeholder="KEY1=val1,KEY2=val2">
+        <textarea id="svc-envvars" rows="5" placeholder="KEY1=val1&#10;KEY2=val2"></textarea>
       </div>
       <div class="form-actions">
         <button class="btn" onclick="closeCreateServiceModal()">Cancel</button>
@@ -710,6 +715,7 @@ function populateTemplateSelect() {
   cachedTemplates.forEach(function(t) {
     sel.innerHTML += '<option value="' + esc(t.template_name) + '">' + esc(t.template_name) + '</option>';
   });
+  sel.innerHTML += '<option value="none">None (init from scratch)</option>';
 }
 
 function openCreateModal() {
@@ -750,8 +756,7 @@ async function submitCreate() {
   btn.textContent = 'Creating...';
 
   try {
-    var payload = {branch_name: branch, repo_url: repo, odoo_image: image};
-    if (template) payload.template_name = template;
+    var payload = {branch_name: branch, repo_url: repo, odoo_image: image, template_name: template};
     var r = await fetch(API + '/create', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
@@ -826,6 +831,14 @@ async function loadServices() {
   }
 }
 
+var SENSITIVE_PATTERNS = /key|password|token/i;
+
+function maskValue(key, val) {
+  if (!val) return val;
+  if (!SENSITIVE_PATTERNS.test(key)) return val;
+  return String(val).replace(/./g, '#');
+}
+
 function renderServices(services) {
   var el = document.getElementById('svc-list');
   if (!services || services.length === 0) {
@@ -838,7 +851,7 @@ function renderServices(services) {
       : '';
     var envHtml = '';
     if (svc.env_vars && Object.keys(svc.env_vars).length > 0) {
-      var envStr = Object.keys(svc.env_vars).map(function(k) { return esc(k) + '=' + esc(svc.env_vars[k]); }).join(', ');
+      var envStr = Object.keys(svc.env_vars).map(function(k) { return esc(k) + '=' + esc(maskValue(k, svc.env_vars[k])); }).join(', ');
       envHtml = '<div class="svc-meta"><span>Env: <strong>' + envStr + '</strong></span></div>';
     }
     return '<div class="svc-card" data-svc="' + esc(svc.name) + '">' +
@@ -848,6 +861,7 @@ function renderServices(services) {
           '<span class="badge ' + badgeClass(svc.status) + '">' + esc(svc.status) + '</span>' +
         '</div>' +
         '<div class="svc-actions">' +
+          '<button class="btn btn-update" onclick="doUpdateService(\'' + escAttr(svc.name) + '\')">Update</button>' +
           '<button class="btn btn-logs" onclick="showServiceLogs(\'' + escAttr(svc.name) + '\')">Logs</button>' +
           '<button class="btn btn-delete" onclick="doDeleteService(\'' + escAttr(svc.name) + '\')">Delete</button>' +
         '</div>' +
@@ -861,6 +875,30 @@ function renderServices(services) {
       envHtml +
     '</div>';
   }).join('');
+}
+
+async function doUpdateService(name) {
+  if (!confirm('Update service "' + name + '"? This will pull the latest image and recreate the container.')) return;
+  var card = document.querySelector('[data-svc="' + name + '"]');
+  if (card) card.querySelectorAll('.btn').forEach(function(b) { b.disabled = true; });
+  try {
+    var r = await fetch(API_SERVICES + '/' + encodeURIComponent(name) + '/update', { method: 'POST' });
+    var data = await r.json();
+    if (data.ok) {
+      var res = data.result || {};
+      var digest = (res.new_digest || '').substring(0, 19);
+      if (res.image_updated) {
+        showToast('Service "' + name + '" updated — new image pulled (' + digest + ')');
+      } else {
+        showToast('Service "' + name + '" is already up-to-date (' + digest + ')');
+      }
+    } else {
+      showToast(data.error || 'Update failed', true);
+    }
+  } catch (e) {
+    showToast('Connection error: ' + e.message, true);
+  }
+  await loadServices();
 }
 
 async function doDeleteService(name) {
