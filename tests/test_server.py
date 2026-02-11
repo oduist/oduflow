@@ -110,6 +110,113 @@ class TestErrorHandling:
             _call_tool("restart_environment", branch_name="main")
 
 
+def _get_tool_fn(tool_name: str):
+    """Get the raw function for a registered MCP tool (avoids name collision with call_tool)."""
+    from oduflow.server import mcp
+    return mcp._tool_manager._tools[tool_name].fn
+
+
+class TestCreateServiceTool:
+    @patch("oduflow.docker_ops.service_ops.create_service")
+    def test_create(self, mock_create):
+        mock_create.return_value = {
+            "name": "redis",
+            "container_name": "oduflow-svc-redis",
+            "url": "http://localhost:6379",
+            "image": "redis:7",
+        }
+        result = _get_tool_fn("create_service")(name="redis", image="redis:7", port=6379)
+        assert "Service created successfully!" in result
+        assert "redis" in result
+        assert "oduflow-svc-redis" in result
+        assert "http://localhost:6379" in result
+
+    @patch("oduflow.docker_ops.service_ops.create_service")
+    def test_create_with_env_vars_parsing(self, mock_create):
+        mock_create.return_value = {
+            "name": "meili",
+            "container_name": "oduflow-svc-meili",
+            "url": "http://localhost:7700",
+            "image": "getmeili/meilisearch:v1.6",
+        }
+        _get_tool_fn("create_service")(
+            name="meili",
+            image="getmeili/meilisearch:v1.6",
+            port=7700,
+            env_vars="MEILI_MASTER_KEY=abc,MEILI_ENV=production",
+        )
+        call_kwargs = mock_create.call_args
+        parsed_env = call_kwargs[1]["env_vars"]
+        assert parsed_env == {"MEILI_MASTER_KEY": "abc", "MEILI_ENV": "production"}
+
+    @patch("oduflow.docker_ops.service_ops.create_service")
+    def test_create_empty_env_vars(self, mock_create):
+        mock_create.return_value = {
+            "name": "redis",
+            "container_name": "oduflow-svc-redis",
+            "url": "http://localhost:6379",
+            "image": "redis:7",
+        }
+        _get_tool_fn("create_service")(name="redis", image="redis:7", port=6379, env_vars="")
+        call_kwargs = mock_create.call_args
+        assert call_kwargs[1]["env_vars"] is None
+
+
+class TestDeleteServiceTool:
+    @patch("oduflow.docker_ops.service_ops.delete_service")
+    def test_delete(self, mock_delete):
+        mock_delete.return_value = {"name": "redis", "container_name": "oduflow-svc-redis"}
+        result = _get_tool_fn("delete_service")(name="redis")
+        assert "deleted" in result
+        assert "redis" in result
+        mock_delete.assert_called_once_with(TEST_SETTINGS, "redis")
+
+
+class TestListServicesTool:
+    @patch("oduflow.docker_ops.service_ops.list_services")
+    def test_list(self, mock_list):
+        mock_list.return_value = [
+            {
+                "name": "redis",
+                "container_name": "oduflow-svc-redis",
+                "image": "redis:7",
+                "status": "running",
+                "port": 6379,
+                "url": "http://localhost:6379",
+                "env_vars": {"REDIS_PASSWORD": "secret"},
+            }
+        ]
+        result = _call_tool("list_services")
+        assert "redis" in result
+        assert "oduflow-svc-redis" in result
+        assert "redis:7" in result
+        assert "6379" in result
+        assert "REDIS_PASSWORD=secret" in result
+
+    @patch("oduflow.docker_ops.service_ops.list_services")
+    def test_list_empty(self, mock_list):
+        mock_list.return_value = []
+        result = _call_tool("list_services")
+        assert "No active services" in result
+
+
+class TestGetServiceLogsTool:
+    @patch("oduflow.docker_ops.service_ops.get_service_logs")
+    def test_logs(self, mock_logs):
+        mock_logs.return_value = "2025-01-01 log line 1\n2025-01-01 log line 2"
+        result = _get_tool_fn("get_service_logs")(name="redis", n_lines=50)
+        assert "log line 1" in result
+        assert "service 'redis'" in result
+        mock_logs.assert_called_once_with(TEST_SETTINGS, "redis", 50)
+
+    @patch("oduflow.docker_ops.service_ops.get_service_logs")
+    def test_logs_error(self, mock_logs):
+        from oduflow.errors import NotFoundError
+        mock_logs.side_effect = NotFoundError("Service 'redis' not found")
+        with pytest.raises(ValueError, match="Service 'redis' not found"):
+            _get_tool_fn("get_service_logs")(name="redis")
+
+
 class TestMutex:
     @patch("oduflow.docker_ops.env_ops.create_environment")
     def test_busy_raises_value_error(self, mock_create):
