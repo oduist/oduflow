@@ -8,7 +8,47 @@
 
 # Oduflow
 
-A **git-flow oriented** development and CI tool for Odoo, powered by **reusable database templates**. Oduflow provisions isolated, ephemeral Odoo environments on Docker — one per git branch — so you can develop, test, and run CI pipelines against real production data without duplicating hundreds of gigabytes for each branch.
+An **AI-first** Odoo development and CI tool, powered by **reusable database templates**. Oduflow provisions isolated, ephemeral Odoo environments on Docker — one per git branch — and exposes them to AI coding agents via [MCP](https://modelcontextprotocol.io/), creating a **closed feedback loop** that enables fully autonomous Odoo development.
+
+### Beyond Vibe Coding: Spec-Driven Development
+
+**Vibe coding** — chatting with an AI and eyeballing the output — was the first wave. It works for prototypes, but breaks down on real ERP systems where a module must install cleanly, pass tests, and work against production data.
+
+**Spec-Driven Development (SDD)** is the next step: you write a precise specification of *what* the module should do, and the AI agent autonomously implements *how* — because it has a **closed feedback loop** with the running system:
+
+```
+┌─────────────────────────────────────────────────────┐
+│                    AI Agent                          │
+│          (Cursor, Cline, Amp, Claude, …)             │
+└──────┬──────────────────────────────▲────────────────┘
+       │ 1. Read spec                 │ 5. Read errors,
+       │ 2. Write code                │    fix code,
+       │ 3. Install module via MCP    │    retry
+       │ 4. Click-test UI via         │
+       │    Playwright MCP            │
+┌──────▼──────────────────────────────┴────────────────┐
+│               Oduflow (MCP Server)                    │
+│  • install_odoo_modules → traceback or success        │
+│  • test_environment → test pass/fail with details     │
+│  • get_environment_logs → runtime errors              │
+│  • upgrade_odoo_modules → upgrade output              │
+├──────────────────────────────────────────────────────┤
+│            + Playwright MCP / other tools              │
+│  • Navigate Odoo UI, click buttons, fill forms        │
+│  • Verify business logic end-to-end                   │
+│  • Validate acceptance criteria from the spec         │
+└──────────────────────────────────────────────────────┘
+```
+
+The agent writes code, installs the module, reads the traceback, fixes the error, retries — and when it installs cleanly, it can open the browser via [Playwright MCP](https://github.com/anthropics/mcp-playwright) to click through the UI, verify business flows, and validate acceptance criteria — **all without human intervention**.
+
+| | Vibe Coding | Spec-Driven Development |
+|---|---|---|
+| **Input** | Conversational prompts | Formal specification with acceptance criteria |
+| **Feedback** | Human eyeballs the code | System returns errors, test results, and UI state automatically |
+| **Iteration** | Human copy-pastes errors back | Agent retries autonomously via MCP |
+| **Scope** | Single files, prototypes | Full modules against real databases |
+| **Verification** | "Looks right" | Module installs, tests pass, UI works on production data |
 
 Create templates from production dumps, staging snapshots, or from scratch. Maintain **multiple named templates** side-by-side (e.g. per Odoo version, per client, per project phase) and spin up any combination of branch + database in seconds.
 
