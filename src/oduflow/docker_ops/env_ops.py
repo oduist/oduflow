@@ -31,7 +31,13 @@ _ODOO_CONF_TEMPLATE = _PROJECT_ROOT / "templates" / "odoo.conf"
 def _get_used_ports(client: DockerClient, settings: Settings, exclude_branch: str = "") -> set[int]:
     """Collect host ports currently bound by managed containers (excluding a specific branch)."""
     used: set[int] = set()
-    for c in client.containers.list(all=True, filters={"label": [settings.managed_label]}):
+    filters = {
+        "label": [
+            f"{settings.managed_label}=true",
+            f"{settings.instance_label}={settings.instance_id}"
+        ]
+    }
+    for c in client.containers.list(all=True, filters=filters):
         branch = c.labels.get(settings.branch_label, "")
         if branch == exclude_branch:
             continue
@@ -61,7 +67,7 @@ def _ensure_system_ready(client: DockerClient, settings: Settings, template_name
         )
 
     if template_name is not None:
-        tpl_db = get_template_db_name(template_name)
+        tpl_db = get_template_db_name(template_name, settings.instance_id)
         if not _db_exists(client, settings, tpl_db):
             raise PrerequisiteNotMetError(
                 f"Template database '{tpl_db}' not found. Run init_template first."
@@ -258,7 +264,7 @@ def _cleanup_old_environment(
         except Exception:
             pass
 
-    env_db = get_db_name(branch_name)
+    env_db = get_db_name(branch_name, settings.instance_id)
     if _db_exists(client, settings, env_db):
         try:
             _exec_sql(client, settings, f'DROP DATABASE IF EXISTS "{env_db}" WITH (FORCE);')
@@ -313,10 +319,11 @@ def create_environment(
     _cleanup_old_environment(client, settings, branch_name)
     workspace_path = get_workspace_path(branch_name, settings.workspaces_dir)
     repo_path = get_repo_path(branch_name, settings.workspaces_dir)
-    env_db = get_db_name(branch_name)
+    env_db = get_db_name(branch_name, settings.instance_id)
 
     labels = {
         settings.managed_label: "true",
+        settings.instance_label: settings.instance_id,
         settings.branch_label: branch_name,
         settings.repo_label: repo_url,
         settings.image_label: odoo_image,
@@ -430,7 +437,7 @@ def create_environment(
         )
 
     if template_name is not None:
-        tpl_db = get_template_db_name(template_name)
+        tpl_db = get_template_db_name(template_name, settings.instance_id)
         _exec_sql(
             client,
             settings,
@@ -576,7 +583,7 @@ def create_environment(
 def delete_environment(settings: Settings, branch_name: str) -> None:
     client = get_client()
     odoo_container_name = get_resource_name(branch_name, "odoo", settings.prefix)
-    env_db = get_db_name(branch_name)
+    env_db = get_db_name(branch_name, settings.instance_id)
 
     logger.info("Deleting environment", extra={"branch": branch_name})
 
@@ -609,7 +616,12 @@ def delete_environment(settings: Settings, branch_name: str) -> None:
 
 def list_environments(settings: Settings) -> list[dict[str, Any]]:
     client = get_client()
-    filters = {"label": [settings.managed_label]}
+    filters = {
+        "label": [
+            f"{settings.managed_label}=true",
+            f"{settings.instance_label}={settings.instance_id}"
+        ]
+    }
     containers = client.containers.list(all=True, filters=filters)
 
     envs: dict[str, dict[str, Any]] = {}

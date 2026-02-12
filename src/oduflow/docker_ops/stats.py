@@ -59,7 +59,12 @@ def get_container_stats(settings: Settings) -> list[dict[str, Any]]:
     client = get_client()
     containers = client.containers.list(
         all=True,
-        filters={"label": [settings.managed_label]},
+        filters={
+            "label": [
+                f"{settings.managed_label}=true",
+                f"{settings.instance_label}={settings.instance_id}"
+            ]
+        },
     )
     if not containers:
         return []

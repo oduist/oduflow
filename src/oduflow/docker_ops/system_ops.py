@@ -11,7 +11,7 @@ from docker import DockerClient
 
 from oduflow.docker_ops.client import get_client, get_odoo_uid_gid
 from oduflow.errors import ConflictError, ExternalCommandError, NotFoundError, PrerequisiteNotMetError
-from oduflow.naming import get_template_db_name
+from oduflow.naming import get_db_name, get_template_db_name
 from oduflow.settings import Settings
 
 logger = logging.getLogger("oduflow")
@@ -231,7 +231,7 @@ def reload_template(
     if not template_name:
         template_name = settings.default_template
     client = get_client()
-    tpl_db = get_template_db_name(template_name)
+    tpl_db = get_template_db_name(template_name, settings.instance_id)
     resolved_dump = dump_path or settings.get_template_sql_path(template_name)
 
     if not os.path.isfile(resolved_dump):
@@ -512,7 +512,7 @@ def template_up(
     if not template_name:
         template_name = settings.default_template
     client = get_client()
-    tpl_db = get_template_db_name(template_name)
+    tpl_db = get_template_db_name(template_name, settings.instance_id)
 
     try:
         existing = client.containers.get(_TEMPLATE_EDITOR_CONTAINER)
@@ -632,7 +632,7 @@ def template_down(settings: Settings, template_name: str = "") -> dict[str, str]
     if not template_name:
         template_name = settings.default_template
     client = get_client()
-    tpl_db = get_template_db_name(template_name)
+    tpl_db = get_template_db_name(template_name, settings.instance_id)
 
     try:
         container = client.containers.get(_TEMPLATE_EDITOR_CONTAINER)
@@ -701,8 +701,8 @@ def promote_env(settings: Settings, branch_name: str, template_name: str = "") -
     from oduflow.naming import get_db_name, get_filestore_paths
 
     client = get_client()
-    tpl_db = get_template_db_name(template_name)
-    env_db = get_db_name(branch_name)
+    tpl_db = get_template_db_name(template_name, settings.instance_id)
+    env_db = get_db_name(branch_name, settings.instance_id)
 
     if not _db_exists(client, settings, env_db):
         raise NotFoundError(f"Database '{env_db}' for branch '{branch_name}' not found.")
@@ -831,7 +831,7 @@ def promote_env(settings: Settings, branch_name: str, template_name: str = "") -
             except (docker.errors.NotFound, IndexError):
                 image = "odoo:17.0"
 
-            env_db = get_db_name(branch)
+            env_db = get_db_name(branch, settings.instance_id)
             env_ops._mount_filestore(client, settings, branch, env_db, image, {}, template_name=template_name)
             logger.info("Remounted overlay for branch %s", branch)
 
@@ -917,7 +917,7 @@ def destroy_system(settings: Settings) -> dict[str, str]:
 
 def drop_template(settings: Settings, template_name: str) -> dict[str, str]:
     client = get_client()
-    tpl_db = get_template_db_name(template_name)
+    tpl_db = get_template_db_name(template_name, settings.instance_id)
 
     if _db_exists(client, settings, tpl_db):
         _wait_pg_ready(client, settings)
@@ -938,7 +938,7 @@ def list_templates(settings: Settings) -> list[dict]:
     templates = settings.list_templates()
     result = []
     for template_name in templates:
-        tpl_db = get_template_db_name(template_name)
+        tpl_db = get_template_db_name(template_name, settings.instance_id)
         has_sql = os.path.isfile(settings.get_template_sql_path(template_name))
         has_filestore = os.path.isdir(settings.get_template_filestore_path(template_name))
         db_loaded = _db_exists(client, settings, tpl_db)

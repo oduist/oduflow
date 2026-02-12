@@ -5,6 +5,7 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class Settings:
+    instance_id: str = "1"
     routing_mode: str = "port"
     base_domain: str = ""
     acme_email: str = ""
@@ -12,7 +13,7 @@ class Settings:
     port_range_start: int = 50000
     port_range_end: int = 50100
     workspaces_dir: str = ""
-    home: str = "/srv/oduflow_data"
+    home: str = ""
     db_user: str = "odoo"
     db_password: str = "odoo"
     odoo_image: str = "odoo"
@@ -25,6 +26,7 @@ class Settings:
     flow_server_port: int = 8000
     prefix: str = "oduflow-"
     branch_label: str = "oduflow.branch"
+    instance_label: str = "oduflow.instance"
     managed_label: str = "oduflow.managed"
     system_label: str = "oduflow.system"
     repo_label: str = "oduflow.repo"
@@ -69,8 +71,10 @@ class Settings:
 
     @staticmethod
     def from_env() -> "Settings":
-        flow_home = os.getenv("ODUFLOW_HOME", "/srv/oduflow_data")
+        instance_id = os.getenv("ODUFLOW_INSTANCE_ID", "1").strip()
+        flow_home = os.getenv("ODUFLOW_HOME", f"/srv/oduflow_data_{instance_id}")
         return Settings(
+            instance_id=instance_id,
             routing_mode=os.getenv("ODUFLOW_ROUTING_MODE", "port").strip().lower(),
             base_domain=re.sub(r"^https?://", "", os.getenv("ODUFLOW_BASE_DOMAIN", "")).strip(),
             acme_email=os.getenv("ODUFLOW_ACME_EMAIL", "").strip(),

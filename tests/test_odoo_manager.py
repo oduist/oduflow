@@ -130,7 +130,7 @@ class TestCreateEnvironment:
         result = env_ops.create_environment(TEST_SETTINGS, "feature/payments", "https://github.com/org/repo.git")
 
         assert result["url"] == "http://localhost:50000"
-        assert result["database"] == "oduflow_feature-payments"
+        assert result["database"] == "oduflow_1_feature-payments"
         assert result["odoo_container"] == "oduflow-feature-payments-odoo"
         mock_sql.assert_called_once()
         mock_docker_client.containers.run.assert_called_once()
@@ -174,7 +174,7 @@ class TestCreateEnvironment:
         result = env_ops.create_environment(TEST_SETTINGS, "feature/no-tpl", "https://github.com/org/repo.git", template_name=None)
 
         assert result["url"] == "http://localhost:50001"
-        assert result["database"] == "oduflow_feature-no-tpl"
+        assert result["database"] == "oduflow_1_feature-no-tpl"
         # Should create empty DB (no TEMPLATE clause)
         create_db_call = mock_sql.call_args_list[0]
         assert "TEMPLATE" not in create_db_call[0][2]
@@ -283,7 +283,7 @@ class TestInstallModules:
 
         assert result["exit_code"] == 0
         args = container.exec_run.call_args[0][0]
-        assert "-d oduflow_main" in args
+        assert "-d oduflow_1_main" in args
         assert "-i sale,crm" in args
 
 
@@ -297,7 +297,7 @@ class TestUpgradeModules:
 
         assert result["exit_code"] == 0
         args = container.exec_run.call_args[0][0]
-        assert "-d oduflow_main" in args
+        assert "-d oduflow_1_main" in args
         assert "-u sale" in args
 
 
@@ -312,7 +312,7 @@ class TestRunEnvironmentTests:
         assert "All tests passed" in output
         args = container.exec_run.call_args[0][0]
         assert "--db_host=oduflow-db" in args
-        assert "--database=oduflow_main" in args
+        assert "--database=oduflow_1_main" in args
 
 
 class TestGetLogs:

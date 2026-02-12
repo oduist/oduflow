@@ -14,7 +14,7 @@ logger = logging.getLogger("oduflow")
 def run_environment_tests(settings: Settings, branch_name: str, modules: str) -> str:
     client = get_client()
     odoo_container_name = get_resource_name(branch_name, "odoo", settings.prefix)
-    env_db = get_db_name(branch_name)
+    env_db = get_db_name(branch_name, settings.instance_id)
 
     try:
         container = client.containers.get(odoo_container_name)
@@ -65,7 +65,7 @@ def _run_odoo_module_command(
 
     client = get_client()
     odoo_container_name = get_resource_name(branch_name, "odoo", settings.prefix)
-    env_db = get_db_name(branch_name)
+    env_db = get_db_name(branch_name, settings.instance_id)
 
     try:
         container = client.containers.get(odoo_container_name)

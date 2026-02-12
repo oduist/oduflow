@@ -33,13 +33,19 @@ class TestSlugifyBranch:
 
 class TestGetDbName:
     def test_main(self):
-        assert get_db_name("main") == "oduflow_main"
+        assert get_db_name("main") == "oduflow_1_main"
 
     def test_feature(self):
-        assert get_db_name("feature/payments") == "oduflow_feature-payments"
+        assert get_db_name("feature/payments") == "oduflow_1_feature-payments"
 
     def test_complex(self):
-        assert get_db_name("hotfix/CRM-123/fix") == "oduflow_hotfix-crm-123-fix"
+        assert get_db_name("hotfix/CRM-123/fix") == "oduflow_1_hotfix-crm-123-fix"
+
+    def test_with_instance_id(self):
+        assert get_db_name("main", instance_id="2") == "oduflow_2_main"
+
+    def test_feature_with_instance_id(self):
+        assert get_db_name("feature/payments", instance_id="3") == "oduflow_3_feature-payments"
 
 
 class TestGetResourceName:
@@ -87,13 +93,19 @@ class TestGetFilestorePaths:
 
 class TestGetTemplateDbName:
     def test_default(self):
-        assert get_template_db_name("default") == "odoo_ref_default"
+        assert get_template_db_name("default") == "odoo_ref_1_default"
 
     def test_named(self):
-        assert get_template_db_name("myproject-v17") == "odoo_ref_myproject-v17"
+        assert get_template_db_name("myproject-v17") == "odoo_ref_1_myproject-v17"
 
     def test_slash(self):
-        assert get_template_db_name("client/prod") == "odoo_ref_client-prod"
+        assert get_template_db_name("client/prod") == "odoo_ref_1_client-prod"
 
     def test_default_arg(self):
-        assert get_template_db_name() == "odoo_ref_default"
+        assert get_template_db_name() == "odoo_ref_1_default"
+
+    def test_with_instance_id(self):
+        assert get_template_db_name("default", instance_id="2") == "odoo_ref_2_default"
+
+    def test_named_with_instance_id(self):
+        assert get_template_db_name("myproject-v17", instance_id="3") == "odoo_ref_3_myproject-v17"

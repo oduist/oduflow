@@ -31,8 +31,8 @@ class TestCLIInitDestroy:
     def test_cli_init(self, mock_init):
         from oduflow.server import _run_init
         mock_init.return_value = {"status": "initialized"}
-        _run_init(TEST_SETTINGS, version="15.0", force=False)
-        mock_init.assert_called_once_with(TEST_SETTINGS, version="15.0", force=False)
+        _run_init(TEST_SETTINGS)
+        mock_init.assert_called_once_with(TEST_SETTINGS)
 
     @patch("oduflow.docker_ops.system_ops.destroy_system")
     def test_cli_destroy(self, mock_destroy):
@@ -48,12 +48,12 @@ class TestCreateEnvironmentTool:
         mock_create.return_value = {
             "url": "http://localhost:50000",
             "odoo_container": "oduflow-main-odoo",
-            "database": "oduflow_main",
+            "database": "oduflow_1_main",
             "workspace": "/tmp/ws",
         }
         result = _call_tool("create_environment", branch_name="main", repo_url="https://repo.url", odoo_image="odoo:17.0")
         assert "Environment provisioned successfully!" in result
-        assert "Database: oduflow_main" in result
+        assert "Database: oduflow_1_main" in result
         assert "Template: default" in result
 
 

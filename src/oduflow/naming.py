@@ -10,8 +10,8 @@ def slugify_branch(branch_name: str) -> str:
     return slug[:63]
 
 
-def get_db_name(branch_name: str) -> str:
-    return f"oduflow_{slugify_branch(branch_name)}"
+def get_db_name(branch_name: str, instance_id: str = "1") -> str:
+    return f"oduflow_{instance_id}_{slugify_branch(branch_name)}"
 
 
 def get_resource_name(branch_name: str, resource_type: str, prefix: str = "oduflow-") -> str:
@@ -32,9 +32,9 @@ def get_env_hostname(branch_name: str, base_domain: str) -> str:
     return f"{slug}.{base_domain}"
 
 
-def get_template_db_name(template_name: str = "default") -> str:
+def get_template_db_name(template_name: str = "default", instance_id: str = "1") -> str:
     slug = template_name.replace("/", "-")
-    return f"odoo_ref_{slug}"
+    return f"odoo_ref_{instance_id}_{slug}"
 
 
 def get_filestore_paths(branch_name: str, workspaces_dir: str) -> dict[str, str]:

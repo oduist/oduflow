@@ -52,6 +52,7 @@ def create_service(
 
     labels = {
         "oduflow.managed": "true",
+        "oduflow.instance": settings.instance_id,
         "oduflow.service": name,
     }
 
@@ -116,7 +117,12 @@ def list_services(settings: Settings) -> list[dict]:
     client = get_client()
     containers = client.containers.list(
         all=True,
-        filters={"label": [f"{settings.managed_label}=true"]},
+        filters={
+            "label": [
+                f"{settings.managed_label}=true",
+                f"{settings.instance_label}={settings.instance_id}"
+            ]
+        },
     )
 
     result = []

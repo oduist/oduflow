@@ -538,6 +538,16 @@ def _run_init(settings: Settings) -> None:
     print(f"System {result['status']}.")
 
 
+def _run_init_instance(settings: Settings) -> None:
+    # Initialize per-instance directories
+    import os
+    os.makedirs(settings.workspaces_dir, exist_ok=True)
+    os.makedirs(settings.get_template_dir(), exist_ok=True)
+    print(f"Instance {settings.instance_id} initialized.")
+    print(f"  Workspaces: {settings.workspaces_dir}")
+    print(f"  Templates: {settings.get_template_dir()}")
+
+
 def _run_reload_template(settings: Settings, template_name: str = "", dump_path: str = "") -> None:
     if not template_name:
         template_name = settings.default_template
@@ -743,6 +753,8 @@ def main() -> None:
 
     sub.add_parser("init", help="Initialize shared infrastructure (network, DB)")
 
+    sub.add_parser("init-instance", help="Initialize per-instance directories (workspaces, templates)")
+
     sub.add_parser("destroy", help="Destroy all shared infrastructure")
 
     p_reload = sub.add_parser("reload-template", help="Drop and re-restore a template DB from template profile")
@@ -803,6 +815,10 @@ def main() -> None:
 
     if args.command == "init":
         _run_init(_settings)
+        return
+
+    if args.command == "init-instance":
+        _run_init_instance(_settings)
         return
 
     if args.command == "destroy":
