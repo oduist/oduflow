@@ -4,6 +4,7 @@ import re
 import docker
 
 from oduflow.docker_ops.client import get_client
+from oduflow.docker_ops import service_presets
 from oduflow.errors import ConflictError, NotFoundError, PrerequisiteNotMetError
 from oduflow.settings import Settings
 
@@ -85,6 +86,16 @@ def create_service(
 
     client.containers.run(**run_kwargs)
     logger.info("Created service container %s from image %s", container_name, image)
+
+    # Auto-save preset for future restore
+    try:
+        service_presets.save_preset(
+            settings, name, image, port,
+            hostname=hostname,
+            env_vars=env_vars,
+        )
+    except Exception:
+        logger.warning("Failed to save service preset for %s", name, exc_info=True)
 
     return {
         "name": name,

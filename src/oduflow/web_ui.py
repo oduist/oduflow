@@ -12,7 +12,7 @@ from starlette.responses import HTMLResponse, JSONResponse, Response
 from starlette.routing import Route
 from starlette.types import ASGIApp, Receive, Scope, Send
 
-from oduflow.docker_ops import env_ops, service_ops, system_ops
+from oduflow.docker_ops import env_ops, service_ops, service_presets, system_ops
 from oduflow.docker_ops.odoo_ops import get_environment_logs
 from oduflow.docker_ops.stats import get_container_stats, get_system_stats
 from oduflow.errors import BusyError, FlowError, NotFoundError
@@ -307,6 +307,51 @@ def _build_routes(
             logger.exception("Unexpected error in api_service_logs")
             return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
 
+    def api_service_presets(request: Request) -> JSONResponse:
+        try:
+            presets = service_presets.list_presets(get_settings())
+            return JSONResponse({"ok": True, "presets": presets})
+        except FlowError as e:
+            return _error_response(e)
+        except Exception as e:
+            logger.exception("Unexpected error in api_service_presets")
+            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+
+    async def api_service_restore(request: Request) -> JSONResponse:
+        name = request.path_params["name"]
+        if not busy_lock.acquire(blocking=False):
+            return _error_response(BusyError("Another operation is in progress."))
+        try:
+            settings = get_settings()
+            preset = service_presets.get_preset(settings, name)
+            result = service_ops.create_service(
+                settings,
+                name=preset["name"],
+                image=preset["image"],
+                port=preset["port"],
+                hostname=preset.get("hostname") or None,
+                env_vars=preset.get("env_vars") or None,
+            )
+            return JSONResponse({"ok": True, "result": result})
+        except FlowError as e:
+            return _error_response(e)
+        except Exception as e:
+            logger.exception("Unexpected error in api_service_restore")
+            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+        finally:
+            busy_lock.release()
+
+    def api_service_preset_delete(request: Request) -> JSONResponse:
+        name = request.path_params["name"]
+        try:
+            service_presets.delete_preset(get_settings(), name)
+            return JSONResponse({"ok": True, "result": {"deleted": name}})
+        except FlowError as e:
+            return _error_response(e)
+        except Exception as e:
+            logger.exception("Unexpected error in api_service_preset_delete")
+            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+
     return [
         Route("/", dashboard, methods=["GET"]),
         Route("/favicon.ico", favicon, methods=["GET"]),
@@ -323,6 +368,9 @@ def _build_routes(
         Route("/api/services/{name}/update", api_service_update, methods=["POST"]),
         Route("/api/services/{name}/delete", api_service_delete, methods=["POST"]),
         Route("/api/services/{name}/logs", api_service_logs, methods=["GET"]),
+        Route("/api/service-presets", api_service_presets, methods=["GET"]),
+        Route("/api/service-presets/{name}/restore", api_service_restore, methods=["POST"]),
+        Route("/api/service-presets/{name}/delete", api_service_preset_delete, methods=["POST"]),
         Route("/api/environments/{branch:path}/logs", api_logs, methods=["GET"]),
     ]
 

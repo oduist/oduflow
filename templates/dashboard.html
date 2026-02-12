@@ -382,10 +382,15 @@
 </div>
 
 <div id="tab-services" class="tab-content">
-  <div style="display:flex;justify-content:flex-end;margin-bottom:12px;">
+  <div style="display:flex;justify-content:flex-end;gap:8px;margin-bottom:12px;">
+    <button class="btn" style="border-color:var(--green);color:var(--green);" onclick="openRestoreServiceModal()">↻ Restore Service</button>
     <button class="btn-create" onclick="openCreateServiceModal()">+ Create Service</button>
   </div>
   <div id="svc-list"></div>
+  <div id="svc-presets-section" style="margin-top:24px;display:none;">
+    <h3 style="font-size:14px;font-weight:600;margin-bottom:10px;color:var(--text-dim);">Saved Presets</h3>
+    <div id="svc-presets-list"></div>
+  </div>
 </div>
 
 <div class="toast" id="toast"></div>
@@ -462,6 +467,28 @@
       <div class="form-actions">
         <button class="btn" onclick="closeCreateServiceModal()">Cancel</button>
         <button class="btn-create" id="svc-submit" onclick="submitCreateService()">Create</button>
+      </div>
+    </div>
+  </div>
+</div>
+<div class="modal-overlay" id="restore-svc-modal" onclick="closeRestoreServiceModal(event)">
+  <div class="modal" style="max-width:420px;">
+    <div class="modal-header">
+      <h2>Restore Service</h2>
+      <button class="modal-close" onclick="closeRestoreServiceModal()">&times;</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-error" id="restore-svc-error"></div>
+      <div class="form-group">
+        <label for="restore-svc-select">Select preset</label>
+        <select id="restore-svc-select" style="width:100%;padding:8px 10px;font-size:13px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:var(--radius);">
+          <option value="">Loading...</option>
+        </select>
+      </div>
+      <div id="restore-svc-details" style="font-size:12px;color:var(--text-dim);margin-top:8px;"></div>
+      <div class="form-actions">
+        <button class="btn" onclick="closeRestoreServiceModal()">Cancel</button>
+        <button class="btn-create" id="restore-svc-submit" onclick="submitRestoreService()" style="background:var(--green);border-color:var(--green);">Restore</button>
       </div>
     </div>
   </div>
@@ -1002,8 +1029,175 @@ async function submitCreateService() {
   }
 }
 
+// --- Service Presets ---
+const API_PRESETS = '/api/service-presets';
+var _cachedPresets = [];
+
+async function loadServicePresets() {
+  try {
+    var r = await fetch(API_PRESETS);
+    var data = await r.json();
+    if (data.ok) {
+      _cachedPresets = data.presets || [];
+      renderPresetsList(_cachedPresets);
+    }
+  } catch (e) { /* silent */ }
+}
+
+function renderPresetsList(presets) {
+  var section = document.getElementById('svc-presets-section');
+  var el = document.getElementById('svc-presets-list');
+  if (!presets || presets.length === 0) {
+    section.style.display = 'none';
+    return;
+  }
+  section.style.display = 'block';
+  el.innerHTML = presets.map(function(p) {
+    var envStr = '';
+    if (p.env_vars && Object.keys(p.env_vars).length > 0) {
+      envStr = '<span style="margin-left:12px;">Env: <strong>' + Object.keys(p.env_vars).map(function(k) { return esc(k) + '=' + esc(maskValue(k, p.env_vars[k])); }).join(', ') + '</strong></span>';
+    }
+    return '<div class="env-card" style="padding:10px 16px;">' +
+      '<div style="display:flex;align-items:center;justify-content:space-between;">' +
+        '<div style="display:flex;align-items:center;gap:10px;">' +
+          '<span style="font-weight:600;font-size:13px;">' + esc(p.name) + '</span>' +
+          '<span class="badge" style="background:rgba(88,166,255,0.12);color:var(--accent);">preset</span>' +
+        '</div>' +
+        '<div style="display:flex;gap:6px;">' +
+          '<button class="btn btn-start" style="font-size:11px;padding:3px 10px;" onclick="doRestorePreset(\'' + escAttr(p.name) + '\')">Restore</button>' +
+          '<button class="btn btn-delete" style="font-size:11px;padding:3px 10px;" onclick="doDeletePreset(\'' + escAttr(p.name) + '\')">Delete</button>' +
+        '</div>' +
+      '</div>' +
+      '<div style="font-size:11px;color:var(--text-dim);margin-top:4px;">' +
+        '<span>Image: <strong>' + esc(p.image) + '</strong></span>' +
+        '<span style="margin-left:12px;">Port: <strong>' + p.port + '</strong></span>' +
+        (p.hostname ? '<span style="margin-left:12px;">Host: <strong>' + esc(p.hostname) + '</strong></span>' : '') +
+        envStr +
+      '</div>' +
+    '</div>';
+  }).join('');
+}
+
+async function doRestorePreset(name) {
+  if (!confirm('Restore service "' + name + '" from preset?')) return;
+  try {
+    var r = await fetch(API_PRESETS + '/' + encodeURIComponent(name) + '/restore', { method: 'POST' });
+    var data = await r.json();
+    if (data.ok) {
+      showToast('Service "' + name + '" restored');
+      await loadServices();
+      await loadServicePresets();
+    } else {
+      showToast(data.error || 'Restore failed', true);
+    }
+  } catch (e) {
+    showToast('Connection error: ' + e.message, true);
+  }
+}
+
+async function doDeletePreset(name) {
+  if (!confirm('Delete preset "' + name + '"? This only removes the saved configuration, not any running service.')) return;
+  try {
+    var r = await fetch(API_PRESETS + '/' + encodeURIComponent(name) + '/delete', { method: 'POST' });
+    var data = await r.json();
+    if (data.ok) {
+      showToast('Preset "' + name + '" deleted');
+      await loadServicePresets();
+    } else {
+      showToast(data.error || 'Delete failed', true);
+    }
+  } catch (e) {
+    showToast('Connection error: ' + e.message, true);
+  }
+}
+
+function openRestoreServiceModal() {
+  var sel = document.getElementById('restore-svc-select');
+  var errEl = document.getElementById('restore-svc-error');
+  var details = document.getElementById('restore-svc-details');
+  errEl.style.display = 'none';
+  details.innerHTML = '';
+  document.getElementById('restore-svc-submit').disabled = false;
+
+  sel.innerHTML = '<option value="">Loading...</option>';
+  document.getElementById('restore-svc-modal').classList.add('show');
+
+  fetch(API_PRESETS).then(function(r) { return r.json(); }).then(function(data) {
+    if (data.ok && data.presets && data.presets.length > 0) {
+      sel.innerHTML = '<option value="">— select a preset —</option>' +
+        data.presets.map(function(p) {
+          return '<option value="' + escAttr(p.name) + '">' + esc(p.name) + ' (' + esc(p.image) + ')</option>';
+        }).join('');
+      sel.onchange = function() {
+        var p = data.presets.find(function(x) { return x.name === sel.value; });
+        if (p) {
+          var lines = ['Image: ' + p.image, 'Port: ' + p.port];
+          if (p.hostname) lines.push('Hostname: ' + p.hostname);
+          if (p.env_vars && Object.keys(p.env_vars).length) {
+            lines.push('Env: ' + Object.keys(p.env_vars).map(function(k) { return k + '=' + maskValue(k, p.env_vars[k]); }).join(', '));
+          }
+          details.innerHTML = lines.map(function(l) { return esc(l); }).join('<br>');
+        } else {
+          details.innerHTML = '';
+        }
+      };
+    } else {
+      sel.innerHTML = '<option value="">No presets available</option>';
+    }
+  }).catch(function() {
+    sel.innerHTML = '<option value="">Failed to load presets</option>';
+  });
+}
+
+function closeRestoreServiceModal(event) {
+  if (event && event.target !== event.currentTarget) return;
+  document.getElementById('restore-svc-modal').classList.remove('show');
+}
+
+async function submitRestoreService() {
+  var sel = document.getElementById('restore-svc-select');
+  var name = sel.value;
+  var errEl = document.getElementById('restore-svc-error');
+  if (!name) {
+    errEl.textContent = 'Please select a preset.';
+    errEl.style.display = 'block';
+    return;
+  }
+  errEl.style.display = 'none';
+  var btn = document.getElementById('restore-svc-submit');
+  btn.disabled = true;
+  btn.textContent = 'Restoring...';
+  try {
+    var r = await fetch(API_PRESETS + '/' + encodeURIComponent(name) + '/restore', { method: 'POST' });
+    var data = await r.json();
+    if (data.ok) {
+      closeRestoreServiceModal();
+      showToast('Service "' + name + '" restored');
+      await loadServices();
+      await loadServicePresets();
+    } else {
+      errEl.textContent = data.error || 'Restore failed';
+      errEl.style.display = 'block';
+    }
+  } catch (e) {
+    errEl.textContent = 'Connection error: ' + e.message;
+    errEl.style.display = 'block';
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Restore';
+  }
+}
+
+// Also reload presets when services change
+var _origLoadServices = loadServices;
+loadServices = async function() {
+  await _origLoadServices();
+  await loadServicePresets();
+};
+
 loadEnvironments();
 loadStats();
+loadServicePresets();
 resetTimers();
 </script>
 </body>

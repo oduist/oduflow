@@ -6,7 +6,7 @@ import threading
 
 from fastmcp import FastMCP
 
-from oduflow.docker_ops import env_ops, odoo_ops, service_ops, system_ops
+from oduflow.docker_ops import env_ops, odoo_ops, service_ops, service_presets, system_ops
 from oduflow import git_ops
 from oduflow.errors import BusyError, FlowError
 from oduflow.settings import Settings
@@ -525,6 +525,67 @@ def delete_service(name: str) -> str:
     """
     result = service_ops.delete_service(_get_settings(), name)
     return f"Service '{result['name']}' deleted. Container '{result['container_name']}' removed."
+
+
+@mcp.tool()
+@handle_errors
+def list_service_presets() -> str:
+    """List saved service presets (configurations that can be restored)."""
+    presets = service_presets.list_presets(_get_settings())
+    if not presets:
+        return "No service presets saved."
+    output = "Saved Service Presets:\n"
+    for p in presets:
+        env_str = ", ".join(f"{k}={v}" for k, v in p["env_vars"].items()) if p.get("env_vars") else ""
+        output += f"- {p['name']}: image={p['image']}, port={p['port']}"
+        if p.get("hostname"):
+            output += f", hostname={p['hostname']}"
+        if env_str:
+            output += f", env=[{env_str}]"
+        output += "\n"
+    return output
+
+
+@mcp.tool()
+@handle_errors
+@with_mutex
+def restore_service(name: str) -> str:
+    """
+    Restore a service from a saved preset. Recreates the service container with the same configuration.
+
+    Args:
+        name: The name of the saved service preset to restore.
+    """
+    settings = _get_settings()
+    preset = service_presets.get_preset(settings, name)
+    result = service_ops.create_service(
+        settings,
+        name=preset["name"],
+        image=preset["image"],
+        port=preset["port"],
+        hostname=preset.get("hostname") or None,
+        env_vars=preset.get("env_vars") or None,
+    )
+    return (
+        f"Service restored from preset!\n"
+        f"Name: {result['name']}\n"
+        f"Container: {result['container_name']}\n"
+        f"Image: {result['image']}\n"
+        f"URL: {result['url']}"
+    )
+
+
+@mcp.tool()
+@handle_errors
+def delete_service_preset(name: str) -> str:
+    """
+    Remove a saved service preset.
+
+    Args:
+        name: The name of the service preset to delete.
+    """
+    service_presets.delete_preset(_get_settings(), name)
+    return f"Service preset '{name}' deleted."
 
 
 @mcp.tool()
