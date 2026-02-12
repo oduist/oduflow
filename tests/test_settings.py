@@ -50,7 +50,7 @@ class TestTemplatePaths:
 
     def test_get_template_sql_path(self):
         s = Settings(home="/srv/data")
-        assert s.get_template_sql_path("v17") == "/srv/data/templates/v17/dump.sql"
+        assert s.get_template_sql_path("v17") == "/srv/data/templates/v17/dump.pgdump"
 
     def test_get_template_filestore_path(self):
         s = Settings(home="/srv/data")

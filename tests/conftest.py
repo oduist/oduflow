@@ -41,21 +41,30 @@ def live_environment(tmp_path_factory):
 
     template_dir = os.path.join(tmp_dir, "templates", "default")
     os.makedirs(template_dir, exist_ok=True)
-    dump_sql = os.path.join(template_dir, "dump.sql")
+    dump_file = os.path.join(template_dir, "dump.pgdump")
 
-    real_dump = "/srv/oduflow_data/templates/default/dump.sql"
-    alt_dump = "/srv/oduflow_data/dump/dump.sql"
+    real_dump = "/srv/oduflow_data/templates/default/dump.pgdump"
+    alt_dump = "/srv/oduflow_data/dump/dump.pgdump"
+    real_dump_sql = "/srv/oduflow_data/templates/default/dump.sql"
+    alt_dump_sql = "/srv/oduflow_data/dump/dump.sql"
     if os.path.isfile(real_dump):
         import shutil
-        shutil.copy2(real_dump, dump_sql)
+        shutil.copy2(real_dump, dump_file)
     elif os.path.isfile(alt_dump):
         import shutil
-        shutil.copy2(alt_dump, dump_sql)
+        shutil.copy2(alt_dump, dump_file)
+    elif os.path.isfile(real_dump_sql):
+        import shutil
+        shutil.copy2(real_dump_sql, os.path.join(template_dir, "dump.sql"))
+    elif os.path.isfile(alt_dump_sql):
+        import shutil
+        shutil.copy2(alt_dump_sql, os.path.join(template_dir, "dump.sql"))
     else:
-        with open(dump_sql, "w") as f:
+        with open(dump_file, "w") as f:
             f.write("-- empty test dump\n")
 
-    system_ops.init_system(settings, version="15.0")
+    system_ops.init_system(settings)
+    system_ops.reload_template(settings)
     env_ops.create_environment(
         settings,
         branch_name="main",
