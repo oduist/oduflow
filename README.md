@@ -91,6 +91,7 @@ Oduflow is not a replacement for production hosting — it's the **developer wor
 - [MCP Tools Reference](#mcp-tools-reference)
 - [CLI Reference](#cli-reference)
 - [Traefik Routing (Auto-HTTPS)](#traefik-routing-auto-https)
+- [Multi-Instance Support](#multi-instance-support)
 - [Authentication & Security](#authentication--security)
 - [Use Cases & Workflows](#use-cases--workflows)
 - [Environment Workspace Structure](#environment-workspace-structure)
@@ -156,7 +157,7 @@ The result: provisioning a new environment from a 30+ GB production database tak
                      │  MCP (Streamable HTTP / stdio)
 ┌────────────────────▼─────────────────────────────┐
 │  server.py — FastMCP transport layer             │
-│  • MCP tool definitions (22 tools)               │
+│  • MCP tool definitions (26 tools)               │
 │  • Global mutex for heavy operations             │
 │  • Unified error handler (FlowError → ValueError)│
 │  • Web UI mount (Starlette)                      │
@@ -211,7 +212,7 @@ The result: provisioning a new environment from a 30+ GB production database tak
 src/oduflow/
   server.py            # MCP transport: tool definitions, error handler, mutex, CLI
   settings.py          # @dataclass Settings with from_env() and validate()
-  errors.py            # FlowError hierarchy (5 error types)
+  errors.py            # FlowError hierarchy (6 error classes)
   models.py            # EnvironmentRef dataclass
   naming.py            # Pure functions: slugify, db name, resource name, paths, URL sanitization
   git_ops.py           # Git clone, pull, credential management, manifest parsing
@@ -227,6 +228,7 @@ src/oduflow/
                         # apt/pip auto-install / filestore overlay mount
     odoo_ops.py         # install / upgrade / test / logs / exec_in_environment
     service_ops.py      # create / delete / update / list / logs for auxiliary services
+    service_presets.py  # Save / restore / list / delete service preset configurations
     stats.py            # Container and system CPU/RAM stats (parallel collection)
 
 templates/
@@ -331,7 +333,8 @@ cp .env.example .env
 
 | Variable | Default | Description |
 |---|---|---|
-| `ODUFLOW_HOME` | `/srv/oduflow_data` | Base directory for all data (dumps, workspaces, ports) |
+| `ODUFLOW_INSTANCE_ID` | `1` | Instance identifier (1-9). Allows running multiple independent Oduflow instances. See [MULTI_INSTANCE.md](MULTI_INSTANCE.md) |
+| `ODUFLOW_HOME` | `/srv/oduflow_data_{INSTANCE_ID}` | Base directory for all data (dumps, workspaces, ports) |
 | `ODUFLOW_WORKSPACES_DIR` | `$ODUFLOW_HOME/workspaces` | Root directory for environment workspaces |
 | `ODUFLOW_PORT_REGISTRY` | `$ODUFLOW_HOME/ports.json` | JSON file for stable port assignments |
 
@@ -695,6 +698,21 @@ The `update_service` operation:
 3. Compares image digests — if unchanged, reports "already up-to-date"
 4. If the image changed: stops the old container, removes it, and creates a new one with identical settings
 
+### Service Presets
+
+Every time a service is created, its configuration (image, port, hostname, environment variables) is automatically saved as a **preset** in `$ODUFLOW_HOME/service_presets.json`. This allows you to restore a service after deletion without re-entering its configuration.
+
+```bash
+# List saved presets
+oduflow call list_service_presets
+
+# Restore a previously deleted service
+oduflow call restore_service redis
+
+# Remove a saved preset
+oduflow call delete_service_preset redis
+```
+
 ---
 
 ## Executing Commands Inside Environments
@@ -762,6 +780,14 @@ All endpoints return JSON with an `ok` field. Authentication via HTTP Basic auth
 | `POST` | `/api/services/{name}/delete` | Delete a service |
 | `GET` | `/api/services/{name}/logs?n=200` | Get service logs |
 
+#### Service Presets
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `GET` | `/api/service-presets` | List saved service presets |
+| `POST` | `/api/service-presets/{name}/restore` | Restore a service from a saved preset |
+| `POST` | `/api/service-presets/{name}/delete` | Delete a saved service preset |
+
 #### System
 
 | Method | Endpoint | Description |
@@ -773,7 +799,7 @@ All endpoints return JSON with an `ok` field. Authentication via HTTP Basic auth
 
 ## MCP Tools Reference
 
-All tools are accessible via MCP clients (Cursor, Cline, Amp, etc.), the REST API, and the CLI (`oduflow call`).
+All tools are accessible via MCP clients (Cursor, Cline, Amp, etc.) and the CLI (`oduflow call`). A subset is also available via the [REST API](#rest-api-endpoints).
 
 | Tool | Mutex | Description |
 |---|:---:|---|
@@ -803,6 +829,10 @@ All tools are accessible via MCP clients (Cursor, Cline, Amp, etc.), the REST AP
 | `update_service` | ✓ | Pull latest image and recreate the service |
 | `list_services` | | List all managed service containers |
 | `get_service_logs` | | Retrieve service container logs |
+| **Service Presets** | | |
+| `list_service_presets` | | List saved service presets (configurations that can be restored) |
+| `restore_service` | ✓ | Restore a service from a saved preset |
+| `delete_service_preset` | | Remove a saved service preset |
 | **Repository Auth** | | |
 | `setup_repo_auth` | ✓ | Cache git credentials for a private repository |
 
@@ -818,8 +848,11 @@ All tools are accessible via MCP clients (Cursor, Cline, Amp, etc.), the REST AP
 # Start the MCP server (default command)
 oduflow
 
-# Initialize shared infrastructure (network, DB, template)
-oduflow init [--version 15.0] [--force]
+# Initialize shared infrastructure (network, DB, Traefik)
+oduflow init
+
+# Initialize per-instance directories (workspaces, templates)
+oduflow init-instance
 
 # Destroy all shared infrastructure (requires no active environments)
 oduflow destroy
@@ -929,6 +962,29 @@ Wildcard certificates (`*.dev.example.com`) via DNS-01 validation are also possi
 ### Service routing with Traefik
 
 Auxiliary services also get Traefik routing. A service named `meilisearch` with base domain `dev.example.com` becomes accessible at `https://meilisearch.dev.example.com`. Custom hostnames are also supported.
+
+---
+
+## Multi-Instance Support
+
+Oduflow supports running **multiple independent instances** on a single machine. Each instance has its own environments, templates, services, and port registry, while sharing the Docker network and PostgreSQL container.
+
+Set `ODUFLOW_INSTANCE_ID` (1-9) and optionally `ODUFLOW_HOME` to isolate instances:
+
+```bash
+# Instance 1
+export ODUFLOW_INSTANCE_ID=1
+oduflow init-instance
+
+# Instance 2 (separate terminal / process)
+export ODUFLOW_INSTANCE_ID=2
+export ODUFLOW_PORT=8001
+oduflow init-instance
+```
+
+Databases are namespaced by instance ID (e.g. `oduflow_1_main`, `oduflow_2_main`), and containers are labeled with `oduflow.instance={ID}` for filtering.
+
+For the full guide — lifecycle, naming conventions, shared vs. per-instance resources — see **[MULTI_INSTANCE.md](MULTI_INSTANCE.md)**.
 
 ---
 
