@@ -838,7 +838,8 @@ def _run_call(argv: list[str]) -> None:
 def main() -> None:
     """Entry point for the Oduflow MCP server."""
     parser = argparse.ArgumentParser(prog="oduflow", description="Oduflow — Odoo dev environment manager",
-                                     usage="oduflow [-h] <command> ...")
+                                     usage="oduflow [-h] [--env ENV] <command> ...")
+    parser.add_argument("--env", default=None, metavar="FILE", help="Path to .env file (default: .env in current dir)")
     sub = parser.add_subparsers(dest="command", title="commands", metavar="")
 
     sub.add_parser("init", help="Initialize shared infrastructure (network, DB)")
@@ -884,7 +885,7 @@ def main() -> None:
     args = parser.parse_args()
 
     from dotenv import load_dotenv
-    load_dotenv()
+    load_dotenv(args.env)
 
     logging.basicConfig(
         level=logging.INFO,
