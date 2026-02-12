@@ -41,28 +41,8 @@ def _ensure_traefik(client: DockerClient, settings: Settings) -> None:
     except docker.errors.NotFound:
         pass
 
-    dynamic_cfg = (
-        "http:\n"
-        "  routers:\n"
-        "    oduflow-server:\n"
-        "      rule: \"Host(`{host}`)\"\n"
-        "      entryPoints: [websecure]\n"
-        "      service: oduflow-server\n"
-        "      tls:\n"
-        "        certResolver: le\n"
-        "  services:\n"
-        "    oduflow-server:\n"
-        "      loadBalancer:\n"
-        "        servers:\n"
-        "          - url: \"http://host.docker.internal:{port}\"\n"
-    ).format(host=settings.base_domain, port=settings.flow_server_port)
-
-    import tempfile
-    dynamic_file = os.path.join(
-        tempfile.gettempdir(), "oduflow-traefik-dynamic.yml"
-    )
-    with open(dynamic_file, "w") as f:
-        f.write(dynamic_cfg)
+    dynamic_dir = "/etc/oduflow/traefik"
+    os.makedirs(dynamic_dir, exist_ok=True)
 
     client.containers.run(
         "traefik:v3.6",
@@ -74,14 +54,15 @@ def _ensure_traefik(client: DockerClient, settings: Settings) -> None:
         volumes={
             "/var/run/docker.sock": {"bind": "/var/run/docker.sock", "mode": "ro"},
             settings.traefik_acme_volume: {"bind": "/acme", "mode": "rw"},
-            dynamic_file: {"bind": "/etc/traefik/dynamic.yml", "mode": "ro"},
+            dynamic_dir: {"bind": "/etc/traefik/dynamic/", "mode": "ro"},
         },
         command=[
             "--log.level=INFO",
             "--providers.docker=true",
             "--providers.docker.exposedbydefault=false",
             f"--providers.docker.network={settings.shared_network}",
-            "--providers.file.filename=/etc/traefik/dynamic.yml",
+            "--providers.file.directory=/etc/traefik/dynamic/",
+            "--providers.file.watch=true",
             "--entrypoints.web.address=:80",
             "--entrypoints.websecure.address=:443",
             "--entrypoints.web.http.redirections.entrypoint.to=websecure",

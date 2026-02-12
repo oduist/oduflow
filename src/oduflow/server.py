@@ -633,6 +633,34 @@ def _run_init_instance(settings: Settings) -> None:
     import os
     os.makedirs(settings.workspaces_dir, exist_ok=True)
     os.makedirs(settings.get_template_dir(), exist_ok=True)
+
+    if settings.routing_mode == "traefik" and settings.base_domain:
+        dynamic_dir = "/etc/oduflow/traefik"
+        os.makedirs(dynamic_dir, exist_ok=True)
+        instance_cfg = (
+            "http:\n"
+            "  routers:\n"
+            "    oduflow-server-{iid}:\n"
+            "      rule: \"Host(`{host}`)\"\n"
+            "      entryPoints: [websecure]\n"
+            "      service: oduflow-server-{iid}\n"
+            "      tls:\n"
+            "        certResolver: le\n"
+            "  services:\n"
+            "    oduflow-server-{iid}:\n"
+            "      loadBalancer:\n"
+            "        servers:\n"
+            "          - url: \"http://host.docker.internal:{port}\"\n"
+        ).format(
+            iid=settings.instance_id,
+            host=settings.base_domain,
+            port=settings.flow_server_port,
+        )
+        cfg_path = os.path.join(dynamic_dir, f"instance-{settings.instance_id}.yml")
+        with open(cfg_path, "w") as f:
+            f.write(instance_cfg)
+        logger.info("Wrote Traefik dynamic config: %s", cfg_path)
+
     print(f"Instance {settings.instance_id} initialized.")
     print(f"  Workspaces: {settings.workspaces_dir}")
     print(f"  Templates: {settings.get_template_dir()}")
