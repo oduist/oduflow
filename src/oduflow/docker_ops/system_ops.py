@@ -3,6 +3,7 @@ import logging
 import os
 import pathlib
 import shutil
+import subprocess
 import tarfile
 import time
 
@@ -152,6 +153,29 @@ def _copy_file_to_container(container: docker.models.containers.Container, src_p
     container.put_archive(dest_dir, tar_stream)
 
 
+def _ensure_iptables_accept(client: DockerClient, network_name: str) -> None:
+    try:
+        net = client.networks.get(network_name)
+        bridge_iface = "br-" + net.id[:12]
+    except docker.errors.NotFound:
+        return
+    try:
+        subprocess.run(
+            ["iptables", "-C", "INPUT", "-i", bridge_iface, "-j", "ACCEPT"],
+            check=True, capture_output=True,
+        )
+        logger.debug("iptables ACCEPT rule already exists for %s", bridge_iface)
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        try:
+            subprocess.run(
+                ["iptables", "-I", "INPUT", "-i", bridge_iface, "-j", "ACCEPT"],
+                check=True, capture_output=True,
+            )
+            logger.info("Added iptables ACCEPT rule for interface %s", bridge_iface)
+        except (subprocess.CalledProcessError, FileNotFoundError) as exc:
+            logger.warning("Could not add iptables rule for %s: %s", bridge_iface, exc)
+
+
 def init_system(
     settings: Settings,
 ) -> dict[str, str]:
@@ -165,6 +189,8 @@ def init_system(
     except docker.errors.NotFound:
         client.networks.create(settings.shared_network, labels=system_labels)
         logger.info("Created network %s", settings.shared_network)
+
+    _ensure_iptables_accept(client, settings.shared_network)
 
     _ensure_traefik(client, settings)
 
