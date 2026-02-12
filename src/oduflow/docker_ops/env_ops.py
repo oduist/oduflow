@@ -211,6 +211,23 @@ def _install_apt_packages(container, repo_path: str) -> str:
         return f"[APT] Installed: {' '.join(packages)}"
 
 
+def _ensure_user_site_packages(container) -> None:
+    """Create the user site-packages directory for the odoo user and fix ownership.
+
+    This allows ``pip install --user`` to work inside containers where
+    ``/var/lib/odoo/.local`` may not exist or may be owned by root.
+    """
+    container.exec_run(
+        "mkdir -p /var/lib/odoo/.local/lib",
+        user="root",
+    )
+    container.exec_run(
+        "chown -R odoo:odoo /var/lib/odoo/.local",
+        user="root",
+    )
+    logger.debug("Ensured /var/lib/odoo/.local is owned by odoo")
+
+
 def _install_pip_requirements(container, repo_path: str, *, restart: bool = True) -> tuple[bool, str]:
     """Install pip requirements from repo.
 
@@ -225,14 +242,17 @@ def _install_pip_requirements(container, repo_path: str, *, restart: bool = True
         logger.debug("No requirements.txt in repo, skipping pip install")
         return False, ""
 
-    cmd = "pip3 install --break-system-packages -r /mnt/extra-addons/requirements.txt"
+    # Ensure the odoo user can write to its local site-packages
+    _ensure_user_site_packages(container)
+
+    cmd = "pip3 install --user --break-system-packages -r /mnt/extra-addons/requirements.txt"
     logger.info("Installing pip requirements from requirements.txt")
-    exit_code, output = container.exec_run(cmd, user="root")
+    exit_code, output = container.exec_run(cmd, user="odoo")
     output_str = output.decode("utf-8") if isinstance(output, bytes) else str(output)
     if exit_code != 0 and "no such option" in output_str.lower():
         logger.info("--break-system-packages not supported, retrying without it")
-        cmd = "pip3 install -r /mnt/extra-addons/requirements.txt"
-        exit_code, output = container.exec_run(cmd, user="root")
+        cmd = "pip3 install --user -r /mnt/extra-addons/requirements.txt"
+        exit_code, output = container.exec_run(cmd, user="odoo")
         output_str = output.decode("utf-8") if isinstance(output, bytes) else str(output)
     if exit_code != 0:
         logger.warning("pip install failed (exit %d): %s", exit_code, output_str)
