@@ -386,6 +386,7 @@
 <div class="tabs">
   <button class="tab-btn active" data-tab="environments" onclick="switchTab('environments')">Environments</button>
   <button class="tab-btn" data-tab="services" onclick="switchTab('services')">Services</button>
+  <button class="tab-btn" data-tab="extra-addons" onclick="switchTab('extra-addons')">Extra Addons</button>
   <button class="tab-btn" data-tab="templates" onclick="switchTab('templates')">Templates</button>
   <button class="tab-btn" data-tab="agents-guide" onclick="switchTab('agents-guide')">Agents Guide</button>
 </div>
@@ -408,6 +409,13 @@
     <h3 style="font-size:14px;font-weight:600;margin-bottom:10px;color:var(--text-dim);">Saved Presets</h3>
     <div id="svc-presets-list"></div>
   </div>
+</div>
+
+<div id="tab-extra-addons" class="tab-content">
+  <div style="display:flex;justify-content:flex-end;margin-bottom:12px;">
+    <button class="btn-create" onclick="openAddExtraRepoModal()">+ Add Repo</button>
+  </div>
+  <div id="extra-repos-list"></div>
 </div>
 
 <div id="tab-agents-guide" class="tab-content">
@@ -446,6 +454,15 @@
         <label for="cr-template">Template</label>
         <select id="cr-template">
         </select>
+      </div>
+      <div class="form-group">
+        <label>Extra Addons Repos</label>
+        <div id="cr-extra-addons-checkboxes" style="max-height:120px;overflow-y:auto;padding:4px 0;"></div>
+        <div style="font-size:11px;color:var(--text-dim);margin-top:4px;">Select repos to mount in this environment</div>
+      </div>
+      <div class="form-group" id="cr-extra-branch-group" style="display:none;">
+        <label for="cr-extra-branch">Extra Addons Branch</label>
+        <input type="text" id="cr-extra-branch" placeholder="e.g. 17.0 (default: use default branch)">
       </div>
       <div class="form-actions">
         <button class="btn" onclick="closeCreateModal()">Cancel</button>
@@ -549,6 +566,29 @@
     </div>
   </div>
 </div>
+<div class="modal-overlay" id="add-extra-repo-modal" onclick="closeAddExtraRepoModal(event)">
+  <div class="modal" style="max-width:500px;">
+    <div class="modal-header">
+      <h2>Add Extra Addons Repository</h2>
+      <button class="modal-close" onclick="closeAddExtraRepoModal()">&times;</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-error" id="add-extra-repo-error"></div>
+      <div class="form-group">
+        <label for="extra-repo-name">Name</label>
+        <input type="text" id="extra-repo-name" placeholder="e.g. enterprise, custom-themes">
+      </div>
+      <div class="form-group">
+        <label for="extra-repo-url">Repository URL</label>
+        <input type="text" id="extra-repo-url" placeholder="https://github.com/odoo/enterprise.git">
+      </div>
+      <div class="form-actions">
+        <button class="btn" onclick="closeAddExtraRepoModal()">Cancel</button>
+        <button class="btn-create" id="extra-repo-submit" onclick="submitAddExtraRepo()">Clone</button>
+      </div>
+    </div>
+  </div>
+</div>
 <script>
 const API = '/api/environments';
 const API_TEMPLATES = '/api/templates';
@@ -617,12 +657,22 @@ function renderEnvironments(envs) {
       ? '<div class="env-url"><a href="' + esc(env.url) + '" target="_blank">' + esc(env.url) + '</a></div>'
       : '';
 
-    const metaHtml = (env.odoo_image || env.repo_url)
+    const metaHtml = (env.odoo_image || env.repo_url || env.db_name)
       ? '<div class="env-meta">' +
+          (env.db_name ? '<span>DB: <strong>' + esc(env.db_name) + '</strong></span>' : '') +
           (env.odoo_image ? '<span>Image: <strong>' + esc(env.odoo_image) + '</strong></span>' : '') +
           (env.repo_url ? '<span>Repo: <strong>' + esc(env.repo_url) + '</strong></span>' : '') +
         '</div>'
       : '';
+
+    var extraHtml = '';
+    if (env.extra_addons && env.extra_addons.length > 0) {
+      extraHtml = '<div class="env-meta"><span>Extra: <strong>' +
+        env.extra_addons.map(function(n){ return esc(n); }).join(', ') +
+        '</strong></span>' +
+        (env.extra_addons_branch ? '<span>Branch: <strong>' + esc(env.extra_addons_branch) + '</strong></span>' : '') +
+      '</div>';
+    }
 
     return '<div class="env-card" data-branch="' + esc(env.branch) + '">' +
       '<div class="env-header">' +
@@ -643,6 +693,7 @@ function renderEnvironments(envs) {
       '</div>' +
       urlHtml +
       metaHtml +
+      extraHtml +
       '<div class="containers">' + containerHtml + '</div>' +
     '</div>';
   }).join('');
@@ -746,6 +797,7 @@ function switchTab(name) {
   if (name === 'templates') loadTemplates();
   if (name === 'services') loadServices();
   if (name === 'agents-guide') loadAgentsGuide();
+  if (name === 'extra-addons') loadExtraRepos();
 }
 
 async function loadTemplates() {
@@ -805,6 +857,21 @@ function openCreateModal() {
   errEl.textContent = '';
   document.getElementById('cr-submit').disabled = false;
   loadTemplates().then(populateTemplateSelect);
+  loadExtraRepos().then(function() {
+    var container = document.getElementById('cr-extra-addons-checkboxes');
+    if (cachedExtraRepos.length === 0) {
+      container.innerHTML = '<span style="font-size:12px;color:var(--text-dim);">No extra repos available</span>';
+      document.getElementById('cr-extra-branch-group').style.display = 'none';
+      return;
+    }
+    container.innerHTML = cachedExtraRepos.map(function(r) {
+      return '<label style="display:flex;align-items:center;gap:8px;padding:3px 0;font-size:13px;cursor:pointer;">' +
+        '<input type="checkbox" class="cr-extra-cb" value="' + escAttr(r.name) + '" onchange="toggleExtraBranchField()">' +
+        esc(r.name) + ' <span style="color:var(--text-dim);font-size:11px;">(' + esc(r.repo_url) + ')</span>' +
+      '</label>';
+    }).join('');
+    document.getElementById('cr-extra-branch-group').style.display = 'none';
+  });
   document.getElementById('create-modal').classList.add('show');
   document.getElementById('cr-branch').focus();
 }
@@ -833,7 +900,17 @@ async function submitCreate() {
   btn.textContent = 'Creating...';
 
   try {
-    var payload = {branch_name: branch, repo_url: repo, odoo_image: image, template_name: template};
+    var extraAddons = Array.from(document.querySelectorAll('.cr-extra-cb:checked'))
+      .map(function(cb) { return cb.value; });
+    var extraBranch = document.getElementById('cr-extra-branch').value.trim();
+    var payload = {
+      branch_name: branch,
+      repo_url: repo,
+      odoo_image: image,
+      template_name: template,
+      extra_addons: extraAddons.join(','),
+      extra_addons_branch: extraBranch,
+    };
     var r = await fetch(API + '/create', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
@@ -1333,6 +1410,123 @@ async function activateLicense() {
     btn.disabled = false;
     btn.textContent = 'Activate';
   }
+}
+
+const API_EXTRA_REPOS = '/api/extra-repos';
+let cachedExtraRepos = [];
+
+async function loadExtraRepos() {
+  try {
+    var r = await fetch(API_EXTRA_REPOS);
+    var data = await r.json();
+    if (data.ok) {
+      cachedExtraRepos = data.repos || [];
+      renderExtraRepos(cachedExtraRepos);
+    } else {
+      showToast(data.error || 'Failed to load extra repos', true);
+    }
+  } catch (e) {
+    showToast('Connection error: ' + e.message, true);
+  }
+}
+
+function renderExtraRepos(repos) {
+  var el = document.getElementById('extra-repos-list');
+  if (!repos || repos.length === 0) {
+    el.innerHTML = '<div class="empty">No extra addons repositories.<br>Add one to use with environments.</div>';
+    return;
+  }
+  el.innerHTML = repos.map(function(r) {
+    var branches = (r.branches || []).slice(0, 10).map(function(b) { return esc(b); }).join(', ');
+    return '<div class="svc-card">' +
+      '<div class="svc-header">' +
+        '<div class="left">' +
+          '<span class="svc-name">' + esc(r.name) + '</span>' +
+        '</div>' +
+        '<div class="svc-actions">' +
+          '<button class="btn btn-delete" onclick="doDeleteExtraRepo(\'' + escAttr(r.name) + '\')">Delete</button>' +
+        '</div>' +
+      '</div>' +
+      '<div class="svc-meta">' +
+        '<span>URL: <strong>' + esc(r.repo_url) + '</strong></span>' +
+      '</div>' +
+      (branches ? '<div class="svc-meta"><span>Branches: <strong>' + branches + '</strong></span></div>' : '') +
+    '</div>';
+  }).join('');
+}
+
+function openAddExtraRepoModal() {
+  document.getElementById('extra-repo-name').value = '';
+  document.getElementById('extra-repo-url').value = '';
+  document.getElementById('add-extra-repo-error').style.display = 'none';
+  document.getElementById('extra-repo-submit').disabled = false;
+  document.getElementById('extra-repo-submit').textContent = 'Clone';
+  document.getElementById('add-extra-repo-modal').classList.add('show');
+  document.getElementById('extra-repo-name').focus();
+}
+
+function closeAddExtraRepoModal(event) {
+  if (event && event.target !== event.currentTarget) return;
+  document.getElementById('add-extra-repo-modal').classList.remove('show');
+}
+
+async function submitAddExtraRepo() {
+  var name = document.getElementById('extra-repo-name').value.trim();
+  var url = document.getElementById('extra-repo-url').value.trim();
+  var errEl = document.getElementById('add-extra-repo-error');
+  if (!name || !url) {
+    errEl.textContent = 'Name and repository URL are required.';
+    errEl.style.display = 'block';
+    return;
+  }
+  errEl.style.display = 'none';
+  var btn = document.getElementById('extra-repo-submit');
+  btn.disabled = true;
+  btn.textContent = 'Cloning...';
+  try {
+    var r = await fetch(API_EXTRA_REPOS + '/add', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({name: name, repo_url: url})
+    });
+    var data = await r.json();
+    if (data.ok) {
+      closeAddExtraRepoModal();
+      showToast('Extra repo "' + name + '" cloned');
+      await loadExtraRepos();
+    } else {
+      errEl.textContent = data.error || 'Clone failed';
+      errEl.style.display = 'block';
+    }
+  } catch (e) {
+    errEl.textContent = 'Connection error: ' + e.message;
+    errEl.style.display = 'block';
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Clone';
+  }
+}
+
+async function doDeleteExtraRepo(name) {
+  if (!confirm('Delete extra repo "' + name + '"? The cloned repository will be removed.')) return;
+  try {
+    var r = await fetch(API_EXTRA_REPOS + '/' + encodeURIComponent(name) + '/delete', {method:'POST'});
+    var data = await r.json();
+    if (data.ok) {
+      showToast('Extra repo "' + name + '" deleted');
+      await loadExtraRepos();
+    } else {
+      showToast(data.error || 'Delete failed', true);
+    }
+  } catch (e) {
+    showToast('Connection error: ' + e.message, true);
+  }
+}
+
+function toggleExtraBranchField() {
+  var checked = document.querySelectorAll('.cr-extra-cb:checked');
+  document.getElementById('cr-extra-branch-group').style.display =
+    checked.length > 0 ? 'block' : 'none';
 }
 
 loadLicense();

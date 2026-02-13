@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 import pathlib
@@ -304,6 +305,8 @@ def create_environment(
     repo_url: str,
     odoo_image: str = "odoo:15.0",
     template_name: str | None = "",
+    extra_addons: list[str] | None = None,
+    extra_addons_branch: str = "",
 ) -> dict[str, str]:
     if template_name is not None and not template_name:
         template_name = settings.default_template
@@ -358,6 +361,10 @@ def create_environment(
         settings.image_label: odoo_image,
         "oduflow.template": template_name if template_name is not None else "none",
     }
+
+    if extra_addons:
+        labels["oduflow.extra_addons"] = json.dumps(extra_addons)
+        labels["oduflow.extra_addons_branch"] = extra_addons_branch or settings.default_branch
 
     if settings.routing_mode == "traefik":
         slug = slugify_branch(branch_name)
@@ -465,6 +472,19 @@ def create_environment(
             "Repository clone timed out (60s). Repository may be too large or network is slow.",
         )
 
+    # --- Extra addons worktrees ---
+    extra_mount_paths = []
+    if extra_addons:
+        from oduflow.extra_addons import create_worktree
+        extra_dir = os.path.join(workspace_path, "extra")
+        os.makedirs(extra_dir, exist_ok=True)
+        for repo_name in extra_addons:
+            wt_path = os.path.join(extra_dir, repo_name)
+            branch = extra_addons_branch or settings.default_branch
+            create_worktree(settings, repo_name, branch, wt_path)
+            container_path = f"/mnt/extra-addons-{repo_name}"
+            extra_mount_paths.append((wt_path, container_path))
+
     if template_name is not None:
         tpl_db = get_template_db_name(template_name, settings.instance_id)
         _exec_sql(
@@ -485,16 +505,29 @@ def create_environment(
         "PASSWORD": settings.db_password,
     }
     odoo_volumes = {repo_path: {"bind": "/mnt/extra-addons", "mode": "rw"}}
+
+    for host_path, container_path in extra_mount_paths:
+        odoo_volumes[host_path] = {"bind": container_path, "mode": "ro"}
+
     repo_odoo_conf = os.path.join(repo_path, "odoo.conf")
     if os.path.isfile(repo_odoo_conf):
-        odoo_conf_path = repo_odoo_conf
+        base_conf_path = repo_odoo_conf
         logger.info("Using odoo.conf from repository")
     elif _ODOO_CONF_TEMPLATE.exists():
-        odoo_conf_path = str(_ODOO_CONF_TEMPLATE)
+        base_conf_path = str(_ODOO_CONF_TEMPLATE)
     else:
-        odoo_conf_path = None
-    if odoo_conf_path:
-        odoo_volumes[odoo_conf_path] = {
+        base_conf_path = None
+
+    if base_conf_path:
+        if extra_mount_paths:
+            from oduflow.extra_addons import generate_odoo_conf
+            generated_conf = os.path.join(workspace_path, "odoo.conf")
+            extra_container_paths = [cp for _, cp in extra_mount_paths]
+            generate_odoo_conf(base_conf_path, generated_conf, extra_container_paths)
+            odoo_conf_to_mount = generated_conf
+        else:
+            odoo_conf_to_mount = base_conf_path
+        odoo_volumes[odoo_conf_to_mount] = {
             "bind": "/etc/odoo/odoo.conf",
             "mode": "ro",
         }
@@ -604,6 +637,8 @@ def create_environment(
         "workspace": workspace_path,
         "setup_logs": setup_logs,
     }
+    result["extra_addons"] = extra_addons or []
+    result["extra_addons_branch"] = extra_addons_branch or ""
     if branch_created:
         result["branch_created_from"] = settings.default_branch
     return result
@@ -638,6 +673,13 @@ def delete_environment(settings: Settings, branch_name: str) -> None:
     workspace_path = get_workspace_path(branch_name, settings.workspaces_dir)
     if os.path.exists(workspace_path):
         _unmount_filestore(branch_name, settings)
+        extra_dir = os.path.join(workspace_path, "extra")
+        if os.path.isdir(extra_dir):
+            from oduflow.extra_addons import remove_worktree
+            for repo_name in os.listdir(extra_dir):
+                wt_path = os.path.join(extra_dir, repo_name)
+                if os.path.isdir(wt_path):
+                    remove_worktree(settings, repo_name, wt_path)
         shutil.rmtree(workspace_path)
 
     logger.info("Environment deleted", extra={"branch": branch_name})
@@ -668,6 +710,9 @@ def list_environments(settings: Settings) -> list[dict[str, Any]]:
                 "odoo_image": container.labels.get(settings.image_label, ""),
                 "repo_url": sanitize_repo_url(container.labels.get(settings.repo_label, "")),
                 "template_name": container.labels.get("oduflow.template", "default"),
+                "extra_addons": json.loads(container.labels.get("oduflow.extra_addons", "[]")),
+                "extra_addons_branch": container.labels.get("oduflow.extra_addons_branch", ""),
+                "db_name": get_db_name(branch, settings.instance_id),
             }
 
         try:
@@ -978,6 +1023,16 @@ def rebuild_environment(settings: Settings, branch_name: str) -> dict[str, str]:
                 )
             except Exception as exc:
                 logger.warning("Could not re-mount filestore overlay: %s", exc)
+
+    # Verify extra addons worktrees are intact
+    extra_addons_json = labels.get("oduflow.extra_addons", "")
+    if extra_addons_json:
+        extra_names = json.loads(extra_addons_json)
+        extra_dir = os.path.join(get_workspace_path(branch_name, settings.workspaces_dir), "extra")
+        for rn in extra_names:
+            wt = os.path.join(extra_dir, rn)
+            if not os.path.isdir(wt):
+                logger.warning("Extra addons worktree missing: %s", wt)
 
     # ------------------------------------------------------------------
     # 4. Re-create the container with the same settings
