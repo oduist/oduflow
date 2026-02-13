@@ -314,6 +314,15 @@ def create_environment(
             f"Failed to connect to Docker daemon: {e}. Ensure Docker is running."
         )
 
+    if template_name is not None:
+        tpl_db = get_template_db_name(template_name, settings.instance_id)
+        if not _db_exists(client, settings, tpl_db):
+            logger.warning(
+                "Template DB '%s' not found, falling back to init from scratch",
+                tpl_db,
+            )
+            template_name = None
+
     _ensure_system_ready(client, settings, template_name)
 
     odoo_container_name = get_resource_name(branch_name, "odoo", settings.prefix)

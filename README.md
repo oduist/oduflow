@@ -1189,6 +1189,41 @@ steps:
     run: oduflow call delete_environment ci-${{ github.sha }}
 ```
 
+### 📦 Importing a Template from Odoo or Another Workspace
+
+You can create a template from an Odoo database backup or by copying a template directory from another Oduflow instance.
+
+**From Odoo Database Manager:**
+
+1. Go to `/web/database/manager` in your Odoo instance
+2. Download a backup — **make sure to include the filestore** (the checkbox must be enabled, otherwise the template will be missing all attachments, images, and assets)
+3. Extract the archive — it contains a `dump.sql` file and a `filestore/` directory
+4. Place them into the template directory:
+
+```bash
+mkdir -p $ODUFLOW_HOME/templates/myproject
+# Copy or move the extracted files
+cp dump.sql $ODUFLOW_HOME/templates/myproject/
+cp -r filestore $ODUFLOW_HOME/templates/myproject/
+```
+
+5. Load the template into PostgreSQL:
+
+```bash
+oduflow reload-template myproject
+```
+
+**From another Oduflow workspace:**
+
+Simply copy the entire template directory and reload:
+
+```bash
+cp -r /other/oduflow/templates/myproject $ODUFLOW_HOME/templates/myproject
+oduflow reload-template myproject
+```
+
+> ⚠️ The SQL dump is loaded into the shared PostgreSQL instance by `reload-template`. Without this step, the template will appear in the list but show **DB NOT LOADED** and cannot be used to create environments.
+
 ### 🏗️ Template Evolution
 
 Evolve your template as the project grows:

@@ -55,3 +55,7 @@ dmypy.json
 # Zenflow / worktrees
 .zenflow/
 .worktrees/
+
+# Licensing (private)
+.license_private_key.pem
+generate_license.py

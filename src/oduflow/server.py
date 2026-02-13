@@ -650,7 +650,7 @@ def _run_init_instance(settings: Settings) -> None:
     # Initialize per-instance directories
     import os
     os.makedirs(settings.workspaces_dir, exist_ok=True)
-    os.makedirs(settings.get_template_dir(), exist_ok=True)
+    os.makedirs(os.path.join(settings.home, "templates"), exist_ok=True)
 
     # Copy bundled agents guide if not present
     agents_guide_dest = os.path.join(settings.home, "agents_guide.md")
@@ -904,7 +904,7 @@ def main() -> None:
     sub.add_parser("destroy", help="Destroy all shared infrastructure")
 
     p_reload = sub.add_parser("reload-template", help="Drop and re-restore a template DB from template profile")
-    p_reload.add_argument("--template-name", default="default", help="Template profile name (default: default)")
+    p_reload.add_argument("template_name", nargs="?", default="default", help="Template profile name (default: default)")
     p_reload.add_argument("--dump-path", default="", help="Path to dump file (overrides template profile path)")
 
     p_init_tpl = sub.add_parser("init-template", help="Generate template dump and filestore from a clean Odoo image")
