@@ -17,10 +17,11 @@ from oduflow.docker_ops.odoo_ops import get_environment_logs
 from oduflow.docker_ops.stats import get_container_stats, get_system_stats
 from oduflow.errors import BusyError, FlowError, NotFoundError
 from oduflow.settings import Settings
+from oduflow.licensing import get_license_info, install_license_from_text
 
 logger = logging.getLogger("oduflow")
 
-_AUTH_REALM = "Flow Dashboard"
+_AUTH_REALM = "Oduflow Dashboard"
 _AUTH_USER = "admin"
 
 
@@ -397,9 +398,29 @@ def _build_routes(
             logger.exception("Unexpected error in api_agents_guide_put")
             return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
 
+    def api_license(request: Request) -> JSONResponse:
+        info = get_license_info()
+        return JSONResponse({"ok": True, "license": info.to_dict()})
+
+    async def api_license_activate(request: Request) -> JSONResponse:
+        try:
+            body = await request.json()
+            key_text = (body.get("key") or "").strip()
+            if not key_text:
+                return JSONResponse({"ok": False, "error": "License key is required."}, status_code=400)
+            info = install_license_from_text(key_text)
+            return JSONResponse({"ok": True, "license": info.to_dict()})
+        except ValueError as e:
+            return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
+        except Exception as e:
+            logger.exception("Unexpected error in api_license_activate")
+            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+
     return [
         Route("/", dashboard, methods=["GET"]),
         Route("/favicon.ico", favicon, methods=["GET"]),
+        Route("/api/license", api_license, methods=["GET"]),
+        Route("/api/license/activate", api_license_activate, methods=["POST"]),
         Route("/api/templates", api_templates, methods=["GET"]),
         Route("/api/environments", api_list, methods=["GET"]),
         Route("/api/environments/create", api_create, methods=["POST"]),

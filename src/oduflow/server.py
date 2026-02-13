@@ -897,7 +897,9 @@ def main() -> None:
     parser.add_argument("--env", default=None, metavar="FILE", help="Path to .env file (default: .env in current dir)")
     sub = parser.add_subparsers(dest="command", title="commands", metavar="")
 
-    sub.add_parser("init", help="Initialize shared infrastructure (network, DB)")
+    p_init = sub.add_parser("init", help="Initialize shared infrastructure (network, DB)")
+    p_init.add_argument("--license", default="", metavar="FILE", dest="license_file",
+                        help="Path to license.key file to install to /etc/oduflow/license.key")
 
     sub.add_parser("init-instance", help="Initialize per-instance directories (workspaces, templates)")
 
@@ -961,6 +963,10 @@ def main() -> None:
 
     if args.command == "init":
         _run_init(_settings)
+        if getattr(args, "license_file", ""):
+            from oduflow.licensing import install_license
+            info = install_license(args.license_file)
+            print(f"License installed: {info.label}")
         return
 
     if args.command == "init-instance":

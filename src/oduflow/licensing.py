@@ -42,8 +42,6 @@ pQIDAQAB
 -----END PUBLIC KEY-----
 """
 
-LICENSE_REQUEST_URL = "https://oduflow.dev/api/license-request"
-
 
 @dataclass(frozen=True)
 class LicenseInfo:
@@ -71,12 +69,12 @@ class LicenseInfo:
 _UNLICENSED = LicenseInfo(type=TYPE_UNLICENSED, name="", email="")
 
 
-def _verify_license_file(path: str) -> LicenseInfo:
+def _verify_license_text(raw: str) -> LicenseInfo:
     from cryptography.hazmat.primitives.asymmetric import padding
     from cryptography.hazmat.primitives import hashes
     from cryptography.hazmat.primitives.serialization import load_pem_public_key
 
-    raw = open(path, "r").read().strip()
+    raw = raw.strip()
     if "." not in raw:
         raise ValueError("Invalid license format")
 
@@ -111,15 +109,26 @@ def get_license_info() -> LicenseInfo:
     if not os.path.isfile(LICENSE_PATH):
         return _UNLICENSED
     try:
-        return _verify_license_file(LICENSE_PATH)
+        raw = open(LICENSE_PATH, "r").read()
+        return _verify_license_text(raw)
     except Exception as e:
         logger.warning("Invalid license file %s: %s", LICENSE_PATH, e)
         return _UNLICENSED
 
 
 def install_license(source_path: str) -> LicenseInfo:
-    info = _verify_license_file(source_path)
+    raw = open(source_path, "r").read()
+    info = _verify_license_text(raw)
     os.makedirs(os.path.dirname(LICENSE_PATH), exist_ok=True)
     shutil.copy2(source_path, LICENSE_PATH)
+    logger.info("License installed: %s", info.label)
+    return info
+
+
+def install_license_from_text(key_text: str) -> LicenseInfo:
+    info = _verify_license_text(key_text)
+    os.makedirs(os.path.dirname(LICENSE_PATH), exist_ok=True)
+    with open(LICENSE_PATH, "w") as f:
+        f.write(key_text.strip())
     logger.info("License installed: %s", info.label)
     return info

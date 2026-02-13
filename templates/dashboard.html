@@ -351,12 +351,28 @@
   }
   .svc-meta strong { color: var(--text); font-weight: 500; }
   .svc-actions { display: flex; gap: 8px; }
+  .license-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 12px;
+    border-radius: 14px;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.3px;
+    white-space: nowrap;
+  }
+  .license-unlicensed { background: rgba(248,81,73,0.12); color: var(--red); border: 1px solid rgba(248,81,73,0.3); }
+  .license-individual { background: rgba(63,185,80,0.10); color: var(--green); border: 1px solid rgba(63,185,80,0.25); }
+  .license-business { background: rgba(63,185,80,0.10); color: var(--green); border: 1px solid rgba(63,185,80,0.25); }
+  .license-integrator { background: rgba(88,166,255,0.10); color: var(--accent); border: 1px solid rgba(88,166,255,0.25); }
 </style>
 </head>
 <body>
 
 <header>
   <h1>Oduflow</h1>
+  <span id="license-badge" class="license-badge license-unlicensed">UNLICENSED — NON-COMMERCIAL USE ONLY</span>
   <div class="actions">
     <label class="auto-label" for="refresh-interval">Refresh
       <input type="number" id="refresh-interval" value="60" min="5" step="5"
@@ -515,6 +531,28 @@
   <span>Load: <span class="sys-val" id="sys-load">—</span></span>
 </div>
 
+<div class="modal-overlay" id="license-modal" onclick="closeLicenseModal(event)">
+  <div class="modal" style="max-width:460px;">
+    <div class="modal-header">
+      <h2>Activate License</h2>
+      <button class="modal-close" onclick="closeLicenseModal()">&times;</button>
+    </div>
+    <div class="modal-body">
+      <p style="font-size:13px;color:var(--text-dim);margin-bottom:16px;">
+        Paste your license key below. Purchase a key at <a href="https://oduflow.dev" target="_blank" style="color:var(--accent);">oduflow.dev</a>
+      </p>
+      <div class="form-error" id="license-error"></div>
+      <div class="form-group">
+        <label for="lic-key">License key</label>
+        <textarea id="lic-key" rows="4" placeholder="Paste your license key here..." style="font-family:SFMono-Regular,Consolas,monospace;font-size:12px;"></textarea>
+      </div>
+      <div class="form-actions">
+        <button class="btn" onclick="closeLicenseModal()">Cancel</button>
+        <button class="btn-create" id="lic-submit" onclick="activateLicense()">Activate</button>
+      </div>
+    </div>
+  </div>
+</div>
 <script>
 const API = '/api/environments';
 const API_TEMPLATES = '/api/templates';
@@ -1283,6 +1321,80 @@ document.getElementById('guide-editor').addEventListener('input', function() {
   document.getElementById('guide-save-status').style.display = 'none';
 });
 
+// --- License ---
+const API_LICENSE = '/api/license';
+
+async function loadLicense() {
+  try {
+    var r = await fetch(API_LICENSE);
+    var data = await r.json();
+    if (!data.ok) return;
+    var lic = data.license;
+    var badge = document.getElementById('license-badge');
+    badge.textContent = lic.label;
+    badge.className = 'license-badge license-' + lic.type;
+    if (lic.type === 'unlicensed') {
+      badge.style.cursor = 'pointer';
+      badge.onclick = openLicenseModal;
+      badge.title = 'Click to activate a license';
+    } else {
+      badge.style.cursor = 'default';
+      badge.onclick = null;
+      badge.title = '';
+    }
+  } catch (e) {}
+}
+
+function openLicenseModal() {
+  document.getElementById('license-error').style.display = 'none';
+  document.getElementById('lic-key').value = '';
+  document.getElementById('lic-submit').disabled = false;
+  document.getElementById('lic-submit').textContent = 'Activate';
+  document.getElementById('license-modal').classList.add('show');
+}
+
+function closeLicenseModal(event) {
+  if (event && event.target !== event.currentTarget) return;
+  document.getElementById('license-modal').classList.remove('show');
+}
+
+async function activateLicense() {
+  var key = document.getElementById('lic-key').value.trim();
+  var errEl = document.getElementById('license-error');
+  if (!key) {
+    errEl.textContent = 'Please paste your license key.';
+    errEl.style.display = 'block';
+    return;
+  }
+  errEl.style.display = 'none';
+  var btn = document.getElementById('lic-submit');
+  btn.disabled = true;
+  btn.textContent = 'Activating...';
+  try {
+    var r = await fetch(API_LICENSE + '/activate', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ key: key })
+    });
+    var data = await r.json();
+    if (data.ok) {
+      closeLicenseModal();
+      showToast('License activated: ' + data.license.label);
+      loadLicense();
+    } else {
+      errEl.textContent = data.error || 'Invalid license key';
+      errEl.style.display = 'block';
+    }
+  } catch (e) {
+    errEl.textContent = 'Connection error: ' + e.message;
+    errEl.style.display = 'block';
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Activate';
+  }
+}
+
+loadLicense();
 loadEnvironments();
 loadStats();
 loadServicePresets();
