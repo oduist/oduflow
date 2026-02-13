@@ -270,10 +270,10 @@ sudo sed -i 's/^#user_allow_other/user_allow_other/' /etc/fuse.conf
 
 ```bash
 git clone https://github.com/oduist/oduflow.git
-cd flow
+cd oduflow
 python -m venv .venv
 source .venv/bin/activate
-pip install -e .
+pip install .
 ```
 
 ---

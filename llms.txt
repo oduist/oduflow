@@ -1,0 +1,170 @@
+# Oduflow
+
+> AI-first Odoo development and CI tool powered by reusable database templates. Provisions isolated, ephemeral Odoo environments on Docker — one per git branch — and exposes them to AI coding agents via MCP.
+
+## Installation
+
+### System Requirements
+
+- Docker (Docker Engine or Docker Desktop)
+- Python 3.10+
+- Git
+- fuse-overlayfs (for filestore overlay mounting)
+
+### Step 1: Install fuse-overlayfs
+
+```bash
+sudo apt install fuse-overlayfs
+```
+
+Enable `user_allow_other` in `/etc/fuse.conf`:
+
+```bash
+sudo sed -i 's/^#user_allow_other/user_allow_other/' /etc/fuse.conf
+```
+
+### Step 2: Install Oduflow
+
+```bash
+git clone https://github.com/oduist/oduflow.git
+cd oduflow
+python -m venv .venv
+source .venv/bin/activate
+pip install .
+```
+
+### Step 3: Configure
+
+```bash
+cp .env.example .env
+```
+
+Key environment variables:
+
+- `ODUFLOW_TRANSPORT` — `http` (default) or `stdio`
+- `ODUFLOW_HOST` — bind address (default `0.0.0.0`)
+- `ODUFLOW_PORT` — HTTP port (default `8000`)
+- `ODUFLOW_AUTH_TOKEN` — Bearer token for MCP auth (empty = auth disabled)
+- `ODUFLOW_HOME` — base directory for all data (default `/srv/oduflow_data_1`)
+- `ODUFLOW_DEFAULT_BRANCH` — base branch for cloning (default `main`)
+- `ODUFLOW_DEFAULT_TEMPLATE` — default template profile (default `default`)
+- `EXTERNAL_HOST` — hostname for environment URLs (default `localhost`)
+- `ODUFLOW_ROUTING_MODE` — `port` (default) or `traefik` (auto-HTTPS)
+
+### Step 4: Initialize the system
+
+```bash
+oduflow init
+```
+
+This creates the shared Docker network, PostgreSQL container, and (optionally) Traefik reverse proxy.
+
+### Step 5: Set up a template
+
+**From scratch (no production dump):**
+
+```bash
+oduflow init-template --odoo-image odoo:17.0
+```
+
+**From a production dump:**
+
+Place `dump.sql` (or `dump.pgdump`) and `filestore/` directory into `$ODUFLOW_HOME/templates/default/`, then:
+
+```bash
+oduflow reload-template
+```
+
+### Step 6: Start the MCP server
+
+```bash
+oduflow
+```
+
+The server starts on `http://0.0.0.0:8000`. MCP endpoint: `http://<host>:8000/mcp`.
+
+## MCP Client Configuration
+
+### Cursor / Windsurf
+
+`.cursor/mcp.json` or `.windsurf/mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "oduflow": {
+      "type": "http",
+      "url": "https://<your-oduflow-host>/mcp",
+      "headers": {
+        "Authorization": "Bearer <your-token>"
+      }
+    }
+  }
+}
+```
+
+### Amp
+
+`.amp/settings.json`:
+
+```json
+{
+  "mcpServers": {
+    "oduflow": {
+      "type": "http",
+      "url": "https://<your-oduflow-host>/mcp",
+      "headers": {
+        "Authorization": "Bearer <your-token>"
+      }
+    }
+  }
+}
+```
+
+### Claude Desktop
+
+`claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "oduflow": {
+      "type": "http",
+      "url": "https://<your-oduflow-host>/mcp",
+      "headers": {
+        "Authorization": "Bearer <your-token>"
+      }
+    }
+  }
+}
+```
+
+## Core MCP Tools
+
+- `create_environment` — provision a new Odoo environment for a branch
+- `delete_environment` — tear down an environment
+- `start_environment` / `stop_environment` / `restart_environment` — lifecycle control
+- `install_odoo_modules` — install Odoo modules
+- `upgrade_odoo_modules` — upgrade Odoo modules
+- `test_environment` — run Odoo tests for specific modules
+- `pull_environment_repository` — pull latest code and auto-install/upgrade/restart as needed
+- `get_environment_logs` — retrieve container logs
+- `exec_in_environment` — execute shell commands inside the Odoo container
+- `list_environments` / `get_environment_status` — inspect environments
+- `create_service` / `delete_service` — manage auxiliary services (Redis, Meilisearch, etc.)
+- `promote_environment` — promote a branch's DB to become the new template
+- `get_agents_guide` — get detailed instructions for AI agents on how to use Oduflow
+
+## Typical Agent Workflow
+
+1. Call `list_environments` to check if an environment for the branch exists
+2. If not, call `create_environment` with `branch_name`, `repo_url`, and `odoo_image`
+3. Write code, `git push`, then call `pull_environment_repository` (auto-detects what to do)
+4. Use `install_odoo_modules` / `test_environment` / `get_environment_logs` to verify
+5. Call `delete_environment` when the task is done
+
+## Links
+
+- Repository: <https://github.com/oduist/oduflow>
+- License: Polyform Noncommercial 1.0.0
+- Website: <https://oduflow.dev>
