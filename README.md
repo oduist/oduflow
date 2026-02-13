@@ -1119,6 +1119,60 @@ The agent will call the appropriate MCP tools in sequence:
 3. `test_environment` → run the test suite
 4. Report results back
 
+#### Connecting Your Agent to Oduflow MCP
+
+Add the Oduflow MCP server to your agent's configuration. The exact format depends on the client:
+
+**Cursor / Windsurf** (`.cursor/mcp.json` or `.windsurf/mcp.json`):
+
+```json
+{
+  "mcpServers": {
+    "oduflow": {
+      "type": "http",
+      "url": "https://<your-oduflow-host>/mcp",
+      "headers": {
+        "Authorization": "Bearer test"
+      }
+    }
+  }
+}
+```
+
+**Amp** (`.amp/settings.json`):
+
+```json
+{
+  "mcpServers": {
+    "oduflow": {
+      "type": "http",
+      "url": "https://<your-oduflow-host>/mcp",
+      "headers": {
+        "Authorization": "Bearer test"
+      }
+    }
+  }
+}
+```
+
+**Claude Desktop** (`claude_desktop_config.json`):
+
+```json
+{
+  "mcpServers": {
+    "oduflow": {
+      "type": "http",
+      "url": "https://<your-oduflow-host>/mcp",
+      "headers": {
+        "Authorization": "Bearer test"
+      }
+    }
+  }
+}
+```
+
+Replace `<your-oduflow-host>` with your Oduflow server address (e.g. `localhost:8000` or `oduflow.example.com`). The Bearer token must match the `ODUFLOW_AUTH_TOKEN` configured on the server.
+
 #### Recommended Agent Rule (Cursor / Windsurf / Amp)
 
 You can add the following rule to your AI coding agent to automate environment lifecycle management:
