@@ -445,7 +445,6 @@
       <div class="form-group">
         <label for="cr-template">Template</label>
         <select id="cr-template">
-          <option value="">Default</option>
         </select>
       </div>
       <div class="form-actions">
@@ -789,7 +788,7 @@ function renderTemplates(templates) {
 
 function populateTemplateSelect() {
   var sel = document.getElementById('cr-template');
-  sel.innerHTML = '<option value="">Default</option>';
+  sel.innerHTML = '';
   cachedTemplates.forEach(function(t) {
     sel.innerHTML += '<option value="' + esc(t.template_name) + '">' + esc(t.template_name) + '</option>';
   });
@@ -800,7 +799,7 @@ function openCreateModal() {
   document.getElementById('cr-branch').value = '';
   document.getElementById('cr-repo').value = '';
   document.getElementById('cr-image').value = '';
-  document.getElementById('cr-template').value = '';
+  
   var errEl = document.getElementById('create-error');
   errEl.style.display = 'none';
   errEl.textContent = '';
