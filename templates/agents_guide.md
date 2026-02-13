@@ -1,0 +1,175 @@
+# Oduflow — Agentic Odoo Development
+Version: 1
+
+## What is Oduflow
+
+Oduflow is an MCP server that provisions isolated, ephemeral Odoo environments on Docker — one per git branch — with instant creation from reusable database templates. It gives AI coding agents a **closed feedback loop**: write code → install module → read errors → fix → retry, all without human intervention.
+
+MCP endpoint: `http://<host>:8000/mcp`
+
+---
+
+## Core Workflow for Agents
+
+```
+1. list_environments          — Check if an environment for the current branch exists
+2. create_environment         — If not, provision one (branch, repo_url, odoo_image)
+3. Write / edit code locally
+4. git push
+5. pull_environment_repository — Pull changes; errors/tracebacks are returned directly in the response
+6. If errors in response → fix code → go to step 4
+7. test_environment            — Run Odoo tests for the changed modules
+8. delete_environment          — Tear down when done
+```
+
+---
+
+## MCP Tools Quick Reference
+
+### Environment Lifecycle
+
+| Tool | When to use |
+|---|---|
+| `list_environments` | Check existing environments before creating a new one |
+| `create_environment(branch_name, repo_url, odoo_image, template_name?)` | Provision an environment. Use the correct Odoo Docker image. Pass `template_name="none"` for greenfield projects |
+| `get_environment_status(branch_name)` | Check if the environment is running, get URL, CPU/RAM stats |
+| `delete_environment(branch_name)` | Tear down when the task is complete or cancelled |
+| `start_environment` / `stop_environment` | Resume or pause a stopped environment |
+| `restart_environment(branch_name)` | Restart the Odoo container (rarely needed — `pull_environment_repository` handles this) |
+| `rebuild_environment(branch_name)` | Recreate the container from scratch if it's broken, without losing DB or filestore |
+
+### Code → Environment Sync
+
+| Tool | When to use |
+|---|---|
+| `pull_environment_repository(branch_name)` | **Always call after every `git push`**. Oduflow analyzes changed files and automatically decides: install new modules, upgrade changed modules, restart for Python changes, or do nothing for XML/JS (hot-reloaded). You do NOT need to call `restart` or `upgrade` manually. **Errors and tracebacks are returned directly in the tool response** — do NOT call `get_environment_logs` to check for errors after this tool. |
+
+### Odoo Module Operations
+
+| Tool | When to use |
+|---|---|
+| `install_odoo_modules(branch_name, modules)` | Install modules for the first time (`odoo -i`). Comma-separated list, e.g. `"sale,crm"`. **Returns full output including any errors directly in the response.** |
+| `upgrade_odoo_modules(branch_name, modules)` | Force-upgrade modules (`odoo -u`). Usually handled by `pull_environment_repository`. **Returns full output including any errors directly in the response.** |
+| `test_environment(branch_name, modules)` | Run Odoo tests (`--test-enable`) for specific modules. **Returns full test output directly in the response.** |
+
+### Debugging & Logs
+
+> ⚠️ **Critical: understand where logs come from.**
+>
+> `install_odoo_modules`, `upgrade_odoo_modules`, `test_environment`, and `pull_environment_repository` run Odoo commands via `docker exec`. Their output is **returned directly in the tool response** and does **NOT** appear in `get_environment_logs`.
+>
+> `get_environment_logs` shows logs from the **main Odoo process** (the container's entrypoint, PID 1) — i.e., runtime errors that occur while Odoo is serving requests, not errors from install/upgrade/test operations.
+
+| Tool | What it shows |
+|---|---|
+| `get_environment_logs(branch_name, n_lines?)` | Logs from the **running Odoo server** (main container process). Use to check for runtime errors, request errors, or startup issues after a restart. Does **NOT** contain output from install/upgrade/test operations. |
+| `exec_in_environment(branch_name, command, user?)` | Run shell commands inside the container. Use `user="root"` for privileged ops (pip install, apt). Useful for DB queries, debugging, checking file paths |
+
+**When to use which:**
+- After `pull_environment_repository` / `install_odoo_modules` / `upgrade_odoo_modules` / `test_environment` → **read the tool response** for errors
+- After `restart_environment` or to check runtime behavior → use `get_environment_logs`
+
+### Private Repositories
+
+| Tool | When to use |
+|---|---|
+| `setup_repo_auth(repo_url)` | Cache git credentials for a private repo. URL format: `https://user:PAT@github.com/owner/repo.git`. Call once, before `create_environment` |
+
+### Auxiliary Services
+
+| Tool | When to use |
+|---|---|
+| `create_service(name, image, port, hostname?, env_vars?)` | Spin up a sidecar (Redis, Meilisearch, etc.). Accessible from Odoo containers via `oduflow-svc-{name}:{port}` |
+| `list_services` / `get_service_logs(name)` / `delete_service(name)` | Manage auxiliary services |
+
+### Template Management (use with caution)
+
+| Tool | When to use |
+|---|---|
+| `list_templates` | List available database template profiles |
+| `promote_environment(branch_name)` | ⚠️ **Destructive**. Make a branch the new template baseline. Requires explicit user permission |
+| `drop_template(template_name)` | ⚠️ **Destructive**. Remove a template profile. Requires explicit user permission |
+
+---
+
+## Rules for Agents
+
+### Initialization
+1. **Check first**: Call `list_environments`. If an environment for the current branch exists, reuse it.
+2. **Create if needed**: Call `create_environment` with the current branch name, repository HTTPS URL, and the correct Odoo Docker image.
+3. **Auth errors**: On 401/403 from `create_environment`, suggest `setup_repo_auth` to the user.
+4. **Show the URL**: Always display the environment URL to the user after creation.
+
+### Sync & Work Cycle
+1. After every `git push`, **always** call `pull_environment_repository`. It handles install/upgrade/restart automatically.
+2. Do **not** call `restart_environment` or `upgrade_odoo_modules` manually unless debugging a specific issue — `pull_environment_repository` already does the right thing.
+3. After `pull_environment_repository`, **read the tool response** for errors. Do NOT call `get_environment_logs` — install/upgrade output is returned directly and does not appear in container logs.
+
+### Debugging Loop
+```
+push → pull_environment_repository → read the response for errors → fix if errors → repeat
+```
+Do NOT call `get_environment_logs` after `pull_environment_repository` — the errors are already in the response. Use `get_environment_logs` only to check the **running server** (e.g., runtime errors during request handling).
+
+### Teardown
+- Only call `delete_environment` when the task is **Done** or **Cancelled**.
+- Do **not** recreate an environment to fix errors without user consent.
+
+### General
+- **One task = one branch = one environment.**
+- Mutexed tools (create, delete, install, upgrade, pull, test, exec) reject concurrent calls with `BusyError` — retry after a short delay.
+- `exec_in_environment` runs as `odoo` by default. Use `user="root"` for package installation or system operations.
+- Database is accessible from inside the container: `psql -h oduflow-db -U odoo -d oduflow_{branch_name}`.
+
+---
+
+## Smart Pull — What Happens Automatically
+
+When you call `pull_environment_repository`, Oduflow analyzes every changed file:
+
+| What changed | Action taken |
+|---|---|
+| New `__manifest__.py` (new module) | **Install** the module |
+| `__manifest__.py` version/data/assets changed | **Upgrade** the module |
+| `*.py` with `fields.*` changes | **Upgrade** the module |
+| `security/*.xml` | **Upgrade** the module |
+| `*.py` without field changes | **Restart** the container |
+| `*.xml` (views, data) / `*.js` | **Nothing** — hot-reloaded via `--dev=xml` |
+
+Priority: install > upgrade > restart > refresh (no action).
+
+---
+
+## Example: Full Agent Session
+
+```
+Agent: list_environments → no environment for "feature-invoice-pdf"
+
+Agent: create_environment("feature-invoice-pdf", "https://github.com/company/addons.git", "odoo:17.0")
+→ Environment created at http://server:50042
+
+Agent: [writes code for the module]
+Agent: git push
+
+Agent: pull_environment_repository("feature-invoice-pdf")
+→ "Upgraded modules: invoice_pdf. Restarted container.
+   Output:
+   ...
+   odoo.exceptions.ValidationError: Field 'x_custom_field' already exists on model 'account.move'
+   ..."
+   # ↑ Error is in the tool response — no need to call get_environment_logs
+
+Agent: [fixes the field conflict in code]
+Agent: git push
+
+Agent: pull_environment_repository("feature-invoice-pdf")
+→ "Upgraded modules: invoice_pdf. Restarted container. Exit code: 0."
+   # ↑ No errors in the response — module upgraded successfully
+
+Agent: test_environment("feature-invoice-pdf", "invoice_pdf")
+→ "Ran 12 tests, 0 failures. Exit code: 0."
+   # ↑ Test results are also in the response
+
+Agent: delete_environment("feature-invoice-pdf")
+→ Environment deleted.
+```

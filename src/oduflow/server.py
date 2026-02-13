@@ -161,6 +161,24 @@ def list_templates() -> str:
 
 @mcp.tool()
 @handle_errors
+def get_agents_guide() -> str:
+    """
+    Get the agents guide with instructions for AI coding agents on how to use Oduflow MCP tools.
+    """
+    import pathlib
+    settings = _get_settings()
+    guide_path = os.path.join(settings.home, "agents_guide.md")
+    if os.path.isfile(guide_path):
+        with open(guide_path, "r", encoding="utf-8") as f:
+            return f.read()
+    bundled = pathlib.Path(__file__).resolve().parents[2] / "templates" / "agents_guide.md"
+    if bundled.is_file():
+        return bundled.read_text(encoding="utf-8")
+    return "Agents guide not found."
+
+
+@mcp.tool()
+@handle_errors
 @with_mutex
 def drop_template(template_name: str) -> str:
     """
@@ -633,6 +651,15 @@ def _run_init_instance(settings: Settings) -> None:
     import os
     os.makedirs(settings.workspaces_dir, exist_ok=True)
     os.makedirs(settings.get_template_dir(), exist_ok=True)
+
+    # Copy bundled agents guide if not present
+    agents_guide_dest = os.path.join(settings.home, "agents_guide.md")
+    if not os.path.isfile(agents_guide_dest):
+        import pathlib, shutil
+        bundled = pathlib.Path(__file__).resolve().parents[2] / "templates" / "agents_guide.md"
+        if bundled.is_file():
+            shutil.copy2(str(bundled), agents_guide_dest)
+            print(f"  Agents guide: {agents_guide_dest}")
 
     if settings.routing_mode == "traefik" and settings.base_domain:
         dynamic_dir = "/etc/oduflow/traefik"
