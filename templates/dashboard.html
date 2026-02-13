@@ -196,6 +196,30 @@
     white-space: pre-wrap; word-break: break-all;
     color: var(--text-dim); font-family: "SFMono-Regular", Consolas, monospace;
   }
+  .logs-toolbar {
+    display: flex; align-items: center; gap: 8px;
+    padding: 8px 20px; border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+  }
+  .logs-toolbar input[type="text"] {
+    flex: 1; max-width: 260px; padding: 5px 8px; font-size: 12px;
+    background: var(--bg); color: var(--text); border: 1px solid var(--border);
+    border-radius: var(--radius); outline: none; font-family: inherit;
+  }
+  .logs-toolbar input[type="text"]:focus { border-color: var(--accent); }
+  .logs-toolbar select {
+    padding: 5px 6px; font-size: 12px; background: var(--bg); color: var(--text);
+    border: 1px solid var(--border); border-radius: var(--radius); outline: none;
+    font-family: inherit; cursor: pointer;
+  }
+  .logs-toolbar .logs-btn {
+    padding: 4px 10px; font-size: 12px; border: 1px solid var(--border);
+    border-radius: var(--radius); background: var(--bg); color: var(--text-dim);
+    cursor: pointer; white-space: nowrap; font-family: inherit;
+  }
+  .logs-toolbar .logs-btn:hover { border-color: var(--accent); color: var(--text); }
+  .logs-toolbar .logs-btn.active { border-color: var(--green); color: var(--green); }
+  .logs-match-count { font-size: 11px; color: var(--text-dim); white-space: nowrap; }
   .toast {
     position: fixed;
     bottom: 24px;
@@ -479,6 +503,17 @@
     <div class="modal-header">
       <h2 id="logs-title">Logs</h2>
       <button class="modal-close" onclick="closeLogsModal()">&times;</button>
+    </div>
+    <div class="logs-toolbar">
+      <input type="text" id="logs-search" placeholder="Filter logs..." oninput="filterLogs()">
+      <span class="logs-match-count" id="logs-match-count"></span>
+      <select id="logs-lines" onchange="changeLogLines()">
+        <option value="100">100 lines</option>
+        <option value="300" selected>300 lines</option>
+        <option value="500">500 lines</option>
+        <option value="1000">1000 lines</option>
+      </select>
+      <button class="logs-btn" onclick="fetchLogs()" title="Refresh logs">↻ Refresh</button>
     </div>
     <div class="modal-body"><pre id="logs-content">Loading...</pre></div>
   </div>
@@ -788,16 +823,28 @@ async function doProtect(branch, isProtected) {
   await loadEnvironments();
 }
 
+var _logsState = { branch: '', lines: [] };
+
 async function showLogs(branch) {
-  const modal = document.getElementById('logs-modal');
+  _logsState.branch = branch;
+  _logsState.lines = [];
+  document.getElementById('logs-search').value = '';
+  document.getElementById('logs-match-count').textContent = '';
+  var modal = document.getElementById('logs-modal');
   document.getElementById('logs-title').textContent = 'Logs — ' + branch;
   document.getElementById('logs-content').textContent = 'Loading...';
   modal.classList.add('show');
+  await fetchLogs();
+}
+
+async function fetchLogs() {
+  var n = document.getElementById('logs-lines').value;
   try {
-    const r = await fetch(API + '/' + encodeURIComponent(branch) + '/logs?n=300');
-    const data = await r.json();
+    var r = await fetch(API + '/' + encodeURIComponent(_logsState.branch) + '/logs?n=' + n);
+    var data = await r.json();
     if (data.ok) {
-      document.getElementById('logs-content').textContent = data.logs || '(empty)';
+      _logsState.lines = (data.logs || '').split('\n');
+      renderLogs();
     } else {
       document.getElementById('logs-content').textContent = 'Error: ' + (data.error || 'Failed to load logs');
     }
@@ -805,6 +852,24 @@ async function showLogs(branch) {
     document.getElementById('logs-content').textContent = 'Connection error: ' + e.message;
   }
 }
+
+function renderLogs() {
+  var lines = _logsState.lines.slice();
+  var search = document.getElementById('logs-search').value.toLowerCase();
+  if (search) {
+    lines = lines.filter(function(l) { return l.toLowerCase().indexOf(search) !== -1; });
+    document.getElementById('logs-match-count').textContent = lines.length + ' match' + (lines.length !== 1 ? 'es' : '');
+  } else {
+    document.getElementById('logs-match-count').textContent = '';
+  }
+  document.getElementById('logs-content').textContent = lines.join('\n') || '(empty)';
+  var body = document.getElementById('logs-content').parentElement;
+  body.scrollTop = body.scrollHeight;
+}
+
+function filterLogs() { renderLogs(); }
+
+function changeLogLines() { fetchLogs(); }
 
 function closeLogsModal(event) {
   if (event && event.target !== event.currentTarget) return;
