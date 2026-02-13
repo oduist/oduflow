@@ -87,7 +87,9 @@ Oduflow is not a replacement for production hosting — it's the **developer wor
 - [Environment Management](#environment-management)
 - [Smart Pull — Intelligent Change Detection](#smart-pull--intelligent-change-detection)
 - [Auxiliary Services](#auxiliary-services)
+- [Extra Addons Repositories](#extra-addons-repositories)
 - [Executing Commands Inside Environments](#executing-commands-inside-environments)
+- [Environment Protection](#environment-protection)
 - [Web Dashboard & REST API](#web-dashboard--rest-api)
 - [MCP Tools Reference](#mcp-tools-reference)
 - [CLI Reference](#cli-reference)
@@ -126,6 +128,8 @@ The result: provisioning a new environment from a 30+ GB production database tak
 - **Minimal disk footprint** — environments share the template DB and filestore; only per-branch changes consume additional space
 - **Template-free mode** — create environments from scratch (`template_name="none"`) when no production dump is available
 - **Auto branch creation** — if a branch doesn't exist on the remote, Oduflow clones the default branch and creates the new branch automatically
+- **Extra addons repositories** — mount shared addon repos (e.g. Odoo Enterprise) into environments via git worktrees; `addons_path` is auto-merged into `odoo.conf`
+- **Environment protection** — protect environments from accidental deletion via a toggle in the dashboard or REST API
 
 ### Smart Automation
 - **Smart pull** — `pull_environment_repository` analyzes changed files (manifest, Python fields, security XML, JS) and automatically decides whether to install, upgrade, restart, or do nothing
@@ -158,7 +162,7 @@ The result: provisioning a new environment from a 30+ GB production database tak
                      │  MCP (Streamable HTTP / stdio)
 ┌────────────────────▼─────────────────────────────┐
 │  server.py — FastMCP transport layer             │
-│  • MCP tool definitions (26 tools)               │
+│  • MCP tool definitions (30 tools)               │
 │  • Global mutex for heavy operations             │
 │  • Unified error handler (FlowError → ValueError)│
 │  • Web UI mount (Starlette)                      │
@@ -220,6 +224,8 @@ src/oduflow/
   git_analysis.py      # Classify changed files → install / upgrade / restart / refresh
   port_registry.py     # Stable port allocation with JSON persistence
   web_ui.py            # Starlette-based dashboard, REST API, Basic auth middleware
+  extra_addons.py      # Extra addon repo management (clone, worktree, odoo.conf generation)
+  licensing.py         # License verification and installation (RSA signatures)
 
   docker_ops/
     client.py           # docker.from_env() wrapper + UID/GID auto-detection
@@ -237,6 +243,7 @@ templates/
   postgresql.conf       # PostgreSQL tuning (shared_buffers, WAL, autovacuum, etc.)
   dashboard.html        # Web dashboard UI (single-page application)
   favicon.ico           # Dashboard favicon
+  agents_guide.md       # AI agent instructions (copied to $ODUFLOW_HOME on init-instance)
 
 tests/                  # Unit and integration tests (pytest)
 ```
@@ -328,7 +335,8 @@ cp .env.example .env
 | `ODUFLOW_TRANSPORT` | `http` | Transport mode: `http` or `stdio` |
 | `ODUFLOW_HOST` | `0.0.0.0` | HTTP server bind address |
 | `ODUFLOW_PORT` | `8000` | HTTP server port |
-| `ODUFLOW_AUTH_TOKEN` | *(empty)* | Bearer token for MCP HTTP auth **and** Basic auth password for the web dashboard (user: `admin`). Empty = auth disabled |
+| `ODUFLOW_AUTH_TOKEN` | *(empty)* | Bearer token for MCP HTTP auth. Empty = MCP auth disabled |
+| `ODUFLOW_UI_PASSWORD` | *(empty)* | Password for Web UI Basic auth (user: `admin`). Separate from MCP auth token. Empty = UI auth disabled |
 
 ### Paths
 
@@ -716,6 +724,71 @@ oduflow call delete_service_preset redis
 
 ---
 
+## Extra Addons Repositories
+
+Oduflow supports mounting **extra addon repositories** (e.g. Odoo Enterprise, third-party themes) into environments. Extra repos are cloned once at the instance level and shared across environments via git worktrees.
+
+### Architecture
+
+```
+$ODUFLOW_HOME/
+  shared_repos/
+    enterprise/          ← bare git clone (shared)
+    custom-themes/       ← bare git clone (shared)
+  workspaces/
+    feature-x/
+      repo/              ← main project repo (existing)
+      extra/
+        enterprise/      ← git worktree (branch 17.0)
+        custom-themes/   ← git worktree (branch main)
+```
+
+### Setting Up Extra Repos
+
+Clone an extra repository once (it will be available for all environments):
+
+```bash
+# Via CLI
+oduflow call add_extra_repo enterprise https://github.com/odoo/enterprise.git
+
+# Private repos — configure auth first
+oduflow call setup_repo_auth https://user:PAT@github.com/odoo/enterprise.git
+oduflow call add_extra_repo enterprise https://github.com/odoo/enterprise.git
+```
+
+### Using Extra Addons in Environments
+
+When creating an environment, specify which extra repos to mount:
+
+```bash
+# Mount enterprise addons on branch 17.0
+oduflow call create_environment feature-x https://github.com/company/addons.git odoo:17.0 default enterprise 17.0
+
+# Mount multiple extra repos
+oduflow call create_environment feature-x https://github.com/company/addons.git odoo:17.0 default "enterprise,custom-themes" 17.0
+```
+
+Oduflow automatically:
+1. Creates a git worktree for each extra repo at the specified branch
+2. Mounts the worktree **read-only** into the container as `/mnt/extra-addons-{name}`
+3. Generates a merged `odoo.conf` with all extra paths added to `addons_path`
+
+### Managing Extra Repos
+
+```bash
+# List all cloned extra repos with available branches
+oduflow call list_extra_repos
+
+# Delete an extra repo (fails if any environment references it)
+oduflow call delete_extra_repo enterprise
+```
+
+Extra repos can also be managed from the **Web Dashboard** under the "Extra Addons" tab.
+
+> **Note:** Extra addons are mounted read-only and are NOT updated by `pull_environment_repository`. To update extra addons, delete and recreate the environment.
+
+---
+
 ## Executing Commands Inside Environments
 
 Run arbitrary shell commands inside the Odoo container:
@@ -741,6 +814,31 @@ The `user` parameter defaults to `odoo`. Use `root` for privileged operations (i
 
 ---
 
+## Environment Protection
+
+Environments can be **protected** from accidental deletion. A protected environment cannot be deleted until protection is removed.
+
+Protection state is stored as a `.protected` marker file in the environment's workspace directory, so it survives container rebuilds and restarts.
+
+### Via REST API
+
+```bash
+# Protect an environment
+curl -X POST http://localhost:8000/api/environments/feature-login/protect
+
+# Unprotect an environment
+curl -X POST http://localhost:8000/api/environments/feature-login/unprotect
+```
+
+### Via Web Dashboard
+
+Click the **🔓 Protect** button on any environment card to toggle protection. When protected:
+- The button shows **🔒 Protected** (highlighted)
+- The **Delete** button is disabled
+- Attempting to delete via MCP or API returns a `ProtectedError`
+
+---
+
 ## Web Dashboard & REST API
 
 ### Web Dashboard
@@ -748,12 +846,15 @@ The `user` parameter defaults to `odoo`. Use `root` for privileged operations (i
 When running in HTTP mode, a web dashboard is available at the server root (`http://<host>:<port>/`). It provides:
 
 - **Environment list** with status indicators (running / stopped / partial)
-- **Environment actions**: Start / Stop / Restart / Delete
-- **Environment creation** form (branch, repo URL, Odoo image, template)
+- **Environment actions**: Start / Stop / Restart / Protect / Delete
+- **Environment creation** form (branch, repo URL, Odoo image, template, extra addons)
+- **Environment protection** — toggle to prevent accidental deletion
 - **Live log viewer** for each environment
 - **Container and system resource stats** (CPU, RAM, load average)
 - **Service management** — create, update, delete, and view logs for auxiliary services
+- **Extra addons management** — clone, list, and delete extra addon repositories
 - **Template listing** — view available template profiles with their status
+- **License management** — view current license and activate license keys
 
 ### REST API Endpoints
 
@@ -770,6 +871,8 @@ All endpoints return JSON with an `ok` field. Authentication via HTTP Basic auth
 | `POST` | `/api/environments/{branch}/restart` | Restart an environment |
 | `POST` | `/api/environments/{branch}/delete` | Delete an environment |
 | `GET` | `/api/environments/{branch}/logs?n=200` | Get environment logs |
+| `POST` | `/api/environments/{branch}/protect` | Protect environment from deletion |
+| `POST` | `/api/environments/{branch}/unprotect` | Remove protection from environment |
 
 #### Services
 
@@ -795,6 +898,27 @@ All endpoints return JSON with an `ok` field. Authentication via HTTP Basic auth
 |---|---|---|
 | `GET` | `/api/stats` | Container CPU/RAM stats + system metrics |
 | `GET` | `/api/templates` | List available template profiles |
+
+#### Extra Addons
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `GET` | `/api/extra-repos` | List all cloned extra addons repositories |
+| `POST` | `/api/extra-repos/add` | Clone an extra addons repo (JSON body: `name`, `repo_url`) |
+| `POST` | `/api/extra-repos/{name}/delete` | Delete a cloned extra addons repository |
+
+#### Licensing
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `GET` | `/api/license` | Get current license information |
+| `POST` | `/api/license/activate` | Activate a license key (JSON body: `key`) |
+
+#### Agent Guide
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `GET` | `/api/agents-guide` | Get AI agent instructions (markdown) |
 
 ---
 
@@ -836,6 +960,12 @@ All tools are accessible via MCP clients (Cursor, Cline, Amp, etc.) and the CLI 
 | `delete_service_preset` | | Remove a saved service preset |
 | **Repository Auth** | | |
 | `setup_repo_auth` | ✓ | Cache git credentials for a private repository |
+| **Extra Addons** | | |
+| `add_extra_repo` | ✓ | Clone an extra addons repository (e.g. Odoo Enterprise) for use with environments |
+| `list_extra_repos` | | List all cloned extra addons repositories |
+| `delete_extra_repo` | ✓ | Delete a cloned extra addons repository |
+| **Agent Guide** | | |
+| `get_agents_guide` | | Get AI agent instructions for using Oduflow MCP tools |
 
 > **Mutex** (✓): these tools acquire a global lock. If another mutexed operation is in progress, the call is rejected with `BusyError` ("Another operation is in progress. Try again later.").
 
@@ -1003,20 +1133,25 @@ This is implemented via FastMCP's `StaticTokenVerifier`.
 
 ### Web Dashboard Auth
 
-The web dashboard and REST API use HTTP Basic authentication with the same token:
+The web dashboard and REST API use HTTP Basic authentication with a **separate** password:
 
 - **Username**: `admin`
-- **Password**: value of `ODUFLOW_AUTH_TOKEN`
+- **Password**: value of `ODUFLOW_UI_PASSWORD`
 
-Credentials are compared using `hmac.compare_digest` to prevent timing attacks.
+This is independent from the MCP Bearer token (`ODUFLOW_AUTH_TOKEN`). Credentials are compared using `hmac.compare_digest` to prevent timing attacks.
 
 ### When auth is disabled
 
-If `ODUFLOW_AUTH_TOKEN` is empty (the default), both MCP and the web dashboard run without authentication. A warning is logged on startup:
+MCP auth and Web UI auth are configured independently:
+
+- If `ODUFLOW_AUTH_TOKEN` is empty, the MCP endpoint runs without authentication
+- If `ODUFLOW_UI_PASSWORD` is empty, the web dashboard runs without authentication
+
+Warnings are logged on startup for each:
 
 ```
 WARNING  HTTP auth DISABLED (ODUFLOW_AUTH_TOKEN not set)
-WARNING  Web UI auth DISABLED (ODUFLOW_AUTH_TOKEN not set)
+WARNING  Web UI auth DISABLED (ODUFLOW_UI_PASSWORD not set)
 ```
 
 ### Git credentials
@@ -1346,6 +1481,7 @@ Oduflow uses a typed error hierarchy for clear error reporting:
 | `ConflictError` | 400 | Resource already exists (e.g. environment already running) |
 | `PrerequisiteNotMetError` | 400 | System not initialized, Docker not running, or dependency missing |
 | `ExternalCommandError` | 400 | Git, psql, or Docker command failed (includes command, exit code, output) |
+| `ProtectedError` | 400 | Environment is protected and cannot be deleted |
 
 MCP clients receive errors as `ValueError` with a descriptive message. REST API clients receive JSON with `{"ok": false, "error": "..."}`.
 
