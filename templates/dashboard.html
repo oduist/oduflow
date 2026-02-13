@@ -722,7 +722,7 @@ function renderEnvironments(envs) {
           '<button class="btn btn-start" onclick="doAction(\'' + escAttr(env.branch) + '\',\'start\')" ' +
             (allRunning ? 'disabled' : '') + '>Start</button>' +
           '<button class="btn btn-stop" onclick="doAction(\'' + escAttr(env.branch) + '\',\'stop\')" ' +
-            (allStopped ? 'disabled' : '') + '>Stop</button>' +
+            (allStopped || env.protected ? 'disabled title="Environment is protected"' : '') + '>Stop</button>' +
           '<button class="btn btn-restart" onclick="doAction(\'' + escAttr(env.branch) + '\',\'restart\')" ' +
             (allStopped ? 'disabled' : '') + '>Restart</button>' +
           '<button class="btn btn-logs" onclick="showLogs(\'' + escAttr(env.branch) + '\')">Logs</button>' +

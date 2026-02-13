@@ -803,6 +803,8 @@ def restart_environment(settings: Settings, branch_name: str) -> dict[str, str]:
 
 
 def stop_environment(settings: Settings, branch_name: str) -> dict[str, str]:
+    if is_protected(settings, branch_name):
+        raise ProtectedError(f"Environment '{branch_name}' is protected. Unprotect it before stopping.")
     client = get_client()
     odoo_container_name = get_resource_name(branch_name, "odoo", settings.prefix)
 
