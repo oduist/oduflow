@@ -51,10 +51,15 @@ def save_preset(
     env_vars: dict[str, str] | None = None,
 ) -> dict:
     """Save (or overwrite) a single service preset and return it."""
+    short_hostname = hostname or ""
+    if short_hostname and settings.base_domain:
+        suffix = f".{settings.base_domain}"
+        if short_hostname.endswith(suffix):
+            short_hostname = short_hostname[: -len(suffix)]
     preset = {
         "image": image,
         "port": port,
-        "hostname": hostname or "",
+        "hostname": short_hostname,
         "env_vars": env_vars if env_vars is not None else {},
     }
     data = _load_presets(settings)

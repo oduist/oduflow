@@ -163,6 +163,9 @@ def _build_routes(
             repo_url = (body.get("repo_url") or "").strip()
             odoo_image = (body.get("odoo_image") or "").strip()
             template_name_raw = (body.get("template_name") or "").strip()
+            extra_addons_raw = (body.get("extra_addons") or "").strip()
+            extra_addons_branch = (body.get("extra_addons_branch") or "").strip()
+            extra_list = [x.strip() for x in extra_addons_raw.split(",") if x.strip()] if extra_addons_raw else None
             if not branch_name or not repo_url or not odoo_image:
                 return JSONResponse(
                     {"ok": False, "error": "branch_name, repo_url and odoo_image are required."},
@@ -173,7 +176,12 @@ def _build_routes(
                 resolved_template = None
             else:
                 resolved_template = template_name_raw
-            result = env_ops.create_environment(get_settings(), branch_name, repo_url, odoo_image, template_name=resolved_template)
+            result = env_ops.create_environment(
+                get_settings(), branch_name, repo_url, odoo_image,
+                template_name=resolved_template,
+                extra_addons=extra_list,
+                extra_addons_branch=extra_addons_branch,
+            )
             return JSONResponse({"ok": True, "result": result})
         except FlowError as e:
             return _error_response(e)
@@ -391,6 +399,56 @@ def _build_routes(
             logger.exception("Unexpected error in api_license_activate")
             return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
 
+    def api_extra_repos(request: Request) -> JSONResponse:
+        from oduflow.extra_addons import list_extra_repos
+        try:
+            repos = list_extra_repos(get_settings())
+            return JSONResponse({"ok": True, "repos": repos})
+        except FlowError as e:
+            return _error_response(e)
+        except Exception as e:
+            logger.exception("Unexpected error in api_extra_repos")
+            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+
+    async def api_extra_repo_add(request: Request) -> JSONResponse:
+        if not busy_lock.acquire(blocking=False):
+            return _error_response(BusyError("Another operation is in progress."))
+        try:
+            body = await request.json()
+            name = (body.get("name") or "").strip()
+            repo_url = (body.get("repo_url") or "").strip()
+            if not name or not repo_url:
+                return JSONResponse(
+                    {"ok": False, "error": "name and repo_url are required."},
+                    status_code=400,
+                )
+            from oduflow.extra_addons import clone_extra_repo
+            result = clone_extra_repo(get_settings(), name, repo_url)
+            return JSONResponse({"ok": True, "result": result})
+        except FlowError as e:
+            return _error_response(e)
+        except Exception as e:
+            logger.exception("Unexpected error in api_extra_repo_add")
+            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+        finally:
+            busy_lock.release()
+
+    def api_extra_repo_delete(request: Request) -> JSONResponse:
+        name = request.path_params["name"]
+        if not busy_lock.acquire(blocking=False):
+            return _error_response(BusyError("Another operation is in progress."))
+        try:
+            from oduflow.extra_addons import delete_extra_repo
+            delete_extra_repo(get_settings(), name)
+            return JSONResponse({"ok": True, "result": {"deleted": name}})
+        except FlowError as e:
+            return _error_response(e)
+        except Exception as e:
+            logger.exception("Unexpected error in api_extra_repo_delete")
+            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+        finally:
+            busy_lock.release()
+
     return [
         Route("/", dashboard, methods=["GET"]),
         Route("/favicon.ico", favicon, methods=["GET"]),
@@ -413,6 +471,9 @@ def _build_routes(
         Route("/api/service-presets", api_service_presets, methods=["GET"]),
         Route("/api/service-presets/{name}/restore", api_service_restore, methods=["POST"]),
         Route("/api/service-presets/{name}/delete", api_service_preset_delete, methods=["POST"]),
+        Route("/api/extra-repos", api_extra_repos, methods=["GET"]),
+        Route("/api/extra-repos/add", api_extra_repo_add, methods=["POST"]),
+        Route("/api/extra-repos/{name}/delete", api_extra_repo_delete, methods=["POST"]),
         Route("/api/environments/{branch:path}/logs", api_logs, methods=["GET"]),
     ]
 

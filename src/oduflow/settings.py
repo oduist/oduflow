@@ -69,6 +69,10 @@ class Settings:
             if os.path.isdir(os.path.join(templates_dir, entry))
         )
 
+    @property
+    def shared_repos_dir(self) -> str:
+        return os.path.join(self.home, "shared_repos")
+
     @staticmethod
     def from_env() -> "Settings":
         instance_id = os.getenv("ODUFLOW_INSTANCE_ID", "1").strip()

@@ -79,7 +79,64 @@ def setup_repo_auth(repo_url: str) -> str:
 @mcp.tool()
 @handle_errors
 @with_mutex
-def create_environment(branch_name: str, repo_url: str, odoo_image: str, template_name: str = "") -> str:
+def add_extra_repo(name: str, repo_url: str) -> str:
+    """
+    Clone an extra addons repository for use with environments.
+
+    The repository is cloned as a bare repo to the shared repos directory.
+    When creating an environment, reference it by name to mount it as
+    additional addons (e.g., Odoo Enterprise).
+
+    Args:
+        name: Short name for the repo (e.g. "enterprise", "custom-themes").
+        repo_url: Git URL of the repository (HTTPS or SSH).
+    """
+    from oduflow.extra_addons import clone_extra_repo
+    result = clone_extra_repo(_get_settings(), name, repo_url)
+    return f"Extra repo '{result['name']}' cloned successfully.\nPath: {result['path']}"
+
+
+@mcp.tool()
+@handle_errors
+def list_extra_repos() -> str:
+    """List all cloned extra addons repositories."""
+    from oduflow.extra_addons import list_extra_repos as _list
+    repos = _list(_get_settings())
+    if not repos:
+        return "No extra addons repositories found."
+    lines = ["Extra addons repositories:"]
+    for r in repos:
+        branches = ", ".join(r["branches"][:10]) if r["branches"] else "(no branches)"
+        lines.append(f"- {r['name']}: {r['repo_url']} [{branches}]")
+    return "\n".join(lines)
+
+
+@mcp.tool()
+@handle_errors
+@with_mutex
+def delete_extra_repo(name: str) -> str:
+    """
+    Delete a cloned extra addons repository.
+
+    Args:
+        name: Name of the extra repo to delete.
+    """
+    from oduflow.extra_addons import delete_extra_repo as _delete
+    _delete(_get_settings(), name)
+    return f"Extra repo '{name}' deleted."
+
+
+@mcp.tool()
+@handle_errors
+@with_mutex
+def create_environment(
+    branch_name: str,
+    repo_url: str,
+    odoo_image: str,
+    template_name: str = "",
+    extra_addons: str = "",
+    extra_addons_branch: str = "",
+) -> str:
     """
     Provision a new ephemeral Odoo environment for a specific branch.
 
@@ -88,6 +145,8 @@ def create_environment(branch_name: str, repo_url: str, odoo_image: str, templat
         repo_url: URL of the git repository to clone.
         odoo_image: Full Docker image name with tag (e.g. "odoo:17.0"). Use a pre-built image with all dependencies for faster startup.
         template_name: Name of the template profile to use as database template (default: from ODUFLOW_DEFAULT_TEMPLATE). Pass "none" to skip template and initialise Odoo from scratch with -i base.
+        extra_addons: Comma-separated list of extra addon repo names to mount (e.g. "enterprise,custom-themes").
+        extra_addons_branch: Git branch for extra addon repos (e.g. "17.0"). Defaults to project default branch.
     """
     settings = _get_settings()
     resolved_template: str | None
@@ -97,7 +156,13 @@ def create_environment(branch_name: str, repo_url: str, odoo_image: str, templat
         resolved_template = settings.default_template
     else:
         resolved_template = template_name
-    result = env_ops.create_environment(settings, branch_name, repo_url, odoo_image, template_name=resolved_template)
+    extra_list = [x.strip() for x in extra_addons.split(",") if x.strip()] if extra_addons else []
+    result = env_ops.create_environment(
+        settings, branch_name, repo_url, odoo_image,
+        template_name=resolved_template,
+        extra_addons=extra_list or None,
+        extra_addons_branch=extra_addons_branch,
+    )
     display_template = resolved_template if resolved_template is not None else "none (init from scratch)"
     lines = [
         "Environment provisioned successfully!",
@@ -107,6 +172,8 @@ def create_environment(branch_name: str, repo_url: str, odoo_image: str, templat
         f"Workspace: {result['workspace']}",
         f"Template: {display_template}",
     ]
+    if extra_list:
+        lines.append(f"Extra Addons: {', '.join(extra_list)} (branch: {extra_addons_branch or settings.default_branch})")
     setup_logs = result.get("setup_logs", [])
     if setup_logs:
         lines.append("\n--- Setup Log ---")
