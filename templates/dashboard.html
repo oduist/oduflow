@@ -411,16 +411,13 @@
 </div>
 
 <div id="tab-agents-guide" class="tab-content">
-  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+  <div style="margin-bottom:12px;">
     <span style="font-size:13px;color:var(--text-dim);">Version: <strong id="guide-version">—</strong></span>
-    <div style="display:flex;gap:8px;align-items:center;">
-      <span id="guide-save-status" style="font-size:12px;color:var(--green);display:none;">Saved!</span>
-      <button class="btn-create" id="guide-save-btn" onclick="saveAgentsGuide()" disabled>Save</button>
-    </div>
   </div>
   <textarea id="guide-editor" 
-    style="width:100%;min-height:600px;padding:16px;font-size:13px;font-family:'SFMono-Regular',Consolas,monospace;line-height:1.6;background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:var(--radius);resize:vertical;outline:none;tab-size:2;"
+    style="width:100%;min-height:600px;padding:16px;font-size:13px;font-family:'SFMono-Regular',Consolas,monospace;line-height:1.6;background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:var(--radius);resize:vertical;outline:none;tab-size:2;opacity:0.85;"
     spellcheck="false"
+    readonly
     placeholder="Loading agents guide..."></textarea>
 </div>
 
@@ -1251,75 +1248,20 @@ loadServices = async function() {
 
 // --- Agents Guide ---
 const API_GUIDE = '/api/agents-guide';
-let _guideOriginal = '';
 
 async function loadAgentsGuide() {
   try {
     var r = await fetch(API_GUIDE);
     var data = await r.json();
     if (data.ok) {
-      var editor = document.getElementById('guide-editor');
-      editor.value = data.content || '';
-      _guideOriginal = editor.value;
+      document.getElementById('guide-editor').value = data.content || '';
       document.getElementById('guide-version').textContent = data.version || '0';
-      document.getElementById('guide-save-btn').disabled = true;
-      document.getElementById('guide-save-status').style.display = 'none';
+
     }
   } catch (e) {
     showToast('Failed to load agents guide: ' + e.message, true);
   }
 }
-
-async function saveAgentsGuide() {
-  var content = document.getElementById('guide-editor').value;
-  var btn = document.getElementById('guide-save-btn');
-  btn.disabled = true;
-  btn.textContent = 'Saving...';
-  try {
-    var r = await fetch(API_GUIDE, {
-      method: 'PUT',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({content: content})
-    });
-    var data = await r.json();
-    if (data.ok) {
-      document.getElementById('guide-version').textContent = data.version;
-      _guideOriginal = content;
-      // Update version line in editor to reflect new version
-      var lines = content.split('\n');
-      var updated = false;
-      for (var i = 0; i < Math.min(lines.length, 5); i++) {
-        if (/^Version:\s*\d+/.test(lines[i])) {
-          lines[i] = 'Version: ' + data.version;
-          updated = true;
-          break;
-        }
-      }
-      if (updated) {
-        document.getElementById('guide-editor').value = lines.join('\n');
-        _guideOriginal = lines.join('\n');
-      }
-      var statusEl = document.getElementById('guide-save-status');
-      statusEl.style.display = 'inline';
-      setTimeout(function() { statusEl.style.display = 'none'; }, 2000);
-      showToast('Agents guide saved (v' + data.version + ')');
-    } else {
-      showToast(data.error || 'Save failed', true);
-    }
-  } catch (e) {
-    showToast('Connection error: ' + e.message, true);
-  } finally {
-    btn.disabled = false;
-    btn.textContent = 'Save';
-  }
-}
-
-// Enable save button when content changes
-document.getElementById('guide-editor').addEventListener('input', function() {
-  var changed = this.value !== _guideOriginal;
-  document.getElementById('guide-save-btn').disabled = !changed;
-  document.getElementById('guide-save-status').style.display = 'none';
-});
 
 // --- License ---
 const API_LICENSE = '/api/license';

@@ -372,31 +372,6 @@ def _build_routes(
             logger.exception("Unexpected error in api_agents_guide_get")
             return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
 
-    async def api_agents_guide_put(request: Request) -> JSONResponse:
-        try:
-            import re as _re
-            body = await request.json()
-            content = body.get("content", "")
-            m = _re.search(r"^Version:\s*(\d+)", content, _re.MULTILINE)
-            if m:
-                old_version = int(m.group(1))
-                new_version = old_version + 1
-                content = content[:m.start()] + f"Version: {new_version}" + content[m.end():]
-            else:
-                new_version = 1
-                lines = content.split("\n", 1)
-                if len(lines) > 1:
-                    content = lines[0] + f"\nVersion: {new_version}\n" + lines[1]
-                else:
-                    content = content + f"\nVersion: {new_version}"
-            guide_path = os.path.join(get_settings().home, "agents_guide.md")
-            os.makedirs(os.path.dirname(guide_path), exist_ok=True)
-            with open(guide_path, "w", encoding="utf-8") as f:
-                f.write(content)
-            return JSONResponse({"ok": True, "version": new_version})
-        except Exception as e:
-            logger.exception("Unexpected error in api_agents_guide_put")
-            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
 
     def api_license(request: Request) -> JSONResponse:
         info = get_license_info()
@@ -426,7 +401,6 @@ def _build_routes(
         Route("/api/environments/create", api_create, methods=["POST"]),
         Route("/api/stats", api_stats, methods=["GET"]),
         Route("/api/agents-guide", api_agents_guide_get, methods=["GET"]),
-        Route("/api/agents-guide", api_agents_guide_put, methods=["PUT"]),
         Route("/api/environments/{branch:path}/start", api_start, methods=["POST"]),
         Route("/api/environments/{branch:path}/stop", api_stop, methods=["POST"]),
         Route("/api/environments/{branch:path}/restart", api_restart, methods=["POST"]),
