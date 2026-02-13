@@ -114,7 +114,7 @@ class TestCreateEnvironment:
     @patch("oduflow.docker_ops.env_ops._ensure_system_ready")
     @patch("oduflow.docker_ops.env_ops.get_odoo_uid_gid", return_value="100:101")
     @patch("oduflow.docker_ops.env_ops._exec_sql")
-    @patch("oduflow.docker_ops.env_ops._db_exists", return_value=False)
+    @patch("oduflow.docker_ops.env_ops._db_exists", return_value=True)
     @patch("oduflow.docker_ops.env_ops._mount_filestore")
     @patch("oduflow.docker_ops.env_ops._get_used_ports", return_value=set())
     @patch("oduflow.docker_ops.env_ops.allocate_port", return_value=50000)
@@ -132,12 +132,13 @@ class TestCreateEnvironment:
         assert result["url"] == "http://localhost:50000"
         assert result["database"] == "oduflow_1_feature-payments"
         assert result["odoo_container"] == "oduflow-feature-payments-odoo"
-        mock_sql.assert_called_once()
+        assert mock_sql.call_count == 2
         mock_docker_client.containers.run.assert_called_once()
         mock_alloc.assert_called_once()
 
+    @patch("oduflow.docker_ops.env_ops._db_exists", return_value=True)
     @patch("oduflow.docker_ops.env_ops._ensure_system_ready")
-    def test_create_already_exists(self, mock_ready, mock_docker_client):
+    def test_create_already_exists(self, mock_ready, mock_db_exists, mock_docker_client):
         existing = MagicMock()
         existing.status = "running"
         existing.ports = {"8069/tcp": [{"HostPort": "50000"}]}
@@ -146,8 +147,9 @@ class TestCreateEnvironment:
         with pytest.raises(ConflictError, match="already exists"):
             env_ops.create_environment(TEST_SETTINGS, "main", "https://github.com/org/repo.git")
 
+    @patch("oduflow.docker_ops.env_ops._db_exists", return_value=True)
     @patch("oduflow.docker_ops.env_ops._ensure_system_ready")
-    def test_create_system_not_ready(self, mock_ready, mock_docker_client):
+    def test_create_system_not_ready(self, mock_ready, mock_db_exists, mock_docker_client):
         mock_ready.side_effect = PrerequisiteNotMetError("flow-db not found. Run init_system first.")
 
         with pytest.raises(PrerequisiteNotMetError, match="init_system"):
