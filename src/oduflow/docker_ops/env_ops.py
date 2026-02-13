@@ -17,6 +17,7 @@ from oduflow.errors import (
     ExternalCommandError,
     NotFoundError,
     PrerequisiteNotMetError,
+    ProtectedError,
 )
 from oduflow.git_ops import RepoAuthError
 from oduflow.naming import get_db_name, get_env_hostname, get_filestore_paths, get_repo_path, get_resource_name, get_template_db_name, get_workspace_path, sanitize_repo_url, slugify_branch
@@ -644,7 +645,45 @@ def create_environment(
     return result
 
 
+def is_protected(settings: Settings, branch_name: str) -> bool:
+    workspace_path = get_workspace_path(branch_name, settings.workspaces_dir)
+    return os.path.exists(os.path.join(workspace_path, ".protected"))
+
+
+def protect_environment(settings: Settings, branch_name: str) -> dict[str, Any]:
+    """Mark environment as protected by creating .protected marker file."""
+    client = get_client()
+    container_name = get_resource_name(branch_name, "odoo", settings.prefix)
+    try:
+        client.containers.get(container_name)
+    except docker.errors.NotFound:
+        raise NotFoundError(f"Environment '{branch_name}' does not exist.")
+    workspace_path = get_workspace_path(branch_name, settings.workspaces_dir)
+    marker = os.path.join(workspace_path, ".protected")
+    open(marker, "w").close()
+    logger.info("Environment protected", extra={"branch": branch_name})
+    return {"branch": branch_name, "protected": True}
+
+
+def unprotect_environment(settings: Settings, branch_name: str) -> dict[str, Any]:
+    """Remove protection from environment by deleting .protected marker file."""
+    client = get_client()
+    container_name = get_resource_name(branch_name, "odoo", settings.prefix)
+    try:
+        client.containers.get(container_name)
+    except docker.errors.NotFound:
+        raise NotFoundError(f"Environment '{branch_name}' does not exist.")
+    workspace_path = get_workspace_path(branch_name, settings.workspaces_dir)
+    marker = os.path.join(workspace_path, ".protected")
+    if os.path.exists(marker):
+        os.remove(marker)
+    logger.info("Environment unprotected", extra={"branch": branch_name})
+    return {"branch": branch_name, "protected": False}
+
+
 def delete_environment(settings: Settings, branch_name: str) -> None:
+    if is_protected(settings, branch_name):
+        raise ProtectedError(f"Environment '{branch_name}' is protected. Unprotect it before deleting.")
     client = get_client()
     odoo_container_name = get_resource_name(branch_name, "odoo", settings.prefix)
     env_db = get_db_name(branch_name, settings.instance_id)
@@ -713,6 +752,7 @@ def list_environments(settings: Settings) -> list[dict[str, Any]]:
                 "extra_addons": json.loads(container.labels.get("oduflow.extra_addons", "[]")),
                 "extra_addons_branch": container.labels.get("oduflow.extra_addons_branch", ""),
                 "db_name": get_db_name(branch, settings.instance_id),
+                "protected": is_protected(settings, branch),
             }
 
         try:

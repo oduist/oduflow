@@ -14,6 +14,10 @@ class PrerequisiteNotMetError(FlowError):
     """System not initialized or dependency missing."""
 
 
+class ProtectedError(FlowError):
+    """Environment is protected and cannot be deleted."""
+
+
 class ConflictError(FlowError):
     """Resource already exists."""
 

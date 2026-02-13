@@ -449,6 +449,28 @@ def _build_routes(
         finally:
             busy_lock.release()
 
+    def api_protect(request: Request) -> JSONResponse:
+        branch = request.path_params["branch"]
+        try:
+            result = env_ops.protect_environment(get_settings(), branch)
+            return JSONResponse({"ok": True, "result": result})
+        except FlowError as e:
+            return _error_response(e)
+        except Exception as e:
+            logger.exception("Unexpected error in api_protect")
+            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+
+    def api_unprotect(request: Request) -> JSONResponse:
+        branch = request.path_params["branch"]
+        try:
+            result = env_ops.unprotect_environment(get_settings(), branch)
+            return JSONResponse({"ok": True, "result": result})
+        except FlowError as e:
+            return _error_response(e)
+        except Exception as e:
+            logger.exception("Unexpected error in api_unprotect")
+            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+
     return [
         Route("/", dashboard, methods=["GET"]),
         Route("/favicon.ico", favicon, methods=["GET"]),
@@ -462,6 +484,8 @@ def _build_routes(
         Route("/api/environments/{branch:path}/start", api_start, methods=["POST"]),
         Route("/api/environments/{branch:path}/stop", api_stop, methods=["POST"]),
         Route("/api/environments/{branch:path}/restart", api_restart, methods=["POST"]),
+        Route("/api/environments/{branch:path}/protect", api_protect, methods=["POST"]),
+        Route("/api/environments/{branch:path}/unprotect", api_unprotect, methods=["POST"]),
         Route("/api/environments/{branch:path}/delete", api_delete, methods=["POST"]),
         Route("/api/services", api_services, methods=["GET"]),
         Route("/api/services/create", api_service_create, methods=["POST"]),
@@ -488,12 +512,12 @@ def mount_web_ui(
     routes = _build_routes(get_settings, busy_lock)
     sub_app: ASGIApp = Router(routes=routes)
 
-    auth_token = (os.getenv("ODUFLOW_AUTH_TOKEN") or "").strip()
-    if auth_token:
-        sub_app = BasicAuthMiddleware(sub_app, auth_token)
+    ui_password = (os.getenv("ODUFLOW_UI_PASSWORD") or "").strip()
+    if ui_password:
+        sub_app = BasicAuthMiddleware(sub_app, ui_password)
         logger.info("Web UI Basic Auth ENABLED (user: %s)", _AUTH_USER)
     else:
-        logger.warning("Web UI auth DISABLED (ODUFLOW_AUTH_TOKEN not set)")
+        logger.warning("Web UI auth DISABLED (ODUFLOW_UI_PASSWORD not set)")
 
     from starlette.routing import Mount
     app.routes.append(Mount("/", app=sub_app))

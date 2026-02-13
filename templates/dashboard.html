@@ -128,6 +128,9 @@
   .btn-update:hover { background: rgba(210,153,34,0.1); }
   .btn-logs { border-color: var(--accent); color: var(--accent); }
   .btn-logs:hover { background: rgba(88,166,255,0.1); }
+  .btn-protect { border-color: var(--yellow); color: var(--yellow); }
+  .btn-protect:hover { background: rgba(210,153,34,0.1); }
+  .btn-protect.active { background: var(--yellow); color: #000; border-color: var(--yellow); }
   .btn-create {
     background: var(--accent);
     color: #fff;
@@ -688,7 +691,11 @@ function renderEnvironments(envs) {
           '<button class="btn btn-restart" onclick="doAction(\'' + escAttr(env.branch) + '\',\'restart\')" ' +
             (allStopped ? 'disabled' : '') + '>Restart</button>' +
           '<button class="btn btn-logs" onclick="showLogs(\'' + escAttr(env.branch) + '\')">Logs</button>' +
-          '<button class="btn btn-delete" onclick="doDelete(\'' + escAttr(env.branch) + '\')">Delete</button>' +
+          '<button class="btn btn-protect' + (env.protected ? ' active' : '') + '" ' +
+            'onclick="doProtect(\'' + escAttr(env.branch) + '\',' + (env.protected ? 'true' : 'false') + ')">' +
+            (env.protected ? '🔒 Protected' : '🔓 Protect') + '</button>' +
+          '<button class="btn btn-delete" onclick="doDelete(\'' + escAttr(env.branch) + '\')" ' +
+            (env.protected ? 'disabled title="Environment is protected"' : '') + '>Delete</button>' +
         '</div>' +
       '</div>' +
       urlHtml +
@@ -757,6 +764,23 @@ async function doDelete(branch) {
       showToast(branch + ': deleted');
     } else {
       showToast(data.error || 'Delete failed', true);
+    }
+  } catch (e) {
+    showToast('Connection error: ' + e.message, true);
+  }
+  await loadEnvironments();
+}
+
+async function doProtect(branch, isProtected) {
+  var action = isProtected ? 'unprotect' : 'protect';
+  if (isProtected && !confirm('Remove protection from "' + branch + '"?')) return;
+  try {
+    var r = await fetch(API + '/' + encodeURIComponent(branch) + '/' + action, { method: 'POST' });
+    var data = await r.json();
+    if (data.ok) {
+      showToast(branch + ': ' + (isProtected ? 'unprotected' : 'protected'));
+    } else {
+      showToast(data.error || action + ' failed', true);
     }
   } catch (e) {
     showToast('Connection error: ' + e.message, true);
