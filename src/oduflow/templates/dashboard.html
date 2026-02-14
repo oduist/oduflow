@@ -830,6 +830,7 @@ async function showLogs(branch) {
   document.getElementById('logs-title').textContent = 'Logs — ' + branch;
   document.getElementById('logs-content').textContent = 'Loading...';
   modal.classList.add('show');
+  document.getElementById('logs-search').focus();
   await fetchLogs();
 }
 
@@ -1234,6 +1235,7 @@ async function showServiceLogs(name) {
   document.getElementById('logs-title').textContent = 'Service Logs — ' + name;
   document.getElementById('logs-content').textContent = 'Loading...';
   modal.classList.add('show');
+  document.getElementById('logs-search').focus();
   try {
     var r = await fetch(API_SERVICES + '/' + encodeURIComponent(name) + '/logs?n=300');
     var data = await r.json();
