@@ -1,10 +1,14 @@
 [project]
 name = "oduflow"
-version = "0.1.0"
-description = "MCP server for automating Odoo development environments"
+version = "1.0.1"
+description = "AI-first Odoo development and CI tool with reusable database templates, powered by MCP"
 authors = [
-    { name = "Flow Contributor" }
+    { name = "Oduist" }
 ]
+readme = "README.md"
+license = { text = "PolyForm-Noncommercial-1.0.0" }
+requires-python = ">=3.10"
+keywords = ["odoo", "mcp", "docker", "development", "ci"]
 dependencies = [
     "fastmcp==2.14.3",
     "docker",
@@ -12,8 +16,13 @@ dependencies = [
     "packaging",
     "cryptography",
 ]
-requires-python = ">=3.10"
-license = { text = "MIT" }
+
+[project.urls]
+Homepage = "https://oduflow.dev"
+Documentation = "https://oduflow.dev"
+Repository = "https://github.com/oduist/oduflow"
+Issues = "https://github.com/oduist/oduflow/issues"
+Changelog = "https://github.com/oduist/oduflow/releases"
 
 [project.scripts]
 oduflow = "oduflow.server:main"
@@ -43,4 +52,3 @@ markers = [
     "integration: integration tests against live Docker (may be slow)",
     "heavyweight: slow tests (init/destroy/create/delete env) — run with pytest -m heavyweight",
 ]
-
