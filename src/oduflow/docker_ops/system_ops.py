@@ -731,7 +731,7 @@ def template_down(settings: Settings, template_name: str) -> dict[str, str]:
     }
 
 
-def promote_env(settings: Settings, branch_name: str, template_name: str) -> dict[str, str]:
+def publish_env_as_template(settings: Settings, branch_name: str, template_name: str) -> dict[str, str]:
     from oduflow.docker_ops import env_ops
     from oduflow.naming import get_db_name, get_filestore_paths
 

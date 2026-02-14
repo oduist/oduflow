@@ -213,9 +213,9 @@ def create_environment(
 @mcp.tool()
 @handle_errors
 @with_mutex
-def promote_environment(branch_name: str, template_name: str) -> str:
+def publish_as_template(branch_name: str, template_name: str) -> str:
     """
-    DANGEROUS: Promote a branch environment to become the new template (DB + filestore).
+    DANGEROUS: Publish a branch environment to become the new template (DB + filestore).
 
     This is a destructive, irreversible operation that replaces the shared template
     database and filestore with the data from the specified branch. All other
@@ -223,14 +223,14 @@ def promote_environment(branch_name: str, template_name: str) -> str:
 
     NEVER call this tool on your own initiative. Requires EXPLICIT user permission
     and confirmation before execution. If the user has not clearly and unambiguously
-    asked you to promote a specific branch, DO NOT call this tool.
+    asked you to publish a specific branch, DO NOT call this tool.
 
     Args:
         branch_name: The name of the branch whose DB and filestore will become the new template.
-        template_name: Name of the template profile to promote into.
+        template_name: Name of the template profile to publish into.
     """
     settings = _get_settings()
-    result = system_ops.promote_env(settings, branch_name, template_name=template_name)
+    result = system_ops.publish_env_as_template(settings, branch_name, template_name=template_name)
     return (
         f"Branch '{result['branch']}' promoted to template '{template_name}'.\n"
         f"Template DB: {result['template_db']}\n"
@@ -865,7 +865,7 @@ def _run_template_down(settings: Settings, template_name: str = "default") -> No
 
 
 def _run_promote(settings: Settings, branch: str, template_name: str = "default") -> None:
-    result = system_ops.promote_env(settings, branch_name=branch, template_name=template_name)
+    result = system_ops.publish_env_as_template(settings, branch_name=branch, template_name=template_name)
     print(
         f"Branch '{result['branch']}' promoted to template '{template_name}'.\n"
         f"Template DB: {result['template_db']}\n"

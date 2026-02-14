@@ -230,7 +230,7 @@ src/oduflow/
   docker_ops/
     client.py           # docker.from_env() wrapper + UID/GID auto-detection
     system_ops.py       # init_system / destroy_system / reload_template / init_template /
-                        # template_up / template_down / promote_env / drop_template / list_templates
+                        # template_up / template_down / publish_env_as_template / drop_template / list_templates
     env_ops.py          # create / delete / start / stop / restart / rebuild / list / status / pull /
                         # apt/pip auto-install / filestore overlay mount
     odoo_ops.py         # install / upgrade / test / logs / exec_in_environment
@@ -951,7 +951,7 @@ All tools are accessible via MCP clients (Cursor, Cline, Amp, etc.) and the CLI 
 | `get_environment_logs` | | Retrieve recent container logs |
 | `exec_in_environment` | ✓ | Execute an arbitrary shell command inside the Odoo container |
 | **Template Management** | | |
-| `promote_environment` | ✓ | ⚠️ Promote a branch DB + filestore to become a new template |
+| `publish_as_template` | ✓ | ⚠️ Publish a branch DB + filestore to become a new template |
 | `list_templates` | | List available template profiles |
 | `drop_template` | ✓ | ⚠️ Drop a template profile (DB + files) |
 | **Auxiliary Services** | | |
@@ -1434,7 +1434,7 @@ oduflow call install_odoo_modules template-update accounting,hr,project
 oduflow call test_environment template-update accounting,hr,project
 
 # 4. Promote to become the new template
-oduflow call promote_environment template-update
+oduflow call publish_as_template template-update
 
 # 5. All future environments will include these modules pre-installed
 ```
