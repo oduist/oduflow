@@ -6,6 +6,7 @@ from oduflow.git_analysis import (
     classify_changes,
     _get_module_name,
     _is_security_path,
+    _is_data_path,
     _extract_field_lines,
     _check_field_changes,
 )
@@ -31,6 +32,17 @@ class TestIsSecurityPath:
 
     def test_security_xml(self):
         assert _is_security_path("crm/security/crm_security.xml") is True
+
+
+class TestIsDataPath:
+    def test_data_dir(self):
+        assert _is_data_path("sale/data/sale_data.xml") is True
+
+    def test_not_data(self):
+        assert _is_data_path("sale/views/sale_order.xml") is False
+
+    def test_nested_data(self):
+        assert _is_data_path("addons_ee/connect_elevenlabs/data/tools.xml") is True
 
 
 class TestClassifyChanges:
@@ -60,6 +72,12 @@ class TestClassifyChanges:
         result = classify_changes(files, "/tmp")
         assert result["action"] == "upgrade"
         assert "sale" in result["modules_to_upgrade"]
+
+    def test_data_xml_triggers_upgrade(self):
+        files = ["connect_elevenlabs/data/tools.xml"]
+        result = classify_changes(files, "/tmp")
+        assert result["action"] == "upgrade"
+        assert "connect_elevenlabs" in result["modules_to_upgrade"]
 
     def test_js_only(self):
         files = ["web/static/src/js/app.js"]

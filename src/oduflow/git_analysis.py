@@ -85,6 +85,10 @@ def _is_security_path(file_path: str) -> bool:
     return "/security/" in f"/{file_path}/" or file_path.startswith("security/")
 
 
+def _is_data_path(file_path: str) -> bool:
+    return "/data/" in f"/{file_path}/" or file_path.startswith("data/")
+
+
 def classify_changes(changed_files: list[str], repo_path: str) -> dict:
     """
     Classify changed files and determine required Odoo actions.
@@ -138,7 +142,7 @@ def classify_changes(changed_files: list[str], repo_path: str) -> dict:
             continue
 
         if ext == ".xml":
-            if _is_security_path(f) and module:
+            if (_is_security_path(f) or _is_data_path(f)) and module:
                 xml_security.append(f)
                 if module not in modules_to_install:
                     modules_to_upgrade.add(module)
