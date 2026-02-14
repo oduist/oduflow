@@ -836,7 +836,7 @@ def publish_env_as_template(settings: Settings, branch_name: str, template_name:
                 os.chown(os.path.join(root, name), uid, gid)
         logger.info("Template filestore chowned to %s", odoo_uid_gid)
 
-    # 7. Remount overlays (clear upper dirs so branches start fresh from new template)
+    # 7. Reset filestores to new template baseline
     for branch in active_branches:
         try:
             bp = get_filestore_paths(branch, settings.workspaces_dir)
@@ -868,7 +868,7 @@ def publish_env_as_template(settings: Settings, branch_name: str, template_name:
 
             env_db = get_db_name(branch, settings.instance_id)
             env_ops._mount_filestore(client, settings, branch, env_db, image, {}, template_name=template_name)
-            logger.info("Remounted overlay for branch %s", branch)
+            logger.info("Filestore reset for branch %s", branch)
 
             try:
                 container = client.containers.get(odoo_container_name)
@@ -877,7 +877,7 @@ def publish_env_as_template(settings: Settings, branch_name: str, template_name:
             except docker.errors.NotFound:
                 pass
         except Exception as e:
-            logger.warning("Could not remount overlay for %s: %s", branch, e)
+            logger.warning("Could not reset filestore for %s: %s", branch, e)
 
     # Save template metadata from promoted environment
     metadata_path = settings.get_template_metadata_path(template_name)

@@ -94,6 +94,18 @@ def _ensure_system_ready(client: DockerClient, settings: Settings, template_name
             )
 
 
+def _dir_size_mb(path: str) -> float:
+    total = 0
+    for dirpath, _dirnames, filenames in os.walk(path):
+        for f in filenames:
+            fp = os.path.join(dirpath, f)
+            try:
+                total += os.path.getsize(fp)
+            except OSError:
+                pass
+    return total / (1024 * 1024)
+
+
 def _mount_filestore(
     client: DockerClient,
     settings: Settings,
@@ -110,6 +122,33 @@ def _mount_filestore(
         return
 
     paths = get_filestore_paths(branch_name, settings.workspaces_dir)
+    size_mb = _dir_size_mb(template_filestore)
+
+    if size_mb < settings.overlay_threshold_mb:
+        logger.info(
+            "Template filestore %.0f MB < threshold %d MB, using copy",
+            size_mb, settings.overlay_threshold_mb,
+        )
+        merged = paths["merged"]
+        if os.path.exists(merged):
+            shutil.rmtree(merged)
+        shutil.copytree(template_filestore, merged)
+        odoo_uid_gid = get_odoo_uid_gid(client, odoo_image)
+        uid_str, gid_str = odoo_uid_gid.split(":")
+        for root, dirs, files in os.walk(merged):
+            os.chown(root, int(uid_str), int(gid_str))
+            for name in dirs + files:
+                os.chown(os.path.join(root, name), int(uid_str), int(gid_str))
+        odoo_volumes[merged] = {
+            "bind": f"/var/lib/odoo/.local/share/Odoo/filestore/{env_db}",
+            "mode": "rw",
+        }
+        return
+
+    logger.info(
+        "Template filestore %.0f MB >= threshold %d MB, using overlay",
+        size_mb, settings.overlay_threshold_mb,
+    )
     for d in (paths["upper"], paths["work"], paths["merged"]):
         os.makedirs(d, mode=0o777, exist_ok=True)
         os.chmod(d, 0o777)
@@ -170,7 +209,7 @@ def _mount_filestore(
 def _unmount_filestore(branch_name: str, settings: Settings) -> None:
     paths = get_filestore_paths(branch_name, settings.workspaces_dir)
     merged = paths["merged"]
-    if not os.path.isdir(merged):
+    if not os.path.isdir(merged) or not os.path.ismount(merged):
         return
 
     for cmd in (
@@ -1044,11 +1083,12 @@ def rebuild_environment(settings: Settings, branch_name: str) -> dict[str, str]:
             pass
 
     # ------------------------------------------------------------------
-    # 3. Re-mount filestore overlay if needed
+    # 3. Re-mount filestore overlay if needed (only for overlay-mode envs)
     # ------------------------------------------------------------------
     fs_paths = get_filestore_paths(branch_name, settings.workspaces_dir)
     merged = fs_paths["merged"]
-    if os.path.isdir(merged) and not os.path.ismount(merged):
+    has_overlay_dirs = os.path.isdir(fs_paths["upper"])
+    if has_overlay_dirs and os.path.isdir(merged) and not os.path.ismount(merged):
         env_db = get_db_name(branch_name)
         template_name = labels.get("oduflow.template", "none")
         if template_name and template_name != "none":

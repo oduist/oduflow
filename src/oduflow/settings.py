@@ -33,6 +33,7 @@ class Settings:
     image_label: str = "oduflow.image"
     default_branch: str = "prod"
     port_registry_path: str = ""
+    overlay_threshold_mb: int = 50
 
     def get_template_dir(self, template_name: str) -> str:
         return os.path.join(self.home, "templates", template_name)
@@ -88,6 +89,7 @@ class Settings:
             db_password=os.getenv("ODOO_DB_PASSWORD", "odoo"),
             flow_server_port=int(os.getenv("ODUFLOW_PORT", "8000")),
             default_branch=os.getenv("ODUFLOW_DEFAULT_BRANCH", "prod"),
+            overlay_threshold_mb=int(os.getenv("ODUFLOW_OVERLAY_THRESHOLD_MB", "50")),
             port_registry_path=os.getenv(
                 "ODUFLOW_PORT_REGISTRY",
                 os.path.join(flow_home, "ports.json"),
