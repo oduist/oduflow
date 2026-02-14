@@ -1239,6 +1239,8 @@ async function showServiceLogs(name) {
     var data = await r.json();
     if (data.ok) {
       document.getElementById('logs-content').textContent = data.logs || '(empty)';
+      var body = document.getElementById('logs-content').parentElement;
+      body.scrollTop = body.scrollHeight;
     } else {
       document.getElementById('logs-content').textContent = 'Error: ' + (data.error || 'Failed to load logs');
     }
