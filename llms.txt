@@ -147,7 +147,7 @@ The server starts on `http://0.0.0.0:8000`. MCP endpoint: `http://<host>:8000/mc
 - `install_odoo_modules` — install Odoo modules
 - `upgrade_odoo_modules` — upgrade Odoo modules
 - `test_environment` — run Odoo tests for specific modules
-- `pull_environment_repository` — pull latest code and auto-install/upgrade/restart as needed
+- `sync_environment` — pull latest code and auto-install/upgrade/restart as needed
 - `get_environment_logs` — retrieve container logs
 - `exec_in_environment` — execute shell commands inside the Odoo container
 - `list_environments` / `get_environment_status` — inspect environments
@@ -159,7 +159,7 @@ The server starts on `http://0.0.0.0:8000`. MCP endpoint: `http://<host>:8000/mc
 
 1. Call `list_environments` to check if an environment for the branch exists
 2. If not, call `create_environment` with `branch_name`, `repo_url`, and `odoo_image`
-3. Write code, `git push`, then call `pull_environment_repository` (auto-detects what to do)
+3. Write code, `git push`, then call `sync_environment` (auto-detects what to do)
 4. Use `install_odoo_modules` / `test_environment` / `get_environment_logs` to verify
 5. Call `delete_environment` when the task is done
 

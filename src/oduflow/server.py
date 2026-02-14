@@ -464,7 +464,7 @@ def start_environment(branch_name: str) -> str:
 @mcp.tool()
 @handle_errors
 @with_mutex
-def pull_environment_repository(branch_name: str) -> str:
+def sync_environment(branch_name: str) -> str:
     """
     Pull latest changes from the remote repository for an environment
     and take appropriate action based on what changed.

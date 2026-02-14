@@ -132,7 +132,7 @@ The result: provisioning a new environment from a 30+ GB production database tak
 - **Environment protection** — protect environments from accidental deletion via a toggle in the dashboard or REST API
 
 ### Smart Automation
-- **Smart pull** — `pull_environment_repository` analyzes changed files (manifest, Python fields, security XML, JS) and automatically decides whether to install, upgrade, restart, or do nothing
+- **Smart pull** — `sync_environment` analyzes changed files (manifest, Python fields, security XML, JS) and automatically decides whether to install, upgrade, restart, or do nothing
 - **Auto-install dependencies** — `requirements.txt` (pip) and `apt_packages.txt` (apt) in the repository root are automatically installed when creating an environment
 - **Custom odoo.conf** — if the repository contains an `odoo.conf` at its root, it is used instead of the default template
 - **Field change detection** — Python files are analyzed for `fields.*` definition changes, triggering module upgrades only when necessary
@@ -633,10 +633,10 @@ This runs `odoo --test-enable --stop-after-init -i <modules>` inside the contain
 
 ## Smart Pull — Intelligent Change Detection
 
-The `pull_environment_repository` tool is one of Oduflow's most powerful features. It pulls the latest changes from the remote repository and **automatically determines the minimal action required**:
+The `sync_environment` tool is one of Oduflow's most powerful features. It pulls the latest changes from the remote repository and **automatically determines the minimal action required**:
 
 ```bash
-oduflow call pull_environment_repository feature-login
+oduflow call sync_environment feature-login
 ```
 
 ### How it works
@@ -791,7 +791,7 @@ oduflow call delete_extra_repo enterprise
 
 Extra repos can also be managed from the **Web Dashboard** under the "Extra Addons" tab.
 
-> **Note:** Extra addons are mounted read-only and are NOT updated by `pull_environment_repository`. To update extra addons, delete and recreate the environment.
+> **Note:** Extra addons are mounted read-only and are NOT updated by `sync_environment`. To update extra addons, delete and recreate the environment.
 
 ---
 
@@ -944,7 +944,7 @@ All tools are accessible via MCP clients (Cursor, Cline, Amp, etc.) and the CLI 
 | `restart_environment` | | Restart the Odoo container |
 | `rebuild_environment` | ✓ | Re-create the container from the same image, preserving DB and filestore |
 | **Odoo Operations** | | |
-| `pull_environment_repository` | ✓ | Git pull + smart analysis → auto install/upgrade/restart |
+| `sync_environment` | ✓ | Git pull + smart analysis → auto install/upgrade/restart |
 | `install_odoo_modules` | ✓ | Install Odoo modules (`-i`) |
 | `upgrade_odoo_modules` | ✓ | Upgrade Odoo modules (`-u`) |
 | `test_environment` | ✓ | Run Odoo tests for specific modules |
@@ -1185,7 +1185,7 @@ The most common workflow — test your changes against real production data:
 oduflow call create_environment feature-login https://github.com/company/odoo-addons.git odoo:17.0
 
 # Make changes, push to remote, then pull into the environment
-oduflow call pull_environment_repository feature-login
+oduflow call sync_environment feature-login
 # Oduflow automatically installs/upgrades/restarts as needed
 
 # When done, tear it down
@@ -1336,7 +1336,7 @@ alwaysApply: true
 
 **Sync & Work Cycle**
 1. **Push**: Run `git push` when the task is complete.
-2. **Pull**: After every `push` (yours or user-requested), ALWAYS call `pull_environment_repository`.
+2. **Pull**: After every `push` (yours or user-requested), ALWAYS call `sync_environment`.
 3. **Automation**: The Flow server decides whether a restart or module upgrade is needed. You do NOT need to call `restart_environment` or `upgrade_odoo_modules`.
 
 **Teardown**
