@@ -51,10 +51,10 @@ class TestCreateEnvironmentTool:
             "database": "oduflow_1_main",
             "workspace": "/tmp/ws",
         }
-        result = _call_tool("create_environment", branch_name="main", repo_url="https://repo.url", odoo_image="odoo:17.0")
+        result = _call_tool("create_environment", branch_name="main", template_name="none", repo_url="https://repo.url", odoo_image="odoo:17.0")
         assert "Environment provisioned successfully!" in result
         assert "Database: oduflow_1_main" in result
-        assert "Template: default" in result
+        assert "Template: none (init from scratch)" in result
 
 
 class TestDeleteEnvironmentTool:
@@ -247,6 +247,6 @@ class TestMutex:
         oduflow.server._busy.acquire()
         try:
             with pytest.raises(ValueError, match="Another operation is in progress"):
-                _call_tool("create_environment", branch_name="main", repo_url="https://x.git")
+                _call_tool("create_environment", branch_name="main", repo_url="https://x.git", odoo_image="odoo:17.0")
         finally:
             oduflow.server._busy.release()

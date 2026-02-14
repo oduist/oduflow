@@ -125,43 +125,71 @@ def delete_extra_repo(name: str) -> str:
     _delete(_get_settings(), name)
     return f"Extra repo '{name}' deleted."
 
+def _parse_extra_addons(raw: str, fallback_branch: str) -> dict[str, str]:
+    result = {}
+    for item in raw.split(","):
+        item = item.strip()
+        if not item:
+            continue
+        if ":" in item:
+            name, branch = item.split(":", 1)
+            result[name.strip()] = branch.strip()
+        else:
+            result[item] = fallback_branch
+    return result
+
 
 @mcp.tool()
 @handle_errors
 @with_mutex
 def create_environment(
     branch_name: str,
-    repo_url: str,
-    odoo_image: str,
     template_name: str = "",
+    repo_url: str = "",
+    odoo_image: str = "",
     extra_addons: str = "",
-    extra_addons_branch: str = "",
 ) -> str:
     """
     Provision a new ephemeral Odoo environment for a specific branch.
 
     Args:
         branch_name: The name of the git branch (will be used for resource naming).
-        repo_url: URL of the git repository to clone.
-        odoo_image: Full Docker image name with tag (e.g. "odoo:17.0"). Use a pre-built image with all dependencies for faster startup.
-        template_name: Name of the template profile to use as database template (default: from ODUFLOW_DEFAULT_TEMPLATE). Pass "none" to skip template and initialise Odoo from scratch with -i base.
-        extra_addons: Comma-separated list of extra addon repo names to mount (e.g. "enterprise,custom-themes").
-        extra_addons_branch: Git branch for extra addon repos (e.g. "17.0"). Defaults to project default branch.
+        template_name: Name of the template profile to use as database template. Pass "none" to skip template and initialise Odoo from scratch with -i base. When a template is specified, repo_url and odoo_image are loaded from template metadata (but can be overridden).
+        repo_url: URL of the git repository to clone. Optional when template_name is specified (loaded from template metadata).
+        odoo_image: Full Docker image name with tag (e.g. "odoo:17.0"). Optional when template_name is specified (loaded from template metadata).
+        extra_addons: Comma-separated list of extra addon repo names to mount (e.g. "enterprise,custom-themes"). Supports per-repo branches with colon syntax: "enterprise:18.0,custom-themes:main".
     """
+    import json
     settings = _get_settings()
     resolved_template: str | None
-    if template_name.lower() == "none":
+    if not template_name or template_name.lower() == "none":
         resolved_template = None
-    elif not template_name:
-        resolved_template = settings.default_template
     else:
         resolved_template = template_name
-    extra_list = [x.strip() for x in extra_addons.split(",") if x.strip()] if extra_addons else []
+
+    # Load metadata from template if available
+    effective_repo_url = repo_url
+    effective_odoo_image = odoo_image
+    if resolved_template:
+        metadata_path = settings.get_template_metadata_path(resolved_template)
+        if os.path.isfile(metadata_path):
+            with open(metadata_path) as f:
+                metadata = json.load(f)
+            if not effective_repo_url:
+                effective_repo_url = metadata.get("repo_url", "")
+            if not effective_odoo_image:
+                effective_odoo_image = metadata.get("odoo_image", "")
+
+    if not effective_repo_url:
+        raise ValueError("repo_url is required (not found in template metadata either).")
+    if not effective_odoo_image:
+        raise ValueError("odoo_image is required (not found in template metadata either).")
+
+    extra_dict = _parse_extra_addons(extra_addons, settings.default_branch) if extra_addons else {}
     result = env_ops.create_environment(
-        settings, branch_name, repo_url, odoo_image,
+        settings, branch_name, effective_repo_url, effective_odoo_image,
         template_name=resolved_template,
-        extra_addons=extra_list or None,
-        extra_addons_branch=extra_addons_branch,
+        extra_addons=extra_dict or None,
     )
     display_template = resolved_template if resolved_template is not None else "none (init from scratch)"
     lines = [
@@ -172,8 +200,9 @@ def create_environment(
         f"Workspace: {result['workspace']}",
         f"Template: {display_template}",
     ]
-    if extra_list:
-        lines.append(f"Extra Addons: {', '.join(extra_list)} (branch: {extra_addons_branch or settings.default_branch})")
+    if extra_dict:
+        extras_display = ", ".join(f"{name} ({branch})" for name, branch in extra_dict.items())
+        lines.append(f"Extra Addons: {extras_display}")
     setup_logs = result.get("setup_logs", [])
     if setup_logs:
         lines.append("\n--- Setup Log ---")
@@ -184,7 +213,7 @@ def create_environment(
 @mcp.tool()
 @handle_errors
 @with_mutex
-def promote_environment(branch_name: str, template_name: str = "") -> str:
+def promote_environment(branch_name: str, template_name: str) -> str:
     """
     DANGEROUS: Promote a branch environment to become the new template (DB + filestore).
 
@@ -198,11 +227,9 @@ def promote_environment(branch_name: str, template_name: str = "") -> str:
 
     Args:
         branch_name: The name of the branch whose DB and filestore will become the new template.
-        template_name: Name of the template profile to promote into (default: from ODUFLOW_DEFAULT_TEMPLATE).
+        template_name: Name of the template profile to promote into.
     """
     settings = _get_settings()
-    if not template_name:
-        template_name = settings.default_template
     result = system_ops.promote_env(settings, branch_name, template_name=template_name)
     return (
         f"Branch '{result['branch']}' promoted to template '{template_name}'.\n"
@@ -238,7 +265,7 @@ def get_agents_guide() -> str:
     if os.path.isfile(guide_path):
         with open(guide_path, "r", encoding="utf-8") as f:
             return f.read()
-    bundled = pathlib.Path(__file__).resolve().parents[2] / "templates" / "agents_guide.md"
+    bundled = pathlib.Path(__file__).resolve().parent / "templates" / "agents_guide.md"
     if bundled.is_file():
         return bundled.read_text(encoding="utf-8")
     return "Agents guide not found."
@@ -709,8 +736,30 @@ def get_service_logs(name: str, n_lines: int = 100) -> str:
 
 
 def _run_init(settings: Settings) -> None:
+    _copy_bundled_configs()
     result = system_ops.init_system(settings)
     print(f"System {result['status']}.")
+
+
+def _copy_bundled_configs() -> None:
+    import pathlib, shutil
+    etc_oduflow = pathlib.Path("/etc/oduflow")
+    try:
+        os.makedirs(etc_oduflow, exist_ok=True)
+    except PermissionError:
+        logger.warning("Cannot create %s (permission denied), skipping config copy", etc_oduflow)
+        return
+    bundled_dir = pathlib.Path(__file__).resolve().parent / "templates"
+    for conf_name in ("postgresql.conf", "odoo.conf"):
+        dest = etc_oduflow / conf_name
+        if not dest.is_file():
+            bundled = bundled_dir / conf_name
+            if bundled.is_file():
+                try:
+                    shutil.copy2(str(bundled), str(dest))
+                    print(f"  Config: {dest}")
+                except PermissionError:
+                    logger.warning("Cannot write %s (permission denied)", dest)
 
 
 def _run_init_instance(settings: Settings) -> None:
@@ -719,11 +768,13 @@ def _run_init_instance(settings: Settings) -> None:
     os.makedirs(settings.workspaces_dir, exist_ok=True)
     os.makedirs(os.path.join(settings.home, "templates"), exist_ok=True)
 
+    _copy_bundled_configs()
+
     # Copy bundled agents guide if not present
+    import pathlib, shutil
     agents_guide_dest = os.path.join(settings.home, "agents_guide.md")
     if not os.path.isfile(agents_guide_dest):
-        import pathlib, shutil
-        bundled = pathlib.Path(__file__).resolve().parents[2] / "templates" / "agents_guide.md"
+        bundled = pathlib.Path(__file__).resolve().parent / "templates" / "agents_guide.md"
         if bundled.is_file():
             shutil.copy2(str(bundled), agents_guide_dest)
             print(f"  Agents guide: {agents_guide_dest}")
@@ -757,12 +808,10 @@ def _run_init_instance(settings: Settings) -> None:
 
     print(f"Instance {settings.instance_id} initialized.")
     print(f"  Workspaces: {settings.workspaces_dir}")
-    print(f"  Templates: {settings.get_template_dir()}")
+    print(f"  Templates: {os.path.join(settings.home, 'templates')}")
 
 
-def _run_reload_template(settings: Settings, template_name: str = "", dump_path: str = "") -> None:
-    if not template_name:
-        template_name = settings.default_template
+def _run_reload_template(settings: Settings, template_name: str, dump_path: str = "") -> None:
     result = system_ops.reload_template(
         settings,
         template_name=template_name,
@@ -774,9 +823,7 @@ def _run_reload_template(settings: Settings, template_name: str = "", dump_path:
     print(msg)
 
 
-def _run_init_template(settings: Settings, odoo_image: str, modules: str = "base", template_name: str = "", force: bool = False) -> None:
-    if not template_name:
-        template_name = settings.default_template
+def _run_init_template(settings: Settings, odoo_image: str, modules: str = "base", template_name: str = "default", force: bool = False) -> None:
     result = system_ops.init_template(
         settings,
         odoo_image=odoo_image,
@@ -795,9 +842,7 @@ def _run_init_template(settings: Settings, odoo_image: str, modules: str = "base
     print(msg)
 
 
-def _run_template_up(settings: Settings, odoo_image: str, template_name: str = "") -> None:
-    if not template_name:
-        template_name = settings.default_template
+def _run_template_up(settings: Settings, odoo_image: str, template_name: str = "default") -> None:
     result = system_ops.template_up(settings, odoo_image=odoo_image, template_name=template_name)
     print(
         f"Template editor started.\n"

@@ -487,10 +487,7 @@
         <div id="cr-extra-addons-checkboxes" style="max-height:120px;overflow-y:auto;padding:4px 0;"></div>
         <div style="font-size:11px;color:var(--text-dim);margin-top:4px;">Select repos to mount in this environment</div>
       </div>
-      <div class="form-group" id="cr-extra-branch-group" style="display:none;">
-        <label for="cr-extra-branch">Extra Addons Branch</label>
-        <input type="text" id="cr-extra-branch" placeholder="e.g. 17.0 (default: use default branch)">
-      </div>
+      
       <div class="form-actions">
         <button class="btn" onclick="closeCreateModal()">Cancel</button>
         <button class="btn-create" id="cr-submit" onclick="submitCreate()">Create</button>
@@ -704,12 +701,11 @@ function renderEnvironments(envs) {
       : '';
 
     var extraHtml = '';
-    if (env.extra_addons && env.extra_addons.length > 0) {
-      extraHtml = '<div class="env-meta"><span>Extra: <strong>' +
-        env.extra_addons.map(function(n){ return esc(n); }).join(', ') +
-        '</strong></span>' +
-        (env.extra_addons_branch ? '<span>Branch: <strong>' + esc(env.extra_addons_branch) + '</strong></span>' : '') +
-      '</div>';
+    if (env.extra_addons && typeof env.extra_addons === 'object' && Object.keys(env.extra_addons).length > 0) {
+      var parts = Object.entries(env.extra_addons).map(function(e) {
+        return esc(e[0]) + ' <span style="color:var(--text-dim);">(' + esc(e[1]) + ')</span>';
+      });
+      extraHtml = '<div class="env-meta"><span>Extra: <strong>' + parts.join(', ') + '</strong></span></div>';
     }
 
     return '<div class="env-card" data-branch="' + esc(env.branch) + '">' +
@@ -920,9 +916,22 @@ function renderTemplates(templates) {
     var fsTag = t.has_filestore
       ? '<span class="tag tag-ok">Filestore</span>'
       : '<span class="tag tag-missing">No Filestore</span>';
-    return '<div class="tpl-card">' +
-      '<span class="tpl-name">' + esc(t.template_name) + '</span>' +
-      '<div class="tpl-meta">' + dbTag + sqlTag + fsTag + '</div>' +
+    var metaHtml = '';
+    if (t.odoo_image || t.repo_url) {
+      var parts = [];
+      if (t.odoo_image) parts.push('<span>Image: <strong>' + esc(t.odoo_image) + '</strong></span>');
+      if (t.repo_url) parts.push('<span>Repo: <strong>' + esc(t.repo_url) + '</strong></span>');
+      metaHtml = '<div class="tpl-meta" style="margin-top:8px;">' + parts.join('') + '</div>';
+    }
+    return '<div class="tpl-card" style="flex-direction:column;align-items:stretch;">' +
+      '<div style="display:flex;align-items:center;justify-content:space-between;">' +
+        '<span class="tpl-name">' + esc(t.template_name) + '</span>' +
+        '<div style="display:flex;align-items:center;gap:8px;">' +
+          '<div class="tpl-meta">' + dbTag + sqlTag + fsTag + '</div>' +
+          '<button class="btn-create" style="font-size:12px;padding:4px 12px;" onclick="openCreateFromTemplate(\'' + escAttr(t.template_name) + '\')">+ New Env</button>' +
+        '</div>' +
+      '</div>' +
+      metaHtml +
     '</div>';
   }).join('');
 }
@@ -934,6 +943,60 @@ function populateTemplateSelect() {
     sel.innerHTML += '<option value="' + esc(t.template_name) + '">' + esc(t.template_name) + '</option>';
   });
   sel.innerHTML += '<option value="none">None (init from scratch)</option>';
+  sel.onchange = function() {
+    var tpl = cachedTemplates.find(function(t) { return t.template_name === sel.value; });
+    if (tpl) {
+      if (tpl.repo_url && !document.getElementById('cr-repo').value.trim()) {
+        document.getElementById('cr-repo').value = tpl.repo_url;
+      }
+      if (tpl.odoo_image && !document.getElementById('cr-image').value.trim()) {
+        document.getElementById('cr-image').value = tpl.odoo_image;
+      }
+      var tplExtras = tpl.extra_addons || {};
+      document.querySelectorAll('.cr-extra-cb').forEach(function(cb) {
+        cb.checked = cb.value in tplExtras;
+        var brInput = document.querySelector('.cr-extra-branch-input[data-repo="' + cb.value + '"]');
+        if (brInput) brInput.value = tplExtras[cb.value] || '';
+      });
+    }
+  };
+}
+
+function openCreateFromTemplate(templateName) {
+  var tpl = cachedTemplates.find(function(t) { return t.template_name === templateName; });
+  document.getElementById('cr-branch').value = '';
+  document.getElementById('cr-repo').value = tpl && tpl.repo_url ? tpl.repo_url : '';
+  document.getElementById('cr-image').value = tpl && tpl.odoo_image ? tpl.odoo_image : '';
+  var errEl = document.getElementById('create-error');
+  errEl.style.display = 'none';
+  errEl.textContent = '';
+  document.getElementById('cr-submit').disabled = false;
+  loadTemplates().then(function() {
+    populateTemplateSelect();
+    var sel = document.getElementById('cr-template');
+    sel.value = templateName;
+  });
+  loadExtraRepos().then(function() {
+    var container = document.getElementById('cr-extra-addons-checkboxes');
+    if (cachedExtraRepos.length === 0) {
+      container.innerHTML = '<span style="font-size:12px;color:var(--text-dim);">No extra repos available</span>';
+      return;
+    }
+    var tplExtras = (tpl && tpl.extra_addons) ? tpl.extra_addons : {};
+    container.innerHTML = cachedExtraRepos.map(function(r) {
+      var checked = (r.name in tplExtras) ? ' checked' : '';
+      var defaultBranch = tplExtras[r.name] || '';
+      return '<label style="display:flex;align-items:center;gap:8px;padding:3px 0;font-size:13px;cursor:pointer;">' +
+        '<input type="checkbox" class="cr-extra-cb" value="' + escAttr(r.name) + '"' + checked + '>' +
+        esc(r.name) + ' <span style="color:var(--text-dim);font-size:11px;">(' + esc(r.repo_url) + ')</span>' +
+        '<input type="text" class="cr-extra-branch-input" data-repo="' + escAttr(r.name) + '"' +
+        ' placeholder="branch" value="' + escAttr(defaultBranch) + '"' +
+        ' style="width:100px;font-size:12px;padding:2px 6px;margin-left:auto;">' +
+      '</label>';
+    }).join('');
+  });
+  document.getElementById('create-modal').classList.add('show');
+  document.getElementById('cr-branch').focus();
 }
 
 function openCreateModal() {
@@ -950,16 +1013,17 @@ function openCreateModal() {
     var container = document.getElementById('cr-extra-addons-checkboxes');
     if (cachedExtraRepos.length === 0) {
       container.innerHTML = '<span style="font-size:12px;color:var(--text-dim);">No extra repos available</span>';
-      document.getElementById('cr-extra-branch-group').style.display = 'none';
       return;
     }
     container.innerHTML = cachedExtraRepos.map(function(r) {
       return '<label style="display:flex;align-items:center;gap:8px;padding:3px 0;font-size:13px;cursor:pointer;">' +
-        '<input type="checkbox" class="cr-extra-cb" value="' + escAttr(r.name) + '" onchange="toggleExtraBranchField()">' +
+        '<input type="checkbox" class="cr-extra-cb" value="' + escAttr(r.name) + '">' +
         esc(r.name) + ' <span style="color:var(--text-dim);font-size:11px;">(' + esc(r.repo_url) + ')</span>' +
+        '<input type="text" class="cr-extra-branch-input" data-repo="' + escAttr(r.name) + '"' +
+        ' placeholder="branch" value=""' +
+        ' style="width:100px;font-size:12px;padding:2px 6px;margin-left:auto;">' +
       '</label>';
     }).join('');
-    document.getElementById('cr-extra-branch-group').style.display = 'none';
   });
   document.getElementById('create-modal').classList.add('show');
   document.getElementById('cr-branch').focus();
@@ -977,8 +1041,8 @@ async function submitCreate() {
   var template = document.getElementById('cr-template').value;
   var errEl = document.getElementById('create-error');
 
-  if (!branch || !repo || !image) {
-    errEl.textContent = 'Branch name, repository URL and Odoo image are required.';
+  if (!branch) {
+    errEl.textContent = 'Branch name is required.';
     errEl.style.display = 'block';
     return;
   }
@@ -989,16 +1053,19 @@ async function submitCreate() {
   btn.textContent = 'Creating...';
 
   try {
-    var extraAddons = Array.from(document.querySelectorAll('.cr-extra-cb:checked'))
-      .map(function(cb) { return cb.value; });
-    var extraBranch = document.getElementById('cr-extra-branch').value.trim();
+    var extraAddonsObj = {};
+    document.querySelectorAll('.cr-extra-cb:checked').forEach(function(cb) {
+      var repoName = cb.value;
+      var branchInput = document.querySelector('.cr-extra-branch-input[data-repo="' + repoName + '"]');
+      var br = branchInput ? branchInput.value.trim() : '';
+      extraAddonsObj[repoName] = br;
+    });
     var payload = {
       branch_name: branch,
       repo_url: repo,
       odoo_image: image,
       template_name: template,
-      extra_addons: extraAddons.join(','),
-      extra_addons_branch: extraBranch,
+      extra_addons: extraAddonsObj,
     };
     var r = await fetch(API + '/create', {
       method: 'POST',
@@ -1610,12 +1677,6 @@ async function doDeleteExtraRepo(name) {
   } catch (e) {
     showToast('Connection error: ' + e.message, true);
   }
-}
-
-function toggleExtraBranchField() {
-  var checked = document.querySelectorAll('.cr-extra-cb:checked');
-  document.getElementById('cr-extra-branch-group').style.display =
-    checked.length > 0 ? 'block' : 'none';
 }
 
 loadLicense();

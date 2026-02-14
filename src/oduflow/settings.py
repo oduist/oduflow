@@ -32,15 +32,12 @@ class Settings:
     repo_label: str = "oduflow.repo"
     image_label: str = "oduflow.image"
     default_branch: str = "prod"
-    default_template: str = "default"
     port_registry_path: str = ""
 
-    def get_template_dir(self, template_name: str = "") -> str:
-        if not template_name:
-            template_name = self.default_template
+    def get_template_dir(self, template_name: str) -> str:
         return os.path.join(self.home, "templates", template_name)
 
-    def get_template_sql_path(self, template_name: str = "") -> str:
+    def get_template_sql_path(self, template_name: str) -> str:
         tpl_dir = self.get_template_dir(template_name)
         pgdump = os.path.join(tpl_dir, "dump.pgdump")
         if os.path.isfile(pgdump):
@@ -51,14 +48,11 @@ class Settings:
         # Default for new templates
         return pgdump
 
-    def get_template_filestore_path(self, template_name: str = "") -> str:
+    def get_template_filestore_path(self, template_name: str) -> str:
         return os.path.join(self.get_template_dir(template_name), "filestore")
 
-    def get_dump_sql_path(self) -> str:
-        return self.get_template_sql_path(self.default_template)
-
-    def get_dump_filestore_path(self) -> str:
-        return self.get_template_filestore_path(self.default_template)
+    def get_template_metadata_path(self, template_name: str) -> str:
+        return os.path.join(self.get_template_dir(template_name), "metadata.json")
 
     def list_templates(self) -> list[str]:
         templates_dir = os.path.join(self.home, "templates")
@@ -94,7 +88,6 @@ class Settings:
             db_password=os.getenv("ODOO_DB_PASSWORD", "odoo"),
             flow_server_port=int(os.getenv("ODUFLOW_PORT", "8000")),
             default_branch=os.getenv("ODUFLOW_DEFAULT_BRANCH", "prod"),
-            default_template=os.getenv("ODUFLOW_DEFAULT_TEMPLATE", "default"),
             port_registry_path=os.getenv(
                 "ODUFLOW_PORT_REGISTRY",
                 os.path.join(flow_home, "ports.json"),

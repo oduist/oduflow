@@ -238,12 +238,12 @@ src/oduflow/
     service_presets.py  # Save / restore / list / delete service preset configurations
     stats.py            # Container and system CPU/RAM stats (parallel collection)
 
-templates/
-  odoo.conf             # Odoo configuration template (addons path, limits, security)
-  postgresql.conf       # PostgreSQL tuning (shared_buffers, WAL, autovacuum, etc.)
-  dashboard.html        # Web dashboard UI (single-page application)
-  favicon.ico           # Dashboard favicon
-  agents_guide.md       # AI agent instructions (copied to $ODUFLOW_HOME on init-instance)
+  templates/
+    odoo.conf             # Odoo configuration template (addons path, limits, security)
+    postgresql.conf       # PostgreSQL tuning (shared_buffers, WAL, autovacuum, etc.)
+    dashboard.html        # Web dashboard UI (single-page application)
+    favicon.ico           # Dashboard favicon
+    agents_guide.md       # AI agent instructions (copied to $ODUFLOW_HOME on init-instance)
 
 tests/                  # Unit and integration tests (pytest)
 ```
@@ -276,11 +276,17 @@ sudo sed -i 's/^#user_allow_other/user_allow_other/' /etc/fuse.conf
 ## Installation
 
 ```bash
+pip install oduflow
+```
+
+For local development:
+
+```bash
 git clone https://github.com/oduist/oduflow.git
 cd oduflow
 python -m venv .venv
 source .venv/bin/activate
-pip install .
+pip install -e .
 ```
 
 ---

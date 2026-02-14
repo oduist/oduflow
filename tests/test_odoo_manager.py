@@ -124,10 +124,11 @@ class TestCreateEnvironment:
     @patch("oduflow.docker_ops.env_ops.os.path.exists", return_value=False)
     def test_create(self, mock_exists, mock_makedirs, mock_chmod, mock_run, mock_alloc, mock_used, mock_mount, mock_db_exists, mock_sql, mock_uid_gid, mock_ready, mock_docker_client):
         mock_odoo = MagicMock()
+        mock_odoo.exec_run.return_value = (0, b"OK")
         mock_docker_client.containers.run.return_value = mock_odoo
         mock_docker_client.containers.get.side_effect = docker.errors.NotFound("nf")
 
-        result = env_ops.create_environment(TEST_SETTINGS, "feature/payments", "https://github.com/org/repo.git")
+        result = env_ops.create_environment(TEST_SETTINGS, "feature/payments", "https://github.com/org/repo.git", "odoo:15.0")
 
         assert result["url"] == "http://localhost:50000"
         assert result["database"] == "oduflow_1_feature-payments"
@@ -145,7 +146,7 @@ class TestCreateEnvironment:
         mock_docker_client.containers.get.return_value = existing
 
         with pytest.raises(ConflictError, match="already exists"):
-            env_ops.create_environment(TEST_SETTINGS, "main", "https://github.com/org/repo.git")
+            env_ops.create_environment(TEST_SETTINGS, "main", "https://github.com/org/repo.git", "odoo:15.0")
 
     @patch("oduflow.docker_ops.env_ops._db_exists", return_value=True)
     @patch("oduflow.docker_ops.env_ops._ensure_system_ready")
@@ -153,7 +154,7 @@ class TestCreateEnvironment:
         mock_ready.side_effect = PrerequisiteNotMetError("flow-db not found. Run init_system first.")
 
         with pytest.raises(PrerequisiteNotMetError, match="init_system"):
-            env_ops.create_environment(TEST_SETTINGS, "main", "https://github.com/org/repo.git")
+            env_ops.create_environment(TEST_SETTINGS, "main", "https://github.com/org/repo.git", "odoo:15.0")
 
 
     @patch("oduflow.docker_ops.env_ops._ensure_system_ready")
@@ -173,7 +174,7 @@ class TestCreateEnvironment:
         mock_docker_client.containers.run.return_value = mock_odoo
         mock_docker_client.containers.get.side_effect = docker.errors.NotFound("nf")
 
-        result = env_ops.create_environment(TEST_SETTINGS, "feature/no-tpl", "https://github.com/org/repo.git", template_name=None)
+        result = env_ops.create_environment(TEST_SETTINGS, "feature/no-tpl", "https://github.com/org/repo.git", "odoo:15.0", template_name=None)
 
         assert result["url"] == "http://localhost:50001"
         assert result["database"] == "oduflow_1_feature-no-tpl"
@@ -194,7 +195,7 @@ class TestDeleteEnvironment:
     @patch("oduflow.docker_ops.env_ops.release_port")
     @patch("oduflow.docker_ops.env_ops._exec_sql")
     @patch("oduflow.docker_ops.env_ops.shutil.rmtree")
-    @patch("oduflow.docker_ops.env_ops.os.path.exists", return_value=True)
+    @patch("oduflow.docker_ops.env_ops.os.path.exists", side_effect=lambda p: ".protected" not in p)
     def test_delete(self, mock_exists, mock_rmtree, mock_sql, mock_release, mock_docker_client):
         container = MagicMock()
         mock_docker_client.containers.get.return_value = container

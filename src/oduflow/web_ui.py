@@ -58,7 +58,7 @@ class BasicAuthMiddleware:
             return False
         return user == _AUTH_USER and hmac.compare_digest(password, self._password)
 
-_TEMPLATE_DIR = pathlib.Path(__file__).resolve().parents[2] / "templates"
+_TEMPLATE_DIR = pathlib.Path(__file__).resolve().parent / "templates"
 
 
 def _error_response(e: FlowError) -> JSONResponse:
@@ -69,6 +69,27 @@ def _error_response(e: FlowError) -> JSONResponse:
     else:
         status = 400
     return JSONResponse({"ok": False, "error": str(e)}, status_code=status)
+
+
+def _normalize_extra_addons(raw_addons, fallback_branch: str) -> dict[str, str]:
+    if isinstance(raw_addons, dict):
+        return raw_addons
+    if isinstance(raw_addons, list):
+        return {name: fallback_branch for name in raw_addons}
+    return {}
+
+def _parse_extra_addons(raw: str, fallback_branch: str) -> dict[str, str]:
+    result = {}
+    for item in raw.split(","):
+        item = item.strip()
+        if not item:
+            continue
+        if ":" in item:
+            name, branch = item.split(":", 1)
+            result[name.strip()] = branch.strip()
+        else:
+            result[item] = fallback_branch
+    return result
 
 
 def _build_routes(
@@ -158,29 +179,54 @@ def _build_routes(
         if not busy_lock.acquire(blocking=False):
             return _error_response(BusyError("Another operation is in progress."))
         try:
+            import json as _json
             body = await request.json()
             branch_name = (body.get("branch_name") or "").strip()
             repo_url = (body.get("repo_url") or "").strip()
             odoo_image = (body.get("odoo_image") or "").strip()
             template_name_raw = (body.get("template_name") or "").strip()
-            extra_addons_raw = (body.get("extra_addons") or "").strip()
-            extra_addons_branch = (body.get("extra_addons_branch") or "").strip()
-            extra_list = [x.strip() for x in extra_addons_raw.split(",") if x.strip()] if extra_addons_raw else None
-            if not branch_name or not repo_url or not odoo_image:
+            extra_addons_raw = body.get("extra_addons")
+            if not branch_name:
                 return JSONResponse(
-                    {"ok": False, "error": "branch_name, repo_url and odoo_image are required."},
+                    {"ok": False, "error": "branch_name is required."},
                     status_code=400,
                 )
             resolved_template: str | None
-            if template_name_raw.lower() == "none":
+            if not template_name_raw or template_name_raw.lower() == "none":
                 resolved_template = None
             else:
                 resolved_template = template_name_raw
+
+            # Load metadata from template
+            settings = get_settings()
+            extra_dict = None
+            if isinstance(extra_addons_raw, dict):
+                extra_dict = extra_addons_raw or None
+            elif isinstance(extra_addons_raw, str) and extra_addons_raw.strip():
+                extra_dict = _parse_extra_addons(extra_addons_raw.strip(), settings.default_branch) or None
+            if resolved_template:
+                metadata_path = settings.get_template_metadata_path(resolved_template)
+                if os.path.isfile(metadata_path):
+                    with open(metadata_path) as f:
+                        metadata = _json.load(f)
+                    if not repo_url:
+                        repo_url = metadata.get("repo_url", "")
+                    if not odoo_image:
+                        odoo_image = metadata.get("odoo_image", "")
+                    if extra_dict is None:
+                        raw = metadata.get("extra_addons")
+                        if raw:
+                            extra_dict = _normalize_extra_addons(raw, settings.default_branch) or None
+
+            if not repo_url or not odoo_image:
+                return JSONResponse(
+                    {"ok": False, "error": "repo_url and odoo_image are required (not found in template metadata either)."},
+                    status_code=400,
+                )
             result = env_ops.create_environment(
-                get_settings(), branch_name, repo_url, odoo_image,
+                settings, branch_name, repo_url, odoo_image,
                 template_name=resolved_template,
-                extra_addons=extra_list,
-                extra_addons_branch=extra_addons_branch,
+                extra_addons=extra_dict,
             )
             return JSONResponse({"ok": True, "result": result})
         except FlowError as e:

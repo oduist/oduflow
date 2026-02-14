@@ -1,4 +1,5 @@
 import io
+import json
 import logging
 import os
 import pathlib
@@ -17,9 +18,28 @@ from oduflow.settings import Settings
 
 logger = logging.getLogger("oduflow")
 
-_PROJECT_ROOT = pathlib.Path(__file__).resolve().parents[3]
-_PG_CONF_TEMPLATE = _PROJECT_ROOT / "templates" / "postgresql.conf"
-_ODOO_CONF_TEMPLATE = _PROJECT_ROOT / "templates" / "odoo.conf"
+_PACKAGE_ROOT = pathlib.Path(__file__).resolve().parents[1]
+_BUNDLED_PG_CONF = _PACKAGE_ROOT / "templates" / "postgresql.conf"
+_BUNDLED_ODOO_CONF = _PACKAGE_ROOT / "templates" / "odoo.conf"
+_ETC_DIR = pathlib.Path("/etc/oduflow")
+
+
+def _normalize_extra_addons(raw_addons, fallback_branch: str) -> dict[str, str]:
+    """Convert old list format or new dict format to {name: branch} dict."""
+    if isinstance(raw_addons, dict):
+        return raw_addons
+    if isinstance(raw_addons, list):
+        return {name: fallback_branch for name in raw_addons}
+    return {}
+
+
+def _resolve_conf(name: str) -> pathlib.Path:
+    """Return /etc/oduflow/{name} if present, otherwise the bundled copy."""
+    etc_path = _ETC_DIR / name
+    if etc_path.is_file():
+        return etc_path
+    bundled = _PACKAGE_ROOT / "templates" / name
+    return bundled
 
 
 def _ensure_traefik(client: DockerClient, settings: Settings) -> None:
@@ -212,7 +232,7 @@ def init_system(
             network=settings.shared_network,
             volumes={
                 settings.shared_db_volume: {"bind": "/var/lib/postgresql/data", "mode": "rw"},
-                str(_PG_CONF_TEMPLATE): {"bind": "/etc/postgresql/postgresql.conf", "mode": "ro"},
+                str(_resolve_conf("postgresql.conf")): {"bind": "/etc/postgresql/postgresql.conf", "mode": "ro"},
             },
             command=["postgres", "-c", "config_file=/etc/postgresql/postgresql.conf"],
             environment={
@@ -232,11 +252,9 @@ def init_system(
 
 def reload_template(
     settings: Settings,
-    template_name: str = "",
+    template_name: str,
     dump_path: str | None = None,
 ) -> dict[str, str]:
-    if not template_name:
-        template_name = settings.default_template
     client = get_client()
     tpl_db = get_template_db_name(template_name, settings.instance_id)
     resolved_dump = dump_path or settings.get_template_sql_path(template_name)
@@ -296,13 +314,11 @@ def reload_template(
 
 def init_template(
     settings: Settings,
+    template_name: str,
     odoo_image: str = "odoo:17.0",
     modules: str = "base",
-    template_name: str = "",
     force: bool = False,
 ) -> dict[str, str]:
-    if not template_name:
-        template_name = settings.default_template
     template_sql_path = settings.get_template_sql_path(template_name)
     template_filestore_path = settings.get_template_filestore_path(template_name)
 
@@ -360,7 +376,7 @@ def init_template(
             network=settings.shared_network,
             volumes={
                 settings.shared_db_volume: {"bind": "/var/lib/postgresql/data", "mode": "rw"},
-                str(_PG_CONF_TEMPLATE): {"bind": "/etc/postgresql/postgresql.conf", "mode": "ro"},
+                str(_resolve_conf("postgresql.conf")): {"bind": "/etc/postgresql/postgresql.conf", "mode": "ro"},
             },
             command=["postgres", "-c", "config_file=/etc/postgresql/postgresql.conf"],
             environment={
@@ -393,8 +409,9 @@ def init_template(
     init_start = time.monotonic()
 
     volumes = {}
-    if _ODOO_CONF_TEMPLATE.exists():
-        volumes[str(_ODOO_CONF_TEMPLATE)] = {"bind": "/etc/odoo/odoo.conf", "mode": "ro"}
+    odoo_conf = _resolve_conf("odoo.conf")
+    if odoo_conf.exists():
+        volumes[str(odoo_conf)] = {"bind": "/etc/odoo/odoo.conf", "mode": "ro"}
 
     temp_container = client.containers.run(
         odoo_image,
@@ -501,6 +518,13 @@ def init_template(
 
     logger.info("Template generation complete, loading into template DB")
     result = reload_template(settings, template_name=template_name)
+
+    metadata = {"odoo_image": odoo_image}
+    metadata_path = settings.get_template_metadata_path(template_name)
+    with open(metadata_path, "w") as f:
+        json.dump(metadata, f, indent=2)
+    logger.info("Template metadata saved to %s", metadata_path)
+
     result["generated_dump"] = template_sql_path
     result["generated_filestore"] = template_filestore_path
     result["filestore_files"] = sum(1 for _ in pathlib.Path(template_filestore_path).rglob("*") if _.is_file())
@@ -514,10 +538,8 @@ _TEMPLATE_EDITOR_BRANCH = "__template__"
 def template_up(
     settings: Settings,
     odoo_image: str,
-    template_name: str = "",
+    template_name: str,
 ) -> dict[str, str]:
-    if not template_name:
-        template_name = settings.default_template
     client = get_client()
     tpl_db = get_template_db_name(template_name, settings.instance_id)
 
@@ -608,8 +630,9 @@ def template_up(
             "mode": "rw",
         },
     }
-    if _ODOO_CONF_TEMPLATE.exists():
-        odoo_volumes[str(_ODOO_CONF_TEMPLATE)] = {"bind": "/etc/odoo/odoo.conf", "mode": "ro"}
+    odoo_conf = _resolve_conf("odoo.conf")
+    if odoo_conf.exists():
+        odoo_volumes[str(odoo_conf)] = {"bind": "/etc/odoo/odoo.conf", "mode": "ro"}
 
     container = client.containers.run(
         odoo_image,
@@ -623,6 +646,15 @@ def template_up(
         command=f"odoo -d {tpl_db} --dev=xml",
     )
 
+    metadata_path = settings.get_template_metadata_path(template_name)
+    metadata = {}
+    if os.path.isfile(metadata_path):
+        with open(metadata_path) as f:
+            metadata = json.load(f)
+    metadata["odoo_image"] = odoo_image
+    with open(metadata_path, "w") as f:
+        json.dump(metadata, f, indent=2)
+
     url = f"http://{settings.external_host}:{host_port}"
     logger.info("Template editor started at %s (container=%s)", url, _TEMPLATE_EDITOR_CONTAINER)
 
@@ -635,9 +667,7 @@ def template_up(
     }
 
 
-def template_down(settings: Settings, template_name: str = "") -> dict[str, str]:
-    if not template_name:
-        template_name = settings.default_template
+def template_down(settings: Settings, template_name: str) -> dict[str, str]:
     client = get_client()
     tpl_db = get_template_db_name(template_name, settings.instance_id)
 
@@ -701,9 +731,7 @@ def template_down(settings: Settings, template_name: str = "") -> dict[str, str]
     }
 
 
-def promote_env(settings: Settings, branch_name: str, template_name: str = "") -> dict[str, str]:
-    if not template_name:
-        template_name = settings.default_template
+def promote_env(settings: Settings, branch_name: str, template_name: str) -> dict[str, str]:
     from oduflow.docker_ops import env_ops
     from oduflow.naming import get_db_name, get_filestore_paths
 
@@ -851,6 +879,27 @@ def promote_env(settings: Settings, branch_name: str, template_name: str = "") -
         except Exception as e:
             logger.warning("Could not remount overlay for %s: %s", branch, e)
 
+    # Save template metadata from promoted environment
+    metadata_path = settings.get_template_metadata_path(template_name)
+    promoted_container_name = f"{settings.prefix}{branch_name.replace('/', '-')}-odoo"
+    metadata = {}
+    try:
+        pc = client.containers.get(promoted_container_name)
+        metadata["odoo_image"] = pc.labels.get(settings.image_label, "")
+        metadata["repo_url"] = pc.labels.get(settings.repo_label, "")
+        raw_extras = pc.labels.get("oduflow.extra_addons", "")
+        if raw_extras:
+            try:
+                parsed = json.loads(raw_extras)
+                metadata["extra_addons"] = _normalize_extra_addons(parsed, settings.default_branch)
+            except (json.JSONDecodeError, TypeError):
+                pass
+    except docker.errors.NotFound:
+        pass
+    with open(metadata_path, "w") as f:
+        json.dump(metadata, f, indent=2)
+    logger.info("Template metadata saved to %s", metadata_path)
+
     return {
         "status": "promoted",
         "branch": branch_name,
@@ -949,11 +998,22 @@ def list_templates(settings: Settings) -> list[dict]:
         has_sql = os.path.isfile(settings.get_template_sql_path(template_name))
         has_filestore = os.path.isdir(settings.get_template_filestore_path(template_name))
         db_loaded = _db_exists(client, settings, tpl_db)
+        metadata = {}
+        metadata_path = settings.get_template_metadata_path(template_name)
+        if os.path.isfile(metadata_path):
+            with open(metadata_path) as f:
+                metadata = json.load(f)
         result.append({
             "template_name": template_name,
             "template_db": tpl_db,
             "has_sql": has_sql,
             "has_filestore": has_filestore,
             "db_loaded": db_loaded,
+            "odoo_image": metadata.get("odoo_image", ""),
+            "repo_url": metadata.get("repo_url", ""),
+            "extra_addons": _normalize_extra_addons(
+                metadata.get("extra_addons", {}),
+                settings.default_branch,
+            ),
         })
     return result

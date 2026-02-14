@@ -11,7 +11,7 @@ import docker
 from docker import DockerClient
 
 from oduflow.docker_ops.client import get_client, get_odoo_uid_gid
-from oduflow.docker_ops.system_ops import _db_exists, _exec_sql
+from oduflow.docker_ops.system_ops import _db_exists, _exec_sql, _resolve_conf
 from oduflow.errors import (
     ConflictError,
     ExternalCommandError,
@@ -26,8 +26,16 @@ from oduflow.settings import Settings
 
 logger = logging.getLogger("oduflow")
 
-_PROJECT_ROOT = pathlib.Path(__file__).resolve().parents[3]
-_ODOO_CONF_TEMPLATE = _PROJECT_ROOT / "templates" / "odoo.conf"
+_PACKAGE_ROOT = pathlib.Path(__file__).resolve().parents[1]
+
+
+def _normalize_extra_addons(raw_addons, fallback_branch: str) -> dict[str, str]:
+    """Convert old list format or new dict format to {name: branch} dict."""
+    if isinstance(raw_addons, dict):
+        return raw_addons
+    if isinstance(raw_addons, list):
+        return {name: fallback_branch for name in raw_addons}
+    return {}
 
 
 def _get_used_ports(client: DockerClient, settings: Settings, exclude_branch: str = "") -> set[int]:
@@ -54,9 +62,7 @@ def _get_used_ports(client: DockerClient, settings: Settings, exclude_branch: st
     return used
 
 
-def _ensure_system_ready(client: DockerClient, settings: Settings, template_name: str | None = "") -> None:
-    if template_name is not None and not template_name:
-        template_name = settings.default_template
+def _ensure_system_ready(client: DockerClient, settings: Settings, template_name: str | None = None) -> None:
     try:
         db_container = client.containers.get(settings.shared_db_container)
         if db_container.status != "running":
@@ -96,10 +102,8 @@ def _mount_filestore(
     odoo_image: str,
     odoo_volumes: dict,
     *,
-    template_name: str = "",
+    template_name: str,
 ) -> None:
-    if not template_name:
-        template_name = settings.default_template
     template_filestore = settings.get_template_filestore_path(template_name)
     if not template_filestore or not os.path.isdir(template_filestore):
         logger.debug("Dump filestore not found at %s, skipping overlay mount", template_filestore)
@@ -304,13 +308,10 @@ def create_environment(
     settings: Settings,
     branch_name: str,
     repo_url: str,
-    odoo_image: str = "odoo:15.0",
-    template_name: str | None = "",
-    extra_addons: list[str] | None = None,
-    extra_addons_branch: str = "",
+    odoo_image: str,
+    template_name: str | None = None,
+    extra_addons: dict[str, str] | None = None,
 ) -> dict[str, str]:
-    if template_name is not None and not template_name:
-        template_name = settings.default_template
     try:
         client = get_client()
     except Exception as e:
@@ -365,7 +366,6 @@ def create_environment(
 
     if extra_addons:
         labels["oduflow.extra_addons"] = json.dumps(extra_addons)
-        labels["oduflow.extra_addons_branch"] = extra_addons_branch or settings.default_branch
 
     if settings.routing_mode == "traefik":
         slug = slugify_branch(branch_name)
@@ -479,9 +479,8 @@ def create_environment(
         from oduflow.extra_addons import create_worktree
         extra_dir = os.path.join(workspace_path, "extra")
         os.makedirs(extra_dir, exist_ok=True)
-        for repo_name in extra_addons:
+        for repo_name, branch in extra_addons.items():
             wt_path = os.path.join(extra_dir, repo_name)
-            branch = extra_addons_branch or settings.default_branch
             create_worktree(settings, repo_name, branch, wt_path)
             container_path = f"/mnt/extra-addons-{repo_name}"
             extra_mount_paths.append((wt_path, container_path))
@@ -491,7 +490,7 @@ def create_environment(
         _exec_sql(
             client,
             settings,
-            f'CREATE DATABASE "{env_db}" TEMPLATE {tpl_db};',
+            f'CREATE DATABASE "{env_db}" TEMPLATE "{tpl_db}";',
         )
     else:
         _exec_sql(
@@ -514,8 +513,8 @@ def create_environment(
     if os.path.isfile(repo_odoo_conf):
         base_conf_path = repo_odoo_conf
         logger.info("Using odoo.conf from repository")
-    elif _ODOO_CONF_TEMPLATE.exists():
-        base_conf_path = str(_ODOO_CONF_TEMPLATE)
+    elif _resolve_conf("odoo.conf").exists():
+        base_conf_path = str(_resolve_conf("odoo.conf"))
     else:
         base_conf_path = None
 
@@ -638,8 +637,7 @@ def create_environment(
         "workspace": workspace_path,
         "setup_logs": setup_logs,
     }
-    result["extra_addons"] = extra_addons or []
-    result["extra_addons_branch"] = extra_addons_branch or ""
+    result["extra_addons"] = extra_addons or {}
     if branch_created:
         result["branch_created_from"] = settings.default_branch
     return result
@@ -749,8 +747,10 @@ def list_environments(settings: Settings) -> list[dict[str, Any]]:
                 "odoo_image": container.labels.get(settings.image_label, ""),
                 "repo_url": sanitize_repo_url(container.labels.get(settings.repo_label, "")),
                 "template_name": container.labels.get("oduflow.template", "default"),
-                "extra_addons": json.loads(container.labels.get("oduflow.extra_addons", "[]")),
-                "extra_addons_branch": container.labels.get("oduflow.extra_addons_branch", ""),
+                "extra_addons": _normalize_extra_addons(
+                    json.loads(container.labels.get("oduflow.extra_addons", "{}")),
+                    settings.default_branch,
+                ),
                 "db_name": get_db_name(branch, settings.instance_id),
                 "protected": is_protected(settings, branch),
             }
@@ -1050,7 +1050,7 @@ def rebuild_environment(settings: Settings, branch_name: str) -> dict[str, str]:
     merged = fs_paths["merged"]
     if os.path.isdir(merged) and not os.path.ismount(merged):
         env_db = get_db_name(branch_name)
-        template_name = labels.get("oduflow.template", settings.default_template)
+        template_name = labels.get("oduflow.template", "none")
         if template_name and template_name != "none":
             try:
                 _tmp_vols: dict = {}
@@ -1069,9 +1069,10 @@ def rebuild_environment(settings: Settings, branch_name: str) -> dict[str, str]:
     # Verify extra addons worktrees are intact
     extra_addons_json = labels.get("oduflow.extra_addons", "")
     if extra_addons_json:
-        extra_names = json.loads(extra_addons_json)
+        parsed = json.loads(extra_addons_json)
+        extra_dict = _normalize_extra_addons(parsed, settings.default_branch)
         extra_dir = os.path.join(get_workspace_path(branch_name, settings.workspaces_dir), "extra")
-        for rn in extra_names:
+        for rn in extra_dict:
             wt = os.path.join(extra_dir, rn)
             if not os.path.isdir(wt):
                 logger.warning("Extra addons worktree missing: %s", wt)

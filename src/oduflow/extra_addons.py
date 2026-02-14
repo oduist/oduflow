@@ -179,9 +179,17 @@ def create_worktree(
 
     fetch_extra_repo(settings, repo_name)
 
+    subprocess.run(
+        ["git", "-C", bare_path, "worktree", "prune"],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        env=GIT_ENV,
+    )
+
     try:
         subprocess.run(
-            ["git", "-C", bare_path, "worktree", "add", target_path, branch],
+            ["git", "-C", bare_path, "worktree", "add", "--detach", target_path, branch],
             check=True,
             capture_output=True,
             text=True,

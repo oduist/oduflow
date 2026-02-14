@@ -64,7 +64,7 @@ def live_environment(tmp_path_factory):
             f.write("-- empty test dump\n")
 
     system_ops.init_system(settings)
-    system_ops.reload_template(settings)
+    system_ops.reload_template(settings, template_name="default")
     env_ops.create_environment(
         settings,
         branch_name="main",
