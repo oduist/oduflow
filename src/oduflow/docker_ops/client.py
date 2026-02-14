@@ -9,7 +9,14 @@ _uid_gid_cache: dict[str, str] = {}
 
 
 def get_client() -> DockerClient:
-    return docker.from_env()
+    try:
+        return docker.from_env()
+    except docker.errors.DockerException:
+        raise SystemExit(
+            "\n❌ Cannot connect to Docker.\n"
+            "   Please make sure Docker is installed and running.\n"
+            "   https://docs.docker.com/get-docker/\n"
+        )
 
 
 def get_odoo_uid_gid(client: DockerClient, image: str) -> str:
