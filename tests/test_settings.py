@@ -42,7 +42,7 @@ class TestSettings:
 class TestTemplatePaths:
     def test_get_template_dir_default(self):
         s = Settings(home="/srv/data")
-        assert s.get_template_dir() == "/srv/data/templates/default"
+        assert s.get_template_dir("default") == "/srv/data/templates/default"
 
     def test_get_template_dir_named(self):
         s = Settings(home="/srv/data")
@@ -58,8 +58,8 @@ class TestTemplatePaths:
 
     def test_dump_methods_delegate_to_template(self):
         s = Settings(home="/srv/data")
-        assert s.get_dump_sql_path() == s.get_template_sql_path("default")
-        assert s.get_dump_filestore_path() == s.get_template_filestore_path("default")
+        assert s.get_template_sql_path("default") == "/srv/data/templates/default/dump.pgdump"
+        assert s.get_template_filestore_path("default") == "/srv/data/templates/default/filestore"
 
     def test_list_templates_empty(self, tmp_path):
         s = Settings(home=str(tmp_path))
