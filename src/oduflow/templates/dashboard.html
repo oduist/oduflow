@@ -823,11 +823,13 @@ async function doProtect(branch, isProtected) {
   await loadEnvironments();
 }
 
-var _logsState = { branch: '', lines: [] };
+var _logsState = { branch: '', lines: [], type: 'env', serviceName: '' };
 
 async function showLogs(branch) {
   _logsState.branch = branch;
   _logsState.lines = [];
+  _logsState.type = 'env';
+  _logsState.serviceName = '';
   document.getElementById('logs-search').value = '';
   document.getElementById('logs-match-count').textContent = '';
   var modal = document.getElementById('logs-modal');
@@ -841,7 +843,13 @@ async function showLogs(branch) {
 async function fetchLogs() {
   var n = document.getElementById('logs-lines').value;
   try {
-    var r = await fetch(API + '/' + encodeURIComponent(_logsState.branch) + '/logs?n=' + n);
+    var url;
+    if (_logsState.type === 'service') {
+      url = API_SERVICES + '/' + encodeURIComponent(_logsState.serviceName) + '/logs?n=' + n;
+    } else {
+      url = API + '/' + encodeURIComponent(_logsState.branch) + '/logs?n=' + n;
+    }
+    var r = await fetch(url);
     var data = await r.json();
     if (data.ok) {
       _logsState.lines = (data.logs || '').split('\n');
@@ -1235,24 +1243,18 @@ async function doDeleteService(name) {
 }
 
 async function showServiceLogs(name) {
+  _logsState.branch = '';
+  _logsState.lines = [];
+  _logsState.type = 'service';
+  _logsState.serviceName = name;
+  document.getElementById('logs-search').value = '';
+  document.getElementById('logs-match-count').textContent = '';
   var modal = document.getElementById('logs-modal');
   document.getElementById('logs-title').textContent = 'Service Logs — ' + name;
   document.getElementById('logs-content').textContent = 'Loading...';
   modal.classList.add('show');
   document.getElementById('logs-search').focus();
-  try {
-    var r = await fetch(API_SERVICES + '/' + encodeURIComponent(name) + '/logs?n=300');
-    var data = await r.json();
-    if (data.ok) {
-      document.getElementById('logs-content').textContent = data.logs || '(empty)';
-      var body = document.getElementById('logs-content').parentElement;
-      body.scrollTop = body.scrollHeight;
-    } else {
-      document.getElementById('logs-content').textContent = 'Error: ' + (data.error || 'Failed to load logs');
-    }
-  } catch (e) {
-    document.getElementById('logs-content').textContent = 'Connection error: ' + e.message;
-  }
+  await fetchLogs();
 }
 
 function openCreateServiceModal() {
