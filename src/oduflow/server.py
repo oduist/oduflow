@@ -207,6 +207,11 @@ def create_environment(
     if setup_logs:
         lines.append("\n--- Setup Log ---")
         lines.extend(setup_logs)
+    import re
+    _ver_match = re.search(r"odoo[:/](\d+)(?:\.0)?", effective_odoo_image)
+    if _ver_match:
+        _odoo_ver = _ver_match.group(1)
+        lines.append(f"\n💡 Hint: Call get_odoo_development_guide(version=\"{_odoo_ver}\") to get Odoo {_odoo_ver} development standards and constraints.")
     return "\n".join(lines)
 
 
@@ -255,20 +260,47 @@ def list_templates() -> str:
 
 @mcp.tool()
 @handle_errors
-def get_agents_guide() -> str:
-    """
-    Get the agents guide with instructions for AI coding agents on how to use Oduflow MCP tools.
-    """
+def get_agent_guide() -> str:
+    """Get the agent guide with instructions for AI coding agents on how to use Oduflow MCP tools."""
     import pathlib
     settings = _get_settings()
-    guide_path = os.path.join(settings.home, "agents_guide.md")
+    guide_path = os.path.join(settings.home, "agent_guides", "agent_guide.md")
     if os.path.isfile(guide_path):
         with open(guide_path, "r", encoding="utf-8") as f:
             return f.read()
-    bundled = pathlib.Path(__file__).resolve().parent / "templates" / "agents_guide.md"
+    bundled = pathlib.Path(__file__).resolve().parent / "templates" / "agent_guides" / "agent_guide.md"
     if bundled.is_file():
         return bundled.read_text(encoding="utf-8")
-    return "Agents guide not found."
+    return "Agent guide not found."
+
+
+@mcp.tool()
+@handle_errors
+def get_odoo_development_guide(version: str) -> str:
+    """
+    Get Odoo development standards and constraints guide for a specific Odoo version.
+
+    Args:
+        version: Odoo version number (e.g. "17", "17.0", "18", "18.0"). Both "17" and "17.0" formats are accepted.
+    """
+    import pathlib
+    normalized = version.split(".")[0]
+    filename = f"odoo_{normalized}_guide.md"
+    settings = _get_settings()
+    guide_path = os.path.join(settings.home, "agent_guides", filename)
+    if os.path.isfile(guide_path):
+        with open(guide_path, "r", encoding="utf-8") as f:
+            return f.read()
+    bundled = pathlib.Path(__file__).resolve().parent / "templates" / "agent_guides" / filename
+    if bundled.is_file():
+        return bundled.read_text(encoding="utf-8")
+    available = []
+    guides_dir = os.path.join(settings.home, "agent_guides")
+    if os.path.isdir(guides_dir):
+        available = [f.replace("odoo_", "").replace("_guide.md", "") for f in os.listdir(guides_dir) if f.startswith("odoo_") and f.endswith("_guide.md")]
+    if available:
+        return f"No development guide found for Odoo {version}. Available versions: {', '.join(sorted(available))}"
+    return f"No development guide found for Odoo {version}."
 
 
 @mcp.tool()
@@ -770,14 +802,18 @@ def _run_init_instance(settings: Settings) -> None:
 
     _copy_bundled_configs()
 
-    # Copy bundled agents guide if not present
+    # Copy bundled agent guides if not present
     import pathlib, shutil
-    agents_guide_dest = os.path.join(settings.home, "agents_guide.md")
-    if not os.path.isfile(agents_guide_dest):
-        bundled = pathlib.Path(__file__).resolve().parent / "templates" / "agents_guide.md"
-        if bundled.is_file():
-            shutil.copy2(str(bundled), agents_guide_dest)
-            print(f"  Agents guide: {agents_guide_dest}")
+    agent_guides_dest = os.path.join(settings.home, "agent_guides")
+    os.makedirs(agent_guides_dest, exist_ok=True)
+    bundled_guides_dir = pathlib.Path(__file__).resolve().parent / "templates" / "agent_guides"
+    if bundled_guides_dir.is_dir():
+        for guide_file in bundled_guides_dir.iterdir():
+            if guide_file.is_file() and guide_file.suffix == ".md":
+                dest_file = os.path.join(agent_guides_dest, guide_file.name)
+                if not os.path.isfile(dest_file):
+                    shutil.copy2(str(guide_file), dest_file)
+                    print(f"  Agent guide: {dest_file}")
 
     if settings.routing_mode == "traefik" and settings.base_domain:
         dynamic_dir = "/etc/oduflow/traefik"

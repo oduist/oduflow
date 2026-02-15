@@ -153,7 +153,8 @@ The server starts on `http://0.0.0.0:8000`. MCP endpoint: `http://<host>:8000/mc
 - `list_environments` / `get_environment_status` — inspect environments
 - `create_service` / `delete_service` — manage auxiliary services (Redis, Meilisearch, etc.)
 - `publish_as_template` — publish a branch's DB to become the new template
-- `get_agents_guide` — get detailed instructions for AI agents on how to use Oduflow
+- `get_agent_guide` — get detailed instructions for AI agents on how to use Oduflow
+- `get_odoo_development_guide` — get Odoo development standards guide for a specific version (15–19)
 
 ## Typical Agent Workflow
 

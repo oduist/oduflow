@@ -92,6 +92,18 @@ def _parse_extra_addons(raw: str, fallback_branch: str) -> dict[str, str]:
     return result
 
 
+def _guide_title(filepath: str) -> str:
+    try:
+        with open(filepath, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if line.startswith("# "):
+                    return line[2:].strip()
+    except Exception:
+        pass
+    return os.path.basename(filepath).replace("_", " ").replace(".md", "").title()
+
+
 def _build_routes(
     get_settings: "callable",
     busy_lock: threading.Lock,
@@ -407,23 +419,44 @@ def _build_routes(
             logger.exception("Unexpected error in api_service_preset_delete")
             return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
 
-    def api_agents_guide_get(request: Request) -> JSONResponse:
+    def api_agent_guides_list(request: Request) -> JSONResponse:
         try:
-            import re as _re
-            guide_path = os.path.join(get_settings().home, "agents_guide.md")
+            guides = []
+            guides_dir = os.path.join(get_settings().home, "agent_guides")
+            bundled_dir = _TEMPLATE_DIR / "agent_guides"
+            seen = set()
+            if os.path.isdir(guides_dir):
+                for fname in sorted(os.listdir(guides_dir)):
+                    if fname.endswith(".md"):
+                        seen.add(fname)
+                        guides.append({"filename": fname, "title": _guide_title(os.path.join(guides_dir, fname))})
+            if bundled_dir.is_dir():
+                for fpath in sorted(bundled_dir.iterdir()):
+                    if fpath.suffix == ".md" and fpath.name not in seen:
+                        guides.append({"filename": fpath.name, "title": _guide_title(str(fpath))})
+            return JSONResponse({"ok": True, "guides": guides})
+        except Exception as e:
+            logger.exception("Unexpected error in api_agent_guides_list")
+            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+
+    def api_agent_guide_get(request: Request) -> JSONResponse:
+        try:
+            filename = request.path_params["filename"]
+            if not filename.endswith(".md") or "/" in filename or "\\" in filename:
+                return JSONResponse({"ok": False, "error": "Invalid filename"}, status_code=400)
+            guides_dir = os.path.join(get_settings().home, "agent_guides")
+            guide_path = os.path.join(guides_dir, filename)
             content = ""
             if os.path.isfile(guide_path):
                 with open(guide_path, "r", encoding="utf-8") as f:
                     content = f.read()
-            elif (_TEMPLATE_DIR / "agents_guide.md").is_file():
-                content = (_TEMPLATE_DIR / "agents_guide.md").read_text(encoding="utf-8")
-            version = 0
-            m = _re.search(r"^Version:\s*(\d+)", content, _re.MULTILINE)
-            if m:
-                version = int(m.group(1))
-            return JSONResponse({"ok": True, "content": content, "version": version})
+            elif (_TEMPLATE_DIR / "agent_guides" / filename).is_file():
+                content = (_TEMPLATE_DIR / "agent_guides" / filename).read_text(encoding="utf-8")
+            else:
+                return JSONResponse({"ok": False, "error": "Guide not found"}, status_code=404)
+            return JSONResponse({"ok": True, "content": content, "filename": filename})
         except Exception as e:
-            logger.exception("Unexpected error in api_agents_guide_get")
+            logger.exception("Unexpected error in api_agent_guide_get")
             return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
 
 
@@ -526,7 +559,8 @@ def _build_routes(
         Route("/api/environments", api_list, methods=["GET"]),
         Route("/api/environments/create", api_create, methods=["POST"]),
         Route("/api/stats", api_stats, methods=["GET"]),
-        Route("/api/agents-guide", api_agents_guide_get, methods=["GET"]),
+        Route("/api/agent-guides", api_agent_guides_list, methods=["GET"]),
+        Route("/api/agent-guides/{filename}", api_agent_guide_get, methods=["GET"]),
         Route("/api/environments/{branch:path}/start", api_start, methods=["POST"]),
         Route("/api/environments/{branch:path}/stop", api_stop, methods=["POST"]),
         Route("/api/environments/{branch:path}/restart", api_restart, methods=["POST"]),

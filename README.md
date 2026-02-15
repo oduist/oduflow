@@ -243,7 +243,13 @@ src/oduflow/
     postgresql.conf       # PostgreSQL tuning (shared_buffers, WAL, autovacuum, etc.)
     dashboard.html        # Web dashboard UI (single-page application)
     favicon.ico           # Dashboard favicon
-    agents_guide.md       # AI agent instructions (copied to $ODUFLOW_HOME on init-instance)
+    agent_guides/         # AI agent guides (copied to $ODUFLOW_HOME/agent_guides on init-instance)
+      agent_guide.md      # Main agent instructions for Oduflow MCP tools
+      odoo_15_guide.md    # Odoo 15 development standards
+      odoo_16_guide.md    # Odoo 16 development standards
+      odoo_17_guide.md    # Odoo 17 development standards
+      odoo_18_guide.md    # Odoo 18 development standards
+      odoo_19_guide.md    # Odoo 19 development standards
 
 tests/                  # Unit and integration tests (pytest)
 ```
@@ -920,11 +926,12 @@ All endpoints return JSON with an `ok` field. Authentication via HTTP Basic auth
 | `GET` | `/api/license` | Get current license information |
 | `POST` | `/api/license/activate` | Activate a license key (JSON body: `key`) |
 
-#### Agent Guide
+#### Agent Guides
 
 | Method | Endpoint | Description |
 |---|---|---|
-| `GET` | `/api/agents-guide` | Get AI agent instructions (markdown) |
+| `GET` | `/api/agent-guides` | List all available agent guides |
+| `GET` | `/api/agent-guides/{filename}` | Get content of a specific agent guide |
 
 ---
 
@@ -970,8 +977,9 @@ All tools are accessible via MCP clients (Cursor, Cline, Amp, etc.) and the CLI 
 | `add_extra_repo` | ✓ | Clone an extra addons repository (e.g. Odoo Enterprise) for use with environments |
 | `list_extra_repos` | | List all cloned extra addons repositories |
 | `delete_extra_repo` | ✓ | Delete a cloned extra addons repository |
-| **Agent Guide** | | |
-| `get_agents_guide` | | Get AI agent instructions for using Oduflow MCP tools |
+| **Agent Guides** | | |
+| `get_agent_guide` | | Get AI agent instructions for using Oduflow MCP tools |
+| `get_odoo_development_guide` | | Get Odoo development standards guide for a specific version (15–19) |
 
 > **Mutex** (✓): these tools acquire a global lock. If another mutexed operation is in progress, the call is rejected with `BusyError` ("Another operation is in progress. Try again later.").
 
