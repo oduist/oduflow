@@ -971,6 +971,175 @@ def destroy_system(settings: Settings) -> dict[str, str]:
     return {"status": "destroyed", "removed": ", ".join(removed)}
 
 
+def import_from_odoo(
+    settings: Settings,
+    odoo_url: str,
+    master_pwd: str,
+    db_name: str = "",
+    template_name: str = "default",
+) -> dict[str, object]:
+    """Import a template from a running Odoo instance via its database manager API.
+
+    Downloads a full backup (SQL + filestore), extracts it into the template
+    directory, reads manifest.json to determine the Odoo version, saves
+    metadata.json, and loads the dump into PostgreSQL as a template DB.
+    """
+    import urllib.request
+    import urllib.parse
+    import zipfile
+
+    base = odoo_url.rstrip("/")
+
+    # 1. Resolve database name
+    if not db_name:
+        req = urllib.request.Request(
+            f"{base}/web/database/list",
+            data=json.dumps({"jsonrpc": "2.0", "method": "call", "params": {}}).encode(),
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            body = json.loads(resp.read())
+        databases = body.get("result", [])
+        if not databases:
+            raise NotFoundError(f"No databases found on {base}")
+        if len(databases) > 1:
+            raise PrerequisiteNotMetError(
+                f"Multiple databases found: {', '.join(databases)}. "
+                f"Specify db_name explicitly."
+            )
+        db_name = databases[0]
+        logger.info("Auto-detected database: %s", db_name)
+
+    # 2. Download backup
+    logger.info("Downloading backup from %s (db=%s)...", base, db_name)
+    boundary = "----OduflowBoundary"
+    parts = []
+    for field_name, field_value in [("master_pwd", master_pwd), ("name", db_name), ("backup_format", "zip")]:
+        parts.append(
+            f"--{boundary}\r\n"
+            f'Content-Disposition: form-data; name="{field_name}"\r\n\r\n'
+            f"{field_value}\r\n"
+        )
+    parts.append(f"--{boundary}--\r\n")
+    multipart_body = "".join(parts).encode("utf-8")
+
+    req = urllib.request.Request(
+        f"{base}/web/database/backup",
+        data=multipart_body,
+        headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+        method="POST",
+    )
+
+    download_start = time.monotonic()
+    tmp_zip = os.path.join(settings.home, "tmp_odoo_backup.zip")
+    os.makedirs(settings.home, exist_ok=True)
+    try:
+        with urllib.request.urlopen(req, timeout=600) as resp:
+            content_type = resp.headers.get("Content-Type", "")
+            if "zip" not in content_type and "octet" not in content_type:
+                body = resp.read(2000).decode("utf-8", errors="replace")
+                raise ExternalCommandError(
+                    "odoo backup", -1,
+                    f"Unexpected response (Content-Type: {content_type}): {body}"
+                )
+            with open(tmp_zip, "wb") as f:
+                while True:
+                    chunk = resp.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    f.write(chunk)
+    except urllib.error.HTTPError as e:
+        body = e.read(2000).decode("utf-8", errors="replace")
+        raise ExternalCommandError("odoo backup", e.code, f"HTTP {e.code}: {body}")
+
+    download_elapsed = time.monotonic() - download_start
+    zip_size_mb = os.path.getsize(tmp_zip) / (1024 * 1024)
+    logger.info("Backup downloaded in %.1fs (%.1f MB)", download_elapsed, zip_size_mb)
+
+    # 3. Extract ZIP
+    template_dir = settings.get_template_dir(template_name)
+    template_sql_path = os.path.join(template_dir, "dump.sql")
+    template_filestore_path = settings.get_template_filestore_path(template_name)
+
+    os.makedirs(template_dir, exist_ok=True)
+
+    manifest = {}
+    try:
+        with zipfile.ZipFile(tmp_zip, "r") as zf:
+            # Extract manifest.json
+            if "manifest.json" in zf.namelist():
+                with zf.open("manifest.json") as mf:
+                    manifest = json.load(mf)
+
+            # Extract dump.sql
+            with zf.open("dump.sql") as src, open(template_sql_path, "wb") as dst:
+                shutil.copyfileobj(src, dst)
+            logger.info("Extracted dump.sql to %s", template_sql_path)
+
+            # Extract filestore
+            if os.path.exists(template_filestore_path):
+                shutil.rmtree(template_filestore_path)
+            os.makedirs(template_filestore_path, exist_ok=True)
+
+            fs_prefix = "filestore/"
+            for member in zf.namelist():
+                if not member.startswith(fs_prefix):
+                    continue
+                rel = member[len(fs_prefix):]
+                if not rel:
+                    continue
+                # Skip checklist/ symlink-like entries
+                if rel.startswith("checklist/"):
+                    continue
+                target = os.path.join(template_filestore_path, rel)
+                if member.endswith("/"):
+                    os.makedirs(target, exist_ok=True)
+                else:
+                    os.makedirs(os.path.dirname(target), exist_ok=True)
+                    with zf.open(member) as src, open(target, "wb") as dst:
+                        shutil.copyfileobj(src, dst)
+
+            fs_count = sum(1 for f in pathlib.Path(template_filestore_path).rglob("*") if f.is_file())
+            logger.info("Extracted filestore to %s (%d files)", template_filestore_path, fs_count)
+    finally:
+        if os.path.exists(tmp_zip):
+            os.remove(tmp_zip)
+
+    # 4. Determine Odoo image from manifest
+    major_version = manifest.get("major_version", "")
+    odoo_image = f"odoo:{major_version}" if major_version else ""
+
+    # 5. Save metadata.json
+    metadata = {
+        "odoo_image": odoo_image,
+        "repo_url": "",
+        "source_url": base,
+        "source_db": db_name,
+        "odoo_version": manifest.get("version", ""),
+        "pg_version": manifest.get("pg_version", ""),
+        "modules": manifest.get("modules", {}),
+    }
+    metadata_path = settings.get_template_metadata_path(template_name)
+    with open(metadata_path, "w") as f:
+        json.dump(metadata, f, indent=2)
+    logger.info("Metadata saved to %s", metadata_path)
+
+    # 6. Load dump into PostgreSQL
+    result = reload_template(settings, template_name=template_name)
+
+    return {
+        "status": "imported",
+        "template_name": template_name,
+        "source_url": base,
+        "source_db": db_name,
+        "odoo_image": odoo_image,
+        "odoo_version": manifest.get("version", ""),
+        "template_db": result["template_db"],
+        "restore_seconds": result.get("restore_seconds", 0),
+        "zip_size_mb": round(zip_size_mb, 1),
+    }
+
+
 def drop_template(settings: Settings, template_name: str) -> dict[str, str]:
     client = get_client()
     tpl_db = get_template_db_name(template_name, settings.instance_id)

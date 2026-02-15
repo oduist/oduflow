@@ -260,6 +260,47 @@ def list_templates() -> str:
 
 @mcp.tool()
 @handle_errors
+@with_mutex
+def import_template_from_odoo(
+    odoo_url: str,
+    master_pwd: str,
+    db_name: str = "",
+    template_name: str = "default",
+) -> str:
+    """
+    Import a template from a running Odoo instance via its database manager API.
+
+    Downloads a full backup (SQL + filestore), extracts it into the template
+    directory, detects the Odoo version from the backup manifest, and loads
+    the dump into PostgreSQL as a template database.
+
+    Args:
+        odoo_url: Base URL of the Odoo instance (e.g. "https://my-odoo.example.com").
+        master_pwd: Odoo master password (database manager password).
+        db_name: Name of the database to back up. If empty, auto-detected (fails if multiple DBs exist).
+        template_name: Name of the template profile to create (default: "default").
+    """
+    result = system_ops.import_from_odoo(
+        _get_settings(),
+        odoo_url=odoo_url,
+        master_pwd=master_pwd,
+        db_name=db_name,
+        template_name=template_name,
+    )
+    lines = [
+        f"Template '{result['template_name']}' imported successfully!",
+        f"Source: {result['source_url']} (db: {result['source_db']})",
+        f"Odoo version: {result['odoo_version']}",
+        f"Odoo image: {result['odoo_image']}",
+        f"Template DB: {result['template_db']}",
+        f"Backup size: {result['zip_size_mb']} MB",
+        f"DB restore time: {result['restore_seconds']}s",
+    ]
+    return "\n".join(lines)
+
+
+@mcp.tool()
+@handle_errors
 def get_agent_guide() -> str:
     """Get the agent guide with instructions for AI coding agents on how to use Oduflow MCP tools."""
     import pathlib
@@ -915,6 +956,19 @@ def _run_drop_template(settings: Settings, template_name: str) -> None:
     print(f"Template '{result['template_name']}' dropped.\nTemplate DB '{result['template_db']}' removed.")
 
 
+def _run_import_template(settings: Settings, odoo_url: str, master_pwd: str, db_name: str = "", template_name: str = "default") -> None:
+    result = system_ops.import_from_odoo(settings, odoo_url=odoo_url, master_pwd=master_pwd, db_name=db_name, template_name=template_name)
+    print(
+        f"Template '{result['template_name']}' imported successfully!\n"
+        f"Source: {result['source_url']} (db: {result['source_db']})\n"
+        f"Odoo version: {result['odoo_version']}\n"
+        f"Odoo image: {result['odoo_image']}\n"
+        f"Template DB: {result['template_db']}\n"
+        f"Backup size: {result['zip_size_mb']} MB\n"
+        f"DB restore time: {result['restore_seconds']}s"
+    )
+
+
 def _run_list_templates(settings: Settings) -> None:
     templates = system_ops.list_templates(settings)
     if not templates:
@@ -1077,6 +1131,12 @@ def main() -> None:
     p_drop_tpl = sub.add_parser("drop-template", help="Drop a template profile (template DB + files)")
     p_drop_tpl.add_argument("template_name", help="Template profile name to drop")
 
+    p_import = sub.add_parser("import-template", help="Import a template from a running Odoo instance")
+    p_import.add_argument("odoo_url", help="Base URL of the Odoo instance (e.g. https://my-odoo.example.com)")
+    p_import.add_argument("master_pwd", help="Odoo master password")
+    p_import.add_argument("--db-name", default="", help="Database name (auto-detected if only one exists)")
+    p_import.add_argument("--template-name", default="default", help="Template profile name (default: default)")
+
     sub.add_parser("list-templates", help="List available template profiles")
 
     sub.add_parser("list-services", help="List managed auxiliary service containers")
@@ -1147,6 +1207,10 @@ def main() -> None:
 
     if args.command == "drop-template":
         _run_drop_template(_settings, template_name=args.template_name)
+        return
+
+    if args.command == "import-template":
+        _run_import_template(_settings, odoo_url=args.odoo_url, master_pwd=args.master_pwd, db_name=args.db_name, template_name=args.template_name)
         return
 
     if args.command == "list-templates":
