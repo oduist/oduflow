@@ -211,7 +211,7 @@ def create_environment(
     _ver_match = re.search(r"odoo[:/](\d+)(?:\.0)?", effective_odoo_image)
     if _ver_match:
         _odoo_ver = _ver_match.group(1)
-        lines.append(f"\n💡 Hint: Call get_odoo_development_guide(version=\"{_odoo_ver}\") to get Odoo {_odoo_ver} development standards and constraints.")
+        lines.append(f"\n⚠️ After creating an environment, immediately call get_odoo_development_guide(version=\"{_odoo_ver}\") to load Odoo {_odoo_ver} development standards and constraints. Do not wait for the user to ask — these guidelines must be loaded before writing any code.")
     return "\n".join(lines)
 
 
