@@ -912,6 +912,7 @@ def get_environment_status(settings: Settings, branch_name: str) -> dict[str, An
         odoo_container = client.containers.get(odoo_container_name)
         result["odoo"]["status"] = odoo_container.status
         result["odoo"]["running"] = odoo_container.status == "running"
+        result["template_name"] = odoo_container.labels.get("oduflow.template", "none")
         stats = _get_one_container_stats(odoo_container)
         if stats:
             result["odoo"]["cpu_percent"] = stats["cpu_percent"]

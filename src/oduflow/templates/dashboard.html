@@ -696,9 +696,10 @@ function renderEnvironments(envs) {
       ? '<div class="env-url"><a href="' + esc(env.url) + '" target="_blank">' + esc(env.url) + '</a></div>'
       : '';
 
-    const metaHtml = (env.odoo_image || env.repo_url || env.db_name)
+    const metaHtml = (env.odoo_image || env.repo_url || env.db_name || env.template_name)
       ? '<div class="env-meta">' +
           (env.db_name ? '<span>DB: <strong>' + esc(env.db_name) + '</strong></span>' : '') +
+          (env.template_name && env.template_name !== 'none' ? '<span>Template: <strong>' + esc(env.template_name) + '</strong></span>' : '') +
           (env.odoo_image ? '<span>Image: <strong>' + esc(env.odoo_image) + '</strong></span>' : '') +
           (env.repo_url ? '<span>Repo: <strong>' + esc(env.repo_url) + '</strong></span>' : '') +
         '</div>'

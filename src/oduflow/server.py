@@ -5,6 +5,7 @@ import os
 import threading
 
 from fastmcp import FastMCP
+from fastmcp.exceptions import ToolError
 
 from oduflow.docker_ops import env_ops, odoo_ops, service_ops, service_presets, system_ops
 from oduflow import git_ops
@@ -48,7 +49,7 @@ def handle_errors(fn):
             return result
         except FlowError as e:
             logger.error("[%s] Error: %s", fn.__name__, e)
-            raise ValueError(str(e)) from e
+            raise ToolError(str(e))
     return wrapper
 
 
@@ -493,6 +494,8 @@ def get_environment_status(branch_name: str) -> str:
     status = env_ops.get_environment_status(_get_settings(), branch_name)
     overall = "All containers running" if status["all_running"] else "Some containers not running"
     lines = [f"Environment Status for '{branch_name}': {overall}"]
+    if status.get("template_name"):
+        lines.append(f"Template: {status['template_name']}")
     for key in ("odoo", "db"):
         info = status[key]
         label = "Odoo" if key == "odoo" else "DB (shared)"
