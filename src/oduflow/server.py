@@ -595,7 +595,8 @@ def install_odoo_modules(branch_name: str, modules: str) -> str:
     modules_str = ', '.join(result['modules'])
     output = result.get('output', '')
     if exit_code == 0:
-        return f"Success. Modules installed: {modules_str}. Exit code: 0.\n\nOutput:\n{output}"
+        env_ops.restart_environment(_get_settings(), branch_name)
+        return f"Success. Modules installed: {modules_str}. Container restarted. Exit code: 0.\n\nOutput:\n{output}"
     return (
         f"Error. Modules: {modules_str}. Exit code: {exit_code}.\n\nOutput:\n{output}"
     )
