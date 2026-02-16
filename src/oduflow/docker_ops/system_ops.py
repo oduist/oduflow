@@ -520,10 +520,13 @@ def init_template(
     result = reload_template(settings, template_name=template_name)
 
     metadata = {"odoo_image": odoo_image}
+    from oduflow.docker_ops.env_ops import _dir_size_mb
+    fs_size = _dir_size_mb(template_filestore_path)
+    metadata["use_overlay"] = fs_size >= settings.overlay_threshold_mb
     metadata_path = settings.get_template_metadata_path(template_name)
     with open(metadata_path, "w") as f:
         json.dump(metadata, f, indent=2)
-    logger.info("Template metadata saved to %s", metadata_path)
+    logger.info("Template metadata saved to %s (use_overlay=%s, filestore=%.0f MB)", metadata_path, metadata["use_overlay"], fs_size)
 
     result["generated_dump"] = template_sql_path
     result["generated_filestore"] = template_filestore_path
@@ -896,9 +899,11 @@ def publish_env_as_template(settings: Settings, branch_name: str, template_name:
                 pass
     except docker.errors.NotFound:
         pass
+    fs_size = env_ops._dir_size_mb(template_filestore_path) if os.path.isdir(template_filestore_path) else 0.0
+    metadata["use_overlay"] = fs_size >= settings.overlay_threshold_mb
     with open(metadata_path, "w") as f:
         json.dump(metadata, f, indent=2)
-    logger.info("Template metadata saved to %s", metadata_path)
+    logger.info("Template metadata saved to %s (use_overlay=%s, filestore=%.0f MB)", metadata_path, metadata["use_overlay"], fs_size)
 
     return {
         "status": "promoted",
@@ -1184,5 +1189,6 @@ def list_templates(settings: Settings) -> list[dict]:
                 metadata.get("extra_addons", {}),
                 settings.default_branch,
             ),
+            "use_overlay": metadata.get("use_overlay"),
         })
     return result

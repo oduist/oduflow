@@ -961,6 +961,7 @@ All tools are accessible via MCP clients (Cursor, Cline, Amp, etc.) and the CLI 
 | `publish_as_template` | ✓ | ⚠️ Publish a branch DB + filestore to become a new template |
 | `list_templates` | | List available template profiles |
 | `drop_template` | ✓ | ⚠️ Drop a template profile (DB + files) |
+| `import_template_from_odoo` | ✓ | Import a template from a running Odoo instance via database manager API |
 | **Auxiliary Services** | | |
 | `create_service` | ✓ | Create a managed service container (e.g. Redis, Meilisearch) |
 | `delete_service` | ✓ | Stop and remove a service container |
@@ -1026,6 +1027,9 @@ oduflow list-templates
 
 # Drop a template profile
 oduflow drop-template <template_name>
+
+# Import a template from a running Odoo instance
+oduflow import-template <odoo_url> <master_pwd> [--db-name <db>] [--template-name default]
 ```
 
 ### Service Commands
@@ -1394,9 +1398,23 @@ steps:
 
 ### 📦 Importing a Template from Odoo or Another Workspace
 
-You can create a template from an Odoo database backup or by copying a template directory from another Oduflow instance.
+You can create a template from a running Odoo instance, from a manual database backup, or by copying a template directory from another Oduflow instance.
 
-**From Odoo Database Manager:**
+**Directly from a running Odoo instance (recommended):**
+
+The easiest way — Oduflow downloads the backup, extracts it, auto-detects the Odoo version, and loads the template in one command:
+
+```bash
+oduflow import-template https://my-odoo.example.com master_password
+```
+
+Options:
+- `--db-name <db>` — specify the database name (auto-detected if only one DB exists)
+- `--template-name <name>` — template profile name (default: `default`)
+
+This is also available as an MCP tool (`import_template_from_odoo`) for AI agents.
+
+**From Odoo Database Manager (manual):**
 
 1. Go to `/web/database/manager` in your Odoo instance
 2. Download a backup — **make sure to include the filestore** (the checkbox must be enabled, otherwise the template will be missing all attachments, images, and assets)

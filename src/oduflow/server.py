@@ -254,7 +254,8 @@ def list_templates() -> str:
     output = "Template profiles:\n"
     for r in templates:
         db_status = "loaded" if r["db_loaded"] else "not loaded"
-        output += f"- {r['template_name']}: DB={db_status}, SQL={r['has_sql']}, Filestore={r['has_filestore']}\n"
+        overlay_status = "overlay" if r.get("use_overlay") else "copy" if r.get("use_overlay") is not None else "auto"
+        output += f"- {r['template_name']}: DB={db_status}, SQL={r['has_sql']}, Filestore={r['has_filestore']}, Mode={overlay_status}\n"
     return output
 
 

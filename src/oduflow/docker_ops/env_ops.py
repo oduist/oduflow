@@ -122,13 +122,25 @@ def _mount_filestore(
         return
 
     paths = get_filestore_paths(branch_name, settings.workspaces_dir)
-    size_mb = _dir_size_mb(template_filestore)
 
-    if size_mb < settings.overlay_threshold_mb:
-        logger.info(
-            "Template filestore %.0f MB < threshold %d MB, using copy",
-            size_mb, settings.overlay_threshold_mb,
-        )
+    # Read use_overlay flag from template metadata (avoids slow filestore scan)
+    use_overlay = None
+    metadata_path = settings.get_template_metadata_path(template_name)
+    if os.path.isfile(metadata_path):
+        try:
+            with open(metadata_path) as f:
+                metadata = json.load(f)
+            use_overlay = metadata.get("use_overlay")
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    if use_overlay is None:
+        # Fallback for old templates without the flag
+        size_mb = _dir_size_mb(template_filestore)
+        use_overlay = size_mb >= settings.overlay_threshold_mb
+
+    if not use_overlay:
+        logger.info("Template use_overlay=False, using copy")
         merged = paths["merged"]
         if os.path.exists(merged):
             shutil.rmtree(merged)
@@ -145,10 +157,7 @@ def _mount_filestore(
         }
         return
 
-    logger.info(
-        "Template filestore %.0f MB >= threshold %d MB, using overlay",
-        size_mb, settings.overlay_threshold_mb,
-    )
+    logger.info("Template use_overlay=True, using overlay")
     for d in (paths["upper"], paths["work"], paths["merged"]):
         os.makedirs(d, mode=0o777, exist_ok=True)
         os.chmod(d, 0o777)
