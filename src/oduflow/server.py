@@ -1162,6 +1162,7 @@ def main() -> None:
         level=logging.INFO,
         format="%(asctime)s %(name)s %(levelname)s %(message)s",
     )
+    logging.getLogger("docket").setLevel(logging.WARNING)
 
     global _settings
     _settings = Settings.from_env()
@@ -1254,7 +1255,7 @@ def main() -> None:
         logger.info("Web UI available at http://%s:%d/", host, port)
 
         import uvicorn
-        uvicorn.run(app, host=host, port=port)
+        uvicorn.run(app, host=host, port=port, ws="websockets-sansio")
     else:
         mcp.run(transport="stdio")
 
