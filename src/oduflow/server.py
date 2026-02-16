@@ -978,7 +978,8 @@ def _run_list_templates(settings: Settings) -> None:
     print("Template profiles:")
     for r in templates:
         db_status = "loaded" if r["db_loaded"] else "not loaded"
-        print(f"  {r['template_name']}: DB={db_status}, SQL={'yes' if r['has_sql'] else 'no'}, Filestore={'yes' if r['has_filestore'] else 'no'}")
+        overlay_status = "overlay" if r.get("use_overlay") else "copy" if r.get("use_overlay") is not None else "auto"
+        print(f"  {r['template_name']}: DB={db_status}, SQL={'yes' if r['has_sql'] else 'no'}, Filestore={'yes' if r['has_filestore'] else 'no'}, Mode={overlay_status}")
 
 
 def _run_list_services(settings: Settings) -> None:

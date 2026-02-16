@@ -929,6 +929,11 @@ function renderTemplates(templates) {
     var fsTag = t.has_filestore
       ? '<span class="tag tag-ok">Filestore</span>'
       : '<span class="tag tag-missing">No Filestore</span>';
+    var modeTag = t.use_overlay === true
+      ? '<span class="tag tag-ok">Overlay</span>'
+      : t.use_overlay === false
+        ? '<span class="tag tag-ok">Copy</span>'
+        : '<span class="tag tag-missing">Auto</span>';
     var metaHtml = '';
     if (t.odoo_image || t.repo_url) {
       var parts = [];
@@ -940,7 +945,7 @@ function renderTemplates(templates) {
       '<div style="display:flex;align-items:center;justify-content:space-between;">' +
         '<span class="tpl-name">' + esc(t.template_name) + '</span>' +
         '<div style="display:flex;align-items:center;gap:8px;">' +
-          '<div class="tpl-meta">' + dbTag + sqlTag + fsTag + '</div>' +
+          '<div class="tpl-meta">' + dbTag + sqlTag + fsTag + modeTag + '</div>' +
           '<button class="btn-create" style="font-size:12px;padding:4px 12px;" onclick="openCreateFromTemplate(\'' + escAttr(t.template_name) + '\')">+ New Env</button>' +
         '</div>' +
       '</div>' +
