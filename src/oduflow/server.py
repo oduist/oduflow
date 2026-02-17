@@ -238,7 +238,7 @@ def publish_as_template(branch_name: str, template_name: str) -> str:
     settings = _get_settings()
     result = system_ops.publish_env_as_template(settings, branch_name, template_name=template_name)
     return (
-        f"Branch '{result['branch']}' promoted to template '{template_name}'.\n"
+        f"Branch '{result['branch']}' saved as template '{template_name}'.\n"
         f"Template DB: {result['template_db']}\n"
         f"Dump: {result['dump']}\n"
         f"Filestore: {result['filestore']}"
@@ -946,10 +946,10 @@ def _run_template_down(settings: Settings, template_name: str = "default") -> No
     )
 
 
-def _run_promote(settings: Settings, branch: str, template_name: str = "default") -> None:
+def _run_template_from_env(settings: Settings, branch: str, template_name: str = "default") -> None:
     result = system_ops.publish_env_as_template(settings, branch_name=branch, template_name=template_name)
     print(
-        f"Branch '{result['branch']}' promoted to template '{template_name}'.\n"
+        f"Branch '{result['branch']}' saved as template '{template_name}'.\n"
         f"Template DB: {result['template_db']}\n"
         f"Dump: {result['dump']}\n"
         f"Filestore: {result['filestore']}"
@@ -1130,9 +1130,9 @@ def main() -> None:
     p_tpl_down = sub.add_parser("template-down", help="Stop the template editor, dump the updated DB, restore template flag")
     p_tpl_down.add_argument("--template-name", default="default", help="Template profile name (default: default)")
 
-    p_promote = sub.add_parser("promote", help="Promote a branch environment to become the new template")
-    p_promote.add_argument("branch", help="Branch name to promote")
-    p_promote.add_argument("--template-name", default="default", help="Template profile name (default: default)")
+    p_tfe = sub.add_parser("template-from-env", help="Save a branch environment as the new template")
+    p_tfe.add_argument("branch", help="Branch name to use as template source")
+    p_tfe.add_argument("--template-name", default="default", help="Template profile name (default: default)")
 
     p_drop_tpl = sub.add_parser("drop-template", help="Drop a template profile (template DB + files)")
     p_drop_tpl.add_argument("template_name", help="Template profile name to drop")
@@ -1208,8 +1208,8 @@ def main() -> None:
         _run_template_down(_settings, template_name=args.template_name)
         return
 
-    if args.command == "promote":
-        _run_promote(_settings, branch=args.branch, template_name=args.template_name)
+    if args.command == "template-from-env":
+        _run_template_from_env(_settings, branch=args.branch, template_name=args.template_name)
         return
 
     if args.command == "drop-template":

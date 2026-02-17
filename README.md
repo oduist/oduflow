@@ -466,13 +466,13 @@ This stops the container, dumps the updated database, and restores the PostgreSQ
 
 All environments created after this will be based on the updated template.
 
-### Promoting a Branch to Template
+### Saving a Branch as Template
 
-When you've made significant changes in a branch environment (installed modules, created configurations), you can promote it to become the new template:
+When you've made significant changes in a branch environment (installed modules, created configurations), you can save it as the new template:
 
 ```bash
-oduflow promote my-branch
-oduflow promote my-branch --template-name myproject  # promote to a named template
+oduflow template-from-env my-branch
+oduflow template-from-env my-branch --template-name myproject  # save to a named template
 ```
 
 This operation:
@@ -515,7 +515,7 @@ oduflow drop-template myproject
 | Have a production dump file | Place dump at `$ODUFLOW_HOME/templates/default/dump.sql` and run `oduflow init` |
 | Need to install modules or configure the template | `oduflow template-up --odoo-image odoo:17.0` / `oduflow template-down` |
 | Update the template from a newer production dump | `oduflow reload-template --dump-path /path/to/new.dump` |
-| Promote a branch environment to template | `oduflow promote my-branch` |
+| Save a branch environment as template | `oduflow template-from-env my-branch` |
 | List all templates | `oduflow list-templates` |
 | Drop a named template | `oduflow drop-template myproject` |
 
@@ -1019,8 +1019,8 @@ oduflow template-down [--template-name myproject]
 # Reload template DB from a dump file
 oduflow reload-template [--template-name default] [--dump-path /path/to/new.dump]
 
-# Promote a branch to become the new template
-oduflow promote <branch> [--template-name default]
+# Save a branch environment as the new template
+oduflow template-from-env <branch> [--template-name default]
 
 # List all template profiles
 oduflow list-templates
@@ -1459,7 +1459,7 @@ oduflow call install_odoo_modules template-update accounting,hr,project
 # 3. Verify everything works
 oduflow call test_environment template-update accounting,hr,project
 
-# 4. Promote to become the new template
+# 4. Save as the new template
 oduflow call publish_as_template template-update
 
 # 5. All future environments will include these modules pre-installed

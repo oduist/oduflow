@@ -776,11 +776,11 @@ def publish_env_as_template(settings: Settings, branch_name: str, template_name:
     # 2. Reload template DB from new dump
     reload_template(settings, template_name=template_name, dump_path=dump_path)
 
-    # 3. Collect active branches (excluding the promoted one is fine, it keeps working)
+    # 3. Collect active branches (excluding the source one is fine, it keeps working)
     active_envs = env_ops.list_environments(settings)
     active_branches = [e["branch"] for e in active_envs]
 
-    # 4. Snapshot the promoted branch's merged filestore (while overlay is still mounted)
+    # 4. Snapshot the source branch's merged filestore (while overlay is still mounted)
     branch_paths = get_filestore_paths(branch_name, settings.workspaces_dir)
     branch_merged = branch_paths["merged"]
     template_filestore_path = settings.get_template_filestore_path(template_name)
@@ -882,7 +882,7 @@ def publish_env_as_template(settings: Settings, branch_name: str, template_name:
         except Exception as e:
             logger.warning("Could not reset filestore for %s: %s", branch, e)
 
-    # Save template metadata from promoted environment
+    # Save template metadata from source environment
     metadata_path = settings.get_template_metadata_path(template_name)
     promoted_container_name = f"{settings.prefix}{branch_name.replace('/', '-')}-odoo"
     metadata = {}
