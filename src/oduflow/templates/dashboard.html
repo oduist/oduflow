@@ -401,7 +401,7 @@
 
 <header>
   <h1>Oduflow</h1>
-  <span id="license-badge" class="license-badge license-unlicensed">UNLICENSED — NON-COMMERCIAL USE ONLY</span>
+  <span id="license-badge" class="license-badge" style="display:none"></span>
   <div class="actions">
     <label class="auto-label" for="refresh-interval">Refresh
       <input type="number" id="refresh-interval" value="60" min="5" step="5"
@@ -1564,6 +1564,7 @@ async function loadLicense() {
     var badge = document.getElementById('license-badge');
     badge.textContent = lic.label;
     badge.className = 'license-badge license-' + lic.type;
+    badge.style.display = '';
     if (lic.type === 'unlicensed') {
       badge.style.cursor = 'pointer';
       badge.onclick = openLicenseModal;
