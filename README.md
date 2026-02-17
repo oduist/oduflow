@@ -100,6 +100,7 @@ Oduflow is not a replacement for production hosting — it's the **developer wor
 - [Environment Workspace Structure](#environment-workspace-structure)
 - [Docker Resources](#docker-resources)
 - [Error Handling](#error-handling)
+- [Licensing](#licensing)
 - [License](#license)
 
 ---
@@ -162,7 +163,7 @@ The result: provisioning a new environment from a 30+ GB production database tak
                      │  MCP (Streamable HTTP / stdio)
 ┌────────────────────▼─────────────────────────────┐
 │  server.py — FastMCP transport layer             │
-│  • MCP tool definitions (30 tools)               │
+│  • MCP tool definitions (32 tools)               │
 │  • Global mutex for heavy operations             │
 │  • Unified error handler (FlowError → ValueError)│
 │  • Web UI mount (Starlette)                      │
@@ -384,12 +385,37 @@ Template folder structure: `$ODUFLOW_HOME/templates/<name>/dump.sql` (or `dump.p
 | `ODUFLOW_BASE_DOMAIN` | *(empty)* | Base domain for Traefik routing (e.g. `dev.example.com`). Required when `ODUFLOW_ROUTING_MODE=traefik` |
 | `ODUFLOW_ACME_EMAIL` | *(empty)* | Let's Encrypt email for TLS certificates. Required when `ODUFLOW_ROUTING_MODE=traefik` |
 
+### Filestore
+
+| Variable | Default | Description |
+|---|---|---|
+| `ODUFLOW_OVERLAY_THRESHOLD_MB` | `50` | Template filestore size threshold (MB). Templates smaller than this use a simple copy per environment; larger templates use fuse-overlayfs (saves disk). The decision is stored in `metadata.json` at template creation time. |
+
 ### Database
 
 | Variable | Default | Description |
 |---|---|---|
 | `ODOO_DB_USER` | `odoo` | PostgreSQL user for the shared database container |
 | `ODOO_DB_PASSWORD` | `odoo` | PostgreSQL password |
+
+### Debug
+
+| Variable | Default | Description |
+|---|---|---|
+| `ODUFLOW_TRACE` | *(empty)* | Set to `1` to enable detailed trace logging for git analysis and environment operations (file classification, field change detection, pull actions) |
+
+### Configuration File Overrides
+
+When `oduflow init` runs, it copies the bundled `postgresql.conf` and `odoo.conf` to `/etc/oduflow/`. These files take **priority** over the bundled defaults — edit them to customize PostgreSQL tuning or Odoo settings globally:
+
+```
+/etc/oduflow/
+  postgresql.conf      ← custom PostgreSQL tuning (used by oduflow-db)
+  odoo.conf            ← custom Odoo defaults (used by new environments)
+  traefik/             ← Traefik dynamic configuration (auto-generated per instance)
+```
+
+If a repository contains an `odoo.conf` at its root, it takes priority over both the bundled and `/etc/oduflow/` versions for that specific environment.
 
 ---
 
@@ -504,6 +530,27 @@ oduflow list-templates
 # Drop a named template (removes DB + files from disk)
 oduflow drop-template myproject
 ```
+
+### Template Metadata
+
+Each template profile can contain a `metadata.json` file that stores defaults and configuration:
+
+```json
+{
+  "odoo_image": "odoo:17.0",
+  "repo_url": "https://github.com/company/addons.git",
+  "extra_addons": {"enterprise": "17.0"},
+  "use_overlay": true,
+  "source_url": "https://my-odoo.example.com",
+  "source_db": "production",
+  "odoo_version": "17.0+e",
+  "pg_version": "15.0"
+}
+```
+
+When `create_environment` is called with a template name, `repo_url`, `odoo_image`, and `extra_addons` are automatically loaded from metadata if not explicitly provided. This means after importing or configuring a template, you can create environments with just `branch_name` and `template_name` — all other parameters are inherited.
+
+The `use_overlay` flag determines whether new environments use fuse-overlayfs (for large filestores) or a simple copy (for small ones). It is set automatically based on `ODUFLOW_OVERLAY_THRESHOLD_MB` when the template is created.
 
 ### Template Decision Matrix
 
@@ -832,6 +879,11 @@ Environments can be **protected** from accidental deletion. A protected environm
 
 Protection state is stored as a `.protected` marker file in the environment's workspace directory, so it survives container rebuilds and restarts.
 
+When an environment is protected:
+- **Delete** is blocked with a `ProtectedError`
+- **Stop** is also blocked with a `ProtectedError`
+- Other operations (restart, sync, install/upgrade modules) are unaffected
+
 ### Via REST API
 
 ```bash
@@ -881,6 +933,7 @@ All endpoints return JSON with an `ok` field. Authentication via HTTP Basic auth
 | `POST` | `/api/environments/{branch}/start` | Start an environment |
 | `POST` | `/api/environments/{branch}/stop` | Stop an environment |
 | `POST` | `/api/environments/{branch}/restart` | Restart an environment |
+| `POST` | `/api/environments/{branch}/sync` | Pull latest code and auto-install/upgrade/restart |
 | `POST` | `/api/environments/{branch}/delete` | Delete an environment |
 | `GET` | `/api/environments/{branch}/logs?n=200` | Get environment logs |
 | `POST` | `/api/environments/{branch}/protect` | Protect environment from deletion |
@@ -988,6 +1041,13 @@ All tools are accessible via MCP clients (Cursor, Cline, Amp, etc.) and the CLI 
 
 ## CLI Reference
 
+### Global Options
+
+```bash
+# Use a custom .env file (default: .env in current directory)
+oduflow --env /path/to/.env <command>
+```
+
 ### Server & System Commands
 
 ```bash
@@ -996,6 +1056,9 @@ oduflow
 
 # Initialize shared infrastructure (network, DB, Traefik)
 oduflow init
+
+# Initialize and install a license in one step
+oduflow init --license /path/to/license.key
 
 # Initialize per-instance directories (workspaces, templates)
 oduflow init-instance
@@ -1175,6 +1238,10 @@ WARNING  Web UI auth DISABLED (ODUFLOW_UI_PASSWORD not set)
 ### Git credentials
 
 Private repository credentials are stored in the git credential store (`~/.git-credentials`) via the `setup_repo_auth` tool. The clean URL (without credentials) is always used in Docker labels and logs — credentials are never exposed.
+
+### iptables rule
+
+During `oduflow init`, an `iptables ACCEPT` rule is automatically added for the `oduflow-net` Docker bridge interface. This ensures that containers on the shared network can communicate with the host (required for Traefik `host.docker.internal` routing and PostgreSQL access). If `iptables` is not available, the rule is skipped with a warning.
 
 ### Odoo security defaults
 
@@ -1530,6 +1597,56 @@ The bundled `postgresql.conf` is optimized for a 2 vCPU / 4 GB RAM development s
 - **Aggressive autovacuum**: 30s naptime, 5% scale factor
 - **Slow query logging**: queries over 1 second
 - **HDD-optimized**: random_page_cost=4.0, effective_io_concurrency=2
+
+---
+
+## Licensing
+
+Oduflow is source-available under the [Polyform Noncommercial License 1.0.0](LICENSE). Commercial use requires a license.
+
+### License Types
+
+| Type | Label | Description |
+|---|---|---|
+| `unlicensed` | UNLICENSED — NON-COMMERCIAL USE ONLY | Default when no license key is installed |
+| `individual` | Licensed to individual | Personal commercial license |
+| `business` | Licensed to company (internal use only) | Company license for internal use |
+| `integrator` | Licensed to Odoo integrator | License for Odoo integrators and consultancies |
+
+### Installing a License
+
+**Via CLI (during init):**
+
+```bash
+oduflow init --license /path/to/license.key
+```
+
+**Via CLI (standalone):**
+
+The license file is stored at `/etc/oduflow/license.key`.
+
+**Via Web Dashboard:**
+
+Navigate to the dashboard and use the license activation form. The license key text can be pasted directly.
+
+**Via REST API:**
+
+```bash
+curl -X POST http://localhost:8000/api/license/activate \
+  -H "Content-Type: application/json" \
+  -d '{"key": "<license-key-text>"}'
+```
+
+### Checking License Status
+
+```bash
+# Via REST API
+curl http://localhost:8000/api/license
+
+# Via Web Dashboard — license info is displayed in the dashboard header
+```
+
+License keys are RSA-signed and verified against a built-in public key. Invalid or tampered keys are rejected.
 
 ---
 

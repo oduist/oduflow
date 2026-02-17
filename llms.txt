@@ -45,11 +45,15 @@ Key environment variables:
 - `ODUFLOW_HOST` — bind address (default `0.0.0.0`)
 - `ODUFLOW_PORT` — HTTP port (default `8000`)
 - `ODUFLOW_AUTH_TOKEN` — Bearer token for MCP auth (empty = auth disabled)
+- `ODUFLOW_UI_PASSWORD` — password for Web UI Basic Auth (empty = UI open)
 - `ODUFLOW_HOME` — base directory for all data (default `/srv/oduflow_data_1`)
-- `ODUFLOW_DEFAULT_BRANCH` — base branch for cloning (default `main`)
+- `ODUFLOW_DEFAULT_BRANCH` — base branch for cloning (default `prod`)
 - `ODUFLOW_DEFAULT_TEMPLATE` — default template profile (default `default`)
 - `EXTERNAL_HOST` — hostname for environment URLs (default `localhost`)
 - `ODUFLOW_ROUTING_MODE` — `port` (default) or `traefik` (auto-HTTPS)
+- `ODUFLOW_OVERLAY_THRESHOLD_MB` — filestore size threshold for overlay vs copy (default `50`)
+- `ODUFLOW_INSTANCE_ID` — instance identifier for multi-instance setups (default `1`)
+- `ODUFLOW_TRACE` — set to `1` for trace-level logging
 
 ### Step 4: Initialize the system
 
@@ -151,9 +155,13 @@ The server starts on `http://0.0.0.0:8000`. MCP endpoint: `http://<host>:8000/mc
 - `get_environment_logs` — retrieve container logs
 - `exec_in_environment` — execute shell commands inside the Odoo container
 - `list_environments` / `get_environment_status` — inspect environments
-- `create_service` / `delete_service` — manage auxiliary services (Redis, Meilisearch, etc.)
-- `publish_as_template` — publish a branch's DB to become the new template
+- `rebuild_environment` — re-create the container from the same image, preserving DB and filestore
+- `create_service` / `delete_service` / `update_service` — manage auxiliary services (Redis, Meilisearch, etc.)
+- `list_service_presets` / `restore_service` / `delete_service_preset` — manage service presets
+- `publish_as_template` / `drop_template` / `list_templates` — template management
 - `import_template_from_odoo` — import a template from a running Odoo instance via its database manager API
+- `setup_repo_auth` — cache git credentials for private repositories
+- `add_extra_repo` / `list_extra_repos` / `delete_extra_repo` — manage extra addons repositories
 - `get_agent_guide` — get detailed instructions for AI agents on how to use Oduflow
 - `get_odoo_development_guide` — get Odoo development standards guide for a specific version (15–19)
 
