@@ -126,6 +126,8 @@
   .btn-delete:hover { background: rgba(248,81,73,0.1); }
   .btn-update { border-color: var(--yellow); color: var(--yellow); }
   .btn-update:hover { background: rgba(210,153,34,0.1); }
+  .btn-sync { border-color: var(--accent); color: var(--accent); }
+  .btn-sync:hover { background: rgba(88,166,255,0.1); }
   .btn-logs { border-color: var(--accent); color: var(--accent); }
   .btn-logs:hover { background: rgba(88,166,255,0.1); }
   .btn-protect { border-color: var(--yellow); color: var(--yellow); }
@@ -726,6 +728,8 @@ function renderEnvironments(envs) {
             (allStopped || env.protected ? 'disabled title="Environment is protected"' : '') + '>Stop</button>' +
           '<button class="btn btn-restart" onclick="doAction(\'' + escAttr(env.branch) + '\',\'restart\')" ' +
             (allStopped ? 'disabled' : '') + '>Restart</button>' +
+          '<button class="btn btn-sync" onclick="doAction(\'' + escAttr(env.branch) + '\',\'sync\')" ' +
+            (allStopped ? 'disabled' : '') + '>Sync</button>' +
           '<button class="btn btn-logs" onclick="showLogs(\'' + escAttr(env.branch) + '\')">Logs</button>' +
           '<button class="btn btn-protect' + (env.protected ? ' active' : '') + '" ' +
             'onclick="doProtect(\'' + escAttr(env.branch) + '\',' + (env.protected ? 'true' : 'false') + ')">' +

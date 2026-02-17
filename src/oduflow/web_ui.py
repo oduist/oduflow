@@ -172,6 +172,21 @@ def _build_routes(
         finally:
             busy_lock.release()
 
+    def api_sync(request: Request) -> JSONResponse:
+        branch = request.path_params["branch"]
+        if not busy_lock.acquire(blocking=False):
+            return _error_response(BusyError("Another operation is in progress."))
+        try:
+            result = env_ops.pull_environment(get_settings(), branch)
+            return JSONResponse({"ok": True, "result": result})
+        except FlowError as e:
+            return _error_response(e)
+        except Exception as e:
+            logger.exception("Unexpected error in api_sync")
+            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+        finally:
+            busy_lock.release()
+
     def api_delete(request: Request) -> JSONResponse:
         branch = request.path_params["branch"]
         if not busy_lock.acquire(blocking=False):
@@ -564,6 +579,7 @@ def _build_routes(
         Route("/api/environments/{branch:path}/start", api_start, methods=["POST"]),
         Route("/api/environments/{branch:path}/stop", api_stop, methods=["POST"]),
         Route("/api/environments/{branch:path}/restart", api_restart, methods=["POST"]),
+        Route("/api/environments/{branch:path}/sync", api_sync, methods=["POST"]),
         Route("/api/environments/{branch:path}/protect", api_protect, methods=["POST"]),
         Route("/api/environments/{branch:path}/unprotect", api_unprotect, methods=["POST"]),
         Route("/api/environments/{branch:path}/delete", api_delete, methods=["POST"]),
