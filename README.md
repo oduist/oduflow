@@ -4,7 +4,7 @@
   <img src="https://img.shields.io/badge/Docker-Required-2496ED?logo=docker&logoColor=white" alt="Docker">
   <img src="https://img.shields.io/badge/Protocol-MCP-green" alt="MCP">
   <img src="https://img.shields.io/badge/License-Polyform%20NC-yellow" alt="Polyform Noncommercial License">
-  <img src="https://img.shields.io/badge/Odoo-13.0--18.0-714B67?logo=odoo&logoColor=white" alt="Odoo">
+  <img src="https://img.shields.io/badge/Odoo-15.0--19.0-714B67?logo=odoo&logoColor=white" alt="Odoo">
 </p>
 
 # Oduflow
@@ -249,40 +249,6 @@ The agent will call the appropriate MCP tools in sequence:
 
 Add the Oduflow MCP server to your agent's configuration. The exact format depends on the client:
 
-**Cursor / Windsurf** (`.cursor/mcp.json` or `.windsurf/mcp.json`):
-
-```json
-{
-  "mcpServers": {
-    "oduflow": {
-      "type": "http",
-      "url": "https://<your-oduflow-host>/mcp",
-      "headers": {
-        "Authorization": "Bearer test"
-      }
-    }
-  }
-}
-```
-
-**Amp** (`.amp/settings.json`):
-
-```json
-{
-  "mcpServers": {
-    "oduflow": {
-      "type": "http",
-      "url": "https://<your-oduflow-host>/mcp",
-      "headers": {
-        "Authorization": "Bearer test"
-      }
-    }
-  }
-}
-```
-
-**Claude Desktop** (`claude_desktop_config.json`):
-
 ```json
 {
   "mcpServers": {
@@ -305,7 +271,7 @@ You can add the following rule to your AI coding agent to automate environment l
 
 ```
 ---
-description: "Manage Odoo dev environments via the Flow MCP server"
+description: "Manage Odoo dev environments via the Oduflow MCP server"
 alwaysApply: true
 ---
 ```
