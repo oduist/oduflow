@@ -7,6 +7,13 @@ import subprocess
 import time
 from typing import Any
 
+_TRACE = os.environ.get("ODUFLOW_TRACE") == "1"
+
+
+def _trace(msg: str, *args: object) -> None:
+    if _TRACE:
+        logger.info("[TRACE] " + msg, *args)
+
 import docker
 from docker import DockerClient
 
@@ -955,12 +962,17 @@ def pull_environment(settings: Settings, branch_name: str) -> dict[str, Any]:
             f"Environment '{branch_name}' does not exist. Use create_environment first."
         )
 
+    _trace("pull_environment(%s): git pull started", branch_name)
     changed_files = pull_repo(repo_path, branch_name)
     if not changed_files:
+        _trace("pull_environment(%s): no changes, already up to date", branch_name)
         return {"action": "none", "message": "Already up to date."}
+
+    _trace("pull_environment(%s): %d files changed: %s", branch_name, len(changed_files), changed_files)
 
     analysis = classify_changes(changed_files, repo_path)
     action = analysis["action"]
+    _trace("pull_environment(%s): classify result action=%s", branch_name, action)
 
     if action in ("install", "upgrade"):
         from oduflow.docker_ops.odoo_ops import install_odoo_modules, upgrade_odoo_modules
@@ -972,21 +984,26 @@ def pull_environment(settings: Settings, branch_name: str) -> dict[str, Any]:
         odoo_output_parts: list[str] = []
 
         if to_install:
+            _trace("pull_environment(%s): installing modules %s", branch_name, to_install)
             res = install_odoo_modules(settings, branch_name, *to_install)
             last_exit_code = res["exit_code"]
+            _trace("pull_environment(%s): install exit_code=%d", branch_name, last_exit_code)
             messages.append(f"Installed modules: {','.join(to_install)}")
             if res.get("output"):
                 odoo_output_parts.append(res["output"])
 
         if to_upgrade:
+            _trace("pull_environment(%s): upgrading modules %s", branch_name, to_upgrade)
             res = upgrade_odoo_modules(settings, branch_name, *to_upgrade)
             last_exit_code = res["exit_code"]
+            _trace("pull_environment(%s): upgrade exit_code=%d", branch_name, last_exit_code)
             messages.append(f"Upgraded modules: {','.join(to_upgrade)}")
             if res.get("output"):
                 odoo_output_parts.append(res["output"])
 
         container = client.containers.get(odoo_container_name)
         container.restart()
+        _trace("pull_environment(%s): container RESTARTED after install/upgrade", branch_name)
         logger.info("Container restarted after module update", extra={"branch": branch_name})
         messages.append("Container restarted.")
         return {
@@ -1002,6 +1019,7 @@ def pull_environment(settings: Settings, branch_name: str) -> dict[str, Any]:
     if action == "restart":
         container = client.containers.get(odoo_container_name)
         container.restart()
+        _trace("pull_environment(%s): container RESTARTED (Python files changed)", branch_name)
         logger.info("Container restarted after pull", extra={"branch": branch_name})
         return {
             "action": "restart",
@@ -1009,6 +1027,7 @@ def pull_environment(settings: Settings, branch_name: str) -> dict[str, Any]:
             "message": "Container restarted (Python files changed).",
         }
 
+    _trace("pull_environment(%s): NO restart, action=refresh (hot-reload only)", branch_name)
     return {
         "action": "refresh",
         "changed_files": changed_files,
