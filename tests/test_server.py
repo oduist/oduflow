@@ -1,6 +1,7 @@
 import pytest
 from unittest.mock import patch, MagicMock
 
+from fastmcp.exceptions import ToolError
 from oduflow.settings import Settings
 
 TEST_SETTINGS = Settings(
@@ -106,7 +107,7 @@ class TestErrorHandling:
     def test_flow_error_raises_value_error(self, mock_restart):
         from oduflow.errors import NotFoundError
         mock_restart.side_effect = NotFoundError("container not found")
-        with pytest.raises(ValueError, match="container not found"):
+        with pytest.raises(ToolError, match="container not found"):
             _call_tool("restart_environment", branch_name="main")
 
 
@@ -181,7 +182,7 @@ class TestUpdateServiceTool:
     def test_update_not_found(self, mock_update):
         from oduflow.errors import NotFoundError
         mock_update.side_effect = NotFoundError("Service 'redis' not found")
-        with pytest.raises(ValueError, match="Service 'redis' not found"):
+        with pytest.raises(ToolError, match="Service 'redis' not found"):
             _get_tool_fn("update_service")(name="redis")
 
 
@@ -236,7 +237,7 @@ class TestGetServiceLogsTool:
     def test_logs_error(self, mock_logs):
         from oduflow.errors import NotFoundError
         mock_logs.side_effect = NotFoundError("Service 'redis' not found")
-        with pytest.raises(ValueError, match="Service 'redis' not found"):
+        with pytest.raises(ToolError, match="Service 'redis' not found"):
             _get_tool_fn("get_service_logs")(name="redis")
 
 
@@ -246,7 +247,7 @@ class TestMutex:
         import oduflow.server
         oduflow.server._busy.acquire()
         try:
-            with pytest.raises(ValueError, match="Another operation is in progress"):
+            with pytest.raises(ToolError, match="Another operation is in progress"):
                 _call_tool("create_environment", branch_name="main", repo_url="https://x.git", odoo_image="odoo:17.0")
         finally:
             oduflow.server._busy.release()
