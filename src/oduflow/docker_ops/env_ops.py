@@ -823,7 +823,7 @@ def list_environments(settings: Settings) -> list[dict[str, Any]]:
 
         if "-odoo" in container.name:
             if settings.routing_mode == "traefik":
-                envs[branch]["url"] = f"https://{get_env_hostname(branch, settings.base_domain)}"
+                envs[branch]["url"] = f"https://{get_env_hostname(branch, settings.base_domain)}/web?debug=1"
             else:
                 ports = container.attrs.get("NetworkSettings", {}).get("Ports", {})
                 if ports:
@@ -831,7 +831,7 @@ def list_environments(settings: Settings) -> list[dict[str, Any]]:
                     if mappings:
                         host_port = mappings[0].get("HostPort")
                         if host_port:
-                            envs[branch]["url"] = f"http://{settings.external_host}:{host_port}"
+                            envs[branch]["url"] = f"http://{settings.external_host}:{host_port}/web?debug=1"
 
         envs[branch]["containers"].append(container_info)
 
