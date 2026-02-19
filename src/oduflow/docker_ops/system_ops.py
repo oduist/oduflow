@@ -1,4 +1,3 @@
-import io
 import json
 import logging
 import os
@@ -171,6 +170,57 @@ def _copy_file_to_container(container: docker.models.containers.Container, src_p
             tar.add(src_path, arcname=os.path.basename(src_path))
         with open(tmp_path, "rb") as f:
             container.put_archive(dest_dir, f)
+    finally:
+        os.remove(tmp_path)
+
+
+def _copy_file_from_container(container: docker.models.containers.Container, container_path: str, dest_path: str) -> None:
+    import tempfile
+
+    chunks, _ = container.get_archive(container_path)
+    with tempfile.NamedTemporaryFile(suffix=".tar", delete=False) as tmp:
+        for chunk in chunks:
+            tmp.write(chunk)
+        tmp_path = tmp.name
+    try:
+        with tarfile.open(tmp_path, mode="r") as tar:
+            member = tar.getmembers()[0]
+            f = tar.extractfile(member)
+            if f is None:
+                raise ExternalCommandError("get_archive", -1, f"Could not extract {container_path} from tar")
+            with open(dest_path, "wb") as out:
+                shutil.copyfileobj(f, out)
+    finally:
+        os.remove(tmp_path)
+
+
+def _extract_archive_from_container(
+    container: docker.models.containers.Container,
+    container_path: str,
+    dest_dir: str,
+    prefix: str,
+) -> int:
+    import tempfile
+
+    chunks, _ = container.get_archive(container_path)
+    with tempfile.NamedTemporaryFile(suffix=".tar", delete=False) as tmp:
+        for chunk in chunks:
+            tmp.write(chunk)
+        tmp_path = tmp.name
+    try:
+        extracted = 0
+        with tarfile.open(tmp_path, mode="r") as tar:
+            for member in tar.getmembers():
+                if not member.name.startswith(prefix) and member.name != prefix.rstrip("/"):
+                    continue
+                rel = member.name[len(prefix):]
+                if not rel:
+                    continue
+                member.name = rel
+                tar.extract(member, dest_dir)
+                if not member.isdir():
+                    extracted += 1
+        return extracted
     finally:
         os.remove(tmp_path)
 
@@ -473,16 +523,7 @@ def init_template(
 
     logger.info("pg_dump completed, extracting dump file")
 
-    chunks, _ = db_container.get_archive(f"/tmp/{build_db}.dump")
-    raw = b"".join(chunks)
-    tar_stream = io.BytesIO(raw)
-    with tarfile.open(fileobj=tar_stream, mode="r") as tar:
-        member = tar.getmembers()[0]
-        f = tar.extractfile(member)
-        if f is None:
-            raise ExternalCommandError("get_archive", -1, "Could not extract dump from tar")
-        with open(template_sql_path, "wb") as out:
-            out.write(f.read())
+    _copy_file_from_container(db_container, f"/tmp/{build_db}.dump", template_sql_path)
 
     logger.info("Dump saved to %s", template_sql_path)
 
@@ -492,22 +533,10 @@ def init_template(
 
     odoo_data_container_path = "/var/lib/odoo/.local/share/Odoo"
     try:
-        chunks_fs, _ = temp_container.get_archive(odoo_data_container_path)
-        raw_fs = b"".join(chunks_fs)
-        tar_fs = io.BytesIO(raw_fs)
-        extracted = 0
         src_fs_prefix = f"Odoo/filestore/{build_db}/"
-        with tarfile.open(fileobj=tar_fs, mode="r") as tar:
-            for member in tar.getmembers():
-                if not member.name.startswith(src_fs_prefix) and member.name != f"Odoo/filestore/{build_db}":
-                    continue
-                rel = member.name[len(src_fs_prefix):]
-                if not rel:
-                    continue
-                member.name = rel
-                tar.extract(member, template_filestore_path)
-                if not member.isdir():
-                    extracted += 1
+        extracted = _extract_archive_from_container(
+            temp_container, odoo_data_container_path, template_filestore_path, src_fs_prefix,
+        )
         logger.info("Filestore extracted to %s (%d files)", template_filestore_path, extracted)
 
     except docker.errors.NotFound:
@@ -721,16 +750,7 @@ def template_down(settings: Settings, template_name: str) -> dict[str, str]:
         msg = output.decode("utf-8") if isinstance(output, bytes) else str(output)
         raise ExternalCommandError("pg_dump", exit_code, msg)
 
-    chunks, _ = db_container.get_archive(dump_file)
-    raw = b"".join(chunks)
-    tar_stream = io.BytesIO(raw)
-    with tarfile.open(fileobj=tar_stream, mode="r") as tar:
-        member = tar.getmembers()[0]
-        f = tar.extractfile(member)
-        if f is None:
-            raise ExternalCommandError("get_archive", -1, "Could not extract dump from tar")
-        with open(template_sql_path, "wb") as out:
-            out.write(f.read())
+    _copy_file_from_container(db_container, dump_file, template_sql_path)
 
     logger.info("Dump saved to %s", template_sql_path)
 
@@ -775,16 +795,7 @@ def publish_env_as_template(settings: Settings, branch_name: str, template_name:
         msg = output.decode("utf-8") if isinstance(output, bytes) else str(output)
         raise ExternalCommandError("pg_dump", exit_code, msg)
 
-    chunks, _ = db_container.get_archive(dump_file)
-    raw = b"".join(chunks)
-    tar_stream = io.BytesIO(raw)
-    with tarfile.open(fileobj=tar_stream, mode="r") as tar:
-        member = tar.getmembers()[0]
-        f = tar.extractfile(member)
-        if f is None:
-            raise ExternalCommandError("get_archive", -1, "Could not extract dump from tar")
-        with open(dump_path, "wb") as out:
-            out.write(f.read())
+    _copy_file_from_container(db_container, dump_file, dump_path)
 
     logger.info("Branch dump saved to %s", dump_path)
 
