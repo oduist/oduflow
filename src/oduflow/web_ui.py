@@ -117,6 +117,10 @@ def _build_routes(
         ico_path = _TEMPLATE_DIR / "favicon.ico"
         return Response(ico_path.read_bytes(), media_type="image/x-icon")
 
+    def logo(request: Request) -> Response:
+        logo_path = _TEMPLATE_DIR / "logo.png"
+        return Response(logo_path.read_bytes(), media_type="image/png")
+
     def api_list(request: Request) -> JSONResponse:
         try:
             envs = env_ops.list_environments(get_settings())
@@ -568,6 +572,7 @@ def _build_routes(
     return [
         Route("/", dashboard, methods=["GET"]),
         Route("/favicon.ico", favicon, methods=["GET"]),
+        Route("/logo.png", logo, methods=["GET"]),
         Route("/api/license", api_license, methods=["GET"]),
         Route("/api/license/activate", api_license_activate, methods=["POST"]),
         Route("/api/templates", api_templates, methods=["GET"]),

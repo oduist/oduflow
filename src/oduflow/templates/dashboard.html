@@ -35,7 +35,8 @@
     padding-bottom: 16px;
     border-bottom: 1px solid var(--border);
   }
-  header h1 { font-size: 20px; font-weight: 600; }
+  header h1 { font-size: 20px; font-weight: 600; display: flex; align-items: center; gap: 10px; }
+  header h1 img { height: 28px; }
   header .actions { display: flex; gap: 8px; align-items: center; }
   .auto-label { font-size: 12px; color: var(--text-dim); }
   #refresh-btn {
@@ -400,7 +401,7 @@
 <body>
 
 <header>
-  <h1>Oduflow</h1>
+  <h1><img src="/logo.png" alt="Oduflow logo">Oduflow</h1>
   <span id="license-badge" class="license-badge" style="display:none"></span>
   <div class="actions">
     <label class="auto-label" for="refresh-interval">Refresh
