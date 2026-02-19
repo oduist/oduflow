@@ -162,15 +162,17 @@ def _is_text_dump(path: str) -> bool:
 
 
 def _copy_file_to_container(container: docker.models.containers.Container, src_path: str, dest_dir: str) -> None:
-    with open(src_path, "rb") as f:
-        data = f.read()
-    tar_stream = io.BytesIO()
-    with tarfile.open(fileobj=tar_stream, mode="w") as tar:
-        info = tarfile.TarInfo(name=os.path.basename(src_path))
-        info.size = len(data)
-        tar.addfile(info, io.BytesIO(data))
-    tar_stream.seek(0)
-    container.put_archive(dest_dir, tar_stream)
+    import tempfile
+
+    with tempfile.NamedTemporaryFile(suffix=".tar", delete=False) as tmp:
+        tmp_path = tmp.name
+    try:
+        with tarfile.open(tmp_path, mode="w") as tar:
+            tar.add(src_path, arcname=os.path.basename(src_path))
+        with open(tmp_path, "rb") as f:
+            container.put_archive(dest_dir, f)
+    finally:
+        os.remove(tmp_path)
 
 
 def _ensure_iptables_accept(client: DockerClient, network_name: str) -> None:
@@ -301,6 +303,19 @@ def reload_template(
         raise ExternalCommandError(cmd_name, exit_code, msg)
 
     logger.info("DB restore finished in %.1fs", restore_elapsed)
+
+    if dump_path:
+        tpl_dir = settings.get_template_dir(template_name)
+        os.makedirs(tpl_dir, exist_ok=True)
+        dest_name = "dump.sql" if use_psql else "dump.pgdump"
+        other_name = "dump.pgdump" if use_psql else "dump.sql"
+        dest_path = os.path.join(tpl_dir, dest_name)
+        other_path = os.path.join(tpl_dir, other_name)
+        shutil.copy2(dump_path, dest_path)
+        if os.path.isfile(other_path):
+            os.remove(other_path)
+            logger.info("Removed old dump %s", other_path)
+        logger.info("Saved dump to workspace: %s", dest_path)
 
     _exec_sql(
         client,
