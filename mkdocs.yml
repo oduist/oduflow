@@ -1,0 +1,40 @@
+site_name: Oduflow
+site_url: https://oduflow.dev
+site_description: AI-first Odoo development and CI tool with reusable database templates, powered by MCP
+repo_url: https://github.com/oduist/oduflow
+repo_name: oduist/oduflow
+
+docs_dir: docs_src
+site_dir: docs
+
+theme:
+  name: material
+  palette:
+    - scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  features:
+    - navigation.instant
+    - navigation.tracking
+    - navigation.sections
+    - content.code.copy
+
+markdown_extensions:
+  - admonition
+  - pymdownx.highlight
+  - pymdownx.superfences
+  - pymdownx.details
+  - toc:
+      permalink: true
+
+nav:
+  - Home: index.md
