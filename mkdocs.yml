@@ -4,29 +4,8 @@ site_description: AI-first Odoo development and CI tool with reusable database t
 repo_url: https://github.com/oduist/oduflow
 repo_name: oduist/oduflow
 
-docs_dir: docs_src
-site_dir: docs
-
 theme:
-  name: material
-  palette:
-    - scheme: default
-      primary: indigo
-      accent: indigo
-      toggle:
-        icon: material/brightness-7
-        name: Switch to dark mode
-    - scheme: slate
-      primary: indigo
-      accent: indigo
-      toggle:
-        icon: material/brightness-4
-        name: Switch to light mode
-  features:
-    - navigation.instant
-    - navigation.tracking
-    - navigation.sections
-    - content.code.copy
+  name: gitbook
 
 markdown_extensions:
   - admonition
