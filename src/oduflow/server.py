@@ -650,6 +650,22 @@ def exec_in_environment(branch_name: str, command: str, user: str = "odoo") -> s
 @mcp.tool()
 @handle_errors
 @with_mutex
+def run_db_query(branch_name: str, query: str, output_format: str = "csv") -> str:
+    """
+    Execute a SQL query against the environment's PostgreSQL database.
+
+    Args:
+        branch_name: The name of the branch/environment.
+        query: SQL query to execute (e.g. "SELECT id, name FROM res_partner LIMIT 10").
+        output_format: "csv" (default, compact for agent consumption) or "human" (pretty table — use when relaying results to the user).
+    """
+    result = odoo_ops.run_db_query(_get_settings(), branch_name, query, output_format)
+    return result["output"]
+
+
+@mcp.tool()
+@handle_errors
+@with_mutex
 def create_service(name: str, image: str, port: int, hostname: str = "", env_vars: str = "") -> str:
     """
     Create a managed auxiliary service container (e.g. Redis, Meilisearch).

@@ -4,7 +4,7 @@ from typing import Any
 import docker
 
 from oduflow.docker_ops.client import get_client
-from oduflow.errors import NotFoundError
+from oduflow.errors import ExternalCommandError, NotFoundError
 from oduflow.naming import get_db_name, get_resource_name
 from oduflow.settings import Settings
 
@@ -119,6 +119,41 @@ def exec_in_environment(
     )
     exit_code, output = container.exec_run(command, user=user)
     output_str = output.decode("utf-8") if isinstance(output, bytes) else str(output)
+
+    return {
+        "exit_code": exit_code,
+        "output": output_str,
+    }
+
+
+def run_db_query(
+    settings: Settings, branch_name: str, query: str, output_format: str = "csv"
+) -> dict[str, Any]:
+    client = get_client()
+    env_db = get_db_name(branch_name, settings.instance_id)
+
+    try:
+        db_container = client.containers.get(settings.shared_db_container)
+    except docker.errors.NotFound:
+        raise NotFoundError(
+            f"Database container '{settings.shared_db_container}' is not running. "
+            "Run 'oduflow init' first."
+        )
+
+    if output_format == "human":
+        cmd = ["psql", "-U", settings.db_user, "-d", env_db, "-c", query]
+    else:
+        cmd = ["psql", "-U", settings.db_user, "-d", env_db, "--csv", "-c", query]
+
+    logger.info(
+        "Running DB query",
+        extra={"branch": branch_name, "format": output_format},
+    )
+    exit_code, output = db_container.exec_run(cmd)
+    output_str = output.decode("utf-8") if isinstance(output, bytes) else str(output)
+
+    if exit_code != 0:
+        raise ExternalCommandError("psql", exit_code, output_str)
 
     return {
         "exit_code": exit_code,
