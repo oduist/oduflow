@@ -140,6 +140,43 @@ Priority: install > upgrade > restart > refresh (no action).
 
 ---
 
+## Database Migrations Workflow
+
+> ⚠️ **Critical: migrations only run during module upgrade, NOT during environment creation.**
+>
+> When `create_environment` provisions from a template, it clones the template database as-is. **No migrations are executed.** Migrations (files in `migrations/` or `upgrades/`) are only triggered by `upgrade_odoo_modules` (or `sync_environment` when it detects a version bump).
+
+### Anti-patterns — Do NOT Do This
+
+| ❌ Anti-pattern | Why it's wrong |
+|---|---|
+| Deleting and recreating the environment to "apply" a migration | `create_environment` from a template does **not** run migrations — you'll get the old schema back and lose your test data |
+| Relying on `create_environment` to execute migrations | Templates are snapshots; migrations require an explicit upgrade step |
+| Skipping verification after upgrade | A migration may silently fail or apply partially — always verify |
+
+### Correct Workflow for Database Schema Changes
+
+```
+Step 1: git commit & push   — Commit the migration script + version bump in __manifest__.py
+Step 2: sync_environment    — Or call upgrade_odoo_modules directly; this triggers the migration
+Step 3: exec_in_environment — Run a SELECT query to verify the expected schema/data changes
+Step 4: get_environment_logs — If something went wrong, check for migration INFO/ERROR messages
+```
+
+### How to Verify a Migration
+
+1. **Query the database** via `exec_in_environment`:
+   ```
+   psql -h oduflow-db -U odoo -d oduflow_{branch_name} -c "SELECT column_name FROM information_schema.columns WHERE table_name = 'your_table';"
+   ```
+   Confirm that new columns, constraints, or data changes are present.
+
+2. **Check logs** via `get_environment_logs`: look for `odoo.modules.migration` INFO messages confirming the migration script was executed.
+
+> **Key takeaway: NEVER recreate an environment to test migrations. Always use `upgrade_odoo_modules` or `sync_environment`.**
+
+---
+
 ## Example: Full Agent Session
 
 ```
