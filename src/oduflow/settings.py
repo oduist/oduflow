@@ -34,6 +34,7 @@ class Settings:
     default_branch: str = "prod"
     port_registry_path: str = ""
     overlay_threshold_mb: int = 50
+    stateless_http: bool = True
 
     def get_template_dir(self, template_name: str) -> str:
         return os.path.join(self.home, "templates", template_name)
@@ -90,6 +91,7 @@ class Settings:
             flow_server_port=int(os.getenv("ODUFLOW_PORT", "8000")),
             default_branch=os.getenv("ODUFLOW_DEFAULT_BRANCH", "prod"),
             overlay_threshold_mb=int(os.getenv("ODUFLOW_OVERLAY_THRESHOLD_MB", "50")),
+            stateless_http=os.getenv("ODUFLOW_STATELESS_HTTP", "true").strip().lower() in ("1", "true", "yes"),
             port_registry_path=os.getenv(
                 "ODUFLOW_PORT_REGISTRY",
                 os.path.join(flow_home, "ports.json"),

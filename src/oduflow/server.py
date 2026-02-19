@@ -1248,7 +1248,10 @@ def main() -> None:
         else:
             logger.warning("HTTP auth DISABLED (ODUFLOW_AUTH_TOKEN not set)")
 
-        app = create_streamable_http_app(mcp, "/mcp", auth=auth)
+        settings = _get_settings()
+        app = create_streamable_http_app(mcp, "/mcp", auth=auth, stateless_http=settings.stateless_http)
+        if settings.stateless_http:
+            logger.info("Stateless HTTP mode ENABLED (no session tracking)")
 
         from oduflow.web_ui import mount_web_ui
         mount_web_ui(app, _get_settings, _busy)
