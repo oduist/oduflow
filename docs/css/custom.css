@@ -1,6 +1,8 @@
 .headerlink {
     opacity: 0;
     transition: opacity 0.2s;
+    text-decoration: none;
+    color: inherit;
 }
 
 h1:hover .headerlink,
