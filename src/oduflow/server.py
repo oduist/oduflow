@@ -220,6 +220,7 @@ def create_environment(
         f"Database: {result['database']}",
         f"Workspace: {result['workspace']}",
         f"Template: {display_template}",
+        f"Creation time: {result.get('elapsed_seconds', '?')}s",
     ]
     if extra_dict:
         extras_display = ", ".join(f"{name} ({branch})" for name, branch in extra_dict.items())

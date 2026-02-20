@@ -368,6 +368,7 @@ def create_environment(
     extra_addons: dict[str, str] | None = None,
     git_user: str = "",
 ) -> dict[str, str]:
+    start_time = time.time()
     try:
         client = get_client()
     except Exception as e:
@@ -699,6 +700,7 @@ def create_environment(
         "setup_logs": setup_logs,
     }
     result["extra_addons"] = extra_addons or {}
+    result["elapsed_seconds"] = round(time.time() - start_time, 1)
     if branch_created:
         result["branch_created_from"] = settings.default_branch
     return result
