@@ -15,6 +15,9 @@ markdown_extensions:
   - toc:
       permalink: true
 
+extra_css:
+  - css/custom.css
+
 nav:
   - Home: index.md
   - Quick Start: quick-start.md
