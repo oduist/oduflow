@@ -36,3 +36,4 @@ nav:
   - Running in Docker: docker.md
   - Internals: internals.md
   - Licensing: licensing.md
+  - Changelog: changelog.md

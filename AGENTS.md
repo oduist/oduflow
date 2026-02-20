@@ -14,7 +14,10 @@ Do NOT write or modify any code until the user explicitly approves the plan.
 After committing and pushing changes to `docs/` or `mkdocs.yml`, always publish the documentation to GitHub Pages automatically — do not ask the user:
 
 ```bash
+pip install -r requirements-docs.txt
 source .venv/bin/activate && mkdocs gh-deploy --force
 ```
+
+Documentation dependencies are listed in `requirements-docs.txt`.
 
 The site is hosted at: https://oduist.github.io/oduflow/
