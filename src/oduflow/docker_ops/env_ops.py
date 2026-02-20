@@ -811,7 +811,7 @@ def list_environments(settings: Settings) -> list[dict[str, Any]]:
                 "url": None,
                 "odoo_image": container.labels.get(settings.image_label, ""),
                 "repo_url": sanitize_repo_url(container.labels.get(settings.repo_label, "")),
-                "template_name": container.labels.get("oduflow.template", "default"),
+                "template_name": container.labels.get("oduflow.template", ""),
                 "extra_addons": _normalize_extra_addons(
                     json.loads(container.labels.get("oduflow.extra_addons", "{}")),
                     settings.default_branch,

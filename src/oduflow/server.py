@@ -284,7 +284,7 @@ def import_template_from_odoo(
         odoo_url: Base URL of the Odoo instance (e.g. "https://my-odoo.example.com").
         master_pwd: Odoo master password (database manager password).
         db_name: Name of the database to back up. If empty, auto-detected (fails if multiple DBs exist).
-        template_name: Name of the template profile to create (default: "default").
+        template_name: Name of the template profile to create.
     """
     result = system_ops.import_from_odoo(
         _get_settings(),
@@ -408,7 +408,7 @@ def list_environments() -> str:
             output += f"  Image: {env['odoo_image']}\n"
         if env.get("repo_url"):
             output += f"  Repo: {env['repo_url']}\n"
-        if env.get("template_name") and env["template_name"] != "default":
+        if env.get("template_name"):
             output += f"  Template: {env['template_name']}\n"
         for container in env["containers"]:
             output += f"  * {container['name']} [{container['status']}] ({container['image']})\n"
@@ -928,7 +928,7 @@ def _run_reload_template(settings: Settings, template_name: str, dump_path: str 
     print(msg)
 
 
-def _run_init_template(settings: Settings, odoo_image: str, modules: str = "base", template_name: str = "default", force: bool = False) -> None:
+def _run_init_template(settings: Settings, odoo_image: str, modules: str = "base", template_name: str = "", force: bool = False) -> None:
     result = system_ops.init_template(
         settings,
         odoo_image=odoo_image,
@@ -947,7 +947,7 @@ def _run_init_template(settings: Settings, odoo_image: str, modules: str = "base
     print(msg)
 
 
-def _run_template_up(settings: Settings, odoo_image: str, template_name: str = "default") -> None:
+def _run_template_up(settings: Settings, odoo_image: str, template_name: str = "") -> None:
     result = system_ops.template_up(settings, odoo_image=odoo_image, template_name=template_name)
     print(
         f"Template editor started.\n"
@@ -959,7 +959,7 @@ def _run_template_up(settings: Settings, odoo_image: str, template_name: str = "
     )
 
 
-def _run_template_down(settings: Settings, template_name: str = "default") -> None:
+def _run_template_down(settings: Settings, template_name: str = "") -> None:
     result = system_ops.template_down(settings, template_name=template_name)
     print(
         f"Template editor stopped.\n"
@@ -969,7 +969,7 @@ def _run_template_down(settings: Settings, template_name: str = "default") -> No
     )
 
 
-def _run_template_from_env(settings: Settings, branch: str, template_name: str = "default") -> None:
+def _run_template_from_env(settings: Settings, branch: str, template_name: str = "") -> None:
     result = system_ops.publish_env_as_template(settings, branch_name=branch, template_name=template_name)
     print(
         f"Branch '{result['branch']}' saved as template '{template_name}'.\n"
@@ -984,7 +984,7 @@ def _run_drop_template(settings: Settings, template_name: str) -> None:
     print(f"Template '{result['template_name']}' dropped.\nTemplate DB '{result['template_db']}' removed.")
 
 
-def _run_import_template(settings: Settings, odoo_url: str, master_pwd: str, db_name: str = "", template_name: str = "default") -> None:
+def _run_import_template(settings: Settings, odoo_url: str, master_pwd: str, db_name: str = "", template_name: str = "") -> None:
     result = system_ops.import_from_odoo(settings, odoo_url=odoo_url, master_pwd=master_pwd, db_name=db_name, template_name=template_name)
     print(
         f"Template '{result['template_name']}' imported successfully!\n"
@@ -1169,25 +1169,25 @@ def main() -> None:
     sub.add_parser("destroy", help="Destroy all shared infrastructure")
 
     p_reload = sub.add_parser("reload-template", help="Drop and re-restore a template DB from template profile")
-    p_reload.add_argument("template_name", nargs="?", default="default", help="Template profile name (default: default)")
+    p_reload.add_argument("template_name", help="Template profile name")
     p_reload.add_argument("--dump-path", default="", help="Path to dump file (overrides template profile path)")
 
     p_init_tpl = sub.add_parser("init-template", help="Generate template dump and filestore from a clean Odoo image")
     p_init_tpl.add_argument("--odoo-image", required=True, help="Docker image for Odoo (e.g. odoo:17.0)")
     p_init_tpl.add_argument("--modules", default="base", help="Comma-separated modules to install (default: base)")
-    p_init_tpl.add_argument("--template-name", default="default", help="Template profile name (default: default)")
+    p_init_tpl.add_argument("--template-name", required=True, help="Template profile name")
     p_init_tpl.add_argument("--force", action="store_true", help="Overwrite existing dump.sql and filestore")
 
     p_tpl_up = sub.add_parser("template-up", help="Start a template editor: Odoo working directly with template DB and filestore")
     p_tpl_up.add_argument("--odoo-image", required=True, help="Docker image for Odoo (e.g. odoo:17.0)")
-    p_tpl_up.add_argument("--template-name", default="default", help="Template profile name (default: default)")
+    p_tpl_up.add_argument("--template-name", required=True, help="Template profile name")
 
     p_tpl_down = sub.add_parser("template-down", help="Stop the template editor, dump the updated DB, restore template flag")
-    p_tpl_down.add_argument("--template-name", default="default", help="Template profile name (default: default)")
+    p_tpl_down.add_argument("--template-name", required=True, help="Template profile name")
 
     p_tfe = sub.add_parser("template-from-env", help="Save a branch environment as the new template")
     p_tfe.add_argument("branch", help="Branch name to use as template source")
-    p_tfe.add_argument("--template-name", default="default", help="Template profile name (default: default)")
+    p_tfe.add_argument("--template-name", required=True, help="Template profile name")
 
     p_drop_tpl = sub.add_parser("drop-template", help="Drop a template profile (template DB + files)")
     p_drop_tpl.add_argument("template_name", help="Template profile name to drop")
@@ -1196,7 +1196,7 @@ def main() -> None:
     p_import.add_argument("odoo_url", help="Base URL of the Odoo instance (e.g. https://my-odoo.example.com)")
     p_import.add_argument("master_pwd", help="Odoo master password")
     p_import.add_argument("--db-name", default="", help="Database name (auto-detected if only one exists)")
-    p_import.add_argument("--template-name", default="default", help="Template profile name (default: default)")
+    p_import.add_argument("--template-name", required=True, help="Template profile name")
 
     sub.add_parser("list-templates", help="List available template profiles")
 

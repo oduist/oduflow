@@ -92,20 +92,17 @@ class TestGetFilestorePaths:
 
 
 class TestGetTemplateDbName:
-    def test_default(self):
-        assert get_template_db_name("default") == "odoo_ref_1_default"
-
     def test_named(self):
-        assert get_template_db_name("myproject-v17") == "odoo_ref_1_myproject-v17"
+        assert get_template_db_name("prod") == "oduflow_template_1_prod"
+
+    def test_custom_name(self):
+        assert get_template_db_name("myproject-v17") == "oduflow_template_1_myproject-v17"
 
     def test_slash(self):
-        assert get_template_db_name("client/prod") == "odoo_ref_1_client-prod"
-
-    def test_default_arg(self):
-        assert get_template_db_name() == "odoo_ref_1_default"
+        assert get_template_db_name("client/prod") == "oduflow_template_1_client-prod"
 
     def test_with_instance_id(self):
-        assert get_template_db_name("default", instance_id="2") == "odoo_ref_2_default"
+        assert get_template_db_name("prod", instance_id="2") == "oduflow_template_2_prod"
 
     def test_named_with_instance_id(self):
-        assert get_template_db_name("myproject-v17", instance_id="3") == "odoo_ref_3_myproject-v17"
+        assert get_template_db_name("myproject-v17", instance_id="3") == "oduflow_template_3_myproject-v17"

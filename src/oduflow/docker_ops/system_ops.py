@@ -455,7 +455,7 @@ def init_template(
 
     _wait_pg_ready(client, settings)
 
-    build_db = "odoo_ref_build"
+    build_db = "oduflow_template_build"
     temp_container_name = "flow-template-builder"
 
     if _db_exists(client, settings, build_db):
@@ -1008,7 +1008,7 @@ def import_from_odoo(
     odoo_url: str,
     master_pwd: str,
     db_name: str = "",
-    template_name: str = "default",
+    template_name: str = "",
 ) -> dict[str, object]:
     """Import a template from a running Odoo instance via its database manager API.
 
@@ -1176,7 +1176,7 @@ def cleanup_orphans(settings: Settings, dry_run: bool = True) -> dict:
     """Find and remove orphaned databases, workspaces, and port registry entries.
 
     An orphan is a resource whose branch has no corresponding Docker container.
-    Template databases (odoo_ref_*) are always excluded.
+    Template databases (oduflow_template_*) are always excluded.
 
     Returns a dict with keys: orphan_databases, orphan_workspaces, orphan_ports,
     each a list of removed (or would-be-removed) names.

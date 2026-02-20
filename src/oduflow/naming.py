@@ -32,9 +32,9 @@ def get_env_hostname(branch_name: str, base_domain: str) -> str:
     return f"{slug}.{base_domain}"
 
 
-def get_template_db_name(template_name: str = "default", instance_id: str = "1") -> str:
+def get_template_db_name(template_name: str, instance_id: str = "1") -> str:
     slug = template_name.replace("/", "-")
-    return f"odoo_ref_{instance_id}_{slug}"
+    return f"oduflow_template_{instance_id}_{slug}"
 
 
 def get_filestore_paths(branch_name: str, workspaces_dir: str) -> dict[str, str]:
