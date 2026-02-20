@@ -279,8 +279,15 @@ def list_templates() -> str:
     output = "Template profiles:\n"
     for r in templates:
         db_status = "loaded" if r["db_loaded"] else "not loaded"
-        overlay_status = "overlay" if r.get("use_overlay") else "copy" if r.get("use_overlay") is not None else "auto"
-        output += f"- {r['template_name']}: DB={db_status}, SQL={r['has_sql']}, Filestore={r['has_filestore']}, Mode={overlay_status}\n"
+        overlay_status = "overlay" if r.get("use_overlay") else "copy"
+        fs_size = r.get("filestore_size_mb")
+        dump_size = r.get("dump_size_mb")
+        size_info = ""
+        if fs_size is not None or dump_size is not None:
+            fs_str = f"{fs_size:.0f} MB" if fs_size is not None else "?"
+            dump_str = f"{dump_size:.0f} MB" if dump_size is not None else "?"
+            size_info = f", Filestore size={fs_str}, Dump size={dump_str}"
+        output += f"- {r['template_name']}: DB={db_status}, SQL={r['has_sql']}, Filestore={r['has_filestore']}, Mode={overlay_status}{size_info}\n"
     return output
 
 
@@ -1025,8 +1032,15 @@ def _run_list_templates(settings: Settings) -> None:
     print("Template profiles:")
     for r in templates:
         db_status = "loaded" if r["db_loaded"] else "not loaded"
-        overlay_status = "overlay" if r.get("use_overlay") else "copy" if r.get("use_overlay") is not None else "auto"
-        print(f"  {r['template_name']}: DB={db_status}, SQL={'yes' if r['has_sql'] else 'no'}, Filestore={'yes' if r['has_filestore'] else 'no'}, Mode={overlay_status}")
+        overlay_status = "overlay" if r.get("use_overlay") else "copy"
+        fs_size = r.get("filestore_size_mb")
+        dump_size = r.get("dump_size_mb")
+        size_info = ""
+        if fs_size is not None or dump_size is not None:
+            fs_str = f"{fs_size:.0f} MB" if fs_size is not None else "?"
+            dump_str = f"{dump_size:.0f} MB" if dump_size is not None else "?"
+            size_info = f", Filestore size={fs_str}, Dump size={dump_str}"
+        print(f"  {r['template_name']}: DB={db_status}, SQL={'yes' if r['has_sql'] else 'no'}, Filestore={'yes' if r['has_filestore'] else 'no'}, Mode={overlay_status}{size_info}")
 
 
 def _run_list_services(settings: Settings) -> None:

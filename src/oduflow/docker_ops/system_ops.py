@@ -23,6 +23,39 @@ _BUNDLED_ODOO_CONF = _PACKAGE_ROOT / "templates" / "odoo.conf"
 _ETC_DIR = pathlib.Path("/etc/oduflow")
 
 
+def _file_size_mb(path: str) -> float:
+    """Return file size in MB, or 0.0 if file does not exist."""
+    try:
+        return os.path.getsize(path) / (1024 * 1024)
+    except OSError:
+        return 0.0
+
+
+def _update_template_sizes(settings: Settings, template_name: str, metadata: dict | None = None) -> dict:
+    """Compute filestore/dump sizes and persist them into template metadata."""
+    from oduflow.docker_ops.env_ops import _dir_size_mb
+
+    metadata_path = settings.get_template_metadata_path(template_name)
+    if metadata is None:
+        if os.path.isfile(metadata_path):
+            with open(metadata_path) as f:
+                metadata = json.load(f)
+        else:
+            metadata = {}
+
+    fs_path = settings.get_template_filestore_path(template_name)
+    dump_path = settings.get_template_sql_path(template_name)
+    fs_size = round(_dir_size_mb(fs_path), 1) if os.path.isdir(fs_path) else 0.0
+    metadata["filestore_size_mb"] = fs_size
+    metadata["dump_size_mb"] = round(_file_size_mb(dump_path), 1)
+    if "use_overlay" not in metadata or metadata["use_overlay"] is None:
+        metadata["use_overlay"] = fs_size >= settings.overlay_threshold_mb
+
+    with open(metadata_path, "w") as f:
+        json.dump(metadata, f, indent=2)
+    return metadata
+
+
 def _normalize_extra_addons(raw_addons, fallback_branch: str) -> dict[str, str]:
     """Convert old list format or new dict format to {name: branch} dict."""
     if isinstance(raw_addons, dict):
@@ -373,6 +406,7 @@ def reload_template(
         f"UPDATE pg_database SET datistemplate=true WHERE datname='{tpl_db}';",
     )
 
+    _update_template_sizes(settings, template_name)
     logger.info("Template DB reloaded, template_db=%s, restore_time=%.1fs", tpl_db, restore_elapsed)
     return {"status": "reloaded", "template_db": tpl_db, "restore_seconds": round(restore_elapsed, 1)}
 
@@ -567,10 +601,8 @@ def init_template(
     from oduflow.docker_ops.env_ops import _dir_size_mb
     fs_size = _dir_size_mb(template_filestore_path)
     metadata["use_overlay"] = fs_size >= settings.overlay_threshold_mb
-    metadata_path = settings.get_template_metadata_path(template_name)
-    with open(metadata_path, "w") as f:
-        json.dump(metadata, f, indent=2)
-    logger.info("Template metadata saved to %s (use_overlay=%s, filestore=%.0f MB)", metadata_path, metadata["use_overlay"], fs_size)
+    metadata = _update_template_sizes(settings, template_name, metadata)
+    logger.info("Template metadata saved (use_overlay=%s, filestore=%.0f MB)", metadata["use_overlay"], fs_size)
 
     result["generated_dump"] = template_sql_path
     result["generated_filestore"] = template_filestore_path
@@ -761,6 +793,8 @@ def template_down(settings: Settings, template_name: str) -> dict[str, str]:
     )
     logger.info("Template flag restored on %s", tpl_db)
 
+    _update_template_sizes(settings, template_name)
+
     return {
         "status": "stopped",
         "dump": template_sql_path,
@@ -928,9 +962,8 @@ def publish_env_as_template(settings: Settings, branch_name: str, template_name:
         pass
     fs_size = env_ops._dir_size_mb(template_filestore_path) if os.path.isdir(template_filestore_path) else 0.0
     metadata["use_overlay"] = fs_size >= settings.overlay_threshold_mb
-    with open(metadata_path, "w") as f:
-        json.dump(metadata, f, indent=2)
-    logger.info("Template metadata saved to %s (use_overlay=%s, filestore=%.0f MB)", metadata_path, metadata["use_overlay"], fs_size)
+    metadata = _update_template_sizes(settings, template_name, metadata)
+    logger.info("Template metadata saved (use_overlay=%s, filestore=%.0f MB)", metadata["use_overlay"], fs_size)
 
     return {
         "status": "promoted",
@@ -1151,10 +1184,8 @@ def import_from_odoo(
         "pg_version": manifest.get("pg_version", ""),
         "modules": manifest.get("modules", {}),
     }
-    metadata_path = settings.get_template_metadata_path(template_name)
-    with open(metadata_path, "w") as f:
-        json.dump(metadata, f, indent=2)
-    logger.info("Metadata saved to %s", metadata_path)
+    _update_template_sizes(settings, template_name, metadata)
+    logger.info("Metadata saved for template %s", template_name)
 
     # 6. Load dump into PostgreSQL
     result = reload_template(settings, template_name=template_name)
@@ -1322,6 +1353,8 @@ def list_templates(settings: Settings) -> list[dict]:
         if os.path.isfile(metadata_path):
             with open(metadata_path) as f:
                 metadata = json.load(f)
+        if "filestore_size_mb" not in metadata or "dump_size_mb" not in metadata:
+            metadata = _update_template_sizes(settings, template_name, metadata)
         result.append({
             "template_name": template_name,
             "template_db": tpl_db,
@@ -1336,5 +1369,7 @@ def list_templates(settings: Settings) -> list[dict]:
                 settings.default_branch,
             ),
             "use_overlay": metadata.get("use_overlay"),
+            "filestore_size_mb": metadata.get("filestore_size_mb"),
+            "dump_size_mb": metadata.get("dump_size_mb"),
         })
     return result

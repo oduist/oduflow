@@ -975,11 +975,18 @@ function renderTemplates(templates) {
     var fsTag = t.has_filestore
       ? '<span class="tag tag-ok">Filestore</span>'
       : '<span class="tag tag-missing">No Filestore</span>';
-    var modeTag = t.use_overlay === true
+    var modeTag = t.use_overlay
       ? '<span class="tag tag-ok">Overlay</span>'
-      : t.use_overlay === false
-        ? '<span class="tag tag-ok">Copy</span>'
-        : '<span class="tag tag-missing">Auto</span>';
+      : '<span class="tag tag-ok">Copy</span>';
+    var sizeHtml = '';
+    if (t.filestore_size_mb != null || t.dump_size_mb != null) {
+      var fmtSize = function(mb) {
+        if (mb == null) return '?';
+        return mb >= 1024 ? (mb / 1024).toFixed(1) + ' GB' : Math.round(mb) + ' MB';
+      };
+      sizeHtml = '<span class="tag" style="font-weight:normal;">Filestore: ' + fmtSize(t.filestore_size_mb) + '</span>' +
+                 '<span class="tag" style="font-weight:normal;">Dump: ' + fmtSize(t.dump_size_mb) + '</span>';
+    }
     var metaHtml = '';
     if (t.odoo_image || t.repo_url) {
       var parts = [];
@@ -992,7 +999,7 @@ function renderTemplates(templates) {
       '<div style="display:flex;align-items:center;justify-content:space-between;">' +
         '<span class="tpl-name">' + esc(t.template_name) + '</span>' +
         '<div style="display:flex;align-items:center;gap:8px;">' +
-          '<div class="tpl-meta">' + dbTag + sqlTag + fsTag + modeTag + '</div>' +
+          '<div class="tpl-meta">' + dbTag + sqlTag + fsTag + modeTag + sizeHtml + '</div>' +
           '<button class="btn-create" style="font-size:12px;padding:4px 12px;" onclick="openCreateFromTemplate(\'' + escAttr(t.template_name) + '\')">+ New Env</button>' +
         '</div>' +
       '</div>' +
