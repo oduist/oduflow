@@ -7,7 +7,7 @@ import shutil
 import subprocess
 
 from oduflow.docker_ops.client import get_client
-from oduflow.errors import ConflictError, ExternalCommandError, NotFoundError
+from oduflow.errors import ConflictError, ExternalCommandError, NotFoundError, ProtectedError
 from oduflow.git_ops import RepoAuthError
 from oduflow.naming import sanitize_repo_url
 from oduflow.settings import Settings
@@ -104,15 +104,45 @@ def list_extra_repos(settings: Settings) -> list[dict]:
         except subprocess.CalledProcessError:
             branches = []
 
-        result.append({"name": entry, "repo_url": sanitize_repo_url(url), "branches": branches})
+        protected = os.path.exists(os.path.join(path, ".protected"))
+        result.append({"name": entry, "repo_url": sanitize_repo_url(url), "branches": branches, "protected": protected})
 
     return result
+
+
+def is_extra_repo_protected(settings: Settings, name: str) -> bool:
+    path = os.path.join(settings.shared_repos_dir, name)
+    return os.path.exists(os.path.join(path, ".protected"))
+
+
+def protect_extra_repo(settings: Settings, name: str) -> dict:
+    path = os.path.join(settings.shared_repos_dir, name)
+    if not os.path.isdir(path):
+        raise NotFoundError(f"Extra repo '{name}' not found.")
+    marker = os.path.join(path, ".protected")
+    open(marker, "w").close()
+    logger.info("Extra repo protected: %s", name)
+    return {"name": name, "protected": True}
+
+
+def unprotect_extra_repo(settings: Settings, name: str) -> dict:
+    path = os.path.join(settings.shared_repos_dir, name)
+    if not os.path.isdir(path):
+        raise NotFoundError(f"Extra repo '{name}' not found.")
+    marker = os.path.join(path, ".protected")
+    if os.path.exists(marker):
+        os.remove(marker)
+    logger.info("Extra repo unprotected: %s", name)
+    return {"name": name, "protected": False}
 
 
 def delete_extra_repo(settings: Settings, name: str) -> dict:
     path = os.path.join(settings.shared_repos_dir, name)
     if not os.path.exists(path):
         raise NotFoundError(f"Extra repo '{name}' not found.")
+
+    if is_extra_repo_protected(settings, name):
+        raise ProtectedError(f"Extra repo '{name}' is protected. Unprotect it before deleting.")
 
     client = get_client()
     filters = {

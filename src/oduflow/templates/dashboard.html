@@ -1720,7 +1720,12 @@ function renderExtraRepos(repos) {
           '<span class="svc-name">' + esc(r.name) + '</span>' +
         '</div>' +
         '<div class="svc-actions">' +
-          '<button class="btn btn-delete" onclick="doDeleteExtraRepo(\'' + escAttr(r.name) + '\')">Delete</button>' +
+          '<button class="btn btn-sync" onclick="doPullExtraRepo(\'' + escAttr(r.name) + '\', this)">Update</button> ' +
+          '<button class="btn btn-protect' + (r.protected ? ' active' : '') + '" ' +
+            'onclick="doProtectExtraRepo(\'' + escAttr(r.name) + '\',' + (r.protected ? 'true' : 'false') + ')">' +
+            (r.protected ? '🔒 Protected' : '🔓 Protect') + '</button> ' +
+          '<button class="btn btn-delete" onclick="doDeleteExtraRepo(\'' + escAttr(r.name) + '\')" ' +
+            (r.protected ? 'disabled title="Repository is protected"' : '') + '>Delete</button>' +
         '</div>' +
       '</div>' +
       '<div class="svc-meta">' +
@@ -1789,6 +1794,43 @@ async function submitAddExtraRepo() {
     btn.disabled = false;
     btn.textContent = 'Clone';
   }
+}
+
+async function doPullExtraRepo(name, btn) {
+  btn.disabled = true;
+  btn.textContent = 'Updating...';
+  try {
+    var r = await fetch(API_EXTRA_REPOS + '/' + encodeURIComponent(name) + '/pull', {method:'POST'});
+    var data = await r.json();
+    if (data.ok) {
+      showToast('Extra repo "' + name + '" updated');
+      await loadExtraRepos();
+    } else {
+      showToast(data.error || 'Update failed', true);
+    }
+  } catch (e) {
+    showToast('Connection error: ' + e.message, true);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Update';
+  }
+}
+
+async function doProtectExtraRepo(name, isProtected) {
+  var action = isProtected ? 'unprotect' : 'protect';
+  if (isProtected && !confirm('Remove protection from extra repo "' + name + '"?')) return;
+  try {
+    var r = await fetch(API_EXTRA_REPOS + '/' + encodeURIComponent(name) + '/' + action, { method: 'POST' });
+    var data = await r.json();
+    if (data.ok) {
+      showToast(name + ': ' + (isProtected ? 'unprotected' : 'protected'));
+    } else {
+      showToast(data.error || action + ' failed', true);
+    }
+  } catch (e) {
+    showToast('Connection error: ' + e.message, true);
+  }
+  await loadExtraRepos();
 }
 
 async function doDeleteExtraRepo(name) {

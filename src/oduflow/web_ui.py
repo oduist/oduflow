@@ -536,6 +536,46 @@ def _build_routes(
         finally:
             busy_lock.release()
 
+    async def api_extra_repo_pull(request: Request) -> JSONResponse:
+        name = request.path_params["name"]
+        if not busy_lock.acquire(blocking=False):
+            return _error_response(BusyError("Another operation is in progress."))
+        try:
+            from oduflow.extra_addons import fetch_extra_repo
+            fetch_extra_repo(get_settings(), name)
+            return JSONResponse({"ok": True, "result": {"pulled": name}})
+        except FlowError as e:
+            return _error_response(e)
+        except Exception as e:
+            logger.exception("Unexpected error in api_extra_repo_pull")
+            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+        finally:
+            busy_lock.release()
+
+    def api_extra_repo_protect(request: Request) -> JSONResponse:
+        name = request.path_params["name"]
+        try:
+            from oduflow.extra_addons import protect_extra_repo
+            result = protect_extra_repo(get_settings(), name)
+            return JSONResponse({"ok": True, "result": result})
+        except FlowError as e:
+            return _error_response(e)
+        except Exception as e:
+            logger.exception("Unexpected error in api_extra_repo_protect")
+            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+
+    def api_extra_repo_unprotect(request: Request) -> JSONResponse:
+        name = request.path_params["name"]
+        try:
+            from oduflow.extra_addons import unprotect_extra_repo
+            result = unprotect_extra_repo(get_settings(), name)
+            return JSONResponse({"ok": True, "result": result})
+        except FlowError as e:
+            return _error_response(e)
+        except Exception as e:
+            logger.exception("Unexpected error in api_extra_repo_unprotect")
+            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+
     def api_extra_repo_delete(request: Request) -> JSONResponse:
         name = request.path_params["name"]
         if not busy_lock.acquire(blocking=False):
@@ -669,6 +709,9 @@ def _build_routes(
         Route("/api/service-presets/{name}/delete", api_service_preset_delete, methods=["POST"]),
         Route("/api/extra-repos", api_extra_repos, methods=["GET"]),
         Route("/api/extra-repos/add", api_extra_repo_add, methods=["POST"]),
+        Route("/api/extra-repos/{name}/pull", api_extra_repo_pull, methods=["POST"]),
+        Route("/api/extra-repos/{name}/protect", api_extra_repo_protect, methods=["POST"]),
+        Route("/api/extra-repos/{name}/unprotect", api_extra_repo_unprotect, methods=["POST"]),
         Route("/api/extra-repos/{name}/delete", api_extra_repo_delete, methods=["POST"]),
         Route("/api/credentials", api_credentials, methods=["GET"]),
         Route("/api/credentials/add", api_credential_add, methods=["POST"]),
