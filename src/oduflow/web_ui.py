@@ -206,6 +206,47 @@ def _build_routes(
         finally:
             busy_lock.release()
 
+    def api_recreate(request: Request) -> JSONResponse:
+        branch = request.path_params["branch"]
+        if not busy_lock.acquire(blocking=False):
+            return _error_response(BusyError("Another operation is in progress."))
+        try:
+            import docker as _docker
+            from oduflow.docker_ops.client import get_client as _get_client
+
+            settings = get_settings()
+            client = _get_client()
+            odoo_container_name = env_ops.get_resource_name(branch, "odoo", settings.prefix)
+            try:
+                container = client.containers.get(odoo_container_name)
+                labels = container.labels
+            except _docker.errors.NotFound:
+                return _error_response(NotFoundError(f"Environment '{branch}' not found."))
+
+            repo_url = labels.get(settings.repo_label, "")
+            odoo_image = labels.get(settings.image_label, "")
+            template_raw = labels.get("oduflow.template", "")
+            template_name = template_raw if template_raw and template_raw != "none" else None
+            extra_addons_raw = labels.get("oduflow.extra_addons", "{}")
+            extra_addons = json.loads(extra_addons_raw) or None
+            git_user = labels.get("oduflow.git_user", "")
+
+            env_ops.delete_environment(settings, branch)
+            result = env_ops.create_environment(
+                settings, branch, repo_url, odoo_image,
+                template_name=template_name,
+                extra_addons=extra_addons,
+                git_user=git_user,
+            )
+            return JSONResponse({"ok": True, "result": result})
+        except FlowError as e:
+            return _error_response(e)
+        except Exception as e:
+            logger.exception("Unexpected error in api_recreate")
+            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+        finally:
+            busy_lock.release()
+
     async def api_create(request: Request) -> JSONResponse:
         if not busy_lock.acquire(blocking=False):
             return _error_response(BusyError("Another operation is in progress."))
@@ -698,6 +739,7 @@ def _build_routes(
         Route("/api/environments/{branch:path}/sync", api_sync, methods=["POST"]),
         Route("/api/environments/{branch:path}/protect", api_protect, methods=["POST"]),
         Route("/api/environments/{branch:path}/unprotect", api_unprotect, methods=["POST"]),
+        Route("/api/environments/{branch:path}/recreate", api_recreate, methods=["POST"]),
         Route("/api/environments/{branch:path}/delete", api_delete, methods=["POST"]),
         Route("/api/services", api_services, methods=["GET"]),
         Route("/api/services/create", api_service_create, methods=["POST"]),

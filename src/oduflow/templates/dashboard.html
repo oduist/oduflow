@@ -774,6 +774,8 @@ function renderEnvironments(envs) {
           '<button class="btn btn-protect' + (env.protected ? ' active' : '') + '" ' +
             'onclick="doProtect(\'' + escAttr(env.branch) + '\',' + (env.protected ? 'true' : 'false') + ')">' +
             (env.protected ? '🔒 Protected' : '🔓 Protect') + '</button>' +
+          '<button class="btn btn-restart" onclick="doRecreate(\'' + escAttr(env.branch) + '\')" ' +
+            (env.protected ? 'disabled title="Environment is protected"' : '') + '>Recreate</button>' +
           '<button class="btn btn-delete" onclick="doDelete(\'' + escAttr(env.branch) + '\')" ' +
             (env.protected ? 'disabled title="Environment is protected"' : '') + '>Delete</button>' +
         '</div>' +
@@ -831,6 +833,24 @@ async function loadStats() {
   } catch (e) {
     // stats are optional, don't show errors
   }
+}
+
+async function doRecreate(branch) {
+  if (!confirm('Recreate environment "' + branch + '"? This will delete and create it again with the same settings.')) return;
+  const card = document.querySelector('[data-branch="' + branch + '"]');
+  if (card) card.querySelectorAll('.btn').forEach(b => b.disabled = true);
+  try {
+    const r = await fetch(API + '/' + encodeURIComponent(branch) + '/recreate', { method: 'POST' });
+    const data = await r.json();
+    if (data.ok) {
+      showToast(branch + ': recreated');
+    } else {
+      showToast(data.error || 'Recreate failed', true);
+    }
+  } catch (e) {
+    showToast('Connection error: ' + e.message, true);
+  }
+  await loadEnvironments();
 }
 
 async function doDelete(branch) {
