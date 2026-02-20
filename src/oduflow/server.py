@@ -174,7 +174,7 @@ def create_environment(
         template_name: Name of the template profile to use as database template. Pass "none" to skip template and initialise Odoo from scratch with -i base. When a template is specified, repo_url and odoo_image are loaded from template metadata (but can be overridden).
         repo_url: URL of the git repository to clone. Optional when template_name is specified (loaded from template metadata).
         odoo_image: Full Docker image name with tag (e.g. "odoo:17.0"). Optional when template_name is specified (loaded from template metadata).
-        extra_addons: Comma-separated list of extra addon repo names to mount (e.g. "enterprise,custom-themes"). Supports per-repo branches with colon syntax: "enterprise:18.0,custom-themes:main".
+        extra_addons: Comma-separated list of extra addon repo names to mount (e.g. "enterprise,custom-themes"). Supports per-repo branches with colon syntax: "enterprise:18.0,custom-themes:main". If no branch is specified for a repo, defaults to the version extracted from odoo_image (e.g. "odoo:18.0" → branch "18.0").
     """
     import json
     settings = _get_settings()
@@ -205,7 +205,10 @@ def create_environment(
     if not effective_odoo_image:
         raise ValueError("odoo_image is required (not found in template metadata either).")
 
-    extra_dict = _parse_extra_addons(extra_addons, settings.default_branch) if extra_addons else {}
+    import re as _re
+    _img_ver_match = _re.search(r"(\d+\.0)", effective_odoo_image)
+    _extra_fallback = _img_ver_match.group(1) if _img_ver_match else settings.default_branch
+    extra_dict = _parse_extra_addons(extra_addons, _extra_fallback) if extra_addons else {}
     result = env_ops.create_environment(
         settings, branch_name, effective_repo_url, effective_odoo_image,
         template_name=resolved_template,
