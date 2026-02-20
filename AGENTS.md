@@ -8,3 +8,13 @@ Before making any code changes, always:
 3. Ask for explicit confirmation before proceeding with implementation
 
 Do NOT write or modify any code until the user explicitly approves the plan.
+
+## Publishing Documentation
+
+After committing and pushing changes to `docs/` or `mkdocs.yml`, always publish the documentation to GitHub Pages automatically — do not ask the user:
+
+```bash
+source .venv/bin/activate && mkdocs gh-deploy --force
+```
+
+The site is hosted at: https://oduist.github.io/oduflow/
