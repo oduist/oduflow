@@ -1,5 +1,5 @@
 site_name: Oduflow
-site_url: https://oduflow.dev
+site_url: https://docs.oduflow.dev
 site_description: AI-first Odoo development and CI tool with reusable database templates, powered by MCP
 repo_url: https://github.com/oduist/oduflow
 repo_name: oduist/oduflow
