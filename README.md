@@ -55,20 +55,26 @@ The agent writes code, installs the module, reads the traceback, fixes the error
 
 ## Quick Start
 
-### 1. Configure
+### 1. Install
+
+```bash
+pip install oduflow
+```
+
+### 2. Configure
 
 ```bash
 cp .env.example .env
 # Edit .env — at minimum set paths and optionally ODUFLOW_AUTH_TOKEN
 ```
 
-### 2. Initialize the system
+### 3. Initialize the system
 
 ```bash
 oduflow init
 ```
 
-### 3. Start the MCP server
+### 4. Start the MCP server
 
 ```bash
 oduflow
@@ -76,7 +82,7 @@ oduflow
 
 The server starts on `http://0.0.0.0:8000` by default.
 
-### 4. Connect an MCP client
+### 5. Connect an MCP client
 
 Point your MCP client (Cursor, Cline, Amp, etc.) to `http://<host>:8000/mcp`.
 

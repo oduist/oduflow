@@ -115,6 +115,25 @@ Do NOT call `get_environment_logs` after `sync_environment` — the errors are a
 - Only call `delete_environment` when the task is **Done** or **Cancelled**.
 - Do **not** recreate an environment to fix errors without user consent.
 
+### Container Is Read-Only for Code
+
+The environment container runs **remotely** and has access only to the git repository it was created for. The container is **not your workspace** — it is a runtime for testing.
+
+**What you CAN do inside the container (`exec_in_environment`):**
+- Read files, inspect paths (`ls`, `cat`, `find`)
+- Run Odoo shell commands (`odoo shell`, `odoo scaffold`, etc.)
+
+> **Note:** For logs use `get_environment_logs` — container logs are not accessible via shell commands inside Docker. For database queries use `run_db_query` — it connects to PostgreSQL directly without needing `exec_in_environment`.
+
+**What you MUST NOT do inside the container:**
+- Edit source code files (no `sed`, `vim`, `echo >`, `patch`, etc.)
+- Run any git commands (`git rebase`, `git pull`, `git checkout`, `git stash`, etc.)
+- Modify module files in any way
+
+**If you need to change code** — always do it locally, then `git commit` → `git push` → `sync_environment`. This is the only correct way to deliver code changes to the environment.
+
+**Non-standard operations** (e.g., `apt install`, `pip install`, modifying system configs) are possible but **require explicit user confirmation** before proceeding — explain what you want to do and why.
+
 ### General
 - **One task = one branch = one environment.**
 - Mutexed tools (create, delete, install, upgrade, pull, test, exec) reject concurrent calls with `BusyError` — retry after a short delay.

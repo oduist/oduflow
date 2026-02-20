@@ -890,7 +890,7 @@ def _copy_bundled_configs() -> None:
                     logger.warning("Cannot write %s (permission denied)", dest)
 
 
-def _run_init_instance(settings: Settings) -> None:
+def _run_init_instance(settings: Settings, *, update_guides: bool = False) -> None:
     # Initialize per-instance directories
     import os
     os.makedirs(settings.workspaces_dir, exist_ok=True)
@@ -898,7 +898,7 @@ def _run_init_instance(settings: Settings) -> None:
 
     _copy_bundled_configs()
 
-    # Copy bundled agent guides if not present
+    # Copy bundled agent guides
     import pathlib, shutil
     agent_guides_dest = os.path.join(settings.home, "agent_guides")
     os.makedirs(agent_guides_dest, exist_ok=True)
@@ -907,9 +907,10 @@ def _run_init_instance(settings: Settings) -> None:
         for guide_file in bundled_guides_dir.iterdir():
             if guide_file.is_file() and guide_file.suffix == ".md":
                 dest_file = os.path.join(agent_guides_dest, guide_file.name)
-                if not os.path.isfile(dest_file):
+                if update_guides or not os.path.isfile(dest_file):
                     shutil.copy2(str(guide_file), dest_file)
-                    print(f"  Agent guide: {dest_file}")
+                    action = "Updated" if update_guides else "Created"
+                    print(f"  Agent guide {action}: {dest_file}")
 
     if settings.routing_mode == "traefik" and settings.base_domain:
         dynamic_dir = "/etc/oduflow/traefik"
@@ -1198,7 +1199,9 @@ def main() -> None:
     p_init.add_argument("--license", default="", metavar="FILE", dest="license_file",
                         help="Path to license.key file to install to /etc/oduflow/license.key")
 
-    sub.add_parser("init-instance", help="Initialize per-instance directories (workspaces, templates)")
+    p_init_inst = sub.add_parser("init-instance", help="Initialize per-instance directories (workspaces, templates)")
+    p_init_inst.add_argument("--update-guides", action="store_true", default=False,
+                             help="Overwrite existing agent guides with the latest bundled versions")
 
     sub.add_parser("destroy", help="Destroy all shared infrastructure")
 
@@ -1280,7 +1283,7 @@ def main() -> None:
         return
 
     if args.command == "init-instance":
-        _run_init_instance(_settings)
+        _run_init_instance(_settings, update_guides=args.update_guides)
         return
 
     if args.command == "destroy":

@@ -22,6 +22,9 @@ oduflow init --license /path/to/license.key
 # Initialize per-instance directories (workspaces, templates)
 oduflow init-instance
 
+# Update agent guides to the latest bundled versions (overwrites existing)
+oduflow init-instance --update-guides
+
 # Destroy all shared infrastructure (requires no active environments)
 oduflow destroy
 ```
