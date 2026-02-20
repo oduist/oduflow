@@ -1,5 +1,7 @@
 # Quick Start
 
+[TOC]
+
 ## 1. Configure
 
 ```bash

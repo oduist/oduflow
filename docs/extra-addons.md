@@ -1,5 +1,7 @@
 # Extra Addons Repositories
 
+[TOC]
+
 Oduflow supports mounting **extra addon repositories** (e.g. Odoo Enterprise, third-party themes) into environments. Extra repos are cloned once at the instance level and shared across environments via git worktrees.
 
 ## Architecture

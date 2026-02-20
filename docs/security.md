@@ -1,5 +1,7 @@
 # Authentication & Security
 
+[TOC]
+
 ## MCP HTTP Auth
 
 When `ODUFLOW_AUTH_TOKEN` is set, the MCP endpoint (`/mcp`) requires a Bearer token:

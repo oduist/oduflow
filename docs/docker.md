@@ -1,5 +1,7 @@
 # Running Oduflow in Docker
 
+[TOC]
+
 Oduflow can run as a Docker container. Since it manages other Docker containers (Odoo environments, PostgreSQL, etc.), it uses the **Docker-out-of-Docker** pattern — the host's Docker socket is mounted into the container.
 
 ## Build

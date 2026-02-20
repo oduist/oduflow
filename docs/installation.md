@@ -1,5 +1,7 @@
 # Installation
 
+[TOC]
+
 ## System Requirements
 
 - **Docker** (Docker Engine or Docker Desktop)

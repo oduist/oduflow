@@ -1,5 +1,7 @@
 # CLI Reference
 
+[TOC]
+
 ## Global Options
 
 ```bash

@@ -1,5 +1,7 @@
 # Oduflow
 
+[TOC]
+
 An **AI-first** Odoo development and CI tool, powered by **reusable database templates**. Oduflow provisions isolated, ephemeral Odoo environments on Docker — one per git branch — and exposes them to AI coding agents via [MCP](https://modelcontextprotocol.io/), creating a **closed feedback loop** that enables fully autonomous Odoo development.
 
 ## Beyond Vibe Coding: Spec-Driven Development

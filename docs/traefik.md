@@ -1,5 +1,7 @@
 # Traefik Routing (Auto-HTTPS)
 
+[TOC]
+
 By default Oduflow uses **port mode**: each environment gets a dedicated host port (e.g. `http://server:50001`). This is simple and works well for local or single-developer setups.
 
 For production-like access with HTTPS, Oduflow can deploy a **Traefik** reverse proxy that gives every environment its own subdomain with an automatically issued Let's Encrypt certificate.

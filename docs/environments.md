@@ -1,5 +1,7 @@
 # Environment Management
 
+[TOC]
+
 ## Creating Environments
 
 ```bash

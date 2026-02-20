@@ -1,5 +1,7 @@
 # MCP Tools Reference
 
+[TOC]
+
 All tools are accessible via MCP clients (Cursor, Cline, Amp, etc.) and the CLI (`oduflow call`). A subset is also available via the [REST API](web-api.md).
 
 | Tool | Mutex | Description |

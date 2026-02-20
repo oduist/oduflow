@@ -1,5 +1,7 @@
 # Internals
 
+[TOC]
+
 ## Architecture
 
 ```

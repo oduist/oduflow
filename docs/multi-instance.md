@@ -1,5 +1,7 @@
 # Multi-Instance Support
 
+[TOC]
+
 Oduflow supports running **multiple independent instances** on a single machine. Each instance has its own environments, templates, services, and port registry, while sharing the Docker network and PostgreSQL container.
 
 Set `ODUFLOW_INSTANCE_ID` (1-9) and optionally `ODUFLOW_HOME` to isolate instances:

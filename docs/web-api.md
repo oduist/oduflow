@@ -1,5 +1,7 @@
 # Web Dashboard & REST API
 
+[TOC]
+
 ## Web Dashboard
 
 When running in HTTP mode, a web dashboard is available at the server root (`http://<host>:<port>/`). It provides:
