@@ -1269,6 +1269,9 @@ def main() -> None:
         if settings.stateless_http:
             logger.info("Stateless HTTP mode ENABLED (no session tracking)")
 
+        from oduflow.git_ops import ensure_credential_helper
+        ensure_credential_helper()
+
         from oduflow.web_ui import mount_web_ui
         mount_web_ui(app, _get_settings, _busy)
         logger.info("Web UI available at http://%s:%d/", host, port)

@@ -1,8 +1,6 @@
 import logging
 import os
-import shutil
 import subprocess
-import tempfile
 from urllib.parse import urlparse
 
 from oduflow.errors import ExternalCommandError, FlowError
@@ -35,12 +33,7 @@ def _parse_authenticated_url(repo_url: str) -> tuple[str, str, str, str]:
 
 
 def _store_git_credentials(host: str, username: str, password: str) -> None:
-    subprocess.run(
-        ["git", "config", "--global", "credential.helper", "store"],
-        check=True,
-        capture_output=True,
-        env=GIT_ENV,
-    )
+    ensure_credential_helper()
 
     credential_input = (
         f"protocol=https\n"
@@ -64,31 +57,160 @@ def setup_repo_auth(repo_url: str) -> dict[str, str]:
 
     _store_git_credentials(host, username, password)
 
-    tmp_dir = tempfile.mkdtemp(prefix="flow-auth-test-")
     try:
         subprocess.run(
-            ["git", "clone", "--depth", "1", clean_url, tmp_dir],
+            ["git", "ls-remote", "--heads", clean_url],
             check=True,
             capture_output=True,
-            timeout=60,
+            timeout=30,
             env=GIT_ENV,
         )
     except subprocess.CalledProcessError as e:
         error_msg = e.stderr.decode("utf-8") if e.stderr else str(e)
         raise ExternalCommandError(
-            "git clone (auth test)", e.returncode,
-            f"Credentials saved but test clone failed: {error_msg}",
+            "git ls-remote (auth test)", e.returncode,
+            f"Credentials saved but access check failed: {error_msg}",
         )
     except subprocess.TimeoutExpired:
         raise ExternalCommandError(
-            "git clone (auth test)", -1,
-            "Test clone timed out (60s).",
+            "git ls-remote (auth test)", -1,
+            "Access check timed out (30s).",
         )
-    finally:
-        shutil.rmtree(tmp_dir, ignore_errors=True)
 
     logger.info("Repo auth verified for %s", clean_url)
     return {"repo_url": clean_url, "host": host, "status": "authenticated"}
+
+
+_ETC_DIR = "/etc/oduflow"
+
+
+def _credentials_file() -> str:
+    return os.path.join(_ETC_DIR, ".git-credentials")
+
+
+def ensure_credential_helper() -> None:
+    cred_file = _credentials_file()
+    os.makedirs(os.path.dirname(cred_file), exist_ok=True)
+    subprocess.run(
+        ["git", "config", "--global", "credential.helper",
+         f"store --file {cred_file}"],
+        check=True,
+        capture_output=True,
+        env=GIT_ENV,
+    )
+
+
+def list_credentials() -> list[dict]:
+    cred_file = _credentials_file()
+    if not os.path.exists(cred_file):
+        return []
+
+    results = []
+    with open(cred_file, "r") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                parsed = urlparse(line)
+            except Exception:
+                continue
+            if not parsed.hostname or not parsed.username:
+                continue
+            results.append({
+                "host": parsed.hostname,
+                "username": parsed.username,
+                "token_masked": (parsed.password or "")[:4] + "****"
+                if parsed.password and len(parsed.password) > 4
+                else "****",
+            })
+    return results
+
+
+def validate_credential(host: str, username: str) -> str:
+    from urllib.request import Request, urlopen
+    from urllib.error import URLError, HTTPError
+
+    cred_file = _credentials_file()
+    if not os.path.exists(cred_file):
+        return "invalid"
+
+    token = None
+    with open(cred_file, "r") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                parsed = urlparse(line)
+            except Exception:
+                continue
+            if parsed.hostname == host and parsed.username == username:
+                token = parsed.password
+                break
+
+    if not token:
+        return "invalid"
+
+    api_urls = {
+        "github.com": "https://api.github.com/user",
+        "gitlab.com": "https://gitlab.com/api/v4/user",
+        "bitbucket.org": "https://api.bitbucket.org/2.0/user",
+    }
+
+    api_url = api_urls.get(host)
+    if not api_url:
+        return "valid"
+
+    try:
+        req = Request(api_url)
+        if host == "github.com":
+            req.add_header("Authorization", f"token {token}")
+        elif host == "gitlab.com":
+            req.add_header("PRIVATE-TOKEN", token)
+        elif host == "bitbucket.org":
+            import base64
+            b64 = base64.b64encode(f"{username}:{token}".encode()).decode()
+            req.add_header("Authorization", f"Basic {b64}")
+        req.add_header("User-Agent", "oduflow")
+        resp = urlopen(req, timeout=10)
+        return "valid" if resp.status == 200 else "invalid"
+    except HTTPError as e:
+        return "invalid" if e.code in (401, 403) else "unknown"
+    except (URLError, OSError):
+        return "unknown"
+
+
+def delete_credential(host: str, username: str) -> bool:
+    cred_file = _credentials_file()
+    if not os.path.exists(cred_file):
+        return False
+
+    with open(cred_file, "r") as f:
+        lines = f.readlines()
+
+    new_lines = []
+    removed = False
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            continue
+        try:
+            parsed = urlparse(stripped)
+        except Exception:
+            new_lines.append(line)
+            continue
+        if parsed.hostname == host and parsed.username == username:
+            removed = True
+            continue
+        new_lines.append(line)
+
+    if removed:
+        with open(cred_file, "w") as f:
+            f.writelines(new_lines)
+        logger.info("Credential deleted for host=%s user=%s", host, username)
+
+    return removed
 
 
 def pull_repo(repo_path: str, branch: str) -> list[str]:

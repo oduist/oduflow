@@ -547,6 +547,72 @@ def _build_routes(
         finally:
             busy_lock.release()
 
+    def api_credentials(request: Request) -> JSONResponse:
+        from oduflow.git_ops import list_credentials
+        try:
+            creds = list_credentials()
+            return JSONResponse({"ok": True, "credentials": creds})
+        except Exception as e:
+            logger.exception("Unexpected error in api_credentials")
+            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+
+    async def api_credential_add(request: Request) -> JSONResponse:
+        try:
+            body = await request.json()
+            repo_url = (body.get("repo_url") or "").strip()
+            if not repo_url:
+                return JSONResponse(
+                    {"ok": False, "error": "repo_url is required."},
+                    status_code=400,
+                )
+            from oduflow import git_ops
+            result = git_ops.setup_repo_auth(repo_url)
+            return JSONResponse({"ok": True, "result": result})
+        except FlowError as e:
+            return _error_response(e)
+        except Exception as e:
+            logger.exception("Unexpected error in api_credential_add")
+            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+
+    async def api_credential_delete(request: Request) -> JSONResponse:
+        try:
+            body = await request.json()
+            host = (body.get("host") or "").strip()
+            username = (body.get("username") or "").strip()
+            if not host or not username:
+                return JSONResponse(
+                    {"ok": False, "error": "host and username are required."},
+                    status_code=400,
+                )
+            from oduflow.git_ops import delete_credential
+            removed = delete_credential(host, username)
+            if not removed:
+                return JSONResponse(
+                    {"ok": False, "error": f"Credential not found for {host}/{username}."},
+                    status_code=404,
+                )
+            return JSONResponse({"ok": True, "result": {"host": host, "username": username}})
+        except Exception as e:
+            logger.exception("Unexpected error in api_credential_delete")
+            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+
+    async def api_credential_validate(request: Request) -> JSONResponse:
+        try:
+            body = await request.json()
+            host = (body.get("host") or "").strip()
+            username = (body.get("username") or "").strip()
+            if not host or not username:
+                return JSONResponse(
+                    {"ok": False, "error": "host and username are required."},
+                    status_code=400,
+                )
+            from oduflow.git_ops import validate_credential
+            status = validate_credential(host, username)
+            return JSONResponse({"ok": True, "status": status})
+        except Exception as e:
+            logger.exception("Unexpected error in api_credential_validate")
+            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+
     def api_protect(request: Request) -> JSONResponse:
         branch = request.path_params["branch"]
         try:
@@ -599,6 +665,10 @@ def _build_routes(
         Route("/api/extra-repos", api_extra_repos, methods=["GET"]),
         Route("/api/extra-repos/add", api_extra_repo_add, methods=["POST"]),
         Route("/api/extra-repos/{name}/delete", api_extra_repo_delete, methods=["POST"]),
+        Route("/api/credentials", api_credentials, methods=["GET"]),
+        Route("/api/credentials/add", api_credential_add, methods=["POST"]),
+        Route("/api/credentials/delete", api_credential_delete, methods=["POST"]),
+        Route("/api/credentials/validate", api_credential_validate, methods=["POST"]),
         Route("/api/environments/{branch:path}/logs", api_logs, methods=["GET"]),
     ]
 

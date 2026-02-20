@@ -417,6 +417,7 @@
   <button class="tab-btn active" data-tab="environments" onclick="switchTab('environments')">Environments</button>
   <button class="tab-btn" data-tab="services" onclick="switchTab('services')">Services</button>
   <button class="tab-btn" data-tab="extra-addons" onclick="switchTab('extra-addons')">Extra Addons</button>
+  <button class="tab-btn" data-tab="credentials" onclick="switchTab('credentials')">Credentials</button>
   <button class="tab-btn" data-tab="templates" onclick="switchTab('templates')">Templates</button>
   <button class="tab-btn" data-tab="agent-guides" onclick="switchTab('agent-guides')">Agent Guides</button>
 </div>
@@ -446,6 +447,13 @@
     <button class="btn-create" onclick="openAddExtraRepoModal()">+ Add Repo</button>
   </div>
   <div id="extra-repos-list"></div>
+</div>
+
+<div id="tab-credentials" class="tab-content">
+  <div style="display:flex;justify-content:flex-end;margin-bottom:12px;">
+    <button class="btn-create" onclick="openAddCredentialModal()">+ Add Credential</button>
+  </div>
+  <div id="credentials-list"></div>
 </div>
 
 <div id="tab-agent-guides" class="tab-content">
@@ -627,6 +635,25 @@
       <div class="form-actions">
         <button class="btn" onclick="closeAddExtraRepoModal()">Cancel</button>
         <button class="btn-create" id="extra-repo-submit" onclick="submitAddExtraRepo()">Clone</button>
+      </div>
+    </div>
+  </div>
+</div>
+<div class="modal-overlay" id="add-credential-modal" onclick="closeAddCredentialModal(event)">
+  <div class="modal" style="max-width:500px;">
+    <div class="modal-header">
+      <h2>Add Git Credential</h2>
+      <button class="modal-close" onclick="closeAddCredentialModal()">&times;</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-error" id="add-credential-error"></div>
+      <div class="form-group">
+        <label for="credential-url">Repository URL with credentials</label>
+        <input type="text" id="credential-url" placeholder="https://user:PAT@github.com/owner/repo.git">
+      </div>
+      <div class="form-actions">
+        <button class="btn" onclick="closeAddCredentialModal()">Cancel</button>
+        <button class="btn-create" id="credential-submit" onclick="submitAddCredential()">Save &amp; Verify</button>
       </div>
     </div>
   </div>
@@ -902,6 +929,7 @@ function switchTab(name) {
   if (name === 'services') loadServices();
   if (name === 'agent-guides') loadAgentGuides();
   if (name === 'extra-addons') loadExtraRepos();
+  if (name === 'credentials') loadCredentials();
 }
 
 async function loadTemplates() {
@@ -1735,6 +1763,150 @@ async function doDeleteExtraRepo(name) {
     }
   } catch (e) {
     showToast('Connection error: ' + e.message, true);
+  }
+}
+
+const API_CREDENTIALS = '/api/credentials';
+
+async function loadCredentials() {
+  try {
+    var r = await fetch(API_CREDENTIALS);
+    var data = await r.json();
+    if (data.ok) {
+      renderCredentials(data.credentials || []);
+    } else {
+      showToast(data.error || 'Failed to load credentials', true);
+    }
+  } catch (e) {
+    showToast('Connection error: ' + e.message, true);
+  }
+}
+
+function renderCredentials(creds) {
+  var el = document.getElementById('credentials-list');
+  if (!creds || creds.length === 0) {
+    el.innerHTML = '<div class="empty">No git credentials configured.<br>Add credentials to access private repositories.</div>';
+    return;
+  }
+  el.innerHTML = creds.map(function(c) {
+    var id = esc(c.host) + '/' + esc(c.username);
+    return '<div class="svc-card">' +
+      '<div class="svc-header">' +
+        '<div class="left">' +
+          '<span class="svc-name">' + esc(c.host) + '</span>' +
+          '<span class="tag" id="cred-status-' + escAttr(id) + '" style="margin-left:8px;">—</span>' +
+        '</div>' +
+        '<div class="svc-actions">' +
+          '<button class="btn" style="font-size:11px;padding:3px 10px;" onclick="doValidateCredential(\'' + escAttr(c.host) + '\',\'' + escAttr(c.username) + '\')">Validate</button>' +
+          '<button class="btn btn-delete" onclick="doDeleteCredential(\'' + escAttr(c.host) + '\',\'' + escAttr(c.username) + '\')">Delete</button>' +
+        '</div>' +
+      '</div>' +
+      '<div class="svc-meta">' +
+        '<span>User: <strong>' + esc(c.username) + '</strong></span>' +
+        '<span style="margin-left:16px;">Token: <strong>' + esc(c.token_masked) + '</strong></span>' +
+      '</div>' +
+    '</div>';
+  }).join('');
+}
+
+function openAddCredentialModal() {
+  document.getElementById('credential-url').value = '';
+  document.getElementById('add-credential-error').style.display = 'none';
+  document.getElementById('credential-submit').disabled = false;
+  document.getElementById('credential-submit').innerHTML = 'Save &amp; Verify';
+  document.getElementById('add-credential-modal').classList.add('show');
+  document.getElementById('credential-url').focus();
+}
+
+function closeAddCredentialModal(event) {
+  if (event && event.target !== event.currentTarget) return;
+  document.getElementById('add-credential-modal').classList.remove('show');
+}
+
+async function submitAddCredential() {
+  var url = document.getElementById('credential-url').value.trim();
+  var errEl = document.getElementById('add-credential-error');
+  if (!url) {
+    errEl.textContent = 'Repository URL with credentials is required.';
+    errEl.style.display = 'block';
+    return;
+  }
+  errEl.style.display = 'none';
+  var btn = document.getElementById('credential-submit');
+  btn.disabled = true;
+  btn.textContent = 'Verifying...';
+  try {
+    var r = await fetch(API_CREDENTIALS + '/add', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({repo_url: url})
+    });
+    var data = await r.json();
+    if (data.ok) {
+      closeAddCredentialModal();
+      showToast('Credential saved and verified');
+      await loadCredentials();
+    } else {
+      errEl.textContent = data.error || 'Failed to save credential';
+      errEl.style.display = 'block';
+    }
+  } catch (e) {
+    errEl.textContent = 'Connection error: ' + e.message;
+    errEl.style.display = 'block';
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = 'Save &amp; Verify';
+  }
+}
+
+async function doDeleteCredential(host, username) {
+  if (!confirm('Delete credential for "' + host + '" (user: ' + username + ')?')) return;
+  try {
+    var r = await fetch(API_CREDENTIALS + '/delete', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({host: host, username: username})
+    });
+    var data = await r.json();
+    if (data.ok) {
+      showToast('Credential deleted');
+      await loadCredentials();
+    } else {
+      showToast(data.error || 'Delete failed', true);
+    }
+  } catch (e) {
+    showToast('Connection error: ' + e.message, true);
+  }
+}
+
+async function doValidateCredential(host, username) {
+  var id = host + '/' + username;
+  var badge = document.getElementById('cred-status-' + id);
+  if (badge) {
+    badge.textContent = '...';
+    badge.className = 'tag';
+  }
+  try {
+    var r = await fetch(API_CREDENTIALS + '/validate', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({host: host, username: username})
+    });
+    var data = await r.json();
+    if (badge) {
+      if (data.ok && data.status === 'valid') {
+        badge.textContent = '✓ Valid';
+        badge.className = 'tag tag-ok';
+      } else {
+        badge.textContent = '✗ Invalid';
+        badge.className = 'tag tag-missing';
+      }
+    }
+  } catch (e) {
+    if (badge) {
+      badge.textContent = '? Error';
+      badge.className = 'tag tag-missing';
+    }
   }
 }
 
