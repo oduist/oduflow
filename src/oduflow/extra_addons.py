@@ -28,7 +28,7 @@ _AUTH_ERROR_KEYWORDS = (
 )
 
 
-def clone_extra_repo(settings: Settings, name: str, repo_url: str) -> dict:
+def clone_extra_repo(settings: Settings, name: str, repo_url: str, git_user: str = "") -> dict:
     if not _NAME_RE.match(name):
         raise ValueError(
             f"Invalid repo name '{name}': only [a-zA-Z0-9_-] allowed, "
@@ -41,9 +41,12 @@ def clone_extra_repo(settings: Settings, name: str, repo_url: str) -> dict:
 
     os.makedirs(settings.shared_repos_dir, exist_ok=True)
 
+    from oduflow.git_ops import inject_credential_user
+    clone_url = inject_credential_user(repo_url, git_user)
+
     try:
         subprocess.run(
-            ["git", "clone", "--bare", repo_url, target],
+            ["git", "clone", "--bare", clone_url, target],
             check=True,
             capture_output=True,
             text=True,

@@ -489,6 +489,12 @@
         <input type="text" id="cr-repo" placeholder="https://github.com/owner/repo.git">
       </div>
       <div class="form-group">
+        <label for="cr-git-user">Git Credential</label>
+        <select id="cr-git-user">
+          <option value="">— None —</option>
+        </select>
+      </div>
+      <div class="form-group">
         <label for="cr-image">Odoo image</label>
         <input type="text" id="cr-image" placeholder="e.g. odoo:17.0">
       </div>
@@ -631,6 +637,12 @@
       <div class="form-group">
         <label for="extra-repo-url">Repository URL</label>
         <input type="text" id="extra-repo-url" placeholder="https://github.com/odoo/enterprise.git">
+      </div>
+      <div class="form-group">
+        <label for="extra-repo-git-user">Git Credential</label>
+        <select id="extra-repo-git-user">
+          <option value="">— None —</option>
+        </select>
       </div>
       <div class="form-actions">
         <button class="btn" onclick="closeAddExtraRepoModal()">Cancel</button>
@@ -973,6 +985,7 @@ function renderTemplates(templates) {
       var parts = [];
       if (t.odoo_image) parts.push('<span>Image: <strong>' + esc(t.odoo_image) + '</strong></span>');
       if (t.repo_url) parts.push('<span>Repo: <strong>' + esc(t.repo_url) + '</strong></span>');
+      if (t.git_user) parts.push('<span>Git User: <strong>' + esc(t.git_user) + '</strong></span>');
       metaHtml = '<div class="tpl-meta" style="margin-top:8px;">' + parts.join('') + '</div>';
     }
     return '<div class="tpl-card" style="flex-direction:column;align-items:stretch;">' +
@@ -1004,6 +1017,9 @@ function populateTemplateSelect() {
       if (tpl.odoo_image && !document.getElementById('cr-image').value.trim()) {
         document.getElementById('cr-image').value = tpl.odoo_image;
       }
+      if (tpl.git_user && !document.getElementById('cr-git-user').value) {
+        document.getElementById('cr-git-user').value = tpl.git_user;
+      }
       var tplExtras = tpl.extra_addons || {};
       document.querySelectorAll('.cr-extra-cb').forEach(function(cb) {
         cb.checked = cb.value in tplExtras;
@@ -1027,6 +1043,14 @@ function openCreateFromTemplate(templateName) {
     populateTemplateSelect();
     var sel = document.getElementById('cr-template');
     sel.value = templateName;
+  });
+  loadCredentials().then(function() {
+    var sel = document.getElementById('cr-git-user');
+    sel.innerHTML = '<option value="">— None —</option>';
+    (cachedCredentials || []).forEach(function(c) {
+      sel.innerHTML += '<option value="' + escAttr(c.username) + '">' + esc(c.username) + ' (' + esc(c.host) + ')</option>';
+    });
+    if (tpl && tpl.git_user) sel.value = tpl.git_user;
   });
   loadExtraRepos().then(function() {
     var container = document.getElementById('cr-extra-addons-checkboxes');
@@ -1061,6 +1085,13 @@ function openCreateModal() {
   errEl.textContent = '';
   document.getElementById('cr-submit').disabled = false;
   loadTemplates().then(populateTemplateSelect);
+  loadCredentials().then(function() {
+    var sel = document.getElementById('cr-git-user');
+    sel.innerHTML = '<option value="">— None —</option>';
+    (cachedCredentials || []).forEach(function(c) {
+      sel.innerHTML += '<option value="' + escAttr(c.username) + '">' + esc(c.username) + ' (' + esc(c.host) + ')</option>';
+    });
+  });
   loadExtraRepos().then(function() {
     var container = document.getElementById('cr-extra-addons-checkboxes');
     if (cachedExtraRepos.length === 0) {
@@ -1091,6 +1122,7 @@ async function submitCreate() {
   var repo = document.getElementById('cr-repo').value.trim();
   var image = document.getElementById('cr-image').value.trim();
   var template = document.getElementById('cr-template').value;
+  var gitUser = document.getElementById('cr-git-user').value;
   var errEl = document.getElementById('create-error');
 
   if (!branch) {
@@ -1117,6 +1149,7 @@ async function submitCreate() {
       repo_url: repo,
       odoo_image: image,
       template_name: template,
+      git_user: gitUser,
       extra_addons: extraAddonsObj,
     };
     var r = await fetch(API + '/create', {
@@ -1704,6 +1737,13 @@ function openAddExtraRepoModal() {
   document.getElementById('add-extra-repo-error').style.display = 'none';
   document.getElementById('extra-repo-submit').disabled = false;
   document.getElementById('extra-repo-submit').textContent = 'Clone';
+  loadCredentials().then(function() {
+    var sel = document.getElementById('extra-repo-git-user');
+    sel.innerHTML = '<option value="">— None —</option>';
+    (cachedCredentials || []).forEach(function(c) {
+      sel.innerHTML += '<option value="' + escAttr(c.username) + '">' + esc(c.username) + ' (' + esc(c.host) + ')</option>';
+    });
+  });
   document.getElementById('add-extra-repo-modal').classList.add('show');
   document.getElementById('extra-repo-name').focus();
 }
@@ -1716,6 +1756,7 @@ function closeAddExtraRepoModal(event) {
 async function submitAddExtraRepo() {
   var name = document.getElementById('extra-repo-name').value.trim();
   var url = document.getElementById('extra-repo-url').value.trim();
+  var gitUser = document.getElementById('extra-repo-git-user').value;
   var errEl = document.getElementById('add-extra-repo-error');
   if (!name || !url) {
     errEl.textContent = 'Name and repository URL are required.';
@@ -1730,7 +1771,7 @@ async function submitAddExtraRepo() {
     var r = await fetch(API_EXTRA_REPOS + '/add', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({name: name, repo_url: url})
+      body: JSON.stringify({name: name, repo_url: url, git_user: gitUser})
     });
     var data = await r.json();
     if (data.ok) {
@@ -1767,12 +1808,14 @@ async function doDeleteExtraRepo(name) {
 }
 
 const API_CREDENTIALS = '/api/credentials';
+let cachedCredentials = [];
 
 async function loadCredentials() {
   try {
     var r = await fetch(API_CREDENTIALS);
     var data = await r.json();
     if (data.ok) {
+      cachedCredentials = data.credentials || [];
       renderCredentials(data.credentials || []);
     } else {
       showToast(data.error || 'Failed to load credentials', true);

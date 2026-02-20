@@ -100,6 +100,19 @@ def ensure_credential_helper() -> None:
     )
 
 
+def inject_credential_user(repo_url: str, git_user: str) -> str:
+    """Inject username into repo URL for credential matching."""
+    if not git_user:
+        return repo_url
+    parsed = urlparse(repo_url)
+    if parsed.username:
+        return repo_url
+    netloc = f"{git_user}@{parsed.hostname}"
+    if parsed.port:
+        netloc += f":{parsed.port}"
+    return parsed._replace(netloc=netloc).geturl()
+
+
 def list_credentials() -> list[dict]:
     cred_file = _credentials_file()
     if not os.path.exists(cred_file):
@@ -257,6 +270,21 @@ def pull_repo(repo_path: str, branch: str) -> list[str]:
         env=GIT_ENV,
     )
     return [f for f in result.stdout.strip().splitlines() if f]
+
+
+def inject_credential_user(repo_url: str, git_user: str) -> str:
+    """Inject *username* into an HTTPS repo URL so git credential-store can match it."""
+    if not git_user:
+        return repo_url
+    parsed = urlparse(repo_url)
+    if parsed.scheme not in ("https", "http") or not parsed.hostname:
+        return repo_url
+    if parsed.username:
+        return repo_url
+    netloc = f"{git_user}@{parsed.hostname}"
+    if parsed.port:
+        netloc += f":{parsed.port}"
+    return parsed._replace(netloc=netloc).geturl()
 
 
 def parse_manifest(manifest_path: str) -> dict:

@@ -171,6 +171,7 @@ def create_environment(
     # Load metadata from template if available
     effective_repo_url = repo_url
     effective_odoo_image = odoo_image
+    effective_git_user = ""
     if resolved_template:
         metadata_path = settings.get_template_metadata_path(resolved_template)
         if os.path.isfile(metadata_path):
@@ -180,6 +181,8 @@ def create_environment(
                 effective_repo_url = metadata.get("repo_url", "")
             if not effective_odoo_image:
                 effective_odoo_image = metadata.get("odoo_image", "")
+            if not effective_git_user:
+                effective_git_user = metadata.get("git_user", "")
 
     if not effective_repo_url:
         raise ValueError("repo_url is required (not found in template metadata either).")
@@ -191,6 +194,7 @@ def create_environment(
         settings, branch_name, effective_repo_url, effective_odoo_image,
         template_name=resolved_template,
         extra_addons=extra_dict or None,
+        git_user=effective_git_user,
     )
     display_template = resolved_template if resolved_template is not None else "none (init from scratch)"
     lines = [

@@ -215,6 +215,7 @@ def _build_routes(
             branch_name = (body.get("branch_name") or "").strip()
             repo_url = (body.get("repo_url") or "").strip()
             odoo_image = (body.get("odoo_image") or "").strip()
+            git_user = (body.get("git_user") or "").strip()
             template_name_raw = (body.get("template_name") or "").strip()
             extra_addons_raw = body.get("extra_addons")
             if not branch_name:
@@ -244,6 +245,8 @@ def _build_routes(
                         repo_url = metadata.get("repo_url", "")
                     if not odoo_image:
                         odoo_image = metadata.get("odoo_image", "")
+                    if not git_user:
+                        git_user = metadata.get("git_user", "")
                     if extra_dict is None:
                         raw = metadata.get("extra_addons")
                         if raw:
@@ -258,6 +261,7 @@ def _build_routes(
                 settings, branch_name, repo_url, odoo_image,
                 template_name=resolved_template,
                 extra_addons=extra_dict,
+                git_user=git_user,
             )
             return JSONResponse({"ok": True, "result": result})
         except FlowError as e:
@@ -515,13 +519,14 @@ def _build_routes(
             body = await request.json()
             name = (body.get("name") or "").strip()
             repo_url = (body.get("repo_url") or "").strip()
+            git_user = (body.get("git_user") or "").strip()
             if not name or not repo_url:
                 return JSONResponse(
                     {"ok": False, "error": "name and repo_url are required."},
                     status_code=400,
                 )
             from oduflow.extra_addons import clone_extra_repo
-            result = clone_extra_repo(get_settings(), name, repo_url)
+            result = clone_extra_repo(get_settings(), name, repo_url, git_user=git_user)
             return JSONResponse({"ok": True, "result": result})
         except FlowError as e:
             return _error_response(e)

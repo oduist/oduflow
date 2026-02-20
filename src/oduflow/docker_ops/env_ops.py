@@ -366,6 +366,7 @@ def create_environment(
     odoo_image: str,
     template_name: str | None = None,
     extra_addons: dict[str, str] | None = None,
+    git_user: str = "",
 ) -> dict[str, str]:
     try:
         client = get_client()
@@ -421,6 +422,8 @@ def create_environment(
 
     if extra_addons:
         labels["oduflow.extra_addons"] = json.dumps(extra_addons)
+    if git_user:
+        labels["oduflow.git_user"] = git_user
 
     if settings.routing_mode == "traefik":
         slug = slugify_branch(branch_name)
@@ -453,6 +456,9 @@ def create_environment(
 
     git_env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
 
+    from oduflow.git_ops import inject_credential_user
+    clone_url = inject_credential_user(repo_url, git_user)
+
     branch_created = False
     auth_keywords = (
         "Authentication failed",
@@ -467,7 +473,7 @@ def create_environment(
         subprocess.run(
             [
                 "git", "clone", "--branch", branch_name,
-                "--depth", "1", repo_url, repo_path,
+                "--depth", "1", clone_url, repo_path,
             ],
             check=True,
             capture_output=True,
@@ -485,7 +491,7 @@ def create_environment(
                 subprocess.run(
                     [
                         "git", "clone", "--branch", settings.default_branch,
-                        "--depth", "1", repo_url, repo_path,
+                        "--depth", "1", clone_url, repo_path,
                     ],
                     check=True,
                     capture_output=True,

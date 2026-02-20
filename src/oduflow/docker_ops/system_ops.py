@@ -916,6 +916,7 @@ def publish_env_as_template(settings: Settings, branch_name: str, template_name:
         pc = client.containers.get(promoted_container_name)
         metadata["odoo_image"] = pc.labels.get(settings.image_label, "")
         metadata["repo_url"] = pc.labels.get(settings.repo_label, "")
+        metadata["git_user"] = pc.labels.get("oduflow.git_user", "")
         raw_extras = pc.labels.get("oduflow.extra_addons", "")
         if raw_extras:
             try:
@@ -1211,6 +1212,7 @@ def list_templates(settings: Settings) -> list[dict]:
             "db_loaded": db_loaded,
             "odoo_image": metadata.get("odoo_image", ""),
             "repo_url": metadata.get("repo_url", ""),
+            "git_user": metadata.get("git_user", ""),
             "extra_addons": _normalize_extra_addons(
                 metadata.get("extra_addons", {}),
                 settings.default_branch,
