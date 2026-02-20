@@ -126,6 +126,22 @@ def delete_extra_repo(name: str) -> str:
     _delete(_get_settings(), name)
     return f"Extra repo '{name}' deleted."
 
+@mcp.tool()
+@handle_errors
+@with_mutex
+def update_extra_repo(name: str) -> str:
+    """
+    Pull latest changes from the remote for an extra addons repository.
+
+    Fetches all branches and prunes deleted remote refs.
+
+    Args:
+        name: Name of the extra repo to update (e.g. "enterprise").
+    """
+    from oduflow.extra_addons import fetch_extra_repo
+    fetch_extra_repo(_get_settings(), name)
+    return f"Extra repo '{name}' updated (fetched all branches)."
+
 def _parse_extra_addons(raw: str, fallback_branch: str) -> dict[str, str]:
     result = {}
     for item in raw.split(","):
