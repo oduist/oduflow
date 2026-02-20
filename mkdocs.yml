@@ -17,3 +17,19 @@ markdown_extensions:
 
 nav:
   - Home: index.md
+  - Quick Start: quick-start.md
+  - Installation & Configuration: installation.md
+  - Use Cases & Workflows: use-cases.md
+  - Template Management: templates.md
+  - Environment Management: environments.md
+  - Auxiliary Services: services.md
+  - Extra Addons Repositories: extra-addons.md
+  - Web Dashboard & REST API: web-api.md
+  - MCP Tools Reference: mcp-tools.md
+  - CLI Reference: cli.md
+  - Traefik Routing: traefik.md
+  - Multi-Instance Support: multi-instance.md
+  - Authentication & Security: security.md
+  - Running in Docker: docker.md
+  - Internals: internals.md
+  - Licensing: licensing.md
