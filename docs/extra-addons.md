@@ -60,5 +60,32 @@ oduflow call delete_extra_repo enterprise
 
 Extra repos can also be managed from the **Web Dashboard** under the "Extra Addons" tab.
 
-!!! note
-    Extra addons are mounted read-only and are NOT updated by `sync_environment`. To update extra addons, delete and recreate the environment.
+## Updating Extra Repos
+
+Use `update_extra_repo` to fetch the latest changes from the remote:
+
+```bash
+oduflow call update_extra_repo enterprise
+```
+
+This runs `git fetch --all --prune` on the **shared bare repository** only. It does **not** affect any running environments.
+
+### Why environments are not updated automatically
+
+Each environment gets a **detached git worktree** pinned to a specific commit at creation time. This is by design:
+
+- **Stability** — the environment keeps working with the exact version of extra addons it was deployed with, regardless of upstream changes.
+- **Isolation** — updating one environment's dependencies cannot break another.
+- **Predictability** — `sync_environment` handles only the main project repository; extra addons remain unchanged.
+
+### How to update extra addons in an environment
+
+Delete and recreate the environment. The new environment will get a fresh worktree pointing to the latest commit on the specified branch:
+
+```bash
+oduflow call delete_environment feature-x
+oduflow call create_environment feature-x ... "enterprise:17.0"
+```
+
+!!! tip
+    Run `update_extra_repo` **before** recreating the environment to ensure the bare repo has the latest commits.
