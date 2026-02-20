@@ -61,9 +61,18 @@ class TestCreateEnvironmentTool:
 class TestDeleteEnvironmentTool:
     @patch("oduflow.docker_ops.env_ops.delete_environment")
     def test_delete(self, mock_delete):
+        mock_delete.return_value = []
         result = _call_tool("delete_environment", branch_name="main")
         assert "torn down" in result
         mock_delete.assert_called_once_with(TEST_SETTINGS, "main")
+
+    @patch("oduflow.docker_ops.env_ops.delete_environment")
+    def test_delete_with_warnings(self, mock_delete):
+        mock_delete.return_value = ['Failed to drop database "oduflow_main": connection refused']
+        result = _call_tool("delete_environment", branch_name="main")
+        assert "torn down" in result
+        assert "⚠️ Warnings:" in result
+        assert "Failed to drop database" in result
 
 
 class TestListEnvironmentsTool:

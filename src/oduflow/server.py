@@ -381,8 +381,11 @@ def delete_environment(branch_name: str) -> str:
     Args:
         branch_name: The name of the branch to tear down.
     """
-    env_ops.delete_environment(_get_settings(), branch_name)
-    return f"Environment for branch '{branch_name}' has been torn down."
+    warnings = env_ops.delete_environment(_get_settings(), branch_name)
+    result = f"Environment for branch '{branch_name}' has been torn down."
+    if warnings:
+        result += "\n\n⚠️ Warnings:\n" + "\n".join(f"- {w}" for w in warnings)
+    return result
 
 
 @mcp.tool()

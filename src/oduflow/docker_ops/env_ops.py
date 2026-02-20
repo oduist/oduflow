@@ -740,12 +740,13 @@ def unprotect_environment(settings: Settings, branch_name: str) -> dict[str, Any
     return {"branch": branch_name, "protected": False}
 
 
-def delete_environment(settings: Settings, branch_name: str) -> None:
+def delete_environment(settings: Settings, branch_name: str) -> list[str]:
     if is_protected(settings, branch_name):
         raise ProtectedError(f"Environment '{branch_name}' is protected. Unprotect it before deleting.")
     client = get_client()
     odoo_container_name = get_resource_name(branch_name, "odoo", settings.prefix)
     env_db = get_db_name(branch_name, settings.instance_id)
+    warnings: list[str] = []
 
     logger.info("Deleting environment", extra={"branch": branch_name})
 
@@ -765,8 +766,10 @@ def delete_environment(settings: Settings, branch_name: str) -> None:
             settings,
             f'DROP DATABASE IF EXISTS "{env_db}" WITH (FORCE);',
         )
-    except Exception:
-        pass
+    except Exception as exc:
+        msg = f'Failed to drop database "{env_db}": {exc}'
+        logger.warning(msg, extra={"branch": branch_name})
+        warnings.append(msg)
 
     workspace_path = get_workspace_path(branch_name, settings.workspaces_dir)
     if os.path.exists(workspace_path):
@@ -781,6 +784,7 @@ def delete_environment(settings: Settings, branch_name: str) -> None:
         shutil.rmtree(workspace_path)
 
     logger.info("Environment deleted", extra={"branch": branch_name})
+    return warnings
 
 
 def list_environments(settings: Settings) -> list[dict[str, Any]]:
