@@ -66,6 +66,14 @@ def clone_extra_repo(settings: Settings, name: str, repo_url: str, git_user: str
             "git clone --bare", -1, "Clone timed out (120s)."
         )
 
+    # git clone --bare does not set a fetch refspec, so subsequent
+    # git fetch --all would only write to FETCH_HEAD without updating
+    # local branches.  Configure the refspec explicitly.
+    subprocess.run(
+        ["git", "-C", target, "config", "remote.origin.fetch", "+refs/heads/*:refs/heads/*"],
+        check=True, capture_output=True, text=True, timeout=10, env=GIT_ENV,
+    )
+
     logger.info("Cloned extra repo '%s' from %s", name, repo_url)
     return {"name": name, "repo_url": repo_url, "path": target}
 
@@ -179,6 +187,21 @@ def fetch_extra_repo(settings: Settings, name: str) -> None:
     path = os.path.join(settings.shared_repos_dir, name)
     if not os.path.isdir(path):
         raise NotFoundError(f"Extra repo '{name}' not found.")
+
+    # Ensure fetch refspec is configured (bare repos created before the fix lack it)
+    try:
+        result = subprocess.run(
+            ["git", "-C", path, "config", "--get", "remote.origin.fetch"],
+            capture_output=True, text=True, timeout=10, env=GIT_ENV,
+        )
+        if result.returncode != 0 or not result.stdout.strip():
+            subprocess.run(
+                ["git", "-C", path, "config", "remote.origin.fetch", "+refs/heads/*:refs/heads/*"],
+                check=True, capture_output=True, text=True, timeout=10, env=GIT_ENV,
+            )
+            logger.info("Added missing fetch refspec for extra repo '%s'", name)
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+        pass  # best-effort; fetch will still run
 
     try:
         subprocess.run(
