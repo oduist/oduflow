@@ -1172,6 +1172,124 @@ def import_from_odoo(
     }
 
 
+def cleanup_orphans(settings: Settings, dry_run: bool = True) -> dict:
+    """Find and remove orphaned databases, workspaces, and port registry entries.
+
+    An orphan is a resource whose branch has no corresponding Docker container.
+    Template databases (odoo_ref_*) are always excluded.
+
+    Returns a dict with keys: orphan_databases, orphan_workspaces, orphan_ports,
+    each a list of removed (or would-be-removed) names.
+    """
+    from oduflow.port_registry import _load_registry, _save_registry
+
+    client = get_client()
+
+    # 1. Collect branches that have live containers
+    filters = {
+        "label": [
+            f"{settings.managed_label}=true",
+            f"{settings.instance_label}={settings.instance_id}",
+        ]
+    }
+    live_branches: set[str] = set()
+    for c in client.containers.list(all=True, filters=filters):
+        branch = c.labels.get(settings.branch_label)
+        if branch:
+            live_branches.add(branch)
+
+    db_prefix = f"oduflow_{settings.instance_id}_"
+
+    # 2. Orphan databases
+    rows = _exec_sql(
+        client, settings,
+        "SELECT datname FROM pg_database WHERE datistemplate=false AND datname NOT IN ('postgres','template0','template1');",
+    )
+    all_dbs = [r for r in rows.splitlines() if r]
+
+    orphan_dbs: list[str] = []
+    for db_name in all_dbs:
+        if not db_name.startswith(db_prefix):
+            continue
+        # Reverse-map: strip prefix to get the slug, then check if any live branch produces this db name
+        matched = any(get_db_name(b, settings.instance_id) == db_name for b in live_branches)
+        if not matched:
+            orphan_dbs.append(db_name)
+
+    # 3. Orphan workspace directories
+    orphan_workspaces: list[str] = []
+    if os.path.isdir(settings.workspaces_dir):
+        for entry in os.listdir(settings.workspaces_dir):
+            entry_path = os.path.join(settings.workspaces_dir, entry)
+            if not os.path.isdir(entry_path):
+                continue
+            # Protected workspaces are never cleaned up
+            if os.path.exists(os.path.join(entry_path, ".protected")):
+                continue
+            matched = any(
+                entry == b.replace("/", "-") for b in live_branches
+            )
+            if not matched:
+                orphan_workspaces.append(entry)
+
+    # 4. Orphan port registry entries
+    orphan_ports: list[str] = []
+    registry = _load_registry(settings.port_registry_path)
+    for branch in list(registry.keys()):
+        if branch not in live_branches:
+            orphan_ports.append(branch)
+
+    if dry_run:
+        logger.info(
+            "Cleanup dry-run: %d orphan DBs, %d orphan workspaces, %d orphan ports",
+            len(orphan_dbs), len(orphan_workspaces), len(orphan_ports),
+        )
+        return {
+            "dry_run": True,
+            "orphan_databases": orphan_dbs,
+            "orphan_workspaces": orphan_workspaces,
+            "orphan_ports": orphan_ports,
+        }
+
+    # --- Actually remove ---
+    removed_dbs: list[str] = []
+    for db_name in orphan_dbs:
+        try:
+            _exec_sql(client, settings, f'DROP DATABASE IF EXISTS "{db_name}" WITH (FORCE);')
+            removed_dbs.append(db_name)
+            logger.info("Dropped orphan database %s", db_name)
+        except Exception as exc:
+            logger.warning("Failed to drop orphan database %s: %s", db_name, exc)
+
+    removed_workspaces: list[str] = []
+    for entry in orphan_workspaces:
+        entry_path = os.path.join(settings.workspaces_dir, entry)
+        try:
+            # Unmount any overlay before removing
+            from oduflow.docker_ops.env_ops import _unmount_filestore
+            _unmount_filestore(entry, settings)
+            shutil.rmtree(entry_path)
+            removed_workspaces.append(entry)
+            logger.info("Removed orphan workspace %s", entry_path)
+        except Exception as exc:
+            logger.warning("Failed to remove orphan workspace %s: %s", entry_path, exc)
+
+    removed_ports: list[str] = []
+    for branch in orphan_ports:
+        registry.pop(branch, None)
+        removed_ports.append(branch)
+        logger.info("Released orphan port for branch '%s'", branch)
+    if removed_ports:
+        _save_registry(settings.port_registry_path, registry)
+
+    return {
+        "dry_run": False,
+        "orphan_databases": removed_dbs,
+        "orphan_workspaces": removed_workspaces,
+        "orphan_ports": removed_ports,
+    }
+
+
 def drop_template(settings: Settings, template_name: str) -> dict[str, str]:
     client = get_client()
     tpl_db = get_template_db_name(template_name, settings.instance_id)

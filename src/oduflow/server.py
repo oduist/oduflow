@@ -1029,6 +1029,38 @@ def _run_list_services(settings: Settings) -> None:
             print(f"    Env: {env_str}")
 
 
+def _run_cleanup(settings: Settings, dry_run: bool = True) -> None:
+    result = system_ops.cleanup_orphans(settings, dry_run=dry_run)
+    mode = "DRY RUN" if result["dry_run"] else "CLEANUP"
+    dbs = result["orphan_databases"]
+    workspaces = result["orphan_workspaces"]
+    ports = result["orphan_ports"]
+
+    if not dbs and not workspaces and not ports:
+        print(f"[{mode}] No orphaned resources found.")
+        return
+
+    print(f"[{mode}] Orphaned resources:")
+    if dbs:
+        print(f"  Databases ({len(dbs)}):")
+        for db in dbs:
+            print(f"    - {db}")
+    if workspaces:
+        print(f"  Workspaces ({len(workspaces)}):")
+        for ws in workspaces:
+            print(f"    - {ws}")
+    if ports:
+        print(f"  Port registry entries ({len(ports)}):")
+        for p in ports:
+            print(f"    - {p}")
+
+    total = len(dbs) + len(workspaces) + len(ports)
+    if result["dry_run"]:
+        print(f"\n  {total} resource(s) would be removed. Run with --force to apply.")
+    else:
+        print(f"\n  {total} resource(s) removed.")
+
+
 def _run_destroy(settings: Settings) -> None:
     result = system_ops.destroy_system(settings)
     print(
@@ -1170,6 +1202,12 @@ def main() -> None:
 
     sub.add_parser("list-services", help="List managed auxiliary service containers")
 
+    p_cleanup = sub.add_parser("cleanup", help="Find and remove orphaned databases, workspaces, and port entries")
+    p_cleanup.add_argument("--dry-run", action="store_true", default=False,
+                           help="Only show what would be removed (default behavior)")
+    p_cleanup.add_argument("--force", action="store_true", default=False,
+                           help="Actually remove orphaned resources")
+
     p_list = sub.add_parser("list", help="List registered MCP tools")
     p_list.add_argument("--verbose", "-v", action="store_true", help="Show tool descriptions")
 
@@ -1249,6 +1287,10 @@ def main() -> None:
 
     if args.command == "list-services":
         _run_list_services(_settings)
+        return
+
+    if args.command == "cleanup":
+        _run_cleanup(_settings, dry_run=not args.force)
         return
 
     transport_str = os.getenv("ODUFLOW_TRANSPORT", "http")
