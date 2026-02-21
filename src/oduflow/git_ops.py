@@ -238,7 +238,8 @@ def pull_repo(repo_path: str, branch: str) -> list[str]:
 
     try:
         subprocess.run(
-            ["git", "-C", repo_path, "fetch", "origin", branch],
+            ["git", "-C", repo_path, "fetch", "origin",
+             f"+refs/heads/{branch}:refs/remotes/origin/{branch}"],
             check=True,
             capture_output=True,
             text=True,
