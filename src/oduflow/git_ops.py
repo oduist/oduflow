@@ -238,18 +238,25 @@ def pull_repo(repo_path: str, branch: str) -> list[str]:
 
     try:
         subprocess.run(
-            ["git", "-C", repo_path, "pull", "--rebase", "origin", branch],
+            ["git", "-C", repo_path, "fetch", "origin", branch],
             check=True,
             capture_output=True,
             text=True,
             timeout=60,
             env=GIT_ENV,
         )
+        subprocess.run(
+            ["git", "-C", repo_path, "reset", "--hard", f"origin/{branch}"],
+            check=True,
+            capture_output=True,
+            text=True,
+            env=GIT_ENV,
+        )
     except subprocess.CalledProcessError as e:
         error_msg = e.stderr or str(e)
         raise ExternalCommandError("git pull", e.returncode, error_msg)
     except subprocess.TimeoutExpired:
-        raise ExternalCommandError("git pull", -1, "Pull timed out (60s).")
+        raise ExternalCommandError("git pull", -1, "Fetch timed out (60s).")
 
     new_head = subprocess.run(
         ["git", "-C", repo_path, "rev-parse", "HEAD"],
