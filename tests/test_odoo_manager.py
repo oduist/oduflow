@@ -256,10 +256,17 @@ class TestStartEnvironment:
         odoo.start.assert_called_once()
 
 
-class TestGetEnvironmentStatus:
+class TestGetEnvironmentInfo:
     def test_all_running(self, mock_docker_client):
         odoo = MagicMock()
         odoo.status = "running"
+        odoo.labels = {
+            "oduflow.template": "default",
+            "oduflow.repo": "https://github.com/example/repo.git",
+            "oduflow.image": "odoo:17.0",
+            "oduflow.extra_addons": "{}",
+        }
+        odoo.attrs = {"NetworkSettings": {"Ports": {}}}
         db = MagicMock()
         db.status = "running"
 
@@ -270,10 +277,14 @@ class TestGetEnvironmentStatus:
 
         mock_docker_client.containers.get.side_effect = get_container
 
-        result = env_ops.get_environment_status(TEST_SETTINGS, "main")
+        result = env_ops.get_environment_info(TEST_SETTINGS, "main")
 
         assert result["all_running"] is True
         assert result["db"]["name"] == "oduflow-db"
+        assert result["db_name"] == "oduflow_1_main"
+        assert result["repo_url"] == "https://github.com/example/repo.git"
+        assert result["odoo_image"] == "odoo:17.0"
+        assert result["template_name"] == "default"
 
 
 class TestInstallModules:

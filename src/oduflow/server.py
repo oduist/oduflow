@@ -440,6 +440,8 @@ def list_environments() -> str:
         if env.get("url"):
             status_line += f" - {env['url']}"
         output += status_line + "\n"
+        if env.get("db_name"):
+            output += f"  Database: {env['db_name']}\n"
         if env.get("odoo_image"):
             output += f"  Image: {env['odoo_image']}\n"
         if env.get("repo_url"):
@@ -527,24 +529,39 @@ def rebuild_environment(branch_name: str) -> str:
 
 @mcp.tool()
 @handle_errors
-def get_environment_status(branch_name: str) -> str:
+def get_environment_info(branch_name: str) -> str:
     """
-    Check if containers are running for a specific branch.
+    Get comprehensive information about an environment for a specific branch.
+
+    Returns database name, URL, repository, image, template, extra addons,
+    workspace path, container status, and CPU/RAM stats.
 
     Args:
         branch_name: The name of the branch/environment to check.
     """
-    status = env_ops.get_environment_status(_get_settings(), branch_name)
-    overall = "All containers running" if status["all_running"] else "Some containers not running"
-    lines = [f"Environment Status for '{branch_name}': {overall}"]
-    if status.get("template_name"):
-        lines.append(f"Template: {status['template_name']}")
+    info = env_ops.get_environment_info(_get_settings(), branch_name)
+    overall = "All containers running" if info["all_running"] else "Some containers not running"
+    lines = [f"Environment Info for '{branch_name}': {overall}"]
+    lines.append(f"Database: {info['db_name']}")
+    if info.get("url"):
+        lines.append(f"URL: {info['url']}")
+    if info.get("repo_url"):
+        lines.append(f"Repo: {info['repo_url']}")
+    if info.get("odoo_image"):
+        lines.append(f"Image: {info['odoo_image']}")
+    if info.get("template_name"):
+        lines.append(f"Template: {info['template_name']}")
+    if info.get("extra_addons"):
+        addons = ", ".join(f"{k}:{v}" for k, v in info["extra_addons"].items())
+        lines.append(f"Extra addons: {addons}")
+    if info.get("workspace"):
+        lines.append(f"Workspace: {info['workspace']}")
     for key in ("odoo", "db"):
-        info = status[key]
+        cinfo = info[key]
         label = "Odoo" if key == "odoo" else "DB (shared)"
-        line = f"{label}: {info['status']} (running: {info['running']})"
-        if "cpu_percent" in info:
-            line += f" | CPU: {info['cpu_percent']}% | RAM: {info['mem_usage_mb']} MB ({info['mem_percent']}%)"
+        line = f"{label}: {cinfo['status']}"
+        if "cpu_percent" in cinfo:
+            line += f" | CPU: {cinfo['cpu_percent']}% | RAM: {cinfo['mem_usage_mb']} MB ({cinfo['mem_percent']}%)"
         lines.append(line)
     return "\n".join(lines)
 

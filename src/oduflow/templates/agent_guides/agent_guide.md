@@ -32,7 +32,7 @@ MCP endpoint: `http://<host>:8000/mcp`
 |---|---|
 | `list_environments` | Check existing environments before creating a new one |
 | `create_environment(branch_name, repo_url, odoo_image, template_name?)` | Provision an environment. Use the correct Odoo Docker image. Pass `template_name="none"` for greenfield projects |
-| `get_environment_status(branch_name)` | Check if the environment is running, get URL, CPU/RAM stats |
+| `get_environment_info(branch_name)` | Get full environment details: database name, URL, repo, image, template, extra addons, workspace, container status, CPU/RAM stats |
 | `delete_environment(branch_name)` | Tear down when the task is complete or cancelled |
 | `start_environment` / `stop_environment` | Resume or pause a stopped environment |
 | `restart_environment(branch_name)` | Restart the Odoo container (rarely needed — `sync_environment` handles this) |

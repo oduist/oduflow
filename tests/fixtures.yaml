@@ -87,13 +87,13 @@ scenarios:
     args: {}
     expect_contains: []
 
-  status_main:
-    tool: get_environment_status
+  info_main:
+    tool: get_environment_info
     needs_env: true
     args:
       branch_name: "main"
     expect_contains:
-      - "Environment Status"
+      - "Environment Info"
 
   restart_main:
     tool: restart_environment

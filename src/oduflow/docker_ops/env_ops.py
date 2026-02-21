@@ -915,7 +915,7 @@ def start_environment(settings: Settings, branch_name: str) -> dict[str, str]:
     return {"odoo_container": odoo_container_name, "started": started}
 
 
-def get_environment_status(settings: Settings, branch_name: str) -> dict[str, Any]:
+def get_environment_info(settings: Settings, branch_name: str) -> dict[str, Any]:
     from oduflow.docker_ops.stats import _get_one_container_stats
 
     client = get_client()
@@ -923,6 +923,8 @@ def get_environment_status(settings: Settings, branch_name: str) -> dict[str, An
 
     result: dict[str, Any] = {
         "branch": branch_name,
+        "db_name": get_db_name(branch_name, settings.instance_id),
+        "workspace": get_workspace_path(branch_name, settings.workspaces_dir),
         "odoo": {"name": odoo_container_name, "running": False, "status": "not found"},
         "db": {"name": settings.shared_db_container, "running": False, "status": "not found"},
     }
@@ -931,7 +933,28 @@ def get_environment_status(settings: Settings, branch_name: str) -> dict[str, An
         odoo_container = client.containers.get(odoo_container_name)
         result["odoo"]["status"] = odoo_container.status
         result["odoo"]["running"] = odoo_container.status == "running"
-        result["template_name"] = odoo_container.labels.get("oduflow.template", "none")
+
+        labels = odoo_container.labels
+        result["template_name"] = labels.get("oduflow.template", "none")
+        result["repo_url"] = sanitize_repo_url(labels.get(settings.repo_label, ""))
+        result["odoo_image"] = labels.get(settings.image_label, "")
+        result["git_user"] = labels.get("oduflow.git_user", "")
+        result["extra_addons"] = _normalize_extra_addons(
+            json.loads(labels.get("oduflow.extra_addons", "{}")),
+            settings.default_branch,
+        )
+
+        if settings.routing_mode == "traefik":
+            result["url"] = f"https://{get_env_hostname(branch_name, settings.base_domain)}/web?debug=1"
+        else:
+            ports = odoo_container.attrs.get("NetworkSettings", {}).get("Ports", {})
+            if ports:
+                mappings = ports.get("8069/tcp")
+                if mappings:
+                    host_port = mappings[0].get("HostPort")
+                    if host_port:
+                        result["url"] = f"http://{settings.external_host}:{host_port}/web?debug=1"
+
         stats = _get_one_container_stats(odoo_container)
         if stats:
             result["odoo"]["cpu_percent"] = stats["cpu_percent"]

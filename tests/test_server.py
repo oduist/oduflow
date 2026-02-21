@@ -97,17 +97,26 @@ class TestListEnvironmentsTool:
         assert "No active" in result
 
 
-class TestStatusTool:
-    @patch("oduflow.docker_ops.env_ops.get_environment_status")
-    def test_status(self, mock_status):
-        mock_status.return_value = {
+class TestInfoTool:
+    @patch("oduflow.docker_ops.env_ops.get_environment_info")
+    def test_info(self, mock_info):
+        mock_info.return_value = {
             "branch": "main",
+            "db_name": "oduflow_1_main",
+            "workspace": "/srv/oduflow_data_1/workspaces/main",
             "all_running": True,
+            "url": "http://localhost:50000/web?debug=1",
+            "repo_url": "https://github.com/example/repo.git",
+            "odoo_image": "odoo:17.0",
+            "template_name": "default",
+            "extra_addons": {},
+            "git_user": "",
             "odoo": {"status": "running", "running": True},
             "db": {"status": "running", "running": True},
         }
-        result = _call_tool("get_environment_status", branch_name="main")
+        result = _call_tool("get_environment_info", branch_name="main")
         assert "All containers running" in result
+        assert "Database: oduflow_1_main" in result
         assert "DB (shared)" in result
 
 

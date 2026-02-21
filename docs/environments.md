@@ -71,8 +71,8 @@ xfonts-75dpi
 # List all environments with status, URL, image, and repo info
 oduflow call list_environments
 
-# Check detailed status with CPU/RAM stats
-oduflow call get_environment_status feature-login
+# Check detailed environment info (DB, URL, repo, image, CPU/RAM stats)
+oduflow call get_environment_info feature-login
 
 # Stop an environment (preserves data)
 oduflow call stop_environment feature-login

@@ -10,7 +10,7 @@ All tools are accessible via MCP clients (Cursor, Cline, Amp, etc.) and the CLI 
 | `create_environment` | ✓ | Provision an Odoo environment for a branch (clone, DB, container, filestore) |
 | `delete_environment` | ✓ | Tear down all resources for a branch |
 | `list_environments` | | List all managed environments with status and URLs |
-| `get_environment_status` | | Container status, CPU and RAM stats for a branch |
+| `get_environment_info` | | Full environment details: DB name, URL, repo, image, template, extra addons, workspace, container status, CPU/RAM stats |
 | `start_environment` | | Start a stopped environment |
 | `stop_environment` | | Stop a running environment |
 | `restart_environment` | | Restart the Odoo container |
