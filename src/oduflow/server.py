@@ -199,6 +199,15 @@ def create_environment(
                 effective_odoo_image = metadata.get("odoo_image", "")
             if not effective_git_user:
                 effective_git_user = metadata.get("git_user", "")
+            if not extra_addons:
+                raw_extra = metadata.get("extra_addons")
+                if raw_extra:
+                    from oduflow.docker_ops.env_ops import _normalize_extra_addons
+                    _metadata_extra = _normalize_extra_addons(raw_extra, settings.default_branch)
+                    if _metadata_extra:
+                        extra_addons = ",".join(
+                            f"{name}:{branch}" for name, branch in _metadata_extra.items()
+                        )
 
     if not effective_repo_url:
         raise ValueError("repo_url is required (not found in template metadata either).")
