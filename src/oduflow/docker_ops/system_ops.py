@@ -394,7 +394,8 @@ def reload_template(
         other_name = "dump.pgdump" if use_psql else "dump.sql"
         dest_path = os.path.join(tpl_dir, dest_name)
         other_path = os.path.join(tpl_dir, other_name)
-        shutil.copy2(dump_path, dest_path)
+        if not os.path.exists(dest_path) or not os.path.samefile(dump_path, dest_path):
+            shutil.copy2(dump_path, dest_path)
         if os.path.isfile(other_path):
             os.remove(other_path)
             logger.info("Removed old dump %s", other_path)
@@ -836,9 +837,13 @@ def publish_env_as_template(settings: Settings, branch_name: str, template_name:
     # 2. Reload template DB from new dump
     reload_template(settings, template_name=template_name, dump_path=dump_path)
 
-    # 3. Collect active branches (excluding the source one is fine, it keeps working)
+    # 3. Collect active branches that use THIS template AND overlay mount
     active_envs = env_ops.list_environments(settings)
-    active_branches = [e["branch"] for e in active_envs]
+    active_branches = [
+        e["branch"] for e in active_envs
+        if e.get("template_name") == template_name
+        and os.path.ismount(get_filestore_paths(e["branch"], settings.workspaces_dir)["merged"])
+    ]
 
     # 4. Snapshot the source branch's merged filestore (while overlay is still mounted)
     branch_paths = get_filestore_paths(branch_name, settings.workspaces_dir)
