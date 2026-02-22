@@ -10,7 +10,7 @@ import time
 import docker
 from docker import DockerClient
 
-from oduflow.docker_ops.client import get_client, get_odoo_uid_gid
+from oduflow.docker_ops.client import chown_recursive, get_client, get_odoo_uid_gid
 from oduflow.errors import ConflictError, ExternalCommandError, NotFoundError, PrerequisiteNotMetError
 from oduflow.naming import get_db_name, get_template_db_name
 from oduflow.settings import Settings
@@ -586,10 +586,7 @@ def init_template(
     odoo_uid_gid = get_odoo_uid_gid(client, odoo_image)
     uid_str, gid_str = odoo_uid_gid.split(":")
     uid, gid = int(uid_str), int(gid_str)
-    for root, dirs, files in os.walk(template_filestore_path):
-        os.chown(root, uid, gid)
-        for name in dirs + files:
-            os.chown(os.path.join(root, name), uid, gid)
+    chown_recursive(template_filestore_path, uid, gid, client, odoo_image)
 
     temp_container.remove(v=True)
     logger.info("Temporary container removed")
@@ -672,18 +669,12 @@ def template_up(
     odoo_uid_gid = get_odoo_uid_gid(client, odoo_image)
     uid_str, gid_str = odoo_uid_gid.split(":")
     uid, gid = int(uid_str), int(gid_str)
-    for root, dirs, files in os.walk(template_filestore_path):
-        os.chown(root, uid, gid)
-        for name in dirs + files:
-            os.chown(os.path.join(root, name), uid, gid)
+    chown_recursive(template_filestore_path, uid, gid, client, odoo_image)
 
     sessions_path = os.path.join(settings.get_template_dir(template_name), "sessions")
     os.makedirs(sessions_path, mode=0o777, exist_ok=True)
     os.chmod(sessions_path, 0o777)
-    for root_dir, dirs, files in os.walk(sessions_path):
-        os.chown(root_dir, uid, gid)
-        for name in dirs + files:
-            os.chown(os.path.join(root_dir, name), uid, gid)
+    chown_recursive(sessions_path, uid, gid, client, odoo_image)
 
     from oduflow.port_registry import allocate_port
     from oduflow.docker_ops.env_ops import _get_used_ports
@@ -899,11 +890,7 @@ def publish_env_as_template(settings: Settings, branch_name: str, template_name:
             promoted_image = "odoo:17.0"
         odoo_uid_gid = get_odoo_uid_gid(client, promoted_image)
         uid_str, gid_str = odoo_uid_gid.split(":")
-        uid, gid = int(uid_str), int(gid_str)
-        for root, dirs, files in os.walk(template_filestore_path):
-            os.chown(root, uid, gid)
-            for name in dirs + files:
-                os.chown(os.path.join(root, name), uid, gid)
+        chown_recursive(template_filestore_path, int(uid_str), int(gid_str), client, promoted_image)
         logger.info("Template filestore chowned to %s", odoo_uid_gid)
 
     # 7. Reset filestores to new template baseline

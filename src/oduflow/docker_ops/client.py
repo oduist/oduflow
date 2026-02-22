@@ -1,4 +1,5 @@
 import logging
+import os
 
 import docker
 from docker import DockerClient
@@ -39,3 +40,30 @@ def get_odoo_uid_gid(client: DockerClient, image: str) -> str:
     _uid_gid_cache[image] = result
     logger.debug("Detected UID:GID for %s: %s", image, result)
     return result
+
+
+def chown_recursive(path: str, uid: int, gid: int, client: DockerClient, image: str) -> None:
+    """Recursively chown *path* to *uid*:*gid*.
+
+    Tries host-side ``os.chown`` first (works on Linux as root).
+    On ``PermissionError`` (e.g. macOS) falls back to running
+    ``chown -R`` inside a throwaway container with *path* bind-mounted.
+    """
+    try:
+        for root, dirs, files in os.walk(path):
+            os.chown(root, uid, gid)
+            for name in dirs + files:
+                os.chown(os.path.join(root, name), uid, gid)
+    except PermissionError:
+        logger.debug(
+            "Host chown failed (PermissionError), falling back to in-container chown for %s",
+            path,
+        )
+        client.containers.run(
+            image,
+            f"chown -R {uid}:{gid} /mnt/target",
+            entrypoint="",
+            user="root",
+            remove=True,
+            volumes={path: {"bind": "/mnt/target", "mode": "rw"}},
+        )

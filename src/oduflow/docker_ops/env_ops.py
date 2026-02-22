@@ -17,7 +17,7 @@ def _trace(msg: str, *args: object) -> None:
 import docker
 from docker import DockerClient
 
-from oduflow.docker_ops.client import get_client, get_odoo_uid_gid
+from oduflow.docker_ops.client import chown_recursive, get_client, get_odoo_uid_gid
 from oduflow.docker_ops.system_ops import _db_exists, _exec_sql, _resolve_conf
 from oduflow.errors import (
     ConflictError,
@@ -154,10 +154,7 @@ def _mount_filestore(
         shutil.copytree(template_filestore, merged)
         odoo_uid_gid = get_odoo_uid_gid(client, odoo_image)
         uid_str, gid_str = odoo_uid_gid.split(":")
-        for root, dirs, files in os.walk(merged):
-            os.chown(root, int(uid_str), int(gid_str))
-            for name in dirs + files:
-                os.chown(os.path.join(root, name), int(uid_str), int(gid_str))
+        chown_recursive(merged, int(uid_str), int(gid_str), client, odoo_image)
         odoo_volumes[merged] = {
             "bind": f"/var/lib/odoo/.local/share/Odoo/filestore/{env_db}",
             "mode": "rw",
@@ -172,10 +169,7 @@ def _mount_filestore(
     odoo_uid_gid = get_odoo_uid_gid(client, odoo_image)
     uid_str, gid_str = odoo_uid_gid.split(":")
     for d in (paths["upper"], paths["work"], paths["merged"]):
-        for root, dirs, files in os.walk(d):
-            os.chown(root, int(uid_str), int(gid_str))
-            for name in dirs + files:
-                os.chown(os.path.join(root, name), int(uid_str), int(gid_str))
+        chown_recursive(d, int(uid_str), int(gid_str), client, odoo_image)
 
     if not shutil.which("fuse-overlayfs"):
         raise PrerequisiteNotMetError(
@@ -603,10 +597,7 @@ def create_environment(
         os.makedirs(filestore_path, mode=0o777, exist_ok=True)
         os.chmod(filestore_path, 0o777)
         _uid, _gid = get_odoo_uid_gid(client, odoo_image).split(":")
-        for _root, _dirs, _files in os.walk(filestore_path):
-            os.chown(_root, int(_uid), int(_gid))
-            for _name in _dirs + _files:
-                os.chown(os.path.join(_root, _name), int(_uid), int(_gid))
+        chown_recursive(filestore_path, int(_uid), int(_gid), client, odoo_image)
         odoo_volumes[filestore_path] = {
             "bind": f"/var/lib/odoo/.local/share/Odoo/filestore/{env_db}",
             "mode": "rw",
@@ -627,10 +618,7 @@ def create_environment(
     os.makedirs(sessions_path, mode=0o777, exist_ok=True)
     os.chmod(sessions_path, 0o777)
     uid_str, gid_str = get_odoo_uid_gid(client, odoo_image).split(":")
-    for root_dir, dirs, files in os.walk(sessions_path):
-        os.chown(root_dir, int(uid_str), int(gid_str))
-        for name in dirs + files:
-            os.chown(os.path.join(root_dir, name), int(uid_str), int(gid_str))
+    chown_recursive(sessions_path, int(uid_str), int(gid_str), client, odoo_image)
     odoo_volumes[sessions_path] = {
         "bind": "/var/lib/odoo/.local/share/Odoo/sessions",
         "mode": "rw",
