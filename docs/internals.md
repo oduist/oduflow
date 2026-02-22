@@ -117,6 +117,18 @@ $ODUFLOW_HOME/workspaces/{branch}/
 
 When `template_name="none"` (no template), the filestore is a plain directory (no overlay).
 
+You can verify active overlay mounts with `df -h` — each environment with a template gets its own `fuse-overlayfs` mount:
+
+```
+$ df -h
+Filesystem                         Size  Used Avail Use% Mounted on
+/dev/mapper/ubuntu--vg-ubuntu--lv   97G   74G   19G  81% /
+fuse-overlayfs                      97G   74G   19G  81% /srv/oduflow_data/workspaces/manuf-plan/filestore
+fuse-overlayfs                      97G   74G   19G  81% /srv/oduflow_data/workspaces/fixing-landing-of-transport-orde-3022/filestore
+fuse-overlayfs                      97G   74G   19G  81% /srv/oduflow_data/workspaces/receiver-company-refactor-64cb/filestore
+fuse-overlayfs                      97G   74G   19G  81% /srv/oduflow_data/workspaces/supply-translation-45e8/filestore
+```
+
 ## Docker Resources
 
 | Resource | Name | Description |
