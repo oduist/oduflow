@@ -449,19 +449,30 @@ def _build_routes(
             return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
 
     async def api_service_restore(request: Request) -> JSONResponse:
-        name = request.path_params["name"]
         if not busy_lock.acquire(blocking=False):
             return _error_response(BusyError("Another operation is in progress."))
         try:
-            settings = get_settings()
-            preset = service_presets.get_preset(settings, name)
+            body = await request.json()
+            name = (body.get("name") or "").strip()
+            image = (body.get("image") or "").strip()
+            port = body.get("port")
+            hostname = (body.get("hostname") or "").strip() or None
+            env_vars_raw = (body.get("env_vars") or "").strip()
+            if not name or not image or not port:
+                return JSONResponse(
+                    {"ok": False, "error": "name, image and port are required."},
+                    status_code=400,
+                )
+            env_vars = None
+            if env_vars_raw:
+                import re
+                env_vars = dict(
+                    item.split("=", 1)
+                    for item in re.split(r"[\n,]+", env_vars_raw)
+                    if "=" in item
+                )
             result = service_ops.create_service(
-                settings,
-                name=preset["name"],
-                image=preset["image"],
-                port=preset["port"],
-                hostname=preset.get("hostname") or None,
-                env_vars=preset.get("env_vars") or None,
+                get_settings(), name, image, int(port), hostname=hostname, env_vars=env_vars,
             )
             return JSONResponse({"ok": True, "result": result})
         except FlowError as e:
@@ -747,7 +758,7 @@ def _build_routes(
         Route("/api/services/{name}/delete", api_service_delete, methods=["POST"]),
         Route("/api/services/{name}/logs", api_service_logs, methods=["GET"]),
         Route("/api/service-presets", api_service_presets, methods=["GET"]),
-        Route("/api/service-presets/{name}/restore", api_service_restore, methods=["POST"]),
+        Route("/api/service-presets/restore", api_service_restore, methods=["POST"]),
         Route("/api/service-presets/{name}/delete", api_service_preset_delete, methods=["POST"]),
         Route("/api/extra-repos", api_extra_repos, methods=["GET"]),
         Route("/api/extra-repos/add", api_extra_repo_add, methods=["POST"]),

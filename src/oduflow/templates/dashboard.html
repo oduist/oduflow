@@ -572,7 +572,7 @@
   </div>
 </div>
 <div class="modal-overlay" id="restore-svc-modal" onclick="closeRestoreServiceModal(event)">
-  <div class="modal" style="max-width:420px;">
+  <div class="modal" style="max-width:500px;">
     <div class="modal-header">
       <h2>Restore Service</h2>
       <button class="modal-close" onclick="closeRestoreServiceModal()">&times;</button>
@@ -580,12 +580,31 @@
     <div class="modal-body">
       <div class="form-error" id="restore-svc-error"></div>
       <div class="form-group">
-        <label for="restore-svc-select">Select preset</label>
+        <label for="restore-svc-select">Load from preset</label>
         <select id="restore-svc-select" style="width:100%;padding:8px 10px;font-size:13px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:var(--radius);">
           <option value="">Loading...</option>
         </select>
       </div>
-      <div id="restore-svc-details" style="font-size:12px;color:var(--text-dim);margin-top:8px;"></div>
+      <div class="form-group">
+        <label for="restore-svc-name">Service name</label>
+        <input type="text" id="restore-svc-name" placeholder="e.g. redis, meilisearch">
+      </div>
+      <div class="form-group">
+        <label for="restore-svc-image">Docker image</label>
+        <input type="text" id="restore-svc-image" placeholder="e.g. redis:7">
+      </div>
+      <div class="form-group">
+        <label for="restore-svc-port">Container port</label>
+        <input type="number" id="restore-svc-port" placeholder="e.g. 6379">
+      </div>
+      <div class="form-group">
+        <label for="restore-svc-hostname">Hostname (optional, traefik mode)</label>
+        <input type="text" id="restore-svc-hostname" placeholder="e.g. redis.example.com">
+      </div>
+      <div class="form-group">
+        <label for="restore-svc-envvars">Environment variables (optional)</label>
+        <textarea id="restore-svc-envvars" rows="4" placeholder="KEY1=val1&#10;KEY2=val2"></textarea>
+      </div>
       <div class="form-actions">
         <button class="btn" onclick="closeRestoreServiceModal()">Cancel</button>
         <button class="btn-create" id="restore-svc-submit" onclick="submitRestoreService()" style="background:var(--green);border-color:var(--green);">Restore</button>
@@ -1471,20 +1490,7 @@ function renderPresetsList(presets) {
 }
 
 async function doRestorePreset(name) {
-  if (!confirm('Restore service "' + name + '" from preset?')) return;
-  try {
-    var r = await fetch(API_PRESETS + '/' + encodeURIComponent(name) + '/restore', { method: 'POST' });
-    var data = await r.json();
-    if (data.ok) {
-      showToast('Service "' + name + '" restored');
-      await loadServices();
-      await loadServicePresets();
-    } else {
-      showToast(data.error || 'Restore failed', true);
-    }
-  } catch (e) {
-    showToast('Connection error: ' + e.message, true);
-  }
+  openRestoreServiceModal(name);
 }
 
 async function doDeletePreset(name) {
@@ -1503,13 +1509,28 @@ async function doDeletePreset(name) {
   }
 }
 
-function openRestoreServiceModal() {
+function _fillRestoreFields(p) {
+  document.getElementById('restore-svc-name').value = p.name || '';
+  document.getElementById('restore-svc-image').value = p.image || '';
+  document.getElementById('restore-svc-port').value = p.port || '';
+  document.getElementById('restore-svc-hostname').value = p.hostname || '';
+  var envStr = '';
+  if (p.env_vars && Object.keys(p.env_vars).length) {
+    envStr = Object.keys(p.env_vars).map(function(k) { return k + '=' + p.env_vars[k]; }).join('\n');
+  }
+  document.getElementById('restore-svc-envvars').value = envStr;
+}
+
+function openRestoreServiceModal(preselect) {
   var sel = document.getElementById('restore-svc-select');
   var errEl = document.getElementById('restore-svc-error');
-  var details = document.getElementById('restore-svc-details');
   errEl.style.display = 'none';
-  details.innerHTML = '';
   document.getElementById('restore-svc-submit').disabled = false;
+  document.getElementById('restore-svc-name').value = '';
+  document.getElementById('restore-svc-image').value = '';
+  document.getElementById('restore-svc-port').value = '';
+  document.getElementById('restore-svc-hostname').value = '';
+  document.getElementById('restore-svc-envvars').value = '';
 
   sel.innerHTML = '<option value="">Loading...</option>';
   document.getElementById('restore-svc-modal').classList.add('show');
@@ -1523,16 +1544,14 @@ function openRestoreServiceModal() {
       sel.onchange = function() {
         var p = data.presets.find(function(x) { return x.name === sel.value; });
         if (p) {
-          var lines = ['Image: ' + p.image, 'Port: ' + p.port];
-          if (p.hostname) lines.push('Hostname: ' + p.hostname);
-          if (p.env_vars && Object.keys(p.env_vars).length) {
-            lines.push('Env: ' + Object.keys(p.env_vars).map(function(k) { return k + '=' + maskValue(k, p.env_vars[k]); }).join(', '));
-          }
-          details.innerHTML = lines.map(function(l) { return esc(l); }).join('<br>');
-        } else {
-          details.innerHTML = '';
+          _fillRestoreFields(p);
         }
       };
+      if (preselect) {
+        sel.value = preselect;
+        var p = data.presets.find(function(x) { return x.name === preselect; });
+        if (p) _fillRestoreFields(p);
+      }
     } else {
       sel.innerHTML = '<option value="">No presets available</option>';
     }
@@ -1547,20 +1566,32 @@ function closeRestoreServiceModal(event) {
 }
 
 async function submitRestoreService() {
-  var sel = document.getElementById('restore-svc-select');
-  var name = sel.value;
+  var name = document.getElementById('restore-svc-name').value.trim();
+  var image = document.getElementById('restore-svc-image').value.trim();
+  var port = document.getElementById('restore-svc-port').value.trim();
+  var hostname = document.getElementById('restore-svc-hostname').value.trim();
+  var envvars = document.getElementById('restore-svc-envvars').value.trim();
   var errEl = document.getElementById('restore-svc-error');
-  if (!name) {
-    errEl.textContent = 'Please select a preset.';
+
+  if (!name || !image || !port) {
+    errEl.textContent = 'Service name, Docker image and port are required.';
     errEl.style.display = 'block';
     return;
   }
+
   errEl.style.display = 'none';
   var btn = document.getElementById('restore-svc-submit');
   btn.disabled = true;
   btn.textContent = 'Restoring...';
   try {
-    var r = await fetch(API_PRESETS + '/' + encodeURIComponent(name) + '/restore', { method: 'POST' });
+    var payload = { name: name, image: image, port: parseInt(port, 10) };
+    if (hostname) payload.hostname = hostname;
+    if (envvars) payload.env_vars = envvars;
+    var r = await fetch(API_PRESETS + '/restore', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(payload)
+    });
     var data = await r.json();
     if (data.ok) {
       closeRestoreServiceModal();
