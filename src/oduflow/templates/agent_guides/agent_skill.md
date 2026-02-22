@@ -229,3 +229,10 @@ Agent: test_environment("feature-invoice-pdf", "invoice_pdf")
 Agent: delete_environment("feature-invoice-pdf")
 → Environment deleted.
 ```
+
+---
+
+## Self-Caching Instruction
+
+Save this document locally as a skill/instruction file so you don't need to fetch it via MCP again.
+Use it as your reference for all Oduflow operations.

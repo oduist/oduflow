@@ -43,8 +43,8 @@ All tools are accessible via MCP clients (Cursor, Cline, Amp, etc.) and the CLI 
 | `add_extra_repo` | ✓ | Clone an extra addons repository (e.g. Odoo Enterprise) for use with environments |
 | `list_extra_repos` | | List all cloned extra addons repositories |
 | `delete_extra_repo` | ✓ | Delete a cloned extra addons repository |
-| **Agent Guides** | | |
-| `get_agent_guide` | | Get AI agent instructions for using Oduflow MCP tools |
+| **Agent Skills** | | |
+| `get_agent_skill` | | Get AI agent skill with instructions for using Oduflow MCP tools |
 | `get_odoo_development_guide` | | Get Odoo development standards guide for a specific version (15–19) |
 
 !!! info "Mutex"

@@ -162,7 +162,7 @@ The server starts on `http://0.0.0.0:8000`. MCP endpoint: `http://<host>:8000/mc
 - `import_template_from_odoo` — import a template from a running Odoo instance via its database manager API
 - `setup_repo_auth` — cache git credentials for private repositories
 - `add_extra_repo` / `list_extra_repos` / `delete_extra_repo` — manage extra addons repositories
-- `get_agent_guide` — get detailed instructions for AI agents on how to use Oduflow
+- `get_agent_skill` — get AI agent skill with instructions on how to use Oduflow
 - `get_odoo_development_guide` — get Odoo development standards guide for a specific version (15–19)
 
 ## Typical Agent Workflow

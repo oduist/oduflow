@@ -343,18 +343,21 @@ def import_template_from_odoo(
 
 @mcp.tool()
 @handle_errors
-def get_agent_guide() -> str:
-    """Get the agent guide with instructions for AI coding agents on how to use Oduflow MCP tools."""
+def get_agent_skill() -> str:
+    """Get the agent skill with instructions for AI coding agents on how to use Oduflow MCP tools."""
     import pathlib
     settings = _get_settings()
-    guide_path = os.path.join(settings.home, "agent_guides", "agent_guide.md")
-    if os.path.isfile(guide_path):
-        with open(guide_path, "r", encoding="utf-8") as f:
-            return f.read()
-    bundled = pathlib.Path(__file__).resolve().parent / "templates" / "agent_guides" / "agent_guide.md"
-    if bundled.is_file():
-        return bundled.read_text(encoding="utf-8")
-    return "Agent guide not found."
+    # Support both new and legacy file names
+    for name in ("agent_skill.md", "agent_guide.md"):
+        skill_path = os.path.join(settings.home, "agent_guides", name)
+        if os.path.isfile(skill_path):
+            with open(skill_path, "r", encoding="utf-8") as f:
+                return f.read()
+    for name in ("agent_skill.md", "agent_guide.md"):
+        bundled = pathlib.Path(__file__).resolve().parent / "templates" / "agent_guides" / name
+        if bundled.is_file():
+            return bundled.read_text(encoding="utf-8")
+    return "Agent skill not found."
 
 
 @mcp.tool()
