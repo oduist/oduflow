@@ -2,6 +2,8 @@
 
 [TOC]
 
+![Environments Dashboard](img/envs.png)
+
 ## Creating Environments
 
 ```bash

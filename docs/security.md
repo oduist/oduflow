@@ -37,6 +37,8 @@ WARNING  Web UI auth DISABLED (ODUFLOW_UI_PASSWORD not set)
 
 ## Git credentials
 
+![Credentials Management](img/credentials.png)
+
 Private repository credentials are stored in the git credential store (`~/.git-credentials`) via the `setup_repo_auth` tool. The clean URL (without credentials) is always used in Docker labels and logs — credentials are never exposed.
 
 ## iptables rule

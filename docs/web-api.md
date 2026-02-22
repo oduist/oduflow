@@ -4,6 +4,8 @@
 
 ## Web Dashboard
 
+![Web Dashboard — Agent Guides](img/agent_guides.png)
+
 When running in HTTP mode, a web dashboard is available at the server root (`http://<host>:<port>/`). It provides:
 
 - **Environment list** with status indicators (running / stopped / partial)
