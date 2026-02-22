@@ -1,6 +1,9 @@
+import logging
 import os
 import re
 from dataclasses import dataclass
+
+logger = logging.getLogger("oduflow")
 
 
 @dataclass(frozen=True)
@@ -35,6 +38,7 @@ class Settings:
     port_registry_path: str = ""
     overlay_threshold_mb: int = 50
     stateless_http: bool = True
+    etc_dir: str = "/etc/oduflow"
 
     def get_template_dir(self, template_name: str) -> str:
         return os.path.join(self.home, "templates", template_name)
@@ -70,6 +74,18 @@ class Settings:
         return os.path.join(self.home, "shared_repos")
 
     @staticmethod
+    def _default_etc_dir() -> str:
+        explicit = os.getenv("ODUFLOW_ETC_DIR", "").strip()
+        if explicit:
+            return explicit
+        default = "/etc/oduflow"
+        if os.access(default, os.W_OK) or os.access(os.path.dirname(default), os.W_OK):
+            return default
+        fallback = os.path.join(os.path.expanduser("~"), ".config", "oduflow")
+        logger.warning("Default %s is not writable, falling back to %s", default, fallback)
+        return fallback
+
+    @staticmethod
     def from_env() -> "Settings":
         instance_id = os.getenv("ODUFLOW_INSTANCE_ID", "1").strip()
         flow_home = os.getenv("ODUFLOW_HOME", f"/srv/oduflow_data_{instance_id}")
@@ -92,6 +108,7 @@ class Settings:
             default_branch=os.getenv("ODUFLOW_DEFAULT_BRANCH", "prod"),
             overlay_threshold_mb=int(os.getenv("ODUFLOW_OVERLAY_THRESHOLD_MB", "50")),
             stateless_http=os.getenv("ODUFLOW_STATELESS_HTTP", "true").strip().lower() in ("1", "true", "yes"),
+            etc_dir=Settings._default_etc_dir(),
             port_registry_path=os.getenv(
                 "ODUFLOW_PORT_REGISTRY",
                 os.path.join(flow_home, "ports.json"),

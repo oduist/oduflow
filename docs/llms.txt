@@ -47,6 +47,7 @@ Key environment variables:
 - `ODUFLOW_AUTH_TOKEN` — Bearer token for MCP auth (empty = auth disabled)
 - `ODUFLOW_UI_PASSWORD` — password for Web UI Basic Auth (empty = UI open)
 - `ODUFLOW_HOME` — base directory for all data (default `/srv/oduflow_data_1`)
+- `ODUFLOW_ETC_DIR` — config/credentials directory (default `/etc/oduflow` in Docker, `~/.config/oduflow` locally)
 - `ODUFLOW_DEFAULT_BRANCH` — base branch for cloning (default `prod`)
 - `ODUFLOW_DEFAULT_TEMPLATE` — default template profile (default `default`)
 - `EXTERNAL_HOST` — hostname for environment URLs (default `localhost`)

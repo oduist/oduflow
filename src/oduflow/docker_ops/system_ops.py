@@ -20,7 +20,9 @@ logger = logging.getLogger("oduflow")
 _PACKAGE_ROOT = pathlib.Path(__file__).resolve().parents[1]
 _BUNDLED_PG_CONF = _PACKAGE_ROOT / "templates" / "postgresql.conf"
 _BUNDLED_ODOO_CONF = _PACKAGE_ROOT / "templates" / "odoo.conf"
-_ETC_DIR = pathlib.Path("/etc/oduflow")
+def _get_etc_dir() -> pathlib.Path:
+    from oduflow.settings import Settings
+    return pathlib.Path(Settings._default_etc_dir())
 
 
 def _file_size_mb(path: str) -> float:
@@ -67,7 +69,7 @@ def _normalize_extra_addons(raw_addons, fallback_branch: str) -> dict[str, str]:
 
 def _resolve_conf(name: str) -> pathlib.Path:
     """Return /etc/oduflow/{name} if present, otherwise the bundled copy."""
-    etc_path = _ETC_DIR / name
+    etc_path = _get_etc_dir() / name
     if etc_path.is_file():
         return etc_path
     bundled = _PACKAGE_ROOT / "templates" / name

@@ -81,11 +81,13 @@ def setup_repo_auth(repo_url: str) -> dict[str, str]:
     return {"repo_url": clean_url, "host": host, "status": "authenticated"}
 
 
-_ETC_DIR = "/etc/oduflow"
+def _get_etc_dir() -> str:
+    from oduflow.settings import Settings
+    return Settings._default_etc_dir()
 
 
 def _credentials_file() -> str:
-    return os.path.join(_ETC_DIR, ".git-credentials")
+    return os.path.join(_get_etc_dir(), ".git-credentials")
 
 
 def ensure_credential_helper() -> None:
