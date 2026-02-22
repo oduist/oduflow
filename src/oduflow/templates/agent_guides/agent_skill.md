@@ -87,7 +87,7 @@ MCP endpoint: `http://<host>:8000/mcp`
 | Tool | When to use |
 |---|---|
 | `list_templates` | List available database template profiles |
-| `publish_as_template(branch_name)` | ⚠️ **Destructive**. Make a branch the new template baseline. Requires explicit user permission |
+| `publish_as_template(branch_name)` | Make a branch the new template baseline. ⚠️ Destructive only if other environments share this template with overlay mounts. Requires explicit user permission |
 | `drop_template(template_name)` | ⚠️ **Destructive**. Remove a template profile. Requires explicit user permission |
 
 ---

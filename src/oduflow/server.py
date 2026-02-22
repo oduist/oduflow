@@ -254,15 +254,17 @@ def create_environment(
 @with_mutex
 def publish_as_template(branch_name: str, template_name: str) -> str:
     """
-    DANGEROUS: Publish a branch environment to become the new template (DB + filestore).
+    Publish a branch environment to become the new template (DB + filestore).
 
-    This is a destructive, irreversible operation that replaces the shared template
-    database and filestore with the data from the specified branch. All other
-    environments will lose their filestore deltas and be reset to the new baseline.
+    Replaces the template database and filestore with the data from the specified
+    branch. If other environments use this template with overlay-mounted filestores,
+    their filestore deltas will be reset to the new baseline — this is destructive
+    for those environments. If no other environments share this template, the
+    operation is safe.
 
-    NEVER call this tool on your own initiative. Requires EXPLICIT user permission
-    and confirmation before execution. If the user has not clearly and unambiguously
-    asked you to publish a specific branch, DO NOT call this tool.
+    Requires EXPLICIT user permission and confirmation before execution.
+    If the user has not clearly and unambiguously asked you to publish
+    a specific branch, DO NOT call this tool.
 
     Args:
         branch_name: The name of the branch whose DB and filestore will become the new template.
@@ -270,12 +272,18 @@ def publish_as_template(branch_name: str, template_name: str) -> str:
     """
     settings = _get_settings()
     result = system_ops.publish_env_as_template(settings, branch_name, template_name=template_name)
-    return (
-        f"Branch '{result['branch']}' saved as template '{template_name}'.\n"
-        f"Template DB: {result['template_db']}\n"
-        f"Dump: {result['dump']}\n"
-        f"Filestore: {result['filestore']}"
-    )
+    affected = result.get("affected_branches", [])
+    lines = [
+        f"Branch '{result['branch']}' saved as template '{template_name}'.",
+        f"Template DB: {result['template_db']}",
+        f"Dump: {result['dump']}",
+        f"Filestore: {result['filestore']}",
+    ]
+    if affected:
+        lines.append(f"⚠️ Reset filestore overlays for: {', '.join(affected)}")
+    else:
+        lines.append("No other environments were affected.")
+    return "\n".join(lines)
 
 
 @mcp.tool()

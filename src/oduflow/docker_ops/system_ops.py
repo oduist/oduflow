@@ -976,6 +976,7 @@ def publish_env_as_template(settings: Settings, branch_name: str, template_name:
         "dump": dump_path,
         "filestore": template_filestore_path,
         "template_db": tpl_db,
+        "affected_branches": active_branches,
     }
 
 
