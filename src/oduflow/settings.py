@@ -86,9 +86,22 @@ class Settings:
         return fallback
 
     @staticmethod
+    def _default_home(instance_id: str) -> str:
+        explicit = os.getenv("ODUFLOW_HOME", "").strip()
+        if explicit:
+            return explicit
+        default = f"/srv/oduflow_data_{instance_id}"
+        parent = os.path.dirname(default)
+        if os.access(parent, os.W_OK) or (os.path.isdir(default) and os.access(default, os.W_OK)):
+            return default
+        fallback = os.path.join(os.path.expanduser("~"), f"oduflow_data_{instance_id}")
+        logger.warning("Default %s is not writable, falling back to %s", default, fallback)
+        return fallback
+
+    @staticmethod
     def from_env() -> "Settings":
         instance_id = os.getenv("ODUFLOW_INSTANCE_ID", "1").strip()
-        flow_home = os.getenv("ODUFLOW_HOME", f"/srv/oduflow_data_{instance_id}")
+        flow_home = Settings._default_home(instance_id)
         return Settings(
             instance_id=instance_id,
             routing_mode=os.getenv("ODUFLOW_ROUTING_MODE", "port").strip().lower(),
