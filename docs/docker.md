@@ -55,7 +55,7 @@ docker run -d \
 |---|---|
 | `/var/run/docker.sock` | **Required.** Gives Oduflow access to the host Docker daemon to manage Odoo containers, PostgreSQL, Traefik, etc. |
 | `/srv/oduflow_data_1` | Oduflow data directory (`ODUFLOW_HOME`). Contains workspaces, templates, port registry. Use a named volume or a host path to persist data across container restarts. |
-| `/etc/oduflow` | License key storage. Mount if you have a commercial license. |
+| `/etc/oduflow` | System configuration directory. Contains license key, database settings, default `odoo.conf`, and other configuration files. Mount to persist configuration across container restarts. |
 
 ## Networking
 
@@ -123,26 +123,31 @@ All environment variables from `.env.example` are supported. Key ones for Docker
 ```yaml
 services:
   oduflow:
-    build: .
+    image: oduist/oduflow
     ports:
       - "8000:8000"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - oduflow_data:/srv/oduflow_data_1
-      - oduflow_license:/etc/oduflow
+      - oduflow_etc:/etc/oduflow
     env_file: .env
     restart: unless-stopped
+    networks:
+      - oduflow-net
 
 volumes:
   oduflow_data:
-  oduflow_license:
+  oduflow_etc:
+
+networks:
+  oduflow-net:
+    name: oduflow-net
 ```
 
 After `docker compose up -d`, run initialization:
 
 ```bash
 docker compose exec oduflow oduflow init
-docker network connect oduflow-net oduflow-oduflow-1
 docker compose exec oduflow oduflow init-instance
 ```
 
