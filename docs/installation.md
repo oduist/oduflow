@@ -9,6 +9,14 @@
 - **Git**
 - **fuse-overlayfs** (for filestore overlay mounting)
 
+!!! note "macOS support"
+    On macOS, Docker Desktop runs containers inside a Linux VM and projects
+    files via VirtioFS. **fuse-overlayfs is not needed** — filestore overlays
+    are skipped and a plain directory is used instead.
+    File ownership (`chown`) is handled automatically: Oduflow detects the
+    `PermissionError` that VirtioFS raises and falls back to running `chown`
+    inside a throwaway container. No extra configuration is required.
+
 ### Install fuse-overlayfs
 
 ```bash

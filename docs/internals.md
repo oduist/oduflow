@@ -129,6 +129,28 @@ fuse-overlayfs                      97G   74G   19G  81% /srv/oduflow_data/works
 fuse-overlayfs                      97G   74G   19G  81% /srv/oduflow_data/workspaces/supply-translation-45e8/filestore
 ```
 
+## File Ownership (macOS vs Linux)
+
+Odoo containers run as `uid=101 gid=101`. Oduflow must set this ownership on
+workspace files so the container can read/write them. The behaviour differs
+between platforms:
+
+| | Linux | macOS (Docker Desktop) |
+|---|---|---|
+| **Docker runtime** | Native — UID/GID are shared between host and container | Runs inside a Linux VM; files are projected via VirtioFS |
+| **Host file ownership** | Matches container UID (e.g. `101:101`) | Always shown as the macOS user regardless of in-container owner |
+| **`os.chown` from host** | Works (when running as root) | Raises `PermissionError` — VirtioFS ignores host-side chown |
+
+To handle both platforms transparently, Oduflow uses **`chown_recursive()`**
+(`docker_ops/client.py`):
+
+1. **Try host-side `os.chown`** — fast, works on Linux.
+2. **On `PermissionError`** — fall back to `chown -R` inside a throwaway
+   container with the target path bind-mounted. The chown happens inside the
+   VM where it takes effect normally.
+
+This means no manual ownership fixups are ever needed on either platform.
+
 ## Docker Resources
 
 | Resource | Name | Description |

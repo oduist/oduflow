@@ -55,7 +55,7 @@ def chown_recursive(path: str, uid: int, gid: int, client: DockerClient, image: 
             for name in dirs + files:
                 os.chown(os.path.join(root, name), uid, gid)
     except PermissionError:
-        logger.debug(
+        logger.info(
             "Host chown failed (PermissionError), falling back to in-container chown for %s",
             path,
         )
