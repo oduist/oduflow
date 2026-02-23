@@ -24,6 +24,8 @@ All tools are accessible via MCP clients (Cursor, Cline, Amp, etc.) and the CLI 
 | `test_environment` | ✓ | Run Odoo tests for specific modules |
 | `get_environment_logs` | | Retrieve recent container logs |
 | `exec_in_environment` | ✓ | Execute an arbitrary shell command inside the Odoo container |
+| `run_db_query` | ✓ | Execute a SQL query against the environment's PostgreSQL database |
+| `reset_admin_password` | ✓ | Reset the admin user password in the Odoo database (default: "test") |
 | **Template Management** | | |
 | `publish_as_template` | ✓ | ⚠️ Publish a branch DB + filestore to become a new template |
 | `list_templates` | | List available template profiles |

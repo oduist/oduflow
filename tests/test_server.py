@@ -259,6 +259,31 @@ class TestGetServiceLogsTool:
             _get_tool_fn("get_service_logs")(name="redis")
 
 
+class TestResetAdminPasswordTool:
+    @patch("oduflow.docker_ops.odoo_ops.reset_admin_password")
+    def test_reset_default_password(self, mock_reset):
+        mock_reset.return_value = {"status": "ok", "login": "admin", "psql_output": "UPDATE 1"}
+        result = _get_tool_fn("reset_admin_password")(branch_name="main")
+        assert "Admin password has been reset successfully" in result
+        assert "Login: admin" in result
+        assert "New password: test" in result
+        mock_reset.assert_called_once_with(TEST_SETTINGS, "main", "test")
+
+    @patch("oduflow.docker_ops.odoo_ops.reset_admin_password")
+    def test_reset_custom_password(self, mock_reset):
+        mock_reset.return_value = {"status": "ok", "login": "admin", "psql_output": "UPDATE 1"}
+        result = _get_tool_fn("reset_admin_password")(branch_name="main", new_password="s3cret")
+        assert "New password: s3cret" in result
+        mock_reset.assert_called_once_with(TEST_SETTINGS, "main", "s3cret")
+
+    @patch("oduflow.docker_ops.odoo_ops.reset_admin_password")
+    def test_reset_not_found(self, mock_reset):
+        from oduflow.errors import NotFoundError
+        mock_reset.side_effect = NotFoundError("Environment 'xyz' does not exist.")
+        with pytest.raises(ToolError, match="does not exist"):
+            _get_tool_fn("reset_admin_password")(branch_name="xyz")
+
+
 class TestMutex:
     @patch("oduflow.docker_ops.env_ops.create_environment")
     def test_busy_raises_value_error(self, mock_create):

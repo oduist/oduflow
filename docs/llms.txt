@@ -155,6 +155,8 @@ The server starts on `http://0.0.0.0:8000`. MCP endpoint: `http://<host>:8000/mc
 - `sync_environment` — pull latest code and auto-install/upgrade/restart as needed
 - `get_environment_logs` — retrieve container logs
 - `exec_in_environment` — execute shell commands inside the Odoo container
+- `run_db_query` — execute SQL queries against the environment's PostgreSQL database
+- `reset_admin_password` — reset the admin user password (default: "test")
 - `list_environments` / `get_environment_info` — inspect environments
 - `rebuild_environment` — re-create the container from the same image, preserving DB and filestore
 - `create_service` / `delete_service` / `update_service` — manage auxiliary services (Redis, Meilisearch, etc.)
