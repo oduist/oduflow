@@ -126,6 +126,54 @@ def exec_in_environment(
     }
 
 
+def reset_admin_password(
+    settings: Settings, branch_name: str, new_password: str = "test"
+) -> dict[str, str]:
+    client = get_client()
+    odoo_container_name = get_resource_name(branch_name, "odoo", settings.prefix)
+    env_db = get_db_name(branch_name, settings.instance_id)
+
+    try:
+        container = client.containers.get(odoo_container_name)
+    except docker.errors.NotFound:
+        raise NotFoundError(
+            f"Environment '{branch_name}' does not exist. Use create_environment first."
+        )
+
+    # Hash the password using passlib inside the Odoo container
+    hash_cmd = [
+        "python3", "-c",
+        "from passlib.context import CryptContext; "
+        f"print(CryptContext(['pbkdf2_sha512']).hash({new_password!r}))",
+    ]
+    exit_code, output = container.exec_run(hash_cmd)
+    hashed = (output.decode("utf-8") if isinstance(output, bytes) else str(output)).strip()
+    if exit_code != 0:
+        raise ExternalCommandError("python3 (passlib hash)", exit_code, hashed)
+
+    # Update the password in the database
+    try:
+        db_container = client.containers.get(settings.shared_db_container)
+    except docker.errors.NotFound:
+        raise NotFoundError(
+            f"Database container '{settings.shared_db_container}' is not running. "
+            "Run 'oduflow init' first."
+        )
+
+    sql = f"UPDATE res_users SET password = '{hashed}' WHERE login = 'admin'"
+    psql_cmd = ["psql", "-U", settings.db_user, "-d", env_db, "-c", sql]
+    exit_code, output = db_container.exec_run(psql_cmd)
+    output_str = (output.decode("utf-8") if isinstance(output, bytes) else str(output)).strip()
+    if exit_code != 0:
+        raise ExternalCommandError("psql", exit_code, output_str)
+
+    logger.info(
+        "Admin password reset",
+        extra={"branch": branch_name},
+    )
+    return {"status": "ok", "login": "admin", "psql_output": output_str}
+
+
 def run_db_query(
     settings: Settings, branch_name: str, query: str, output_format: str = "csv"
 ) -> dict[str, Any]:

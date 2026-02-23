@@ -721,6 +721,24 @@ def exec_in_environment(branch_name: str, command: str, user: str = "odoo") -> s
 @mcp.tool()
 @handle_errors
 @with_mutex
+def reset_admin_password(branch_name: str, new_password: str = "test") -> str:
+    """
+    Reset the admin user password in the environment's Odoo database.
+
+    Hashes the password using passlib (pbkdf2_sha512) inside the Odoo container
+    and updates the res_users record where login = 'admin'.
+
+    Args:
+        branch_name: The name of the branch/environment.
+        new_password: The new password for the admin user (default: "test").
+    """
+    result = odoo_ops.reset_admin_password(_get_settings(), branch_name, new_password)
+    return f"Admin password has been reset successfully.\nLogin: {result['login']}\nNew password: {new_password}"
+
+
+@mcp.tool()
+@handle_errors
+@with_mutex
 def run_db_query(branch_name: str, query: str, output_format: str = "csv") -> str:
     """
     Execute a SQL query against the environment's PostgreSQL database.
