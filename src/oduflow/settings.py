@@ -115,10 +115,6 @@ class Settings:
             external_host=re.sub(r"^https?://", "", os.getenv("EXTERNAL_HOST", "localhost")),
             port_range_start=int(os.getenv("PORT_RANGE_START", "50000")),
             port_range_end=int(os.getenv("PORT_RANGE_END", "50100")),
-            workspaces_dir=os.getenv(
-                "ODUFLOW_WORKSPACES_DIR",
-                os.path.join(data_dir, "workspaces"),
-            ),
             data_dir=data_dir,
             db_user=os.getenv("ODOO_DB_USER", "odoo"),
             db_password=os.getenv("ODOO_DB_PASSWORD", "odoo"),

@@ -203,7 +203,6 @@ Now both instances are running independently:
 |----------|---------|-------------|
 | `ODUFLOW_INSTANCE_ID` | `1` | Instance identifier (1-9) |
 | `ODUFLOW_DATA_DIR` | `/srv/oduflow` | Base directory for instance data |
-| `ODUFLOW_WORKSPACES_DIR` | `{ODUFLOW_DATA_DIR}/instance_{ID}/workspaces` | Per-instance workspace directory |
 | `ODUFLOW_PORT` | `8000` | HTTP server port (choose different port per instance) |
 | `ODUFLOW_AUTH_TOKEN` | (empty) | Bearer token for HTTP auth |
 | `ODUFLOW_ROUTING_MODE` | `port` | `port` or `traefik` |
