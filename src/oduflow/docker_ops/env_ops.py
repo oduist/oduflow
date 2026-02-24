@@ -36,12 +36,13 @@ logger = logging.getLogger("oduflow")
 _PACKAGE_ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 
-def _normalize_extra_addons(raw_addons, fallback_branch: str) -> dict[str, str]:
+def _normalize_extra_addons(raw_addons) -> dict[str, str]:
     """Convert old list format or new dict format to {name: branch} dict."""
     if isinstance(raw_addons, dict):
         return raw_addons
     if isinstance(raw_addons, list):
-        return {name: fallback_branch for name in raw_addons}
+        logger.warning("Legacy list format for extra_addons (no branch info), skipping: %s", raw_addons)
+        return {}
     return {}
 
 
@@ -455,7 +456,6 @@ def create_environment(
     from oduflow.git_ops import inject_credential_user
     clone_url = inject_credential_user(repo_url, git_user)
 
-    branch_created = False
     auth_keywords = (
         "Authentication failed",
         "could not read Username",
@@ -478,52 +478,13 @@ def create_environment(
         )
     except subprocess.CalledProcessError as e:
         error_msg = e.stderr.decode("utf-8") if e.stderr else str(e)
-        if "branch" in error_msg.lower() and "not found" in error_msg.lower():
-            logger.info(
-                "Branch '%s' not found on remote, cloning latest '%s' and creating branch",
-                branch_name, settings.default_branch,
+        if any(kw.lower() in error_msg.lower() for kw in auth_keywords):
+            raise RepoAuthError(
+                f"Git authentication failed for {repo_url}. "
+                f"Call 'setup_repo_auth' first with URL in format "
+                f"https://user:PAT@github.com/owner/repo.git to cache credentials."
             )
-            try:
-                subprocess.run(
-                    [
-                        "git", "clone", "--branch", settings.default_branch,
-                        "--depth", "1", clone_url, repo_path,
-                    ],
-                    check=True,
-                    capture_output=True,
-                    timeout=60,
-                    env=git_env,
-                )
-            except subprocess.CalledProcessError as e2:
-                error_msg2 = e2.stderr.decode("utf-8") if e2.stderr else str(e2)
-                if any(kw.lower() in error_msg2.lower() for kw in auth_keywords):
-                    raise RepoAuthError(
-                        f"Git authentication failed for {repo_url}. "
-                        f"Call 'setup_repo_auth' first with URL in format "
-                        f"https://user:PAT@github.com/owner/repo.git to cache credentials."
-                    )
-                raise ExternalCommandError("git clone", e2.returncode, error_msg2)
-            except subprocess.TimeoutExpired:
-                raise ExternalCommandError(
-                    "git clone", -1,
-                    "Repository clone timed out (60s). Repository may be too large or network is slow.",
-                )
-            subprocess.run(
-                ["git", "checkout", "-b", branch_name],
-                check=True,
-                capture_output=True,
-                cwd=repo_path,
-                env=git_env,
-            )
-            branch_created = True
-        else:
-            if any(kw.lower() in error_msg.lower() for kw in auth_keywords):
-                raise RepoAuthError(
-                    f"Git authentication failed for {repo_url}. "
-                    f"Call 'setup_repo_auth' first with URL in format "
-                    f"https://user:PAT@github.com/owner/repo.git to cache credentials."
-                )
-            raise ExternalCommandError("git clone", e.returncode, error_msg)
+        raise ExternalCommandError("git clone", e.returncode, error_msg)
     except subprocess.TimeoutExpired:
         raise ExternalCommandError(
             "git clone", -1,
@@ -696,8 +657,6 @@ def create_environment(
     }
     result["extra_addons"] = extra_addons or {}
     result["elapsed_seconds"] = round(time.time() - start_time, 1)
-    if branch_created:
-        result["branch_created_from"] = settings.default_branch
     return result
 
 
@@ -811,7 +770,6 @@ def list_environments(settings: Settings) -> list[dict[str, Any]]:
                 "template_name": container.labels.get("oduflow.template", ""),
                 "extra_addons": _normalize_extra_addons(
                     json.loads(container.labels.get("oduflow.extra_addons", "{}")),
-                    settings.default_branch,
                 ),
                 "db_name": get_db_name(branch, settings.instance_id),
                 "protected": is_protected(settings, branch),
@@ -936,7 +894,6 @@ def get_environment_info(settings: Settings, branch_name: str) -> dict[str, Any]
         result["git_user"] = labels.get("oduflow.git_user", "")
         result["extra_addons"] = _normalize_extra_addons(
             json.loads(labels.get("oduflow.extra_addons", "{}")),
-            settings.default_branch,
         )
 
         if settings.routing_mode == "traefik":
@@ -1169,7 +1126,7 @@ def rebuild_environment(settings: Settings, branch_name: str) -> dict[str, str]:
     extra_addons_json = labels.get("oduflow.extra_addons", "")
     if extra_addons_json:
         parsed = json.loads(extra_addons_json)
-        extra_dict = _normalize_extra_addons(parsed, settings.default_branch)
+        extra_dict = _normalize_extra_addons(parsed)
         extra_dir = os.path.join(get_workspace_path(branch_name, settings.workspaces_dir), "extra")
         for rn in extra_dict:
             wt = os.path.join(extra_dir, rn)

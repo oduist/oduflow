@@ -77,13 +77,6 @@ cp .env.example .env
 
 Template folder structure: `$ODUFLOW_DATA_DIR/instance_{ID}/templates/<name>/dump.sql` (or `dump.pgdump`) and `$ODUFLOW_DATA_DIR/instance_{ID}/templates/<name>/filestore/`.
 
-### Git
-
-| Variable | Default | Description |
-|---|---|---|
-| `ODUFLOW_DEFAULT_BRANCH` | `prod` | Base branch to clone from when the requested branch does not exist on the remote |
-| `ODUFLOW_DEFAULT_TEMPLATE` | `default` | Default template profile for new environments |
-
 ### Network / Host
 
 | Variable | Default | Description |

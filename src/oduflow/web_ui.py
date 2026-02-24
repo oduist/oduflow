@@ -71,14 +71,15 @@ def _error_response(e: FlowError) -> JSONResponse:
     return JSONResponse({"ok": False, "error": str(e)}, status_code=status)
 
 
-def _normalize_extra_addons(raw_addons, fallback_branch: str) -> dict[str, str]:
+def _normalize_extra_addons(raw_addons) -> dict[str, str]:
     if isinstance(raw_addons, dict):
         return raw_addons
     if isinstance(raw_addons, list):
-        return {name: fallback_branch for name in raw_addons}
+        logger.warning("Legacy list format for extra_addons (no branch info), skipping: %s", raw_addons)
+        return {}
     return {}
 
-def _parse_extra_addons(raw: str, fallback_branch: str) -> dict[str, str]:
+def _parse_extra_addons(raw: str) -> dict[str, str]:
     result = {}
     for item in raw.split(","):
         item = item.strip()
@@ -88,7 +89,9 @@ def _parse_extra_addons(raw: str, fallback_branch: str) -> dict[str, str]:
             name, branch = item.split(":", 1)
             result[name.strip()] = branch.strip()
         else:
-            result[item] = fallback_branch
+            raise ValueError(
+                f"Extra addon '{item}' must include a branch (e.g. '{item}:18.0')."
+            )
     return result
 
 
@@ -276,7 +279,7 @@ def _build_routes(
             if isinstance(extra_addons_raw, dict):
                 extra_dict = extra_addons_raw or None
             elif isinstance(extra_addons_raw, str) and extra_addons_raw.strip():
-                extra_dict = _parse_extra_addons(extra_addons_raw.strip(), settings.default_branch) or None
+                extra_dict = _parse_extra_addons(extra_addons_raw.strip()) or None
             if resolved_template:
                 metadata_path = settings.get_template_metadata_path(resolved_template)
                 if os.path.isfile(metadata_path):
@@ -291,7 +294,7 @@ def _build_routes(
                     if extra_dict is None:
                         raw = metadata.get("extra_addons")
                         if raw:
-                            extra_dict = _normalize_extra_addons(raw, settings.default_branch) or None
+                            extra_dict = _normalize_extra_addons(raw) or None
 
             if not repo_url or not odoo_image:
                 return JSONResponse(

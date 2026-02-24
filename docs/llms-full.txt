@@ -195,13 +195,6 @@ cp .env.example .env
 
 Template folder structure: `$ODUFLOW_DATA_DIR/instance_{ID}/templates/<name>/dump.sql` (or `dump.pgdump`) and `$ODUFLOW_DATA_DIR/instance_{ID}/templates/<name>/filestore/`.
 
-### Git
-
-| Variable | Default | Description |
-|---|---|---|
-| `ODUFLOW_DEFAULT_BRANCH` | `prod` | Base branch to clone from when the requested branch does not exist on the remote |
-| `ODUFLOW_DEFAULT_TEMPLATE` | `default` | Default template profile for new environments |
-
 ### Network / Host
 
 | Variable | Default | Description |
@@ -691,14 +684,6 @@ When creating an environment, Oduflow:
 6. **Configures Odoo** — uses repo's `odoo.conf` if available, otherwise the default template
 7. **Starts the container** — with `--dev=xml` for hot-reloading XML/QWeb changes
 8. **Initializes base** — when `template=none`, runs `odoo -i base --stop-after-init`
-
-### Auto branch creation
-
-If the requested branch doesn't exist on the remote, Oduflow automatically:
-
-1. Clones the default branch (configured via `ODUFLOW_DEFAULT_BRANCH`)
-2. Creates a new local branch with the requested name
-3. Reports the branch was created from the default branch
 
 ### Private repository authentication
 

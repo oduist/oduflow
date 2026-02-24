@@ -28,14 +28,6 @@ When creating an environment, Oduflow:
 7. **Starts the container** — with `--dev=xml` for hot-reloading XML/QWeb changes
 8. **Initializes base** — when `template=none`, runs `odoo -i base --stop-after-init`
 
-### Auto branch creation
-
-If the requested branch doesn't exist on the remote, Oduflow automatically:
-
-1. Clones the default branch (configured via `ODUFLOW_DEFAULT_BRANCH`)
-2. Creates a new local branch with the requested name
-3. Reports the branch was created from the default branch
-
 ### Private repository authentication
 
 For private repos, configure credentials first:
