@@ -10,7 +10,6 @@ TEST_SETTINGS = Settings(
     external_host="localhost",
     port_range_start=50000,
     port_range_end=50100,
-    workspaces_dir="/tmp/flow-test/workspaces",
     data_dir="/tmp/flow-test",
     db_user="odoo",
     db_password="odoo",

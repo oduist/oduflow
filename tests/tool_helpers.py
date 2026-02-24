@@ -21,19 +21,16 @@ def list_tools() -> list[str]:
     return sorted(mcp._tool_manager._tools.keys())
 
 
-def call_cli(command: str, **kwargs) -> str:
+def call_cli(command: str, settings=None, **kwargs) -> str:
     """Run a CLI command (init / destroy) and return formatted output."""
     from oduflow.docker_ops import system_ops
     from oduflow.settings import Settings
 
-    settings = Settings.from_env()
+    if settings is None:
+        settings = Settings.from_env()
 
     if command == "init":
-        result = system_ops.init_system(
-            settings,
-            version=kwargs.get("version", "15.0"),
-            force=kwargs.get("force", False),
-        )
+        result = system_ops.init_system(settings)
         return f"System {result['status']}."
 
     if command == "destroy":

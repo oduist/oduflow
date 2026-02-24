@@ -48,16 +48,10 @@ def _build_params():
 @pytest.mark.integration
 @pytest.mark.parametrize("scenario", _build_params())
 def test_scenario(scenario, live_environment):
-    if scenario.get("needs_env"):
-        settings = live_environment
-        with patch("oduflow.server._get_settings", return_value=settings):
-            if "cli" in scenario:
-                result = call_cli(scenario["cli"], **scenario.get("args", {}))
-            else:
-                result = call_tool(scenario["tool"], **scenario.get("args", {}))
-    else:
+    settings = live_environment
+    with patch("oduflow.server._get_settings", return_value=settings):
         if "cli" in scenario:
-            result = call_cli(scenario["cli"], **scenario.get("args", {}))
+            result = call_cli(scenario["cli"], settings=settings, **scenario.get("args", {}))
         else:
             result = call_tool(scenario["tool"], **scenario.get("args", {}))
     assert isinstance(result, str), f"Expected str, got {type(result)}"

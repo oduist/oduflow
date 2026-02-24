@@ -10,7 +10,6 @@ from oduflow.settings import Settings
 def tmp_settings(tmp_path):
     return Settings(
         data_dir=str(tmp_path),
-        workspaces_dir=str(tmp_path / "workspaces"),
         port_registry_path=str(tmp_path / "ports.json"),
     )
 
@@ -57,7 +56,6 @@ class TestSavePreset:
         nested = tmp_path / "deep" / "nested"
         settings = Settings(
             data_dir=str(nested),
-            workspaces_dir=str(nested / "workspaces"),
             port_registry_path=str(nested / "ports.json"),
         )
         assert not nested.exists()

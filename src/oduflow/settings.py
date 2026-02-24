@@ -15,7 +15,6 @@ class Settings:
     external_host: str = "localhost"
     port_range_start: int = 50000
     port_range_end: int = 50100
-    workspaces_dir: str = ""
     data_dir: str = ""
     db_user: str = "odoo"
     db_password: str = "odoo"
@@ -37,7 +36,11 @@ class Settings:
     port_registry_path: str = ""
     overlay_threshold_mb: int = 50
     stateless_http: bool = True
-    etc_dir: str = "/etc/oduflow"
+    etc_dir: str = ""
+
+    def __post_init__(self):
+        if not self.etc_dir:
+            object.__setattr__(self, "etc_dir", self._default_etc_dir())
 
     def get_template_dir(self, template_name: str) -> str:
         return os.path.join(self.data_dir, "templates", template_name)
@@ -67,6 +70,10 @@ class Settings:
             entry for entry in os.listdir(templates_dir)
             if os.path.isdir(os.path.join(templates_dir, entry))
         )
+
+    @property
+    def workspaces_dir(self) -> str:
+        return os.path.join(self.data_dir, "workspaces")
 
     @property
     def shared_repos_dir(self) -> str:
@@ -133,9 +140,6 @@ class Settings:
             raise ValueError(
                 f"Invalid port range: {self.port_range_start}-{self.port_range_end}"
             )
-        if not self.workspaces_dir:
-            raise ValueError("workspaces_dir must be set")
-
         if self.routing_mode not in ("port", "traefik"):
             raise ValueError("routing_mode must be 'port' or 'traefik'")
 

@@ -11,17 +11,12 @@ class TestSettings:
         assert s.db_user == "odoo"
 
     def test_validate_port_range(self):
-        s = Settings(port_range_start=50100, port_range_end=50000, workspaces_dir="/tmp")
+        s = Settings(port_range_start=50100, port_range_end=50000)
         with pytest.raises(ValueError, match="Invalid port range"):
             s.validate()
 
-    def test_validate_workspaces_dir(self):
-        s = Settings(workspaces_dir="")
-        with pytest.raises(ValueError, match="workspaces_dir must be set"):
-            s.validate()
-
     def test_validate_ok(self):
-        s = Settings(workspaces_dir="/tmp")
+        s = Settings()
         s.validate()
 
     def test_from_env(self, monkeypatch):
