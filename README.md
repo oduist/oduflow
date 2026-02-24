@@ -30,7 +30,7 @@ An **AI-first** Odoo development and CI tool, powered by **reusable database tem
 ┌──────▼──────────────────────────────┴────────────────┐
 │               Oduflow (MCP Server)                    │
 │  • install_odoo_modules → traceback or success        │
-│  • test_environment → test pass/fail with details     │
+│  • run_odoo_tests → test pass/fail with details       │
 │  • get_environment_logs → runtime errors              │
 │  • upgrade_odoo_modules → upgrade output              │
 ├──────────────────────────────────────────────────────┤

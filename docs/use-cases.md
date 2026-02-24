@@ -11,7 +11,7 @@ The most common workflow — test your changes against real production data:
 oduflow call create_environment feature-login https://github.com/company/odoo-addons.git odoo:17.0
 
 # Make changes, push to remote, then pull into the environment
-oduflow call sync_environment feature-login
+oduflow call pull_and_apply feature-login
 # Oduflow automatically installs/upgrades/restarts as needed
 
 # When done, tear it down
@@ -27,10 +27,10 @@ Reproduce a production bug with real data:
 oduflow call create_environment bug-12345 https://github.com/company/odoo-addons.git odoo:17.0
 
 # Debug inside the container
-oduflow call exec_in_environment bug-12345 "python3 -c 'import odoo; ...'"
+oduflow call exec_in_odoo bug-12345 "python3 -c 'import odoo; ...'"
 
 # Check the database directly
-oduflow call exec_in_environment bug-12345 "psql -h oduflow-db -U odoo -d oduflow_bug-12345 -c 'SELECT * FROM sale_order WHERE id=42;'"
+oduflow call exec_in_odoo bug-12345 "psql -h oduflow-db -U odoo -d oduflow_bug-12345 -c 'SELECT * FROM sale_order WHERE id=42;'"
 ```
 
 ## 🧪 Module Testing
@@ -39,7 +39,7 @@ Run Odoo tests in an isolated environment:
 
 ```bash
 oduflow call create_environment test-suite https://github.com/company/odoo-addons.git odoo:17.0
-oduflow call test_environment test-suite sale_custom,invoice_custom
+oduflow call run_odoo_tests test-suite sale_custom,invoice_custom
 oduflow call delete_environment test-suite
 ```
 
@@ -84,7 +84,7 @@ The agent will call the appropriate MCP tools in sequence:
 
 1. `create_environment` → provision the environment
 2. `install_odoo_modules` → install the requested modules
-3. `test_environment` → run the test suite
+3. `run_odoo_tests` → run the test suite
 4. Report results back
 
 ### Connecting Your Agent to Oduflow MCP
@@ -131,7 +131,7 @@ alwaysApply: true
 **Sync & Work Cycle**
 
 1. **Push**: Run `git push` when the task is complete.
-2. **Pull**: After every `push` (yours or user-requested), ALWAYS call `sync_environment`.
+2. **Pull**: After every `push` (yours or user-requested), ALWAYS call `pull_and_apply`.
 3. **Automation**: The Flow server decides whether a restart or module upgrade is needed. You do NOT need to call `restart_environment` or `upgrade_odoo_modules`.
 
 **Teardown**
@@ -174,7 +174,7 @@ steps:
   - name: Install and test
     run: |
       oduflow call install_odoo_modules ci-${{ github.sha }} my_module
-      oduflow call test_environment ci-${{ github.sha }} my_module
+      oduflow call run_odoo_tests ci-${{ github.sha }} my_module
 
   - name: Cleanup
     if: always()
@@ -244,10 +244,10 @@ oduflow call create_environment template-update https://github.com/company/odoo-
 oduflow call install_odoo_modules template-update accounting,hr,project
 
 # 3. Verify everything works
-oduflow call test_environment template-update accounting,hr,project
+oduflow call run_odoo_tests template-update accounting,hr,project
 
 # 4. Save as the new template
-oduflow call publish_as_template template-update
+oduflow call save_as_template template-update
 
 # 5. All future environments will include these modules pre-installed
 ```

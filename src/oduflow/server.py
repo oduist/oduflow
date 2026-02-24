@@ -252,9 +252,9 @@ def create_environment(
 @mcp.tool()
 @handle_errors
 @with_mutex
-def publish_as_template(branch_name: str, template_name: str) -> str:
+def save_as_template(branch_name: str, template_name: str) -> str:
     """
-    Publish a branch environment to become the new template (DB + filestore).
+    Save a branch environment as the new template (DB + filestore).
 
     Replaces the template database and filestore with the data from the specified
     branch. If other environments use this template with overlay-mounted filestores,
@@ -263,8 +263,8 @@ def publish_as_template(branch_name: str, template_name: str) -> str:
     operation is safe.
 
     Requires EXPLICIT user permission and confirmation before execution.
-    If the user has not clearly and unambiguously asked you to publish
-    a specific branch, DO NOT call this tool.
+    If the user has not clearly and unambiguously asked you to save
+    a specific branch as template, DO NOT call this tool.
 
     Args:
         branch_name: The name of the branch whose DB and filestore will become the new template.
@@ -351,17 +351,17 @@ def import_template_from_odoo(
 
 @mcp.tool()
 @handle_errors
-def get_agent_skill() -> str:
-    """Get the agent skill with instructions for AI coding agents on how to use Oduflow MCP tools."""
+def get_agent_instructions() -> str:
+    """Get instructions for AI coding agents on how to use Oduflow MCP tools."""
     import pathlib
     settings = _get_settings()
     # Support both new and legacy file names
-    for name in ("agent_skill.md", "agent_guide.md"):
+    for name in ("agent_instructions.md", "agent_skill.md", "agent_guide.md"):
         skill_path = os.path.join(settings.home, "agent_guides", name)
         if os.path.isfile(skill_path):
             with open(skill_path, "r", encoding="utf-8") as f:
                 return f.read()
-    for name in ("agent_skill.md", "agent_guide.md"):
+    for name in ("agent_instructions.md", "agent_skill.md", "agent_guide.md"):
         bundled = pathlib.Path(__file__).resolve().parent / "templates" / "agent_guides" / name
         if bundled.is_file():
             return bundled.read_text(encoding="utf-8")
@@ -400,22 +400,22 @@ def get_odoo_development_guide(version: str) -> str:
 @mcp.tool()
 @handle_errors
 @with_mutex
-def drop_template(template_name: str) -> str:
+def delete_template(template_name: str) -> str:
     """
-    DANGEROUS: Drop a template profile — permanently removes its template database and files from disk.
+    DANGEROUS: Delete a template profile — permanently removes its template database and files from disk.
 
     This is a destructive, irreversible operation. All environments that depend on this
     template will lose their baseline and cannot be recreated until a new template is set up.
 
     NEVER call this tool on your own initiative. Requires EXPLICIT user permission
     and confirmation before execution. If the user has not clearly and unambiguously
-    asked you to drop a specific template, DO NOT call this tool.
+    asked you to delete a specific template, DO NOT call this tool.
 
     Args:
-        template_name: Name of the template profile to drop.
+        template_name: Name of the template profile to delete.
     """
-    result = system_ops.drop_template(_get_settings(), template_name)
-    return f"Template '{result['template_name']}' dropped. Template DB '{result['template_db']}' removed."
+    result = system_ops.delete_template(_get_settings(), template_name)
+    return f"Template '{result['template_name']}' deleted. Template DB '{result['template_db']}' removed."
 
 
 @mcp.tool()
@@ -467,9 +467,9 @@ def list_environments() -> str:
 @mcp.tool()
 @handle_errors
 @with_mutex
-def test_environment(branch_name: str, modules: str) -> str:
+def run_odoo_tests(branch_name: str, modules: str) -> str:
     """
-    Execute Odoo tests for specific modules in an environment.
+    Run Odoo tests for specific modules in an environment.
 
     Args:
         branch_name: The name of the branch/environment.
@@ -612,7 +612,7 @@ def start_environment(branch_name: str) -> str:
 @mcp.tool()
 @handle_errors
 @with_mutex
-def sync_environment(branch_name: str) -> str:
+def pull_and_apply(branch_name: str) -> str:
     """
     Pull latest changes from the remote repository for an environment
     and take appropriate action based on what changed.
@@ -702,7 +702,7 @@ def upgrade_odoo_modules(branch_name: str, modules: str) -> str:
 @mcp.tool()
 @handle_errors
 @with_mutex
-def exec_in_environment(branch_name: str, command: str, user: str = "odoo") -> str:
+def exec_in_odoo(branch_name: str, command: str, user: str = "odoo") -> str:
     """
     Execute an arbitrary shell command inside the Odoo container for a specific branch.
 
@@ -1062,9 +1062,9 @@ def _run_template_from_env(settings: Settings, branch: str, template_name: str =
     )
 
 
-def _run_drop_template(settings: Settings, template_name: str) -> None:
-    result = system_ops.drop_template(settings, template_name)
-    print(f"Template '{result['template_name']}' dropped.\nTemplate DB '{result['template_db']}' removed.")
+def _run_delete_template(settings: Settings, template_name: str) -> None:
+    result = system_ops.delete_template(settings, template_name)
+    print(f"Template '{result['template_name']}' deleted.\nTemplate DB '{result['template_db']}' removed.")
 
 
 def _run_import_template(settings: Settings, odoo_url: str, master_pwd: str, db_name: str = "", template_name: str = "") -> None:
@@ -1281,8 +1281,8 @@ def main() -> None:
     p_tfe.add_argument("branch", help="Branch name to use as template source")
     p_tfe.add_argument("--template-name", required=True, help="Template profile name")
 
-    p_drop_tpl = sub.add_parser("drop-template", help="Drop a template profile (template DB + files)")
-    p_drop_tpl.add_argument("template_name", help="Template profile name to drop")
+    p_drop_tpl = sub.add_parser("delete-template", help="Delete a template profile (template DB + files)")
+    p_drop_tpl.add_argument("template_name", help="Template profile name to delete")
 
     p_import = sub.add_parser("import-template", help="Import a template from a running Odoo instance")
     p_import.add_argument("odoo_url", help="Base URL of the Odoo instance (e.g. https://my-odoo.example.com)")
@@ -1365,8 +1365,8 @@ def main() -> None:
         _run_template_from_env(_settings, branch=args.branch, template_name=args.template_name)
         return
 
-    if args.command == "drop-template":
-        _run_drop_template(_settings, template_name=args.template_name)
+    if args.command == "delete-template":
+        _run_delete_template(_settings, template_name=args.template_name)
         return
 
     if args.command == "import-template":

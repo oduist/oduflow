@@ -16,9 +16,9 @@ MCP endpoint: `http://<host>:8000/mcp`
 2. create_environment         — If not, provision one (branch, repo_url, odoo_image)
 3. Write / edit code locally
 4. git push
-5. sync_environment — Pull changes; errors/tracebacks are returned directly in the response
+5. pull_and_apply — Pull changes; errors/tracebacks are returned directly in the response
 6. If errors in response → fix code → go to step 4
-7. test_environment            — Run Odoo tests for the changed modules
+7. run_odoo_tests            — Run Odoo tests for the changed modules
 8. delete_environment          — Tear down when done
 ```
 
@@ -35,38 +35,38 @@ MCP endpoint: `http://<host>:8000/mcp`
 | `get_environment_info(branch_name)` | Get full environment details: database name, URL, repo, image, template, extra addons, workspace, container status, CPU/RAM stats |
 | `delete_environment(branch_name)` | Tear down when the task is complete or cancelled |
 | `start_environment` / `stop_environment` | Resume or pause a stopped environment |
-| `restart_environment(branch_name)` | Restart the Odoo container (rarely needed — `sync_environment` handles this) |
+| `restart_environment(branch_name)` | Restart the Odoo container (rarely needed — `pull_and_apply` handles this) |
 | `rebuild_environment(branch_name)` | Recreate the container from scratch if it's broken, without losing DB or filestore |
 
 ### Code → Environment Sync
 
 | Tool | When to use |
 |---|---|
-| `sync_environment(branch_name)` | **Always call after every `git push`**. Oduflow analyzes changed files and automatically decides: install new modules, upgrade changed modules, restart for Python changes, or do nothing for XML/JS (hot-reloaded). You do NOT need to call `restart` or `upgrade` manually. **Errors and tracebacks are returned directly in the tool response** — do NOT call `get_environment_logs` to check for errors after this tool. |
+| `pull_and_apply(branch_name)` | **Always call after every `git push`**. Oduflow analyzes changed files and automatically decides: install new modules, upgrade changed modules, restart for Python changes, or do nothing for XML/JS (hot-reloaded). You do NOT need to call `restart` or `upgrade` manually. **Errors and tracebacks are returned directly in the tool response** — do NOT call `get_environment_logs` to check for errors after this tool. |
 
 ### Odoo Module Operations
 
 | Tool | When to use |
 |---|---|
 | `install_odoo_modules(branch_name, modules)` | Install modules for the first time (`odoo -i`). Comma-separated list, e.g. `"sale,crm"`. **Returns full output including any errors directly in the response.** |
-| `upgrade_odoo_modules(branch_name, modules)` | Force-upgrade modules (`odoo -u`). Usually handled by `sync_environment`. **Returns full output including any errors directly in the response.** |
-| `test_environment(branch_name, modules)` | Run Odoo tests (`--test-enable`) for specific modules. **Returns full test output directly in the response.** |
+| `upgrade_odoo_modules(branch_name, modules)` | Force-upgrade modules (`odoo -u`). Usually handled by `pull_and_apply`. **Returns full output including any errors directly in the response.** |
+| `run_odoo_tests(branch_name, modules)` | Run Odoo tests (`--test-enable`) for specific modules. **Returns full test output directly in the response.** |
 
 ### Debugging & Logs
 
 > ⚠️ **Critical: understand where logs come from.**
 >
-> `install_odoo_modules`, `upgrade_odoo_modules`, `test_environment`, and `sync_environment` run Odoo commands via `docker exec`. Their output is **returned directly in the tool response** and does **NOT** appear in `get_environment_logs`.
+> `install_odoo_modules`, `upgrade_odoo_modules`, `run_odoo_tests`, and `pull_and_apply` run Odoo commands via `docker exec`. Their output is **returned directly in the tool response** and does **NOT** appear in `get_environment_logs`.
 >
 > `get_environment_logs` shows logs from the **main Odoo process** (the container's entrypoint, PID 1) — i.e., runtime errors that occur while Odoo is serving requests, not errors from install/upgrade/test operations.
 
 | Tool | What it shows |
 |---|---|
 | `get_environment_logs(branch_name, n_lines?)` | Logs from the **running Odoo server** (main container process). Use to check for runtime errors, request errors, or startup issues after a restart. Does **NOT** contain output from install/upgrade/test operations. |
-| `exec_in_environment(branch_name, command, user?)` | Run shell commands inside the container. Use `user="root"` for privileged ops (pip install, apt). Useful for DB queries, debugging, checking file paths |
+| `exec_in_odoo(branch_name, command, user?)` | Run shell commands inside the container. Use `user="root"` for privileged ops (pip install, apt). Useful for DB queries, debugging, checking file paths |
 
 **When to use which:**
-- After `sync_environment` / `install_odoo_modules` / `upgrade_odoo_modules` / `test_environment` → **read the tool response** for errors
+- After `pull_and_apply` / `install_odoo_modules` / `upgrade_odoo_modules` / `run_odoo_tests` → **read the tool response** for errors
 - After `restart_environment` or to check runtime behavior → use `get_environment_logs`
 
 ### Private Repositories
@@ -87,8 +87,8 @@ MCP endpoint: `http://<host>:8000/mcp`
 | Tool | When to use |
 |---|---|
 | `list_templates` | List available database template profiles |
-| `publish_as_template(branch_name)` | Make a branch the new template baseline. ⚠️ Destructive only if other environments share this template with overlay mounts. Requires explicit user permission |
-| `drop_template(template_name)` | ⚠️ **Destructive**. Remove a template profile. Requires explicit user permission |
+| `save_as_template(branch_name)` | Make a branch the new template baseline. ⚠️ Destructive only if other environments share this template with overlay mounts. Requires explicit user permission |
+| `delete_template(template_name)` | ⚠️ **Destructive**. Remove a template profile. Requires explicit user permission |
 
 ---
 
@@ -101,15 +101,15 @@ MCP endpoint: `http://<host>:8000/mcp`
 4. **Show the URL**: Always display the environment URL to the user after creation.
 
 ### Sync & Work Cycle
-1. After every `git push`, **always** call `sync_environment`. It handles install/upgrade/restart automatically.
-2. Do **not** call `restart_environment` or `upgrade_odoo_modules` manually unless debugging a specific issue — `sync_environment` already does the right thing.
-3. After `sync_environment`, **read the tool response** for errors. Do NOT call `get_environment_logs` — install/upgrade output is returned directly and does not appear in container logs.
+1. After every `git push`, **always** call `pull_and_apply`. It handles install/upgrade/restart automatically.
+2. Do **not** call `restart_environment` or `upgrade_odoo_modules` manually unless debugging a specific issue — `pull_and_apply` already does the right thing.
+3. After `pull_and_apply`, **read the tool response** for errors. Do NOT call `get_environment_logs` — install/upgrade output is returned directly and does not appear in container logs.
 
 ### Debugging Loop
 ```
-push → sync_environment → read the response for errors → fix if errors → repeat
+push → pull_and_apply → read the response for errors → fix if errors → repeat
 ```
-Do NOT call `get_environment_logs` after `sync_environment` — the errors are already in the response. Use `get_environment_logs` only to check the **running server** (e.g., runtime errors during request handling).
+Do NOT call `get_environment_logs` after `pull_and_apply` — the errors are already in the response. Use `get_environment_logs` only to check the **running server** (e.g., runtime errors during request handling).
 
 ### Teardown
 - Only call `delete_environment` when the task is **Done** or **Cancelled**.
@@ -119,32 +119,32 @@ Do NOT call `get_environment_logs` after `sync_environment` — the errors are a
 
 The environment container runs **remotely** and has access only to the git repository it was created for. The container is **not your workspace** — it is a runtime for testing.
 
-**What you CAN do inside the container (`exec_in_environment`):**
+**What you CAN do inside the container (`exec_in_odoo`):**
 - Read files, inspect paths (`ls`, `cat`, `find`)
 - Run Odoo shell commands (`odoo shell`, `odoo scaffold`, etc.)
 
-> **Note:** For logs use `get_environment_logs` — container logs are not accessible via shell commands inside Docker. For database queries use `run_db_query` — it connects to PostgreSQL directly without needing `exec_in_environment`.
+> **Note:** For logs use `get_environment_logs` — container logs are not accessible via shell commands inside Docker. For database queries use `run_db_query` — it connects to PostgreSQL directly without needing `exec_in_odoo`.
 
 **What you MUST NOT do inside the container:**
 - Edit source code files (no `sed`, `vim`, `echo >`, `patch`, etc.)
 - Run any git commands (`git rebase`, `git pull`, `git checkout`, `git stash`, etc.)
 - Modify module files in any way
 
-**If you need to change code** — always do it locally, then `git commit` → `git push` → `sync_environment`. This is the only correct way to deliver code changes to the environment.
+**If you need to change code** — always do it locally, then `git commit` → `git push` → `pull_and_apply`. This is the only correct way to deliver code changes to the environment.
 
 **Non-standard operations** (e.g., `apt install`, `pip install`, modifying system configs) are possible but **require explicit user confirmation** before proceeding — explain what you want to do and why.
 
 ### General
 - **One task = one branch = one environment.**
 - Mutexed tools (create, delete, install, upgrade, pull, test, exec) reject concurrent calls with `BusyError` — retry after a short delay.
-- `exec_in_environment` runs as `odoo` by default. Use `user="root"` for package installation or system operations.
+- `exec_in_odoo` runs as `odoo` by default. Use `user="root"` for package installation or system operations.
 - Database is accessible from inside the container: `psql -h oduflow-db -U odoo -d oduflow_{branch_name}`.
 
 ---
 
 ## Smart Pull — What Happens Automatically
 
-When you call `sync_environment`, Oduflow analyzes every changed file:
+When you call `pull_and_apply`, Oduflow analyzes every changed file:
 
 | What changed | Action taken |
 |---|---|
@@ -163,7 +163,7 @@ Priority: install > upgrade > restart > refresh (no action).
 
 > ⚠️ **Critical: migrations only run during module upgrade, NOT during environment creation.**
 >
-> When `create_environment` provisions from a template, it clones the template database as-is. **No migrations are executed.** Migrations (files in `migrations/` or `upgrades/`) are only triggered by `upgrade_odoo_modules` (or `sync_environment` when it detects a version bump).
+> When `create_environment` provisions from a template, it clones the template database as-is. **No migrations are executed.** Migrations (files in `migrations/` or `upgrades/`) are only triggered by `upgrade_odoo_modules` (or `pull_and_apply` when it detects a version bump).
 
 ### Anti-patterns — Do NOT Do This
 
@@ -177,14 +177,14 @@ Priority: install > upgrade > restart > refresh (no action).
 
 ```
 Step 1: git commit & push   — Commit the migration script + version bump in __manifest__.py
-Step 2: sync_environment    — Or call upgrade_odoo_modules directly; this triggers the migration
-Step 3: exec_in_environment — Run a SELECT query to verify the expected schema/data changes
+Step 2: pull_and_apply    — Or call upgrade_odoo_modules directly; this triggers the migration
+Step 3: exec_in_odoo — Run a SELECT query to verify the expected schema/data changes
 Step 4: get_environment_logs — If something went wrong, check for migration INFO/ERROR messages
 ```
 
 ### How to Verify a Migration
 
-1. **Query the database** via `exec_in_environment`:
+1. **Query the database** via `exec_in_odoo`:
    ```
    psql -h oduflow-db -U odoo -d oduflow_{branch_name} -c "SELECT column_name FROM information_schema.columns WHERE table_name = 'your_table';"
    ```
@@ -192,7 +192,7 @@ Step 4: get_environment_logs — If something went wrong, check for migration IN
 
 2. **Check logs** via `get_environment_logs`: look for `odoo.modules.migration` INFO messages confirming the migration script was executed.
 
-> **Key takeaway: NEVER recreate an environment to test migrations. Always use `upgrade_odoo_modules` or `sync_environment`.**
+> **Key takeaway: NEVER recreate an environment to test migrations. Always use `upgrade_odoo_modules` or `pull_and_apply`.**
 
 ---
 
@@ -207,7 +207,7 @@ Agent: create_environment("feature-invoice-pdf", "https://github.com/company/add
 Agent: [writes code for the module]
 Agent: git push
 
-Agent: sync_environment("feature-invoice-pdf")
+Agent: pull_and_apply("feature-invoice-pdf")
 → "Upgraded modules: invoice_pdf. Restarted container.
    Output:
    ...
@@ -218,11 +218,11 @@ Agent: sync_environment("feature-invoice-pdf")
 Agent: [fixes the field conflict in code]
 Agent: git push
 
-Agent: sync_environment("feature-invoice-pdf")
+Agent: pull_and_apply("feature-invoice-pdf")
 → "Upgraded modules: invoice_pdf. Restarted container. Exit code: 0."
    # ↑ No errors in the response — module upgraded successfully
 
-Agent: test_environment("feature-invoice-pdf", "invoice_pdf")
+Agent: run_odoo_tests("feature-invoice-pdf", "invoice_pdf")
 → "Ran 12 tests, 0 failures. Exit code: 0."
    # ↑ Test results are also in the response
 

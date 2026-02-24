@@ -2,7 +2,7 @@
 
 [TOC]
 
-![Agent Skill](img/agent_skill.png)
+![Agent Instructions](img/agent_instructions.png)
 
 All tools are accessible via MCP clients (Cursor, Cline, Amp, etc.) and the CLI (`oduflow call`). A subset is also available via the [REST API](web-api.md).
 
@@ -18,18 +18,18 @@ All tools are accessible via MCP clients (Cursor, Cline, Amp, etc.) and the CLI 
 | `restart_environment` | | Restart the Odoo container |
 | `rebuild_environment` | ✓ | Re-create the container from the same image, preserving DB and filestore |
 | **Odoo Operations** | | |
-| `sync_environment` | ✓ | Git pull + smart analysis → auto install/upgrade/restart |
+| `pull_and_apply` | ✓ | Git pull + smart analysis → auto install/upgrade/restart |
 | `install_odoo_modules` | ✓ | Install Odoo modules (`-i`) |
 | `upgrade_odoo_modules` | ✓ | Upgrade Odoo modules (`-u`) |
-| `test_environment` | ✓ | Run Odoo tests for specific modules |
+| `run_odoo_tests` | ✓ | Run Odoo tests for specific modules |
 | `get_environment_logs` | | Retrieve recent container logs |
-| `exec_in_environment` | ✓ | Execute an arbitrary shell command inside the Odoo container |
+| `exec_in_odoo` | ✓ | Execute an arbitrary shell command inside the Odoo container |
 | `run_db_query` | ✓ | Execute a SQL query against the environment's PostgreSQL database |
 | `reset_admin_password` | ✓ | Reset the admin user password in the Odoo database (default: "test") |
 | **Template Management** | | |
-| `publish_as_template` | ✓ | ⚠️ Publish a branch DB + filestore to become a new template |
+| `save_as_template` | ✓ | ⚠️ Save a branch DB + filestore as a new template |
 | `list_templates` | | List available template profiles |
-| `drop_template` | ✓ | ⚠️ Drop a template profile (DB + files) |
+| `delete_template` | ✓ | ⚠️ Delete a template profile (DB + files) |
 | `import_template_from_odoo` | ✓ | Import a template from a running Odoo instance via database manager API |
 | **Auxiliary Services** | | |
 | `create_service` | ✓ | Create a managed service container (e.g. Redis, Meilisearch) |
@@ -47,8 +47,8 @@ All tools are accessible via MCP clients (Cursor, Cline, Amp, etc.) and the CLI 
 | `add_extra_repo` | ✓ | Clone an extra addons repository (e.g. Odoo Enterprise) for use with environments |
 | `list_extra_repos` | | List all cloned extra addons repositories |
 | `delete_extra_repo` | ✓ | Delete a cloned extra addons repository |
-| **Agent Skills** | | |
-| `get_agent_skill` | | Get AI agent skill with instructions for using Oduflow MCP tools |
+| **Agent Instructions** | | |
+| `get_agent_instructions` | | Get AI agent instructions for using Oduflow MCP tools |
 | `get_odoo_development_guide` | | Get Odoo development standards guide for a specific version (15–19) |
 
 !!! info "Mutex"

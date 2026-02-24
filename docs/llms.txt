@@ -151,29 +151,29 @@ The server starts on `http://0.0.0.0:8000`. MCP endpoint: `http://<host>:8000/mc
 - `start_environment` / `stop_environment` / `restart_environment` — lifecycle control
 - `install_odoo_modules` — install Odoo modules
 - `upgrade_odoo_modules` — upgrade Odoo modules
-- `test_environment` — run Odoo tests for specific modules
-- `sync_environment` — pull latest code and auto-install/upgrade/restart as needed
+- `run_odoo_tests` — run Odoo tests for specific modules
+- `pull_and_apply` — pull latest code and auto-install/upgrade/restart as needed
 - `get_environment_logs` — retrieve container logs
-- `exec_in_environment` — execute shell commands inside the Odoo container
+- `exec_in_odoo` — execute shell commands inside the Odoo container
 - `run_db_query` — execute SQL queries against the environment's PostgreSQL database
 - `reset_admin_password` — reset the admin user password (default: "test")
 - `list_environments` / `get_environment_info` — inspect environments
 - `rebuild_environment` — re-create the container from the same image, preserving DB and filestore
 - `create_service` / `delete_service` / `update_service` — manage auxiliary services (Redis, Meilisearch, etc.)
 - `list_service_presets` / `restore_service` / `delete_service_preset` — manage service presets
-- `publish_as_template` / `drop_template` / `list_templates` — template management
+- `save_as_template` / `delete_template` / `list_templates` — template management
 - `import_template_from_odoo` — import a template from a running Odoo instance via its database manager API
 - `setup_repo_auth` — cache git credentials for private repositories
 - `add_extra_repo` / `list_extra_repos` / `delete_extra_repo` — manage extra addons repositories
-- `get_agent_skill` — get AI agent skill with instructions on how to use Oduflow
+- `get_agent_instructions` — get AI agent skill with instructions on how to use Oduflow
 - `get_odoo_development_guide` — get Odoo development standards guide for a specific version (15–19)
 
 ## Typical Agent Workflow
 
 1. Call `list_environments` to check if an environment for the branch exists
 2. If not, call `create_environment` with `branch_name`, `repo_url`, and `odoo_image`
-3. Write code, `git push`, then call `sync_environment` (auto-detects what to do)
-4. Use `install_odoo_modules` / `test_environment` / `get_environment_logs` to verify
+3. Write code, `git push`, then call `pull_and_apply` (auto-detects what to do)
+4. Use `install_odoo_modules` / `run_odoo_tests` / `get_environment_logs` to verify
 5. Call `delete_environment` when the task is done
 
 ## Links

@@ -1316,7 +1316,7 @@ def cleanup_orphans(settings: Settings, dry_run: bool = True) -> dict:
     }
 
 
-def drop_template(settings: Settings, template_name: str) -> dict[str, str]:
+def delete_template(settings: Settings, template_name: str) -> dict[str, str]:
     client = get_client()
     tpl_db = get_template_db_name(template_name, settings.instance_id)
 

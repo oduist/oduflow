@@ -115,17 +115,17 @@ oduflow call upgrade_odoo_modules feature-login sale,crm
 ## Running Tests
 
 ```bash
-oduflow call test_environment feature-login sale,crm
+oduflow call run_odoo_tests feature-login sale,crm
 ```
 
 This runs `odoo --test-enable --stop-after-init -i <modules>` inside the container.
 
 ## Smart Pull — Intelligent Change Detection
 
-The `sync_environment` tool is one of Oduflow's most powerful features. It pulls the latest changes from the remote repository and **automatically determines the minimal action required**:
+The `pull_and_apply` tool is one of Oduflow's most powerful features. It pulls the latest changes from the remote repository and **automatically determines the minimal action required**:
 
 ```bash
-oduflow call sync_environment feature-login
+oduflow call pull_and_apply feature-login
 ```
 
 ### How it works
@@ -150,7 +150,7 @@ After `git pull --rebase`, Oduflow compares `HEAD` before and after, then classi
 If any module needs installation, all pending upgrades are also executed. If only Python files changed (without field modifications), a container restart is sufficient. If only XML/JS changed, no server-side action is needed — just refresh the browser.
 
 !!! note
-    `sync_environment` updates only the **main project repository**. Extra addons repositories are pinned to the commit they were deployed with and are not affected. See [Extra Addons — Updating](extra-addons.md#updating-extra-repos) for details.
+    `pull_and_apply` updates only the **main project repository**. Extra addons repositories are pinned to the commit they were deployed with and are not affected. See [Extra Addons — Updating](extra-addons.md#updating-extra-repos) for details.
 
 ### Module detection
 
@@ -162,19 +162,19 @@ Run arbitrary shell commands inside the Odoo container:
 
 ```bash
 # List addon files
-oduflow call exec_in_environment feature-login "ls /mnt/extra-addons"
+oduflow call exec_in_odoo feature-login "ls /mnt/extra-addons"
 
 # Check Python version
-oduflow call exec_in_environment feature-login "python3 --version"
+oduflow call exec_in_odoo feature-login "python3 --version"
 
 # Run a Python script
-oduflow call exec_in_environment feature-login "python3 -c 'import odoo; print(odoo.release.version)'"
+oduflow call exec_in_odoo feature-login "python3 -c 'import odoo; print(odoo.release.version)'"
 
 # Install a package as root
-oduflow call exec_in_environment feature-login "pip3 install phonenumbers" root
+oduflow call exec_in_odoo feature-login "pip3 install phonenumbers" root
 
 # Debug database
-oduflow call exec_in_environment feature-login "psql -h oduflow-db -U odoo -d oduflow_feature-login -c 'SELECT count(*) FROM res_partner;'"
+oduflow call exec_in_odoo feature-login "psql -h oduflow-db -U odoo -d oduflow_feature-login -c 'SELECT count(*) FROM res_partner;'"
 ```
 
 The `user` parameter defaults to `odoo`. Use `root` for privileged operations (installing packages, modifying system files).

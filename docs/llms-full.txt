@@ -34,7 +34,7 @@ An **AI-first** Odoo development and CI tool, powered by **reusable database tem
 ┌──────▼──────────────────────────────┴────────────────┐
 │               Oduflow (MCP Server)                    │
 │  • install_odoo_modules → traceback or success        │
-│  • test_environment → test pass/fail with details     │
+│  • run_odoo_tests → test pass/fail with details     │
 │  • get_environment_logs → runtime errors              │
 │  • upgrade_odoo_modules → upgrade output              │
 ├──────────────────────────────────────────────────────┤
@@ -67,7 +67,7 @@ The agent writes code, installs the module, reads the traceback, fixes the error
 - **Environment protection** — protect environments from accidental deletion via a toggle in the dashboard or REST API
 
 ### Smart Automation
-- **Smart pull** — `sync_environment` analyzes changed files (manifest, Python fields, security XML, JS) and automatically decides whether to install, upgrade, restart, or do nothing
+- **Smart pull** — `pull_and_apply` analyzes changed files (manifest, Python fields, security XML, JS) and automatically decides whether to install, upgrade, restart, or do nothing
 - **Auto-install dependencies** — `requirements.txt` (pip) and `apt_packages.txt` (apt) in the repository root are automatically installed when creating an environment
 - **Custom odoo.conf** — if the repository contains an `odoo.conf` at its root, it is used instead of the default template
 - **Field change detection** — Python files are analyzed for `fields.*` definition changes, triggering module upgrades only when necessary
@@ -265,7 +265,7 @@ The most common workflow — test your changes against real production data:
 oduflow call create_environment feature-login https://github.com/company/odoo-addons.git odoo:17.0
 
 # Make changes, push to remote, then pull into the environment
-oduflow call sync_environment feature-login
+oduflow call pull_and_apply feature-login
 # Oduflow automatically installs/upgrades/restarts as needed
 
 # When done, tear it down
@@ -281,10 +281,10 @@ Reproduce a production bug with real data:
 oduflow call create_environment bug-12345 https://github.com/company/odoo-addons.git odoo:17.0
 
 # Debug inside the container
-oduflow call exec_in_environment bug-12345 "python3 -c 'import odoo; ...'"
+oduflow call exec_in_odoo bug-12345 "python3 -c 'import odoo; ...'"
 
 # Check the database directly
-oduflow call exec_in_environment bug-12345 "psql -h oduflow-db -U odoo -d oduflow_bug-12345 -c 'SELECT * FROM sale_order WHERE id=42;'"
+oduflow call exec_in_odoo bug-12345 "psql -h oduflow-db -U odoo -d oduflow_bug-12345 -c 'SELECT * FROM sale_order WHERE id=42;'"
 ```
 
 ## 🧪 Module Testing
@@ -293,7 +293,7 @@ Run Odoo tests in an isolated environment:
 
 ```bash
 oduflow call create_environment test-suite https://github.com/company/odoo-addons.git odoo:17.0
-oduflow call test_environment test-suite sale_custom,invoice_custom
+oduflow call run_odoo_tests test-suite sale_custom,invoice_custom
 oduflow call delete_environment test-suite
 ```
 
@@ -338,7 +338,7 @@ The agent will call the appropriate MCP tools in sequence:
 
 1. `create_environment` → provision the environment
 2. `install_odoo_modules` → install the requested modules
-3. `test_environment` → run the test suite
+3. `run_odoo_tests` → run the test suite
 4. Report results back
 
 ### Connecting Your Agent to Oduflow MCP
@@ -385,7 +385,7 @@ alwaysApply: true
 **Sync & Work Cycle**
 
 1. **Push**: Run `git push` when the task is complete.
-2. **Pull**: After every `push` (yours or user-requested), ALWAYS call `sync_environment`.
+2. **Pull**: After every `push` (yours or user-requested), ALWAYS call `pull_and_apply`.
 3. **Automation**: The Flow server decides whether a restart or module upgrade is needed. You do NOT need to call `restart_environment` or `upgrade_odoo_modules`.
 
 **Teardown**
@@ -428,7 +428,7 @@ steps:
   - name: Install and test
     run: |
       oduflow call install_odoo_modules ci-${{ github.sha }} my_module
-      oduflow call test_environment ci-${{ github.sha }} my_module
+      oduflow call run_odoo_tests ci-${{ github.sha }} my_module
 
   - name: Cleanup
     if: always()
@@ -498,10 +498,10 @@ oduflow call create_environment template-update https://github.com/company/odoo-
 oduflow call install_odoo_modules template-update accounting,hr,project
 
 # 3. Verify everything works
-oduflow call test_environment template-update accounting,hr,project
+oduflow call run_odoo_tests template-update accounting,hr,project
 
 # 4. Save as the new template
-oduflow call publish_as_template template-update
+oduflow call save_as_template template-update
 
 # 5. All future environments will include these modules pre-installed
 ```
@@ -779,17 +779,17 @@ oduflow call upgrade_odoo_modules feature-login sale,crm
 ## Running Tests
 
 ```bash
-oduflow call test_environment feature-login sale,crm
+oduflow call run_odoo_tests feature-login sale,crm
 ```
 
 This runs `odoo --test-enable --stop-after-init -i <modules>` inside the container.
 
 ## Smart Pull — Intelligent Change Detection
 
-The `sync_environment` tool is one of Oduflow's most powerful features. It pulls the latest changes from the remote repository and **automatically determines the minimal action required**:
+The `pull_and_apply` tool is one of Oduflow's most powerful features. It pulls the latest changes from the remote repository and **automatically determines the minimal action required**:
 
 ```bash
-oduflow call sync_environment feature-login
+oduflow call pull_and_apply feature-login
 ```
 
 ### How it works
@@ -814,7 +814,7 @@ After `git pull --rebase`, Oduflow compares `HEAD` before and after, then classi
 If any module needs installation, all pending upgrades are also executed. If only Python files changed (without field modifications), a container restart is sufficient. If only XML/JS changed, no server-side action is needed — just refresh the browser.
 
 !!! note
-    `sync_environment` updates only the **main project repository**. Extra addons repositories are pinned to the commit they were deployed with and are not affected. See [Extra Addons — Updating](extra-addons.md#updating-extra-repos) for details.
+    `pull_and_apply` updates only the **main project repository**. Extra addons repositories are pinned to the commit they were deployed with and are not affected. See [Extra Addons — Updating](extra-addons.md#updating-extra-repos) for details.
 
 ### Module detection
 
@@ -826,19 +826,19 @@ Run arbitrary shell commands inside the Odoo container:
 
 ```bash
 # List addon files
-oduflow call exec_in_environment feature-login "ls /mnt/extra-addons"
+oduflow call exec_in_odoo feature-login "ls /mnt/extra-addons"
 
 # Check Python version
-oduflow call exec_in_environment feature-login "python3 --version"
+oduflow call exec_in_odoo feature-login "python3 --version"
 
 # Run a Python script
-oduflow call exec_in_environment feature-login "python3 -c 'import odoo; print(odoo.release.version)'"
+oduflow call exec_in_odoo feature-login "python3 -c 'import odoo; print(odoo.release.version)'"
 
 # Install a package as root
-oduflow call exec_in_environment feature-login "pip3 install phonenumbers" root
+oduflow call exec_in_odoo feature-login "pip3 install phonenumbers" root
 
 # Debug database
-oduflow call exec_in_environment feature-login "psql -h oduflow-db -U odoo -d oduflow_feature-login -c 'SELECT count(*) FROM res_partner;'"
+oduflow call exec_in_odoo feature-login "psql -h oduflow-db -U odoo -d oduflow_feature-login -c 'SELECT count(*) FROM res_partner;'"
 ```
 
 The `user` parameter defaults to `odoo`. Use `root` for privileged operations (installing packages, modifying system files).
@@ -1023,7 +1023,7 @@ Each environment gets a **detached git worktree** pinned to a specific commit at
 
 - **Stability** — the environment keeps working with the exact version of extra addons it was deployed with, regardless of upstream changes.
 - **Isolation** — updating one environment's dependencies cannot break another.
-- **Predictability** — `sync_environment` handles only the main project repository; extra addons remain unchanged.
+- **Predictability** — `pull_and_apply` handles only the main project repository; extra addons remain unchanged.
 
 ### How to update extra addons in an environment
 
@@ -1144,18 +1144,18 @@ All tools are accessible via MCP clients (Cursor, Cline, Amp, etc.) and the CLI 
 | `restart_environment` | | Restart the Odoo container |
 | `rebuild_environment` | ✓ | Re-create the container from the same image, preserving DB and filestore |
 | **Odoo Operations** | | |
-| `sync_environment` | ✓ | Git pull + smart analysis → auto install/upgrade/restart |
+| `pull_and_apply` | ✓ | Git pull + smart analysis → auto install/upgrade/restart |
 | `install_odoo_modules` | ✓ | Install Odoo modules (`-i`) |
 | `upgrade_odoo_modules` | ✓ | Upgrade Odoo modules (`-u`) |
-| `test_environment` | ✓ | Run Odoo tests for specific modules |
+| `run_odoo_tests` | ✓ | Run Odoo tests for specific modules |
 | `get_environment_logs` | | Retrieve recent container logs |
-| `exec_in_environment` | ✓ | Execute an arbitrary shell command inside the Odoo container |
+| `exec_in_odoo` | ✓ | Execute an arbitrary shell command inside the Odoo container |
 | `run_db_query` | ✓ | Execute a SQL query against the environment's PostgreSQL database |
 | `reset_admin_password` | ✓ | Reset the admin user password in the Odoo database (default: "test") |
 | **Template Management** | | |
-| `publish_as_template` | ✓ | ⚠️ Publish a branch DB + filestore to become a new template |
+| `save_as_template` | ✓ | ⚠️ Save a branch DB + filestore as a new template |
 | `list_templates` | | List available template profiles |
-| `drop_template` | ✓ | ⚠️ Drop a template profile (DB + files) |
+| `delete_template` | ✓ | ⚠️ Delete a template profile (DB + files) |
 | `import_template_from_odoo` | ✓ | Import a template from a running Odoo instance via database manager API |
 | **Auxiliary Services** | | |
 | `create_service` | ✓ | Create a managed service container (e.g. Redis, Meilisearch) |
@@ -1173,8 +1173,8 @@ All tools are accessible via MCP clients (Cursor, Cline, Amp, etc.) and the CLI 
 | `add_extra_repo` | ✓ | Clone an extra addons repository (e.g. Odoo Enterprise) for use with environments |
 | `list_extra_repos` | | List all cloned extra addons repositories |
 | `delete_extra_repo` | ✓ | Delete a cloned extra addons repository |
-| **Agent Skills** | | |
-| `get_agent_skill` | | Get AI agent skill with instructions for using Oduflow MCP tools |
+| **Agent Instructions** | | |
+| `get_agent_instructions` | | Get AI agent instructions for using Oduflow MCP tools |
 | `get_odoo_development_guide` | | Get Odoo development standards guide for a specific version (15–19) |
 
 !!! info "Mutex"
@@ -1270,7 +1270,7 @@ oduflow call create_environment dev https://github.com/owner/repo.git odoo:17.0
 oduflow call delete_environment dev
 oduflow call list_environments
 oduflow call get_environment_logs main 50
-oduflow call exec_in_environment dev "ls /mnt/extra-addons"
+oduflow call exec_in_odoo dev "ls /mnt/extra-addons"
 oduflow call create_service redis redis:7 6379
 
 # Call a tool with JSON-encoded arguments
@@ -1674,10 +1674,10 @@ src/oduflow/
   docker_ops/
     client.py           # docker.from_env() wrapper + UID/GID auto-detection
     system_ops.py       # init_system / destroy_system / reload_template / init_template /
-                        # template_up / template_down / publish_env_as_template / drop_template / list_templates
+                        # template_up / template_down / save_env_as_template / delete_template / list_templates
     env_ops.py          # create / delete / start / stop / restart / rebuild / list / status / pull /
                         # apt/pip auto-install / filestore overlay mount
-    odoo_ops.py         # install / upgrade / test / logs / exec_in_environment
+    odoo_ops.py         # install / upgrade / test / logs / exec_in_odoo
     service_ops.py      # create / delete / update / list / logs for auxiliary services
     service_presets.py  # Save / restore / list / delete service preset configurations
     stats.py            # Container and system CPU/RAM stats (parallel collection)

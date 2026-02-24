@@ -52,8 +52,8 @@ oduflow template-from-env <branch> [--template-name default]
 # List all template profiles
 oduflow list-templates
 
-# Drop a template profile
-oduflow drop-template <template_name>
+# Delete a template profile
+oduflow delete-template <template_name>
 
 # Import a template from a running Odoo instance
 oduflow import-template <odoo_url> <master_pwd> [--db-name <db>] [--template-name default]
@@ -86,7 +86,7 @@ oduflow call create_environment dev https://github.com/owner/repo.git odoo:17.0
 oduflow call delete_environment dev
 oduflow call list_environments
 oduflow call get_environment_logs main 50
-oduflow call exec_in_environment dev "ls /mnt/extra-addons"
+oduflow call exec_in_odoo dev "ls /mnt/extra-addons"
 oduflow call create_service redis redis:7 6379
 
 # Call a tool with JSON-encoded arguments

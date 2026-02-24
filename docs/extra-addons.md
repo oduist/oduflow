@@ -80,7 +80,7 @@ Each environment gets a **detached git worktree** pinned to a specific commit at
 
 - **Stability** — the environment keeps working with the exact version of extra addons it was deployed with, regardless of upstream changes.
 - **Isolation** — updating one environment's dependencies cannot break another.
-- **Predictability** — `sync_environment` handles only the main project repository; extra addons remain unchanged.
+- **Predictability** — `pull_and_apply` handles only the main project repository; extra addons remain unchanged.
 
 ### How to update extra addons in an environment
 
