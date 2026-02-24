@@ -1040,6 +1040,10 @@ def _run_reload_template(settings: Settings, template_name: str, dump_path: str 
     msg = f"Template DB {result['status']}.\nTemplate DB: {result['template_db']}"
     if "restore_seconds" in result:
         msg += f"\nDB restore time: {result['restore_seconds']}s"
+    if "tables" in result:
+        msg += f"\nTables restored: {result['tables']}"
+    if "message" in result and result["message"].strip():
+        msg += f"\nRestore output: {result['message']}"
     print(msg)
 
 
