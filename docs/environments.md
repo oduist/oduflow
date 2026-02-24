@@ -67,6 +67,83 @@ libxrender1
 xfonts-75dpi
 ```
 
+## Database Sanitization
+
+When an environment is created from a template, Oduflow **automatically sanitizes** the database to prevent the test instance from sending real emails or polling mailboxes. This is enabled by default (`sanitize=True`).
+
+Sanitization uses a **two-tier** approach:
+
+1. **System-wide scripts** from `/etc/oduflow/odoo_sanitize/` — managed by the instance administrator, shared across all environments
+2. **Per-project scripts** from `.odoo_sanitize/` in the repository root — managed by the developer, specific to the project
+
+Both folders support `.sql` and `.py` files, executed in alphabetical order (first all `.sql`, then all `.py`). System-wide scripts run first, then per-project scripts.
+
+### System-wide sanitization
+
+During `oduflow init`, the folder `/etc/oduflow/odoo_sanitize/` is created and seeded with a default script:
+
+**`01_disable_mail.sql`** — disables incoming and outgoing mail servers:
+
+```sql
+-- Disable incoming mail servers (fetchmail)
+UPDATE fetchmail_server SET active = false WHERE active = true;
+
+-- Disable outgoing mail servers
+UPDATE ir_mail_server SET active = false WHERE active = true;
+```
+
+The instance administrator can add, modify, or remove scripts in this folder to control sanitization for all environments on the instance.
+
+!!! tip
+    To disable additional cron jobs system-wide, create `/etc/oduflow/odoo_sanitize/02_disable_crons.sql`:
+    ```sql
+    UPDATE ir_cron SET active = false;
+    ```
+
+### Per-project sanitization
+
+You can add project-specific sanitization by placing scripts in a `.odoo_sanitize/` folder in your repository root:
+
+| File type | Execution method |
+|-----------|-----------------|
+| `*.sql`   | Executed directly against the environment database via `psql` |
+| `*.py`    | Executed inside the Odoo container via `python3 -c` |
+
+**Example SQL script** (`.odoo_sanitize/01_clean_partners.sql`):
+
+```sql
+UPDATE res_partner SET email = 'test@example.com' WHERE email IS NOT NULL;
+```
+
+**Example Python script** (`.odoo_sanitize/02_reset_passwords.py`):
+
+```python
+import os, psycopg2
+conn = psycopg2.connect(
+    host=os.environ["DB_HOST"],
+    dbname=os.environ["ODOO_DB"],
+    user=os.environ["DB_USER"],
+    password=os.environ["DB_PASSWORD"],
+)
+with conn.cursor() as cr:
+    cr.execute("UPDATE res_partner SET email = 'test@example.com' WHERE email IS NOT NULL")
+    conn.commit()
+conn.close()
+```
+
+Python scripts receive the following environment variables: `ODOO_DB`, `DB_HOST`, `DB_USER`, `DB_PASSWORD`.
+
+### Disabling sanitization
+
+Pass `sanitize=false` when creating an environment to skip all sanitization (both system-wide and per-project):
+
+```bash
+oduflow call create_environment my-branch mytemplate "" "" "" false
+```
+
+!!! note
+    Sanitization only runs when creating from a template. Environments created without a template (`template=none`) are not sanitized since they start with a clean database.
+
 ## Lifecycle Management
 
 ```bash

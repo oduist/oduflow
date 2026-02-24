@@ -361,6 +361,7 @@ def create_environment(
     template_name: str | None = None,
     extra_addons: dict[str, str] | None = None,
     git_user: str = "",
+    sanitize: bool = True,
 ) -> dict[str, str]:
     start_time = time.time()
     try:
@@ -670,6 +671,12 @@ def create_environment(
         _, pip_log = _install_pip_requirements(container, repo_path)
         if pip_log:
             setup_logs.append(pip_log)
+
+    # --- Sanitize environment database ---
+    if sanitize and template_name is not None:
+        from oduflow.sanitizer import sanitize_environment
+        sanitize_logs = sanitize_environment(client, settings, branch_name)
+        setup_logs.extend(sanitize_logs)
 
     if settings.routing_mode == "traefik":
         url = f"https://{get_env_hostname(branch_name, settings.base_domain)}"

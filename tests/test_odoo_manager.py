@@ -15,6 +15,7 @@ TEST_SETTINGS = Settings(
     db_user="odoo",
     db_password="odoo",
     port_registry_path="/tmp/flow-test/ports.json",
+    etc_dir="/tmp/flow-test/etc",
 )
 
 

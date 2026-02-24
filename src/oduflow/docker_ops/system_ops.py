@@ -21,6 +21,7 @@ logger = logging.getLogger("oduflow")
 _PACKAGE_ROOT = pathlib.Path(__file__).resolve().parents[1]
 _BUNDLED_PG_CONF = _PACKAGE_ROOT / "templates" / "postgresql.conf"
 _BUNDLED_ODOO_CONF = _PACKAGE_ROOT / "templates" / "odoo.conf"
+_BUNDLED_SANITIZE_DIR = _PACKAGE_ROOT / "templates"
 def _get_etc_dir() -> pathlib.Path:
     from oduflow.settings import Settings
     return pathlib.Path(Settings._default_etc_dir())
@@ -360,6 +361,15 @@ def init_system(
         logger.info("Created container %s", settings.shared_db_container)
 
     _wait_pg_ready(client, settings)
+
+    # --- Seed system-wide sanitization scripts ---
+    sanitize_dest = os.path.join(settings.etc_dir, "odoo_sanitize")
+    os.makedirs(sanitize_dest, exist_ok=True)
+    bundled_sql = _BUNDLED_SANITIZE_DIR / "01_disable_mail.sql"
+    dest_sql = os.path.join(sanitize_dest, "01_disable_mail.sql")
+    if not os.path.isfile(dest_sql):
+        shutil.copy2(str(bundled_sql), dest_sql)
+        logger.info("Copied default sanitize script to %s", dest_sql)
 
     logger.info("System initialized")
     return {"status": "initialized"}

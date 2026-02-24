@@ -165,6 +165,7 @@ def create_environment(
     repo_url: str = "",
     odoo_image: str = "",
     extra_addons: str = "",
+    sanitize: bool = True,
 ) -> str:
     """
     Provision a new ephemeral Odoo environment for a specific branch.
@@ -175,6 +176,7 @@ def create_environment(
         repo_url: URL of the git repository to clone. Optional when template_name is specified (loaded from template metadata).
         odoo_image: Full Docker image name with tag (e.g. "odoo:17.0"). Optional when template_name is specified (loaded from template metadata).
         extra_addons: Comma-separated list of extra addon repo names to mount (e.g. "enterprise,custom-themes"). Supports per-repo branches with colon syntax: "enterprise:18.0,custom-themes:main". If no branch is specified for a repo, defaults to the version extracted from odoo_image (e.g. "odoo:18.0" → branch "18.0").
+        sanitize: Sanitize the database after provisioning (default: True). Disables incoming/outgoing mail servers and runs custom scripts from the .odoo_sanitize/ folder in the repository.
     """
     import json
     settings = _get_settings()
@@ -223,6 +225,7 @@ def create_environment(
         template_name=resolved_template,
         extra_addons=extra_dict or None,
         git_user=effective_git_user,
+        sanitize=sanitize,
     )
     display_template = resolved_template if resolved_template is not None else "none (init from scratch)"
     lines = [
