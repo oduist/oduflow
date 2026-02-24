@@ -71,7 +71,6 @@ cp .env.example .env
 |---|---|---|
 | `ODUFLOW_INSTANCE_ID` | `1` | Instance identifier (1-9). Allows running multiple independent Oduflow instances. See [Multi-Instance Support](multi-instance.md) |
 | `ODUFLOW_DATA_DIR` | `/srv/oduflow` | Base directory for all data (instance dirs are `instance_{ID}` subdirectories inside) |
-| `ODUFLOW_WORKSPACES_DIR` | `$ODUFLOW_DATA_DIR/instance_{ID}/workspaces` | Root directory for environment workspaces |
 | `ODUFLOW_ETC_DIR` | `/etc/oduflow` or `~/.oduflow/conf` | Config and credentials directory. Defaults to `/etc/oduflow` when writable (Docker), otherwise `~/.oduflow/conf` |
 | `ODUFLOW_PORT_REGISTRY` | `$ODUFLOW_DATA_DIR/instance_{ID}/ports.json` | JSON file for stable port assignments |
 
