@@ -63,7 +63,8 @@ MCP endpoint: `http://<host>:8000/mcp`
 | Tool | What it shows |
 |---|---|
 | `get_environment_logs(branch_name, n_lines?)` | Logs from the **running Odoo server** (main container process). Use to check for runtime errors, request errors, or startup issues after a restart. Does **NOT** contain output from install/upgrade/test operations. |
-| `exec_in_odoo(branch_name, command, user?)` | Run shell commands inside the container. Use `user="root"` for privileged ops (pip install, apt). Useful for DB queries, debugging, checking file paths |
+| `read_file_in_odoo(branch_name, path, read_range?)` | Read a text file or list a directory inside the container. Use to inspect Odoo source code, addon structure, config files. Supports `read_range="START:END"` for large files. **Prefer this over `exec_in_odoo` with `cat`/`ls`.** |
+| `exec_in_odoo(branch_name, command, user?)` | Run shell commands inside the container. Use `user="root"` for privileged ops (pip install, apt). Useful for debugging, running Odoo shell commands. For reading files, prefer `read_file_in_odoo` instead |
 
 **When to use which:**
 - After `pull_and_apply` / `install_odoo_modules` / `upgrade_odoo_modules` / `run_odoo_tests` → **read the tool response** for errors
@@ -119,9 +120,9 @@ Do NOT call `get_environment_logs` after `pull_and_apply` — the errors are alr
 
 The environment container runs **remotely** and has access only to the git repository it was created for. The container is **not your workspace** — it is a runtime for testing.
 
-**What you CAN do inside the container (`exec_in_odoo`):**
-- Read files, inspect paths (`ls`, `cat`, `find`)
-- Run Odoo shell commands (`odoo shell`, `odoo scaffold`, etc.)
+**What you CAN do inside the container:**
+- Read files and inspect paths — use `read_file_in_odoo` (preferred) or `exec_in_odoo`
+- Run Odoo shell commands (`odoo shell`, `odoo scaffold`, etc.) — use `exec_in_odoo`
 
 > **Note:** For logs use `get_environment_logs` — container logs are not accessible via shell commands inside Docker. For database queries use `run_db_query` — it connects to PostgreSQL directly without needing `exec_in_odoo`.
 

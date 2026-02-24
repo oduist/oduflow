@@ -702,6 +702,38 @@ def upgrade_odoo_modules(branch_name: str, modules: str) -> str:
 @mcp.tool()
 @handle_errors
 @with_mutex
+def read_file_in_odoo(branch_name: str, path: str, read_range: str = "") -> str:
+    """
+    Read a text file or list a directory inside the Odoo container for a specific branch.
+
+    Use this tool to inspect files in the container without constructing shell commands.
+    Common use cases:
+    - Read Odoo source code (e.g. /usr/lib/python3/dist-packages/odoo/addons/sale/models/sale_order.py)
+    - Inspect addon structure (e.g. /mnt/extra-addons/)
+    - Check config files (e.g. /etc/odoo/odoo.conf)
+    - Verify file presence after pull_and_apply
+
+    If the path is a directory, returns a listing (like `ls -la`).
+    If the path is a text file, returns its contents (first 100KB by default).
+    Binary files are not supported — use exec_in_odoo for binary operations.
+
+    Prefer this tool over exec_in_odoo with `cat` or `ls` commands.
+
+    Args:
+        branch_name: The name of the branch/environment.
+        path: Absolute path inside the container (e.g. "/mnt/extra-addons/my_module/__manifest__.py").
+        read_range: Optional line range in format "START:END" (e.g. "1:50", "100:200").
+                    If omitted, returns the entire file (up to 100KB).
+    """
+    result = odoo_ops.read_file_in_environment(_get_settings(), branch_name, path, read_range)
+    if "error" in result:
+        return f"Error: {result['error']}"
+    return result["output"]
+
+
+@mcp.tool()
+@handle_errors
+@with_mutex
 def exec_in_odoo(branch_name: str, command: str, user: str = "odoo") -> str:
     """
     Execute an arbitrary shell command inside the Odoo container for a specific branch.

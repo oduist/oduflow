@@ -100,6 +100,86 @@ def install_odoo_modules(settings: Settings, branch_name: str, *modules: str) ->
     return _run_odoo_module_command(settings, branch_name, "-i", *modules)
 
 
+_FILE_SIZE_LIMIT = 100 * 1024  # 100KB
+
+
+def read_file_in_environment(
+    settings: Settings, branch_name: str, path: str, read_range: str = ""
+) -> dict[str, Any]:
+    client = get_client()
+    odoo_container_name = get_resource_name(branch_name, "odoo", settings.prefix)
+
+    try:
+        container = client.containers.get(odoo_container_name)
+    except docker.errors.NotFound:
+        raise NotFoundError(
+            f"Environment '{branch_name}' does not exist. Use create_environment first."
+        )
+
+    logger.info(
+        "Reading file in environment",
+        extra={"branch": branch_name, "path": path},
+    )
+
+    # Check if path exists and determine its type
+    exit_code, output = container.exec_run(
+        ["sh", "-c", f'if [ -d "{path}" ]; then echo DIR; elif [ -f "{path}" ]; then echo FILE; else echo NOTFOUND; fi']
+    )
+    path_type = (output.decode("utf-8") if isinstance(output, bytes) else str(output)).strip()
+
+    if path_type == "NOTFOUND":
+        return {"error": f"Path not found: {path}"}
+
+    if path_type == "DIR":
+        exit_code, output = container.exec_run(["ls", "-la", path])
+        output_str = output.decode("utf-8") if isinstance(output, bytes) else str(output)
+        return {"type": "directory", "output": output_str}
+
+    # It's a file — check if binary
+    exit_code, output = container.exec_run(["file", "--mime", path])
+    mime_str = (output.decode("utf-8") if isinstance(output, bytes) else str(output)).strip()
+    if "charset=binary" in mime_str:
+        return {"error": f"Binary file, cannot display: {path}\nUse exec_in_odoo for binary file operations."}
+
+    # Check file size
+    exit_code, output = container.exec_run(["stat", "-c", "%s", path])
+    size_str = (output.decode("utf-8") if isinstance(output, bytes) else str(output)).strip()
+    try:
+        file_size = int(size_str)
+    except ValueError:
+        file_size = 0
+
+    if read_range:
+        # Parse "START:END" format
+        parts = read_range.split(":")
+        if len(parts) != 2:
+            return {"error": f"Invalid read_range format: '{read_range}'. Expected 'START:END' (e.g. '1:50')."}
+        try:
+            start, end = int(parts[0]), int(parts[1])
+        except ValueError:
+            return {"error": f"Invalid read_range format: '{read_range}'. START and END must be integers."}
+        exit_code, output = container.exec_run(
+            ["sed", "-n", f"{start},{end}p", path]
+        )
+        output_str = output.decode("utf-8") if isinstance(output, bytes) else str(output)
+        return {"type": "file", "output": output_str, "size": file_size, "range": read_range}
+
+    # No range — enforce size limit
+    if file_size > _FILE_SIZE_LIMIT:
+        size_kb = file_size // 1024
+        limit_kb = _FILE_SIZE_LIMIT // 1024
+        return {
+            "error": (
+                f"File is too large ({size_kb}KB, limit {limit_kb}KB). "
+                f'Use read_range parameter to read a specific portion, e.g. read_range="1:500".'
+            )
+        }
+
+    exit_code, output = container.exec_run(["cat", path])
+    output_str = output.decode("utf-8") if isinstance(output, bytes) else str(output)
+    return {"type": "file", "output": output_str, "size": file_size}
+
+
 def exec_in_environment(
     settings: Settings, branch_name: str, command: str, user: str = "odoo"
 ) -> dict[str, Any]:
