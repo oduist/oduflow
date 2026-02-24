@@ -208,10 +208,10 @@ This is also available as an MCP tool (`import_template_from_odoo`) for AI agent
 4. Place them into the template directory:
 
 ```bash
-mkdir -p $ODUFLOW_HOME/templates/myproject
+mkdir -p $ODUFLOW_DATA_DIR/instance_{ID}/templates/myproject
 # Copy or move the extracted files
-cp dump.sql $ODUFLOW_HOME/templates/myproject/
-cp -r filestore $ODUFLOW_HOME/templates/myproject/
+cp dump.sql $ODUFLOW_DATA_DIR/instance_{ID}/templates/myproject/
+cp -r filestore $ODUFLOW_DATA_DIR/instance_{ID}/templates/myproject/
 ```
 
 5. Load the template into PostgreSQL:
@@ -225,7 +225,7 @@ oduflow reload-template myproject
 Simply copy the entire template directory and reload:
 
 ```bash
-cp -r /other/oduflow/templates/myproject $ODUFLOW_HOME/templates/myproject
+cp -r /other/oduflow/templates/myproject $ODUFLOW_DATA_DIR/instance_{ID}/templates/myproject
 oduflow reload-template myproject
 ```
 

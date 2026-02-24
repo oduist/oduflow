@@ -9,7 +9,7 @@ Oduflow supports mounting **extra addon repositories** (e.g. Odoo Enterprise, th
 ## Architecture
 
 ```
-$ODUFLOW_HOME/
+$ODUFLOW_DATA_DIR/instance_{ID}/
   shared_repos/
     enterprise/          ← bare git clone (shared)
     custom-themes/       ← bare git clone (shared)

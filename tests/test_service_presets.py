@@ -9,7 +9,7 @@ from oduflow.settings import Settings
 @pytest.fixture
 def tmp_settings(tmp_path):
     return Settings(
-        home=str(tmp_path),
+        data_dir=str(tmp_path),
         workspaces_dir=str(tmp_path / "workspaces"),
         port_registry_path=str(tmp_path / "ports.json"),
     )
@@ -56,7 +56,7 @@ class TestSavePreset:
     def test_save_preset_creates_dir(self, tmp_path):
         nested = tmp_path / "deep" / "nested"
         settings = Settings(
-            home=str(nested),
+            data_dir=str(nested),
             workspaces_dir=str(nested / "workspaces"),
             port_registry_path=str(nested / "ports.json"),
         )

@@ -91,7 +91,7 @@ src/oduflow/
     postgresql.conf       # PostgreSQL tuning (shared_buffers, WAL, autovacuum, etc.)
     dashboard.html        # Web dashboard UI (single-page application)
     favicon.ico           # Dashboard favicon
-    agent_guides/         # AI agent guides (copied to $ODUFLOW_HOME/agent_guides on init-instance)
+    agent_guides/         # AI agent guides (copied to $ODUFLOW_DATA_DIR/instance_{ID}/agent_guides on init-instance)
       agent_guide.md      # Main agent instructions for Oduflow MCP tools
       odoo_15_guide.md    # Odoo 15 development standards
       odoo_16_guide.md    # Odoo 16 development standards
@@ -107,7 +107,7 @@ tests/                  # Unit and integration tests (pytest)
 Each branch gets an isolated workspace:
 
 ```
-$ODUFLOW_HOME/workspaces/{branch}/
+$ODUFLOW_DATA_DIR/instance_{ID}/workspaces/{branch}/
   repo/                ← shallow git clone (--depth 1)
   filestore_upper/     ← overlay upper layer (branch-specific changes)
   filestore_work/      ← overlay work directory (required by overlayfs)
@@ -123,10 +123,10 @@ You can verify active overlay mounts with `df -h` — each environment with a te
 $ df -h
 Filesystem                         Size  Used Avail Use% Mounted on
 /dev/mapper/ubuntu--vg-ubuntu--lv   97G   74G   19G  81% /
-fuse-overlayfs                      97G   74G   19G  81% /srv/oduflow_data/workspaces/manuf-plan/filestore
-fuse-overlayfs                      97G   74G   19G  81% /srv/oduflow_data/workspaces/fixing-landing-of-transport-orde-3022/filestore
-fuse-overlayfs                      97G   74G   19G  81% /srv/oduflow_data/workspaces/receiver-company-refactor-64cb/filestore
-fuse-overlayfs                      97G   74G   19G  81% /srv/oduflow_data/workspaces/supply-translation-45e8/filestore
+fuse-overlayfs                      97G   74G   19G  81% /srv/oduflow/instance_1/workspaces/manuf-plan/filestore
+fuse-overlayfs                      97G   74G   19G  81% /srv/oduflow/instance_1/workspaces/fixing-landing-of-transport-orde-3022/filestore
+fuse-overlayfs                      97G   74G   19G  81% /srv/oduflow/instance_1/workspaces/receiver-company-refactor-64cb/filestore
+fuse-overlayfs                      97G   74G   19G  81% /srv/oduflow/instance_1/workspaces/supply-translation-45e8/filestore
 ```
 
 ## File Ownership (macOS vs Linux)

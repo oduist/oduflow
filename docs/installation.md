@@ -70,12 +70,12 @@ cp .env.example .env
 | Variable | Default | Description |
 |---|---|---|
 | `ODUFLOW_INSTANCE_ID` | `1` | Instance identifier (1-9). Allows running multiple independent Oduflow instances. See [Multi-Instance Support](multi-instance.md) |
-| `ODUFLOW_HOME` | `/srv/oduflow_data_{INSTANCE_ID}` | Base directory for all data (dumps, workspaces, ports) |
-| `ODUFLOW_WORKSPACES_DIR` | `$ODUFLOW_HOME/workspaces` | Root directory for environment workspaces |
-| `ODUFLOW_ETC_DIR` | `/etc/oduflow` or `~/.config/oduflow` | Config and credentials directory. Defaults to `/etc/oduflow` when writable (Docker), otherwise `~/.config/oduflow` |
-| `ODUFLOW_PORT_REGISTRY` | `$ODUFLOW_HOME/ports.json` | JSON file for stable port assignments |
+| `ODUFLOW_DATA_DIR` | `/srv/oduflow` | Base directory for all data (instance dirs are `instance_{ID}` subdirectories inside) |
+| `ODUFLOW_WORKSPACES_DIR` | `$ODUFLOW_DATA_DIR/instance_{ID}/workspaces` | Root directory for environment workspaces |
+| `ODUFLOW_ETC_DIR` | `/etc/oduflow` or `~/.oduflow/conf` | Config and credentials directory. Defaults to `/etc/oduflow` when writable (Docker), otherwise `~/.oduflow/conf` |
+| `ODUFLOW_PORT_REGISTRY` | `$ODUFLOW_DATA_DIR/instance_{ID}/ports.json` | JSON file for stable port assignments |
 
-Template folder structure: `$ODUFLOW_HOME/templates/<name>/dump.sql` (or `dump.pgdump`) and `$ODUFLOW_HOME/templates/<name>/filestore/`.
+Template folder structure: `$ODUFLOW_DATA_DIR/instance_{ID}/templates/<name>/dump.sql` (or `dump.pgdump`) and `$ODUFLOW_DATA_DIR/instance_{ID}/templates/<name>/filestore/`.
 
 ### Git
 

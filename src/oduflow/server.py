@@ -360,7 +360,7 @@ def get_agent_instructions() -> str:
     settings = _get_settings()
     # Support both new and legacy file names
     for name in ("agent_instructions.md", "agent_skill.md", "agent_guide.md"):
-        skill_path = os.path.join(settings.home, "agent_guides", name)
+        skill_path = os.path.join(settings.data_dir, "agent_guides", name)
         if os.path.isfile(skill_path):
             with open(skill_path, "r", encoding="utf-8") as f:
                 return f.read()
@@ -384,7 +384,7 @@ def get_odoo_development_guide(version: str) -> str:
     normalized = version.split(".")[0]
     filename = f"odoo_{normalized}_guide.md"
     settings = _get_settings()
-    guide_path = os.path.join(settings.home, "agent_guides", filename)
+    guide_path = os.path.join(settings.data_dir, "agent_guides", filename)
     if os.path.isfile(guide_path):
         with open(guide_path, "r", encoding="utf-8") as f:
             return f.read()
@@ -392,7 +392,7 @@ def get_odoo_development_guide(version: str) -> str:
     if bundled.is_file():
         return bundled.read_text(encoding="utf-8")
     available = []
-    guides_dir = os.path.join(settings.home, "agent_guides")
+    guides_dir = os.path.join(settings.data_dir, "agent_guides")
     if os.path.isdir(guides_dir):
         available = [f.replace("odoo_", "").replace("_guide.md", "") for f in os.listdir(guides_dir) if f.startswith("odoo_") and f.endswith("_guide.md")]
     if available:
@@ -984,13 +984,13 @@ def _run_init_instance(settings: Settings, *, update_guides: bool = False) -> No
     # Initialize per-instance directories
     import os
     os.makedirs(settings.workspaces_dir, exist_ok=True)
-    os.makedirs(os.path.join(settings.home, "templates"), exist_ok=True)
+    os.makedirs(os.path.join(settings.data_dir, "templates"), exist_ok=True)
 
     _copy_bundled_configs()
 
     # Copy bundled agent guides
     import pathlib, shutil
-    agent_guides_dest = os.path.join(settings.home, "agent_guides")
+    agent_guides_dest = os.path.join(settings.data_dir, "agent_guides")
     os.makedirs(agent_guides_dest, exist_ok=True)
     bundled_guides_dir = pathlib.Path(__file__).resolve().parent / "templates" / "agent_guides"
     if bundled_guides_dir.is_dir():
@@ -1031,7 +1031,7 @@ def _run_init_instance(settings: Settings, *, update_guides: bool = False) -> No
 
     print(f"Instance {settings.instance_id} initialized.")
     print(f"  Workspaces: {settings.workspaces_dir}")
-    print(f"  Templates: {os.path.join(settings.home, 'templates')}")
+    print(f"  Templates: {os.path.join(settings.data_dir, 'templates')}")
 
 
 def _run_reload_template(settings: Settings, template_name: str, dump_path: str = "") -> None:

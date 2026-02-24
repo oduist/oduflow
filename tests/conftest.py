@@ -22,7 +22,7 @@ def _test_settings(tmp_dir: str) -> Settings:
         port_range_start=51000,
         port_range_end=51100,
         workspaces_dir=os.path.join(tmp_dir, "workspaces"),
-        home=tmp_dir,
+        data_dir=tmp_dir,
         db_user="odoo",
         db_password="odoo",
         prefix=_TEST_PREFIX,

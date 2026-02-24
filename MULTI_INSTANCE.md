@@ -6,7 +6,7 @@ Oduflow now supports running multiple independent instances on a single machine.
 
 - **Instance ID**: Numeric identifier (1, 2, 3, ...). Default: `1`
 - **Database prefix**: Each instance's databases are prefixed with instance ID (e.g., `oduflow_1_main`, `oduflow_2_main`)
-- **ODUFLOW_HOME**: Each instance has its own home directory (e.g., `/srv/oduflow_data_1`, `/srv/oduflow_data_2`)
+- **ODUFLOW_DATA_DIR**: Each instance gets its own subdirectory inside the data directory (e.g., `/srv/oduflow/instance_1`, `/srv/oduflow/instance_2`)
 - **Shared resources**: Docker network (`oduflow-net`), PostgreSQL container (`oduflow-db`), Traefik (if enabled)
 
 ## Configuration
@@ -18,11 +18,11 @@ Set the environment variable `ODUFLOW_INSTANCE_ID` to identify your instance:
 ```bash
 # Instance 1 (default)
 export ODUFLOW_INSTANCE_ID=1
-export ODUFLOW_HOME=/srv/oduflow_data_1
+# Data stored in /srv/oduflow/instance_1
 
 # Instance 2
 export ODUFLOW_INSTANCE_ID=2
-export ODUFLOW_HOME=/srv/oduflow_data_2
+# Data stored in /srv/oduflow/instance_2
 ```
 
 Or in `.env`:
@@ -30,14 +30,20 @@ Or in `.env`:
 ```env
 # Instance 1
 ODUFLOW_INSTANCE_ID=1
-ODUFLOW_HOME=/srv/oduflow_data_1
 
 # ... or Instance 2
 ODUFLOW_INSTANCE_ID=2
-ODUFLOW_HOME=/srv/oduflow_data_2
 ```
 
-If `ODUFLOW_HOME` is not set, it defaults to `/srv/oduflow_data_{INSTANCE_ID}`.
+Optionally override the base data directory (default: `/srv/oduflow`):
+
+```env
+ODUFLOW_DATA_DIR=/custom/path
+# Instance 1 data → /custom/path/instance_1
+# Instance 2 data → /custom/path/instance_2
+```
+
+If `ODUFLOW_DATA_DIR` is not set, it defaults to `/srv/oduflow` with instances stored as `instance_{ID}` subdirectories.
 
 ## Lifecycle
 
@@ -145,8 +151,8 @@ oduflow call list_environments  # Shows only Instance 2 environments
 | PostgreSQL (`oduflow-db`) | ✓ | | Single DB, namespaced by instance ID in database names |
 | Traefik (`oduflow-traefik`) | ✓ | | Ports 80/443 shared; different domains per instance supported |
 | Port registry (`ports.json`) | | ✓ | Each instance has its own port allocation file |
-| Workspaces (`workspaces/`) | | ✓ | Stored in `ODUFLOW_HOME` per instance |
-| Templates (`templates/`) | | ✓ | Stored in `ODUFLOW_HOME` per instance |
+| Workspaces (`workspaces/`) | | ✓ | Stored in `ODUFLOW_DATA_DIR/instance_{ID}` per instance |
+| Templates (`templates/`) | | ✓ | Stored in `ODUFLOW_DATA_DIR/instance_{ID}` per instance |
 | Environments | | ✓ | Database, filestore, containers labeled by instance |
 | Services | | ✓ | Auxiliary services (Redis, etc.) per instance |
 
@@ -156,7 +162,6 @@ oduflow call list_environments  # Shows only Instance 2 environments
 
 ```bash
 export ODUFLOW_INSTANCE_ID=1
-export ODUFLOW_HOME=/srv/oduflow_data_1
 export ODUFLOW_PORT=8000
 
 # First time: initialize shared infrastructure
@@ -176,7 +181,6 @@ oduflow  # Runs on http://localhost:8000/mcp
 
 ```bash
 export ODUFLOW_INSTANCE_ID=2
-export ODUFLOW_HOME=/srv/oduflow_data_2
 export ODUFLOW_PORT=8001
 
 # Initialize instance (shared infrastructure already up from Instance 1)
@@ -198,8 +202,8 @@ Now both instances are running independently:
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `ODUFLOW_INSTANCE_ID` | `1` | Instance identifier (1-9) |
-| `ODUFLOW_HOME` | `/srv/oduflow_data_{INSTANCE_ID}` | Base directory for instance data |
-| `ODUFLOW_WORKSPACES_DIR` | `{ODUFLOW_HOME}/workspaces` | Per-instance workspace directory |
+| `ODUFLOW_DATA_DIR` | `/srv/oduflow` | Base directory for instance data |
+| `ODUFLOW_WORKSPACES_DIR` | `{ODUFLOW_DATA_DIR}/instance_{ID}/workspaces` | Per-instance workspace directory |
 | `ODUFLOW_PORT` | `8000` | HTTP server port (choose different port per instance) |
 | `ODUFLOW_AUTH_TOKEN` | (empty) | Bearer token for HTTP auth |
 | `ODUFLOW_ROUTING_MODE` | `port` | `port` or `traefik` |

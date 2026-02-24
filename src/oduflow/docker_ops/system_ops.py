@@ -1172,8 +1172,8 @@ def import_from_odoo(
     )
 
     download_start = time.monotonic()
-    tmp_zip = os.path.join(settings.home, "tmp_odoo_backup.zip")
-    os.makedirs(settings.home, exist_ok=True)
+    tmp_zip = os.path.join(settings.data_dir, "tmp_odoo_backup.zip")
+    os.makedirs(settings.data_dir, exist_ok=True)
     try:
         with urllib.request.urlopen(req, timeout=600) as resp:
             content_type = resp.headers.get("Content-Type", "")

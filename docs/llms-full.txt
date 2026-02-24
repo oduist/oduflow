@@ -188,12 +188,12 @@ cp .env.example .env
 | Variable | Default | Description |
 |---|---|---|
 | `ODUFLOW_INSTANCE_ID` | `1` | Instance identifier (1-9). Allows running multiple independent Oduflow instances. See [Multi-Instance Support](multi-instance.md) |
-| `ODUFLOW_HOME` | `/srv/oduflow_data_{INSTANCE_ID}` | Base directory for all data (dumps, workspaces, ports) |
-| `ODUFLOW_WORKSPACES_DIR` | `$ODUFLOW_HOME/workspaces` | Root directory for environment workspaces |
-| `ODUFLOW_ETC_DIR` | `/etc/oduflow` or `~/.config/oduflow` | Config and credentials directory. Defaults to `/etc/oduflow` when writable (Docker), otherwise `~/.config/oduflow` |
-| `ODUFLOW_PORT_REGISTRY` | `$ODUFLOW_HOME/ports.json` | JSON file for stable port assignments |
+| `ODUFLOW_DATA_DIR` | `/srv/oduflow` | Base directory for all data (dumps, workspaces, ports) |
+| `ODUFLOW_WORKSPACES_DIR` | `$ODUFLOW_DATA_DIR/instance_{ID}/workspaces` | Root directory for environment workspaces |
+| `ODUFLOW_ETC_DIR` | `/etc/oduflow` or `~/.oduflow/conf` | Config and credentials directory. Defaults to `/etc/oduflow` when writable (Docker), otherwise `~/.oduflow/conf` |
+| `ODUFLOW_PORT_REGISTRY` | `$ODUFLOW_DATA_DIR/instance_{ID}/ports.json` | JSON file for stable port assignments |
 
-Template folder structure: `$ODUFLOW_HOME/templates/<name>/dump.sql` (or `dump.pgdump`) and `$ODUFLOW_HOME/templates/<name>/filestore/`.
+Template folder structure: `$ODUFLOW_DATA_DIR/instance_{ID}/templates/<name>/dump.sql` (or `dump.pgdump`) and `$ODUFLOW_DATA_DIR/instance_{ID}/templates/<name>/filestore/`.
 
 ### Git
 
@@ -462,10 +462,10 @@ This is also available as an MCP tool (`import_template_from_odoo`) for AI agent
 4. Place them into the template directory:
 
 ```bash
-mkdir -p $ODUFLOW_HOME/templates/myproject
+mkdir -p $ODUFLOW_DATA_DIR/instance_{ID}/templates/myproject
 # Copy or move the extracted files
-cp dump.sql $ODUFLOW_HOME/templates/myproject/
-cp -r filestore $ODUFLOW_HOME/templates/myproject/
+cp dump.sql $ODUFLOW_DATA_DIR/instance_{ID}/templates/myproject/
+cp -r filestore $ODUFLOW_DATA_DIR/instance_{ID}/templates/myproject/
 ```
 
 5. Load the template into PostgreSQL:
@@ -479,7 +479,7 @@ oduflow reload-template myproject
 Simply copy the entire template directory and reload:
 
 ```bash
-cp -r /other/oduflow/templates/myproject $ODUFLOW_HOME/templates/myproject
+cp -r /other/oduflow/templates/myproject $ODUFLOW_DATA_DIR/instance_{ID}/templates/myproject
 oduflow reload-template myproject
 ```
 
@@ -536,8 +536,8 @@ This will:
 
 1. Start a PostgreSQL container (if not already running)
 2. Run a temporary Odoo container that initializes a fresh database with the `base` module
-3. Dump the database to `$ODUFLOW_HOME/templates/default/dump.pgdump`
-4. Extract the filestore to `$ODUFLOW_HOME/templates/default/filestore/`
+3. Dump the database to `$ODUFLOW_DATA_DIR/instance_{ID}/templates/default/dump.pgdump`
+4. Extract the filestore to `$ODUFLOW_DATA_DIR/instance_{ID}/templates/default/filestore/`
 5. Load the dump into the template database automatically
 
 ### Install additional modules during generation
@@ -555,12 +555,12 @@ oduflow init-template --odoo-image odoo:15.0 --template-name legacy-v15
 
 ## From a Production Dump
 
-Place your dump file at `$ODUFLOW_HOME/templates/default/dump.sql` (plain SQL) or `dump.pgdump` (PostgreSQL custom format) and optionally copy the filestore:
+Place your dump file at `$ODUFLOW_DATA_DIR/instance_{ID}/templates/default/dump.sql` (plain SQL) or `dump.pgdump` (PostgreSQL custom format) and optionally copy the filestore:
 
 ```bash
-mkdir -p /srv/oduflow_data/templates/default/
-cp /path/to/production.sql /srv/oduflow_data/templates/default/dump.sql
-cp -r /path/to/filestore/ /srv/oduflow_data/templates/default/filestore/
+mkdir -p /srv/oduflow/instance_1/templates/default/
+cp /path/to/production.sql /srv/oduflow/instance_1/templates/default/dump.sql
+cp -r /path/to/filestore/ /srv/oduflow/instance_1/templates/default/filestore/
 oduflow init
 ```
 
@@ -655,7 +655,7 @@ The `use_overlay` flag determines whether new environments use fuse-overlayfs (f
 | New project, no existing database | `oduflow init-template --odoo-image odoo:17.0` |
 | Regenerate template from scratch | `oduflow init-template --odoo-image odoo:17.0 --force` |
 | Named template for a specific project | `oduflow init-template --odoo-image odoo:17.0 --template-name myproject` |
-| Have a production dump file | Place dump at `$ODUFLOW_HOME/templates/default/dump.sql` and run `oduflow init` |
+| Have a production dump file | Place dump at `$ODUFLOW_DATA_DIR/instance_{ID}/templates/default/dump.sql` and run `oduflow init` |
 | Need to install modules or configure the template | `oduflow template-up --odoo-image odoo:17.0` / `oduflow template-down` |
 | Update the template from a newer production dump | `oduflow reload-template --dump-path /path/to/new.dump` |
 | Save a branch environment as template | `oduflow template-from-env my-branch` |
@@ -928,7 +928,7 @@ The `update_service` operation:
 
 ## Service Presets
 
-Every time a service is created, its configuration (image, port, hostname, environment variables) is automatically saved as a **preset** in `$ODUFLOW_HOME/service_presets.json`. This allows you to restore a service after deletion without re-entering its configuration.
+Every time a service is created, its configuration (image, port, hostname, environment variables) is automatically saved as a **preset** in `$ODUFLOW_DATA_DIR/instance_{ID}/service_presets.json`. This allows you to restore a service after deletion without re-entering its configuration.
 
 ```bash
 # List saved presets
@@ -952,7 +952,7 @@ Oduflow supports mounting **extra addon repositories** (e.g. Odoo Enterprise, th
 ## Architecture
 
 ```
-$ODUFLOW_HOME/
+$ODUFLOW_DATA_DIR/instance_{ID}/
   shared_repos/
     enterprise/          ← bare git clone (shared)
     custom-themes/       ← bare git clone (shared)
@@ -1333,7 +1333,7 @@ Auxiliary services also get Traefik routing. A service named `meilisearch` with 
 
 Oduflow supports running **multiple independent instances** on a single machine. Each instance has its own environments, templates, services, and port registry, while sharing the Docker network and PostgreSQL container.
 
-Set `ODUFLOW_INSTANCE_ID` (1-9) and optionally `ODUFLOW_HOME` to isolate instances:
+Set `ODUFLOW_INSTANCE_ID` (1-9) and optionally `ODUFLOW_DATA_DIR` to isolate instances:
 
 ```bash
 # Instance 1
@@ -1429,7 +1429,7 @@ docker run -d \
   --name oduflow \
   -p 8000:8000 \
   -v /var/run/docker.sock:/var/run/docker.sock \
-  -v oduflow_data:/srv/oduflow_data_1 \
+  -v oduflow_data:/srv/oduflow/instance_1 \
   oduflow
 ```
 
@@ -1441,7 +1441,7 @@ docker run -d \
   --env-file .env \
   -p 8000:8000 \
   -v /var/run/docker.sock:/var/run/docker.sock \
-  -v oduflow_data:/srv/oduflow_data_1 \
+  -v oduflow_data:/srv/oduflow/instance_1 \
   oduflow
 ```
 
@@ -1454,7 +1454,7 @@ docker run -d \
   --env-file .env \
   -p 8000:8000 \
   -v /var/run/docker.sock:/var/run/docker.sock \
-  -v oduflow_data:/srv/oduflow_data_1 \
+  -v oduflow_data:/srv/oduflow/instance_1 \
   -v /etc/oduflow:/etc/oduflow \
   oduflow
 ```
@@ -1464,7 +1464,7 @@ docker run -d \
 | Mount | Purpose |
 |---|---|
 | `/var/run/docker.sock` | **Required.** Gives Oduflow access to the host Docker daemon to manage Odoo containers, PostgreSQL, Traefik, etc. |
-| `/srv/oduflow_data_1` | Oduflow data directory (`ODUFLOW_HOME`). Contains workspaces, templates, port registry. Use a named volume or a host path to persist data across container restarts. |
+| `/srv/oduflow/instance_1` | Oduflow data directory (`ODUFLOW_DATA_DIR`). Contains workspaces, templates, port registry. Use a named volume or a host path to persist data across container restarts. |
 | `/etc/oduflow` | System configuration directory. Contains license key, database settings, default `odoo.conf`, and other configuration files. Mount to persist configuration across container restarts. |
 
 ## Networking
@@ -1475,7 +1475,7 @@ The Oduflow container must be on the same Docker network as the containers it cr
 # 1. Start Oduflow
 docker run -d --name oduflow -p 8000:8000 \
   -v /var/run/docker.sock:/var/run/docker.sock \
-  -v oduflow_data:/srv/oduflow_data_1 \
+  -v oduflow_data:/srv/oduflow/instance_1 \
   oduflow
 
 # 2. Initialize shared infrastructure (creates oduflow-net, PostgreSQL, etc.)
@@ -1525,7 +1525,7 @@ All environment variables from `.env.example` are supported. Key ones for Docker
 | `ODUFLOW_HOST` | `0.0.0.0` | Bind address |
 | `ODUFLOW_PORT` | `8000` | HTTP port |
 | `ODUFLOW_AUTH_TOKEN` | *(empty)* | Bearer token for MCP auth (empty = disabled) |
-| `ODUFLOW_HOME` | `/srv/oduflow_data_1` | Data directory |
+| `ODUFLOW_DATA_DIR` | `/srv/oduflow/instance_1` | Data directory |
 | `EXTERNAL_HOST` | `localhost` | Hostname used in generated URLs |
 
 ## Docker Compose
@@ -1538,7 +1538,7 @@ services:
       - "8000:8000"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      - oduflow_data:/srv/oduflow_data_1
+      - oduflow_data:/srv/oduflow/instance_1
       - oduflow_etc:/etc/oduflow
     env_file: .env
     restart: unless-stopped
@@ -1687,7 +1687,7 @@ src/oduflow/
     postgresql.conf       # PostgreSQL tuning (shared_buffers, WAL, autovacuum, etc.)
     dashboard.html        # Web dashboard UI (single-page application)
     favicon.ico           # Dashboard favicon
-    agent_guides/         # AI agent guides (copied to $ODUFLOW_HOME/agent_guides on init-instance)
+    agent_guides/         # AI agent guides (copied to $ODUFLOW_DATA_DIR/instance_{ID}/agent_guides on init-instance)
       agent_guide.md      # Main agent instructions for Oduflow MCP tools
       odoo_15_guide.md    # Odoo 15 development standards
       odoo_16_guide.md    # Odoo 16 development standards
@@ -1703,7 +1703,7 @@ tests/                  # Unit and integration tests (pytest)
 Each branch gets an isolated workspace:
 
 ```
-$ODUFLOW_HOME/workspaces/{branch}/
+$ODUFLOW_DATA_DIR/instance_{ID}/workspaces/{branch}/
   repo/                ← shallow git clone (--depth 1)
   filestore_upper/     ← overlay upper layer (branch-specific changes)
   filestore_work/      ← overlay work directory (required by overlayfs)

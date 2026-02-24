@@ -497,7 +497,7 @@ def _build_routes(
     def api_agent_guides_list(request: Request) -> JSONResponse:
         try:
             guides = []
-            guides_dir = os.path.join(get_settings().home, "agent_guides")
+            guides_dir = os.path.join(get_settings().data_dir, "agent_guides")
             bundled_dir = _TEMPLATE_DIR / "agent_guides"
             seen = set()
             if os.path.isdir(guides_dir):
@@ -519,7 +519,7 @@ def _build_routes(
             filename = request.path_params["filename"]
             if not filename.endswith(".md") or "/" in filename or "\\" in filename:
                 return JSONResponse({"ok": False, "error": "Invalid filename"}, status_code=400)
-            guides_dir = os.path.join(get_settings().home, "agent_guides")
+            guides_dir = os.path.join(get_settings().data_dir, "agent_guides")
             guide_path = os.path.join(guides_dir, filename)
             content = ""
             if os.path.isfile(guide_path):

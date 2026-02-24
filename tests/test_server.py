@@ -9,7 +9,7 @@ TEST_SETTINGS = Settings(
     port_range_start=50000,
     port_range_end=50100,
     workspaces_dir="/tmp/flow-test/workspaces",
-    home="/tmp/flow-test",
+    data_dir="/tmp/flow-test",
     db_user="odoo",
     db_password="odoo",
     port_registry_path="/tmp/flow-test/ports.json",
@@ -103,7 +103,7 @@ class TestInfoTool:
         mock_info.return_value = {
             "branch": "main",
             "db_name": "oduflow_1_main",
-            "workspace": "/srv/oduflow_data_1/workspaces/main",
+            "workspace": "/srv/oduflow/instance_1/workspaces/main",
             "all_running": True,
             "url": "http://localhost:50000/web?debug=1",
             "repo_url": "https://github.com/example/repo.git",

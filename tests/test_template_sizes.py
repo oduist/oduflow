@@ -31,7 +31,7 @@ class TestUpdateTemplateSizes:
         # Create dump
         dump = tpl_dir / "dump.pgdump"
         dump.write_bytes(b"\x00" * 1024 * 256)  # 0.25 MB
-        return Settings(home=str(tmp_path))
+        return Settings(data_dir=str(tmp_path))
 
     def test_sizes_saved_to_metadata(self, tmp_path):
         settings = self._make_template(tmp_path)
@@ -74,7 +74,7 @@ class TestUpdateTemplateSizes:
         tpl_dir = tmp_path / "templates" / "bare"
         tpl_dir.mkdir(parents=True)
         (tpl_dir / "dump.pgdump").write_bytes(b"\x00" * 1024 * 1024)  # 1 MB
-        settings = Settings(home=str(tmp_path))
+        settings = Settings(data_dir=str(tmp_path))
 
         _update_template_sizes(settings, "bare")
 
@@ -89,7 +89,7 @@ class TestUpdateTemplateSizes:
         fs_dir = tpl_dir / "filestore"
         fs_dir.mkdir(parents=True)
         (fs_dir / "file.bin").write_bytes(b"\x00" * 1024 * 1024)  # 1 MB
-        settings = Settings(home=str(tmp_path))
+        settings = Settings(data_dir=str(tmp_path))
 
         _update_template_sizes(settings, "nodump")
 

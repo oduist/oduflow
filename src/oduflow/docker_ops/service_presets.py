@@ -1,6 +1,6 @@
 """Manage service preset configurations (save / restore / list / delete).
 
-Presets are persisted as a single JSON file at ``{settings.home}/service_presets.json``.
+Presets are persisted as a single JSON file at ``{settings.data_dir}/service_presets.json``.
 """
 
 import json
@@ -15,7 +15,7 @@ logger = logging.getLogger("oduflow")
 
 def _presets_path(settings: Settings) -> str:
     """Return the absolute path to the presets JSON file."""
-    return os.path.join(settings.home, "service_presets.json")
+    return os.path.join(settings.data_dir, "service_presets.json")
 
 
 def _load_presets(settings: Settings) -> dict:

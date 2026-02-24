@@ -28,8 +28,8 @@ This will:
 
 1. Start a PostgreSQL container (if not already running)
 2. Run a temporary Odoo container that initializes a fresh database with the `base` module
-3. Dump the database to `$ODUFLOW_HOME/templates/default/dump.pgdump`
-4. Extract the filestore to `$ODUFLOW_HOME/templates/default/filestore/`
+3. Dump the database to `$ODUFLOW_DATA_DIR/instance_{ID}/templates/default/dump.pgdump`
+4. Extract the filestore to `$ODUFLOW_DATA_DIR/instance_{ID}/templates/default/filestore/`
 5. Load the dump into the template database automatically
 
 ### Install additional modules during generation
@@ -47,12 +47,12 @@ oduflow init-template --odoo-image odoo:15.0 --template-name legacy-v15
 
 ## From a Production Dump
 
-Place your dump file at `$ODUFLOW_HOME/templates/default/dump.sql` (plain SQL) or `dump.pgdump` (PostgreSQL custom format) and optionally copy the filestore:
+Place your dump file at `$ODUFLOW_DATA_DIR/instance_{ID}/templates/default/dump.sql` (plain SQL) or `dump.pgdump` (PostgreSQL custom format) and optionally copy the filestore:
 
 ```bash
-mkdir -p /srv/oduflow_data/templates/default/
-cp /path/to/production.sql /srv/oduflow_data/templates/default/dump.sql
-cp -r /path/to/filestore/ /srv/oduflow_data/templates/default/filestore/
+mkdir -p /srv/oduflow/instance_1/templates/default/
+cp /path/to/production.sql /srv/oduflow/instance_1/templates/default/dump.sql
+cp -r /path/to/filestore/ /srv/oduflow/instance_1/templates/default/filestore/
 oduflow init
 ```
 
@@ -147,7 +147,7 @@ The `use_overlay` flag determines whether new environments use fuse-overlayfs (f
 | New project, no existing database | `oduflow init-template --odoo-image odoo:17.0` |
 | Regenerate template from scratch | `oduflow init-template --odoo-image odoo:17.0 --force` |
 | Named template for a specific project | `oduflow init-template --odoo-image odoo:17.0 --template-name myproject` |
-| Have a production dump file | Place dump at `$ODUFLOW_HOME/templates/default/dump.sql` and run `oduflow init` |
+| Have a production dump file | Place dump at `$ODUFLOW_DATA_DIR/instance_{ID}/templates/default/dump.sql` and run `oduflow init` |
 | Need to install modules or configure the template | `oduflow template-up --odoo-image odoo:17.0` / `oduflow template-down` |
 | Update the template from a newer production dump | `oduflow reload-template --dump-path /path/to/new.dump` |
 | Save a branch environment as template | `oduflow template-from-env my-branch` |

@@ -46,8 +46,8 @@ Key environment variables:
 - `ODUFLOW_PORT` — HTTP port (default `8000`)
 - `ODUFLOW_AUTH_TOKEN` — Bearer token for MCP auth (empty = auth disabled)
 - `ODUFLOW_UI_PASSWORD` — password for Web UI Basic Auth (empty = UI open)
-- `ODUFLOW_HOME` — base directory for all data (default `/srv/oduflow_data_1`)
-- `ODUFLOW_ETC_DIR` — config/credentials directory (default `/etc/oduflow` in Docker, `~/.config/oduflow` locally)
+- `ODUFLOW_DATA_DIR` — base directory for all data (default `/srv/oduflow`)
+- `ODUFLOW_ETC_DIR` — config/credentials directory (default `/etc/oduflow` in Docker, `~/.oduflow/conf` locally)
 - `ODUFLOW_DEFAULT_BRANCH` — base branch for cloning (default `prod`)
 - `ODUFLOW_DEFAULT_TEMPLATE` — default template profile (default `default`)
 - `EXTERNAL_HOST` — hostname for environment URLs (default `localhost`)
@@ -74,7 +74,7 @@ oduflow init-template --odoo-image odoo:17.0
 
 **From a production dump:**
 
-Place `dump.sql` (or `dump.pgdump`) and `filestore/` directory into `$ODUFLOW_HOME/templates/default/`, then:
+Place `dump.sql` (or `dump.pgdump`) and `filestore/` directory into `$ODUFLOW_DATA_DIR/instance_{ID}/templates/default/`, then:
 
 ```bash
 oduflow reload-template

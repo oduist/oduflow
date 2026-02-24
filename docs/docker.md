@@ -19,7 +19,7 @@ docker run -d \
   --name oduflow \
   -p 8000:8000 \
   -v /var/run/docker.sock:/var/run/docker.sock \
-  -v oduflow_data:/srv/oduflow_data_1 \
+  -v oduflow_data:/srv/oduflow/instance_1 \
   oduflow
 ```
 
@@ -31,7 +31,7 @@ docker run -d \
   --env-file .env \
   -p 8000:8000 \
   -v /var/run/docker.sock:/var/run/docker.sock \
-  -v oduflow_data:/srv/oduflow_data_1 \
+  -v oduflow_data:/srv/oduflow/instance_1 \
   oduflow
 ```
 
@@ -44,7 +44,7 @@ docker run -d \
   --env-file .env \
   -p 8000:8000 \
   -v /var/run/docker.sock:/var/run/docker.sock \
-  -v oduflow_data:/srv/oduflow_data_1 \
+  -v oduflow_data:/srv/oduflow/instance_1 \
   -v /etc/oduflow:/etc/oduflow \
   oduflow
 ```
@@ -54,7 +54,7 @@ docker run -d \
 | Mount | Purpose |
 |---|---|
 | `/var/run/docker.sock` | **Required.** Gives Oduflow access to the host Docker daemon to manage Odoo containers, PostgreSQL, Traefik, etc. |
-| `/srv/oduflow_data_1` | Oduflow data directory (`ODUFLOW_HOME`). Contains workspaces, templates, port registry. Use a named volume or a host path to persist data across container restarts. |
+| `/srv/oduflow/instance_1` | Oduflow data directory (`ODUFLOW_DATA_DIR`). Contains workspaces, templates, port registry. Use a named volume or a host path to persist data across container restarts. |
 | `/etc/oduflow` | System configuration directory. Contains license key, database settings, default `odoo.conf`, and other configuration files. Mount to persist configuration across container restarts. |
 
 ## Networking
@@ -65,7 +65,7 @@ The Oduflow container must be on the same Docker network as the containers it cr
 # 1. Start Oduflow
 docker run -d --name oduflow -p 8000:8000 \
   -v /var/run/docker.sock:/var/run/docker.sock \
-  -v oduflow_data:/srv/oduflow_data_1 \
+  -v oduflow_data:/srv/oduflow/instance_1 \
   oduflow
 
 # 2. Initialize shared infrastructure (creates oduflow-net, PostgreSQL, etc.)
@@ -115,7 +115,7 @@ All environment variables from `.env.example` are supported. Key ones for Docker
 | `ODUFLOW_HOST` | `0.0.0.0` | Bind address |
 | `ODUFLOW_PORT` | `8000` | HTTP port |
 | `ODUFLOW_AUTH_TOKEN` | *(empty)* | Bearer token for MCP auth (empty = disabled) |
-| `ODUFLOW_HOME` | `/srv/oduflow_data_1` | Data directory |
+| `ODUFLOW_DATA_DIR` | `/srv/oduflow/instance_1` | Data directory |
 | `EXTERNAL_HOST` | `localhost` | Hostname used in generated URLs |
 
 ## Docker Compose
@@ -128,7 +128,7 @@ services:
       - "8000:8000"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      - oduflow_data:/srv/oduflow_data_1
+      - oduflow_data:/srv/oduflow/instance_1
       - oduflow_etc:/etc/oduflow
     env_file: .env
     restart: unless-stopped
@@ -172,7 +172,7 @@ docker run -d \
   --cap-add SYS_ADMIN \
   -p 8000:8000 \
   -v /var/run/docker.sock:/var/run/docker.sock \
-  -v oduflow_data:/srv/oduflow_data_1 \
+  -v oduflow_data:/srv/oduflow/instance_1 \
   oduflow
 ```
 

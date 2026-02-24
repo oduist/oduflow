@@ -41,28 +41,28 @@ class TestSettings:
 
 class TestTemplatePaths:
     def test_get_template_dir_default(self):
-        s = Settings(home="/srv/data")
+        s = Settings(data_dir="/srv/data")
         assert s.get_template_dir("default") == "/srv/data/templates/default"
 
     def test_get_template_dir_named(self):
-        s = Settings(home="/srv/data")
+        s = Settings(data_dir="/srv/data")
         assert s.get_template_dir("myproject") == "/srv/data/templates/myproject"
 
     def test_get_template_sql_path(self):
-        s = Settings(home="/srv/data")
+        s = Settings(data_dir="/srv/data")
         assert s.get_template_sql_path("v17") == "/srv/data/templates/v17/dump.pgdump"
 
     def test_get_template_filestore_path(self):
-        s = Settings(home="/srv/data")
+        s = Settings(data_dir="/srv/data")
         assert s.get_template_filestore_path("v17") == "/srv/data/templates/v17/filestore"
 
     def test_dump_methods_delegate_to_template(self):
-        s = Settings(home="/srv/data")
+        s = Settings(data_dir="/srv/data")
         assert s.get_template_sql_path("default") == "/srv/data/templates/default/dump.pgdump"
         assert s.get_template_filestore_path("default") == "/srv/data/templates/default/filestore"
 
     def test_list_templates_empty(self, tmp_path):
-        s = Settings(home=str(tmp_path))
+        s = Settings(data_dir=str(tmp_path))
         assert s.list_templates() == []
 
     def test_list_templates(self, tmp_path):
@@ -70,5 +70,5 @@ class TestTemplatePaths:
         (templates_dir / "alpha").mkdir(parents=True)
         (templates_dir / "beta").mkdir(parents=True)
         (templates_dir / "not-a-dir").touch()  # should be ignored
-        s = Settings(home=str(tmp_path))
+        s = Settings(data_dir=str(tmp_path))
         assert s.list_templates() == ["alpha", "beta"]

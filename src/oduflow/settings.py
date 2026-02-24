@@ -16,7 +16,7 @@ class Settings:
     port_range_start: int = 50000
     port_range_end: int = 50100
     workspaces_dir: str = ""
-    home: str = ""
+    data_dir: str = ""
     db_user: str = "odoo"
     db_password: str = "odoo"
     odoo_image: str = "odoo"
@@ -41,7 +41,7 @@ class Settings:
     etc_dir: str = "/etc/oduflow"
 
     def get_template_dir(self, template_name: str) -> str:
-        return os.path.join(self.home, "templates", template_name)
+        return os.path.join(self.data_dir, "templates", template_name)
 
     def get_template_sql_path(self, template_name: str) -> str:
         tpl_dir = self.get_template_dir(template_name)
@@ -61,7 +61,7 @@ class Settings:
         return os.path.join(self.get_template_dir(template_name), "metadata.json")
 
     def list_templates(self) -> list[str]:
-        templates_dir = os.path.join(self.home, "templates")
+        templates_dir = os.path.join(self.data_dir, "templates")
         if not os.path.isdir(templates_dir):
             return []
         return sorted(
@@ -71,7 +71,7 @@ class Settings:
 
     @property
     def shared_repos_dir(self) -> str:
-        return os.path.join(self.home, "shared_repos")
+        return os.path.join(self.data_dir, "shared_repos")
 
     @staticmethod
     def _default_etc_dir() -> str:
@@ -81,27 +81,27 @@ class Settings:
         default = "/etc/oduflow"
         if os.access(default, os.W_OK) or os.access(os.path.dirname(default), os.W_OK):
             return default
-        fallback = os.path.join(os.path.expanduser("~"), ".config", "oduflow")
+        fallback = os.path.join(os.path.expanduser("~"), ".oduflow", "conf")
         logger.warning("Default %s is not writable, falling back to %s", default, fallback)
         return fallback
 
     @staticmethod
-    def _default_home(instance_id: str) -> str:
-        explicit = os.getenv("ODUFLOW_HOME", "").strip()
+    def _default_data_dir(instance_id: str) -> str:
+        explicit = os.getenv("ODUFLOW_DATA_DIR", "").strip()
         if explicit:
-            return explicit
-        default = f"/srv/oduflow_data_{instance_id}"
+            return os.path.join(explicit, f"instance_{instance_id}")
+        default = f"/srv/oduflow/instance_{instance_id}"
         parent = os.path.dirname(default)
         if os.access(parent, os.W_OK) or (os.path.isdir(default) and os.access(default, os.W_OK)):
             return default
-        fallback = os.path.join(os.path.expanduser("~"), f"oduflow_data_{instance_id}")
+        fallback = os.path.join(os.path.expanduser("~"), ".oduflow", "data", f"instance_{instance_id}")
         logger.warning("Default %s is not writable, falling back to %s", default, fallback)
         return fallback
 
     @staticmethod
     def from_env() -> "Settings":
         instance_id = os.getenv("ODUFLOW_INSTANCE_ID", "1").strip()
-        flow_home = Settings._default_home(instance_id)
+        data_dir = Settings._default_data_dir(instance_id)
         return Settings(
             instance_id=instance_id,
             routing_mode=os.getenv("ODUFLOW_ROUTING_MODE", "port").strip().lower(),
@@ -112,9 +112,9 @@ class Settings:
             port_range_end=int(os.getenv("PORT_RANGE_END", "50100")),
             workspaces_dir=os.getenv(
                 "ODUFLOW_WORKSPACES_DIR",
-                os.path.join(flow_home, "workspaces"),
+                os.path.join(data_dir, "workspaces"),
             ),
-            home=flow_home,
+            data_dir=data_dir,
             db_user=os.getenv("ODOO_DB_USER", "odoo"),
             db_password=os.getenv("ODOO_DB_PASSWORD", "odoo"),
             flow_server_port=int(os.getenv("ODUFLOW_PORT", "8000")),
@@ -124,7 +124,7 @@ class Settings:
             etc_dir=Settings._default_etc_dir(),
             port_registry_path=os.getenv(
                 "ODUFLOW_PORT_REGISTRY",
-                os.path.join(flow_home, "ports.json"),
+                os.path.join(data_dir, "ports.json"),
             ),
         )
 
