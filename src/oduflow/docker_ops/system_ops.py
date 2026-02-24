@@ -60,12 +60,13 @@ def _update_template_sizes(settings: Settings, template_name: str, metadata: dic
     return metadata
 
 
-def _normalize_extra_addons(raw_addons, fallback_branch: str) -> dict[str, str]:
+def _normalize_extra_addons(raw_addons) -> dict[str, str]:
     """Convert old list format or new dict format to {name: branch} dict."""
     if isinstance(raw_addons, dict):
         return raw_addons
     if isinstance(raw_addons, list):
-        return {name: fallback_branch for name in raw_addons}
+        logger.warning("Legacy list format for extra_addons (no branch info), skipping: %s", raw_addons)
+        return {}
     return {}
 
 
@@ -1030,7 +1031,7 @@ def publish_env_as_template(settings: Settings, branch_name: str, template_name:
         if raw_extras:
             try:
                 parsed = json.loads(raw_extras)
-                metadata["extra_addons"] = _normalize_extra_addons(parsed, settings.default_branch)
+                metadata["extra_addons"] = _normalize_extra_addons(parsed)
             except (json.JSONDecodeError, TypeError):
                 pass
     except docker.errors.NotFound:
@@ -1442,7 +1443,6 @@ def list_templates(settings: Settings) -> list[dict]:
             "git_user": metadata.get("git_user", ""),
             "extra_addons": _normalize_extra_addons(
                 metadata.get("extra_addons", {}),
-                settings.default_branch,
             ),
             "use_overlay": metadata.get("use_overlay"),
             "filestore_size_mb": metadata.get("filestore_size_mb"),

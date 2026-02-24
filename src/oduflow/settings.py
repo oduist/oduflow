@@ -34,7 +34,6 @@ class Settings:
     system_label: str = "oduflow.system"
     repo_label: str = "oduflow.repo"
     image_label: str = "oduflow.image"
-    default_branch: str = "prod"
     port_registry_path: str = ""
     overlay_threshold_mb: int = 50
     stateless_http: bool = True
@@ -82,7 +81,8 @@ class Settings:
         if os.access(default, os.W_OK) or os.access(os.path.dirname(default), os.W_OK):
             return default
         fallback = os.path.join(os.path.expanduser("~"), ".oduflow", "conf")
-        logger.warning("Default %s is not writable, falling back to %s", default, fallback)
+        logger.info("Default %s is not writable, falling back to %s", default, fallback)
+        os.environ["ODUFLOW_ETC_DIR"] = fallback
         return fallback
 
     @staticmethod
@@ -93,9 +93,14 @@ class Settings:
         default = f"/srv/oduflow/instance_{instance_id}"
         parent = os.path.dirname(default)
         if os.access(parent, os.W_OK) or (os.path.isdir(default) and os.access(default, os.W_OK)):
-            return default
+            try:
+                os.makedirs(default, exist_ok=True)
+                return default
+            except OSError:
+                pass
         fallback = os.path.join(os.path.expanduser("~"), ".oduflow", "data", f"instance_{instance_id}")
-        logger.warning("Default %s is not writable, falling back to %s", default, fallback)
+        logger.info("Default %s is not writable, falling back to %s", default, fallback)
+        os.environ["ODUFLOW_DATA_DIR"] = os.path.join(os.path.expanduser("~"), ".oduflow", "data")
         return fallback
 
     @staticmethod
@@ -118,7 +123,6 @@ class Settings:
             db_user=os.getenv("ODOO_DB_USER", "odoo"),
             db_password=os.getenv("ODOO_DB_PASSWORD", "odoo"),
             flow_server_port=int(os.getenv("ODUFLOW_PORT", "8000")),
-            default_branch=os.getenv("ODUFLOW_DEFAULT_BRANCH", "prod"),
             overlay_threshold_mb=int(os.getenv("ODUFLOW_OVERLAY_THRESHOLD_MB", "50")),
             stateless_http=os.getenv("ODUFLOW_STATELESS_HTTP", "true").strip().lower() in ("1", "true", "yes"),
             etc_dir=Settings._default_etc_dir(),

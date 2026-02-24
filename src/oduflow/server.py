@@ -142,7 +142,7 @@ def update_extra_repo(name: str) -> str:
     fetch_extra_repo(_get_settings(), name)
     return f"Extra repo '{name}' updated (fetched all branches)."
 
-def _parse_extra_addons(raw: str, fallback_branch: str) -> dict[str, str]:
+def _parse_extra_addons(raw: str) -> dict[str, str]:
     result = {}
     for item in raw.split(","):
         item = item.strip()
@@ -152,7 +152,9 @@ def _parse_extra_addons(raw: str, fallback_branch: str) -> dict[str, str]:
             name, branch = item.split(":", 1)
             result[name.strip()] = branch.strip()
         else:
-            result[item] = fallback_branch
+            raise ValueError(
+                f"Extra addon '{item}' must include a branch (e.g. '{item}:18.0')."
+            )
     return result
 
 
@@ -175,7 +177,7 @@ def create_environment(
         template_name: Name of the template profile to use as database template. Pass "none" to skip template and initialise Odoo from scratch with -i base. When a template is specified, repo_url and odoo_image are loaded from template metadata (but can be overridden).
         repo_url: URL of the git repository to clone. Optional when template_name is specified (loaded from template metadata).
         odoo_image: Full Docker image name with tag (e.g. "odoo:17.0"). Optional when template_name is specified (loaded from template metadata).
-        extra_addons: Comma-separated list of extra addon repo names to mount (e.g. "enterprise,custom-themes"). Supports per-repo branches with colon syntax: "enterprise:18.0,custom-themes:main". If no branch is specified for a repo, defaults to the version extracted from odoo_image (e.g. "odoo:18.0" → branch "18.0").
+        extra_addons: Comma-separated list of extra addon repo names with branches (e.g. "enterprise:18.0,custom-themes:main"). Each entry must include a branch after a colon.
         sanitize: Sanitize the database after provisioning (default: True). Disables incoming/outgoing mail servers and runs custom scripts from the .odoo_sanitize/ folder in the repository.
     """
     import json
@@ -205,7 +207,7 @@ def create_environment(
                 raw_extra = metadata.get("extra_addons")
                 if raw_extra:
                     from oduflow.docker_ops.env_ops import _normalize_extra_addons
-                    _metadata_extra = _normalize_extra_addons(raw_extra, settings.default_branch)
+                    _metadata_extra = _normalize_extra_addons(raw_extra)
                     if _metadata_extra:
                         extra_addons = ",".join(
                             f"{name}:{branch}" for name, branch in _metadata_extra.items()
@@ -216,10 +218,7 @@ def create_environment(
     if not effective_odoo_image:
         raise ValueError("odoo_image is required (not found in template metadata either).")
 
-    import re as _re
-    _img_ver_match = _re.search(r"(\d+\.0)", effective_odoo_image)
-    _extra_fallback = _img_ver_match.group(1) if _img_ver_match else settings.default_branch
-    extra_dict = _parse_extra_addons(extra_addons, _extra_fallback) if extra_addons else {}
+    extra_dict = _parse_extra_addons(extra_addons) if extra_addons else {}
     result = env_ops.create_environment(
         settings, branch_name, effective_repo_url, effective_odoo_image,
         template_name=resolved_template,

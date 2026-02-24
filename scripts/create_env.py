@@ -65,7 +65,7 @@ def main() -> None:
                         help="Oduflow server URL (default: http://localhost:8000)")
     parser.add_argument("--branch", default="",
                         help="Branch name (default: current git branch)")
-    parser.add_argument("--template", default="default",
+    parser.add_argument("--template", default="",
                         help="Template profile name (default: 'default')")
     parser.add_argument("--repo-url", default="",
                         help="Git repository URL (default: from template metadata)")
