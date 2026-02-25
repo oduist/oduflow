@@ -24,6 +24,7 @@ All tools are accessible via MCP clients (Cursor, Cline, Amp, etc.) and the CLI 
 | `run_odoo_tests` | ✓ | Run Odoo tests for specific modules |
 | `get_environment_logs` | | Retrieve recent container logs |
 | `exec_in_odoo` | ✓ | Execute an arbitrary shell command inside the Odoo container |
+| `read_file_in_odoo` | ✓ | Read a text file or list a directory inside the Odoo container. Supports line ranges (e.g. `"1:50"`) |
 | `run_db_query` | ✓ | Execute a SQL query against the environment's PostgreSQL database |
 | `reset_admin_password` | ✓ | Reset the admin user password in the Odoo database (default: "test") |
 | **Template Management** | | |
@@ -46,6 +47,7 @@ All tools are accessible via MCP clients (Cursor, Cline, Amp, etc.) and the CLI 
 | **Extra Addons** | | |
 | `add_extra_repo` | ✓ | Clone an extra addons repository (e.g. Odoo Enterprise) for use with environments |
 | `list_extra_repos` | | List all cloned extra addons repositories |
+| `update_extra_repo` | ✓ | Fetch latest changes from the remote for an extra addons repository |
 | `delete_extra_repo` | ✓ | Delete a cloned extra addons repository |
 | **Agent Instructions** | | |
 | `get_agent_instructions` | | Get AI agent instructions for using Oduflow MCP tools |
