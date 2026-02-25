@@ -182,6 +182,7 @@ cp .env.example .env
 | `ODUFLOW_PORT` | `8000` | HTTP server port |
 | `ODUFLOW_AUTH_TOKEN` | *(empty)* | Bearer token for MCP HTTP auth. Empty = MCP auth disabled |
 | `ODUFLOW_UI_PASSWORD` | *(empty)* | Password for Web UI Basic auth (user: `admin`). Separate from MCP auth token. Empty = UI auth disabled |
+| `ODUFLOW_STATELESS_HTTP` | `true` | When `true`, the MCP HTTP transport runs in stateless mode (no session tracking). Set to `false` to enable session-based communication |
 
 ### Paths
 
@@ -741,6 +742,17 @@ oduflow call rebuild_environment feature-login
 oduflow call delete_environment feature-login
 ```
 
+### Recreating Environments
+
+The **Recreate** action (available via the Web Dashboard and REST API) deletes an environment and immediately creates a fresh one using the same parameters (repo URL, Odoo image, template, extra addons). This is useful when you want a clean slate without manually re-entering all environment settings.
+
+```bash
+# Via REST API
+curl -X POST http://localhost:8000/api/environments/feature-login/recreate
+```
+
+Recreate reads the original configuration from the container's Docker labels, so all parameters (repo URL, image, template, extra addons, git user) are preserved automatically.
+
 ## Viewing Logs
 
 ```bash
@@ -805,6 +817,31 @@ If any module needs installation, all pending upgrades are also executed. If onl
 
 Oduflow walks up from each changed file to find the nearest `__manifest__.py`, correctly identifying which Odoo module a file belongs to, even in nested directory structures.
 
+## Reading Files Inside Environments
+
+Use `read_file_in_odoo` to inspect files and directories inside the Odoo container without constructing shell commands:
+
+```bash
+# Read Odoo source code
+oduflow call read_file_in_odoo feature-login /usr/lib/python3/dist-packages/odoo/addons/sale/models/sale_order.py
+
+# Read a specific line range (lines 100–200)
+oduflow call read_file_in_odoo feature-login /usr/lib/python3/dist-packages/odoo/addons/sale/models/sale_order.py "100:200"
+
+# List a directory
+oduflow call read_file_in_odoo feature-login /mnt/extra-addons/
+
+# Check the generated Odoo config
+oduflow call read_file_in_odoo feature-login /etc/odoo/odoo.conf
+```
+
+- If the path is a **directory**, returns a listing (like `ls -la`).
+- If the path is a **text file**, returns its contents (up to 100KB by default).
+- **Binary files** are not supported — use `exec_in_odoo` for binary operations.
+- The optional `read_range` parameter accepts a `"START:END"` format (e.g. `"1:50"`, `"100:200"`) to read only specific lines.
+
+Prefer `read_file_in_odoo` over `exec_in_odoo` with `cat` or `ls` commands — it handles file type detection, size limits, and binary file rejection automatically.
+
 ## Executing Commands Inside Environments
 
 Run arbitrary shell commands inside the Odoo container:
@@ -827,6 +864,20 @@ oduflow call exec_in_odoo feature-login "psql -h oduflow-db -U odoo -d oduflow_f
 ```
 
 The `user` parameter defaults to `odoo`. Use `root` for privileged operations (installing packages, modifying system files).
+
+## Interactive Terminal
+
+The Web Dashboard provides an **interactive Odoo Python shell** directly in the browser via WebSocket. It launches `odoo shell` connected to the environment's database, allowing you to inspect and manipulate Odoo models in real time.
+
+The terminal is accessible from the environment card in the Web Dashboard. It supports:
+
+- Full interactive Python REPL with Odoo ORM access (`self.env['res.partner'].search([])`)
+- Terminal resizing (adapts to browser window)
+- Standard TTY features (colors, line editing)
+
+The WebSocket endpoint is `ws://<host>:<port>/api/environments/{branch}/terminal`.
+
+The terminal requires the environment container to be running. If the container is stopped, the terminal will display an error message.
 
 ## Environment Protection
 
@@ -992,6 +1043,22 @@ oduflow call delete_extra_repo enterprise
 
 Extra repos can also be managed from the **Web Dashboard** under the "Extra Addons" tab.
 
+## Protecting Extra Repos
+
+Extra addon repositories can be **protected** from accidental deletion, similar to environment protection. A protected repo cannot be deleted until protection is removed.
+
+Protection state is stored as a `.protected` marker file in the bare repository directory.
+
+```bash
+# Protect an extra repo
+curl -X POST http://localhost:8000/api/extra-repos/enterprise/protect
+
+# Unprotect an extra repo
+curl -X POST http://localhost:8000/api/extra-repos/enterprise/unprotect
+```
+
+Extra repo protection can also be toggled from the **Extra Addons** tab in the Web Dashboard.
+
 ## Updating Extra Repos
 
 Use `update_extra_repo` to fetch the latest changes from the remote:
@@ -1033,19 +1100,21 @@ oduflow call create_environment feature-x ... "enterprise:17.0"
 When running in HTTP mode, a web dashboard is available at the server root (`http://<host>:<port>/`). It provides:
 
 - **Environment list** with status indicators (running / stopped / partial)
-- **Environment actions**: Start / Stop / Restart / Protect / Delete
+- **Environment actions**: Start / Stop / Restart / Recreate / Protect / Delete
 - **Environment creation** form (branch, repo URL, Odoo image, template, extra addons)
 - **Environment protection** — toggle to prevent accidental deletion
 - **Live log viewer** for each environment
+- **Interactive terminal** — WebSocket-based Odoo Python shell directly in the browser
 - **Container and system resource stats** (CPU, RAM, load average)
 - **Service management** — create, update, delete, and view logs for auxiliary services
-- **Extra addons management** — clone, list, and delete extra addon repositories
+- **Extra addons management** — clone, pull, protect, and delete extra addon repositories
+- **Git credential management** — list, add, delete, and validate stored git credentials
 - **Template listing** — view available template profiles with their status
 - **License management** — view current license and activate license keys
 
 ## REST API Endpoints
 
-All endpoints return JSON with an `ok` field. Authentication via HTTP Basic auth when `ODUFLOW_AUTH_TOKEN` is set (user: `admin`, password: the token value).
+All endpoints return JSON with an `ok` field. Authentication via HTTP Basic auth when `ODUFLOW_UI_PASSWORD` is set (user: `admin`, password: the configured value). This is separate from the MCP Bearer token auth (`ODUFLOW_AUTH_TOKEN`).
 
 ### Environments
 
@@ -1057,10 +1126,12 @@ All endpoints return JSON with an `ok` field. Authentication via HTTP Basic auth
 | `POST` | `/api/environments/{branch}/stop` | Stop an environment |
 | `POST` | `/api/environments/{branch}/restart` | Restart an environment |
 | `POST` | `/api/environments/{branch}/sync` | Pull latest code and auto-install/upgrade/restart |
+| `POST` | `/api/environments/{branch}/recreate` | Recreate an environment (delete + create with the same parameters) |
 | `POST` | `/api/environments/{branch}/delete` | Delete an environment |
 | `GET` | `/api/environments/{branch}/logs?n=200` | Get environment logs |
 | `POST` | `/api/environments/{branch}/protect` | Protect environment from deletion |
 | `POST` | `/api/environments/{branch}/unprotect` | Remove protection from environment |
+| `WebSocket` | `/api/environments/{branch}/terminal` | Interactive Odoo Python shell via WebSocket (used by the Web Dashboard terminal) |
 
 ### Services
 
@@ -1077,7 +1148,7 @@ All endpoints return JSON with an `ok` field. Authentication via HTTP Basic auth
 | Method | Endpoint | Description |
 |---|---|---|
 | `GET` | `/api/service-presets` | List saved service presets |
-| `POST` | `/api/service-presets/{name}/restore` | Restore a service from a saved preset |
+| `POST` | `/api/service-presets/restore` | Restore a service from a saved preset (JSON body: `name`, `image`, `port`, `hostname`, `env_vars`) |
 | `POST` | `/api/service-presets/{name}/delete` | Delete a saved service preset |
 
 ### System
@@ -1092,8 +1163,20 @@ All endpoints return JSON with an `ok` field. Authentication via HTTP Basic auth
 | Method | Endpoint | Description |
 |---|---|---|
 | `GET` | `/api/extra-repos` | List all cloned extra addons repositories |
-| `POST` | `/api/extra-repos/add` | Clone an extra addons repo (JSON body: `name`, `repo_url`) |
+| `POST` | `/api/extra-repos/add` | Clone an extra addons repo (JSON body: `name`, `repo_url`, `git_user`) |
+| `POST` | `/api/extra-repos/{name}/pull` | Fetch latest changes from the remote for an extra repo |
+| `POST` | `/api/extra-repos/{name}/protect` | Protect an extra repo from deletion |
+| `POST` | `/api/extra-repos/{name}/unprotect` | Remove protection from an extra repo |
 | `POST` | `/api/extra-repos/{name}/delete` | Delete a cloned extra addons repository |
+
+### Credentials
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `GET` | `/api/credentials` | List all stored git credentials |
+| `POST` | `/api/credentials/add` | Store git credentials for a repository (JSON body: `repo_url`) |
+| `POST` | `/api/credentials/delete` | Delete a stored credential (JSON body: `host`, `username`) |
+| `POST` | `/api/credentials/validate` | Validate a stored credential (JSON body: `host`, `username`) |
 
 ### Licensing
 
@@ -1135,6 +1218,7 @@ All tools are accessible via MCP clients (Cursor, Cline, Amp, etc.) and the CLI 
 | `run_odoo_tests` | ✓ | Run Odoo tests for specific modules |
 | `get_environment_logs` | | Retrieve recent container logs |
 | `exec_in_odoo` | ✓ | Execute an arbitrary shell command inside the Odoo container |
+| `read_file_in_odoo` | ✓ | Read a text file or list a directory inside the Odoo container. Supports line ranges (e.g. `"1:50"`) |
 | `run_db_query` | ✓ | Execute a SQL query against the environment's PostgreSQL database |
 | `reset_admin_password` | ✓ | Reset the admin user password in the Odoo database (default: "test") |
 | **Template Management** | | |
@@ -1157,6 +1241,7 @@ All tools are accessible via MCP clients (Cursor, Cline, Amp, etc.) and the CLI 
 | **Extra Addons** | | |
 | `add_extra_repo` | ✓ | Clone an extra addons repository (e.g. Odoo Enterprise) for use with environments |
 | `list_extra_repos` | | List all cloned extra addons repositories |
+| `update_extra_repo` | ✓ | Fetch latest changes from the remote for an extra addons repository |
 | `delete_extra_repo` | ✓ | Delete a cloned extra addons repository |
 | **Agent Instructions** | | |
 | `get_agent_instructions` | | Get AI agent instructions for using Oduflow MCP tools |
@@ -1204,28 +1289,28 @@ oduflow destroy
 
 ```bash
 # Generate a clean template from a Docker image
-oduflow init-template --odoo-image odoo:17.0 [--modules base,web,sale] [--template-name myproject] [--force]
+oduflow init-template --odoo-image odoo:17.0 --template-name myproject [--modules base,web,sale] [--force]
 
 # Start interactive template editor
-oduflow template-up --odoo-image odoo:17.0 [--template-name myproject]
+oduflow template-up --odoo-image odoo:17.0 --template-name myproject
 
 # Stop template editor and save changes
-oduflow template-down [--template-name myproject]
+oduflow template-down --template-name myproject
 
 # Reload template DB from a dump file
-oduflow reload-template [--template-name default] [--dump-path /path/to/new.dump]
+oduflow reload-template <template_name> [--dump-path /path/to/new.dump]
 
 # Save a branch environment as the new template
-oduflow template-from-env <branch> [--template-name default]
+oduflow template-from-env <branch> --template-name myproject
 
 # List all template profiles
 oduflow list-templates
 
-# Drop a template profile
-oduflow drop-template <template_name>
+# Delete a template profile
+oduflow delete-template <template_name>
 
 # Import a template from a running Odoo instance
-oduflow import-template <odoo_url> <master_pwd> [--db-name <db>] [--template-name default]
+oduflow import-template <odoo_url> <master_pwd> --template-name myproject [--db-name <db>]
 ```
 
 ## Service Commands
@@ -1234,6 +1319,27 @@ oduflow import-template <odoo_url> <master_pwd> [--db-name <db>] [--template-nam
 # List all managed services
 oduflow list-services
 ```
+
+## Maintenance Commands
+
+```bash
+# Show orphaned databases, workspaces, and port entries (dry-run by default)
+oduflow cleanup
+
+# Same as above — only show what would be removed
+oduflow cleanup --dry-run
+
+# Actually remove orphaned resources
+oduflow cleanup --force
+```
+
+The `cleanup` command detects and removes resources that no longer have a corresponding running or stopped container:
+
+- **Orphan databases** — PostgreSQL databases with the `oduflow_` prefix that have no matching environment container
+- **Orphan workspaces** — workspace directories on disk that have no matching environment container
+- **Orphan port entries** — entries in `ports.json` that have no matching environment container
+
+By default, `cleanup` runs in **dry-run mode** and only reports what would be removed. Use `--force` to actually delete the orphaned resources.
 
 ## Tool Introspection
 
@@ -1374,9 +1480,31 @@ WARNING  HTTP auth DISABLED (ODUFLOW_AUTH_TOKEN not set)
 WARNING  Web UI auth DISABLED (ODUFLOW_UI_PASSWORD not set)
 ```
 
-## Git credentials
+## Git Credentials
 
-Private repository credentials are stored in the git credential store (`~/.git-credentials`) via the `setup_repo_auth` tool. The clean URL (without credentials) is always used in Docker labels and logs — credentials are never exposed.
+Private repository credentials are stored in the git credential store (at `$ODUFLOW_ETC_DIR/.git-credentials`) via the `setup_repo_auth` tool. The clean URL (without credentials) is always used in Docker labels and logs — credentials are never exposed.
+
+### Managing credentials via MCP
+
+```bash
+# Store credentials for a private repository
+oduflow call setup_repo_auth https://user:PAT@github.com/owner/private-repo.git
+```
+
+The tool parses the URL, stores the credentials, and verifies access by running `git ls-remote`.
+
+### Managing credentials via REST API and Web Dashboard
+
+The Web Dashboard and REST API provide full credential lifecycle management:
+
+| Action | REST API |
+|---|---|
+| **List** all stored credentials | `GET /api/credentials` |
+| **Add** credentials for a repository | `POST /api/credentials/add` (body: `repo_url`) |
+| **Delete** a stored credential | `POST /api/credentials/delete` (body: `host`, `username`) |
+| **Validate** a credential against the provider | `POST /api/credentials/validate` (body: `host`, `username`) |
+
+Validation checks the credential against the provider's API (GitHub, GitLab, Bitbucket). For other hosts, it reports `"valid"` if the credential exists. Tokens are always masked in API responses (e.g. `ghp_****`).
 
 ## iptables rule
 

@@ -51,6 +51,7 @@ Key environment variables:
 - `EXTERNAL_HOST` — hostname for environment URLs (default `localhost`)
 - `ODUFLOW_ROUTING_MODE` — `port` (default) or `traefik` (auto-HTTPS)
 - `ODUFLOW_OVERLAY_THRESHOLD_MB` — filestore size threshold for overlay vs copy (default `50`)
+- `ODUFLOW_STATELESS_HTTP` — stateless MCP HTTP mode (default `true`); set to `false` for session-based communication
 - `ODUFLOW_INSTANCE_ID` — instance identifier for multi-instance setups (default `1`)
 - `ODUFLOW_TRACE` — set to `1` for trace-level logging
 
@@ -153,6 +154,7 @@ The server starts on `http://0.0.0.0:8000`. MCP endpoint: `http://<host>:8000/mc
 - `pull_and_apply` — pull latest code and auto-install/upgrade/restart as needed
 - `get_environment_logs` — retrieve container logs
 - `exec_in_odoo` — execute shell commands inside the Odoo container
+- `read_file_in_odoo` — read a text file or list a directory inside the container (supports line ranges)
 - `run_db_query` — execute SQL queries against the environment's PostgreSQL database
 - `reset_admin_password` — reset the admin user password (default: "test")
 - `list_environments` / `get_environment_info` — inspect environments
@@ -162,7 +164,7 @@ The server starts on `http://0.0.0.0:8000`. MCP endpoint: `http://<host>:8000/mc
 - `save_as_template` / `delete_template` / `list_templates` — template management
 - `import_template_from_odoo` — import a template from a running Odoo instance via its database manager API
 - `setup_repo_auth` — cache git credentials for private repositories
-- `add_extra_repo` / `list_extra_repos` / `delete_extra_repo` — manage extra addons repositories
+- `add_extra_repo` / `list_extra_repos` / `update_extra_repo` / `delete_extra_repo` — manage extra addons repositories
 - `get_agent_instructions` — get AI agent skill with instructions on how to use Oduflow
 - `get_odoo_development_guide` — get Odoo development standards guide for a specific version (15–19)
 
