@@ -79,6 +79,14 @@ oduflow cleanup --dry-run
 oduflow cleanup --force
 ```
 
+The `cleanup` command detects and removes resources that no longer have a corresponding running or stopped container:
+
+- **Orphan databases** — PostgreSQL databases with the `oduflow_` prefix that have no matching environment container
+- **Orphan workspaces** — workspace directories on disk that have no matching environment container
+- **Orphan port entries** — entries in `ports.json` that have no matching environment container
+
+By default, `cleanup` runs in **dry-run mode** and only reports what would be removed. Use `--force` to actually delete the orphaned resources.
+
 ## Tool Introspection
 
 ```bash

@@ -35,11 +35,33 @@ WARNING  HTTP auth DISABLED (ODUFLOW_AUTH_TOKEN not set)
 WARNING  Web UI auth DISABLED (ODUFLOW_UI_PASSWORD not set)
 ```
 
-## Git credentials
+## Git Credentials
 
 ![Credentials Management](img/credentials.png)
 
-Private repository credentials are stored in the git credential store (`~/.git-credentials`) via the `setup_repo_auth` tool. The clean URL (without credentials) is always used in Docker labels and logs — credentials are never exposed.
+Private repository credentials are stored in the git credential store (at `$ODUFLOW_ETC_DIR/.git-credentials`) via the `setup_repo_auth` tool. The clean URL (without credentials) is always used in Docker labels and logs — credentials are never exposed.
+
+### Managing credentials via MCP
+
+```bash
+# Store credentials for a private repository
+oduflow call setup_repo_auth https://user:PAT@github.com/owner/private-repo.git
+```
+
+The tool parses the URL, stores the credentials, and verifies access by running `git ls-remote`.
+
+### Managing credentials via REST API and Web Dashboard
+
+The Web Dashboard and REST API provide full credential lifecycle management:
+
+| Action | REST API |
+|---|---|
+| **List** all stored credentials | `GET /api/credentials` |
+| **Add** credentials for a repository | `POST /api/credentials/add` (body: `repo_url`) |
+| **Delete** a stored credential | `POST /api/credentials/delete` (body: `host`, `username`) |
+| **Validate** a credential against the provider | `POST /api/credentials/validate` (body: `host`, `username`) |
+
+Validation checks the credential against the provider's API (GitHub, GitLab, Bitbucket). For other hosts, it reports `"valid"` if the credential exists. Tokens are always masked in API responses (e.g. `ghp_****`).
 
 ## iptables rule
 

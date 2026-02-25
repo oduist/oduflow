@@ -64,6 +64,29 @@ oduflow call delete_extra_repo enterprise
 
 Extra repos can also be managed from the **Web Dashboard** under the "Extra Addons" tab.
 
+## Protecting Extra Repos
+
+Extra addon repositories can be **protected** from accidental deletion, similar to [environment protection](environments.md#environment-protection). A protected repo cannot be deleted until protection is removed.
+
+Protection state is stored as a `.protected` marker file in the bare repository directory.
+
+### Via REST API
+
+```bash
+# Protect an extra repo
+curl -X POST http://localhost:8000/api/extra-repos/enterprise/protect
+
+# Unprotect an extra repo
+curl -X POST http://localhost:8000/api/extra-repos/enterprise/unprotect
+```
+
+### Via Web Dashboard
+
+Extra repo protection can be toggled from the **Extra Addons** tab in the Web Dashboard. When protected:
+
+- The **Delete** button is disabled
+- Attempting to delete via API returns a `ProtectedError`
+
 ## Updating Extra Repos
 
 Use `update_extra_repo` to fetch the latest changes from the remote:

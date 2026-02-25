@@ -161,6 +161,17 @@ oduflow call rebuild_environment feature-login
 oduflow call delete_environment feature-login
 ```
 
+### Recreating Environments
+
+The **Recreate** action (available via the Web Dashboard and REST API) deletes an environment and immediately creates a fresh one using the same parameters (repo URL, Odoo image, template, extra addons). This is useful when you want a clean slate without manually re-entering all environment settings.
+
+```bash
+# Via REST API
+curl -X POST http://localhost:8000/api/environments/feature-login/recreate
+```
+
+Recreate reads the original configuration from the container's Docker labels, so all parameters (repo URL, image, template, extra addons, git user) are preserved automatically.
+
 ## Viewing Logs
 
 ```bash
@@ -225,6 +236,35 @@ If any module needs installation, all pending upgrades are also executed. If onl
 
 Oduflow walks up from each changed file to find the nearest `__manifest__.py`, correctly identifying which Odoo module a file belongs to, even in nested directory structures.
 
+## Reading Files Inside Environments
+
+Use `read_file_in_odoo` to inspect files and directories inside the Odoo container without constructing shell commands:
+
+```bash
+# Read Odoo source code
+oduflow call read_file_in_odoo feature-login /usr/lib/python3/dist-packages/odoo/addons/sale/models/sale_order.py
+
+# Read a specific line range (lines 100–200)
+oduflow call read_file_in_odoo feature-login /usr/lib/python3/dist-packages/odoo/addons/sale/models/sale_order.py "100:200"
+
+# List a directory
+oduflow call read_file_in_odoo feature-login /mnt/extra-addons/
+
+# Check the generated Odoo config
+oduflow call read_file_in_odoo feature-login /etc/odoo/odoo.conf
+
+# Verify file presence after pull_and_apply
+oduflow call read_file_in_odoo feature-login /mnt/extra-addons/my_module/__manifest__.py
+```
+
+- If the path is a **directory**, returns a listing (like `ls -la`).
+- If the path is a **text file**, returns its contents (up to 100KB by default).
+- **Binary files** are not supported — use `exec_in_odoo` for binary operations.
+- The optional `read_range` parameter accepts a `"START:END"` format (e.g. `"1:50"`, `"100:200"`) to read only specific lines.
+
+!!! tip
+    Prefer `read_file_in_odoo` over `exec_in_odoo` with `cat` or `ls` commands — it handles file type detection, size limits, and binary file rejection automatically.
+
 ## Executing Commands Inside Environments
 
 Run arbitrary shell commands inside the Odoo container:
@@ -247,6 +287,21 @@ oduflow call exec_in_odoo feature-login "psql -h oduflow-db -U odoo -d oduflow_f
 ```
 
 The `user` parameter defaults to `odoo`. Use `root` for privileged operations (installing packages, modifying system files).
+
+## Interactive Terminal
+
+The Web Dashboard provides an **interactive Odoo Python shell** directly in the browser via WebSocket. It launches `odoo shell` connected to the environment's database, allowing you to inspect and manipulate Odoo models in real time.
+
+The terminal is accessible from the environment card in the Web Dashboard. It supports:
+
+- Full interactive Python REPL with Odoo ORM access (`self.env['res.partner'].search([])`)
+- Terminal resizing (adapts to browser window)
+- Standard TTY features (colors, line editing)
+
+The WebSocket endpoint is `ws://<host>:<port>/api/environments/{branch}/terminal`.
+
+!!! note
+    The terminal requires the environment container to be running. If the container is stopped, the terminal will display an error message.
 
 ## Environment Protection
 
