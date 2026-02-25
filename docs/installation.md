@@ -64,6 +64,7 @@ cp .env.example .env
 | `ODUFLOW_PORT` | `8000` | HTTP server port |
 | `ODUFLOW_AUTH_TOKEN` | *(empty)* | Bearer token for MCP HTTP auth. Empty = MCP auth disabled |
 | `ODUFLOW_UI_PASSWORD` | *(empty)* | Password for Web UI Basic auth (user: `admin`). Separate from MCP auth token. Empty = UI auth disabled |
+| `ODUFLOW_STATELESS_HTTP` | `true` | When `true`, the MCP HTTP transport runs in stateless mode (no session tracking). Set to `false` to enable session-based communication |
 
 ### Paths
 

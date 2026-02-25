@@ -35,19 +35,19 @@ oduflow destroy
 
 ```bash
 # Generate a clean template from a Docker image
-oduflow init-template --odoo-image odoo:17.0 [--modules base,web,sale] [--template-name myproject] [--force]
+oduflow init-template --odoo-image odoo:17.0 --template-name myproject [--modules base,web,sale] [--force]
 
 # Start interactive template editor
-oduflow template-up --odoo-image odoo:17.0 [--template-name myproject]
+oduflow template-up --odoo-image odoo:17.0 --template-name myproject
 
 # Stop template editor and save changes
-oduflow template-down [--template-name myproject]
+oduflow template-down --template-name myproject
 
 # Reload template DB from a dump file
-oduflow reload-template [--template-name default] [--dump-path /path/to/new.dump]
+oduflow reload-template <template_name> [--dump-path /path/to/new.dump]
 
 # Save a branch environment as the new template
-oduflow template-from-env <branch> [--template-name default]
+oduflow template-from-env <branch> --template-name myproject
 
 # List all template profiles
 oduflow list-templates
@@ -56,7 +56,7 @@ oduflow list-templates
 oduflow delete-template <template_name>
 
 # Import a template from a running Odoo instance
-oduflow import-template <odoo_url> <master_pwd> [--db-name <db>] [--template-name default]
+oduflow import-template <odoo_url> <master_pwd> --template-name myproject [--db-name <db>]
 ```
 
 ## Service Commands
@@ -64,6 +64,19 @@ oduflow import-template <odoo_url> <master_pwd> [--db-name <db>] [--template-nam
 ```bash
 # List all managed services
 oduflow list-services
+```
+
+## Maintenance Commands
+
+```bash
+# Show orphaned databases, workspaces, and port entries (dry-run by default)
+oduflow cleanup
+
+# Same as above — only show what would be removed
+oduflow cleanup --dry-run
+
+# Actually remove orphaned resources
+oduflow cleanup --force
 ```
 
 ## Tool Introspection
