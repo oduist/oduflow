@@ -2,7 +2,7 @@
 
 [TOC]
 
-![Environments Dashboard](img/envs.png)
+[![Environments Dashboard](img/envs.png)](img/envs.png)
 
 ## Creating Environments
 

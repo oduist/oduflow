@@ -828,6 +828,92 @@ def _build_routes(
             except Exception:
                 pass
 
+    async def ws_sql_terminal(websocket: WebSocket) -> None:
+        branch = websocket.path_params["branch"]
+        await websocket.accept()
+        try:
+            import docker as _docker
+            from oduflow.docker_ops.client import get_client as _get_client
+            from oduflow.naming import get_db_name
+
+            settings = get_settings()
+            client = _get_client()
+            db_name = get_db_name(branch, settings.instance_id)
+
+            try:
+                db_container = client.containers.get(settings.shared_db_container)
+            except _docker.errors.NotFound:
+                await websocket.send_text("\x1b[31mError: database container not found\x1b[0m\r\n")
+                await websocket.close(code=1011)
+                return
+
+            if db_container.status != "running":
+                await websocket.send_text("\x1b[31mError: database container is not running\x1b[0m\r\n")
+                await websocket.close(code=1011)
+                return
+
+            exec_id = client.api.exec_create(
+                db_container.id,
+                ["psql", "-U", settings.db_user, "-d", db_name],
+                stdin=True, tty=True, stdout=True, stderr=True,
+            )["Id"]
+            sock = client.api.exec_start(exec_id, detach=False, tty=True, socket=True)
+            raw_sock = sock._sock
+
+            loop = asyncio.get_event_loop()
+            closed = asyncio.Event()
+
+            async def docker_to_browser() -> None:
+                try:
+                    while not closed.is_set():
+                        data = await loop.run_in_executor(None, raw_sock.recv, 4096)
+                        if not data:
+                            break
+                        await websocket.send_text(data.decode("utf-8", errors="replace"))
+                except Exception:
+                    pass
+                finally:
+                    closed.set()
+
+            async def browser_to_docker() -> None:
+                try:
+                    while not closed.is_set():
+                        text = await websocket.receive_text()
+                        msg = json.loads(text)
+                        if msg.get("type") == "input":
+                            await loop.run_in_executor(None, raw_sock.sendall, msg["data"].encode("utf-8"))
+                        elif msg.get("type") == "resize":
+                            cols = msg.get("cols", 80)
+                            rows = msg.get("rows", 24)
+                            try:
+                                client.api.exec_resize(exec_id, height=rows, width=cols)
+                            except Exception:
+                                pass
+                except Exception:
+                    pass
+                finally:
+                    closed.set()
+
+            try:
+                await asyncio.gather(docker_to_browser(), browser_to_docker())
+            finally:
+                try:
+                    raw_sock.close()
+                except Exception:
+                    pass
+                try:
+                    sock.close()
+                except Exception:
+                    pass
+
+        except Exception as e:
+            logger.exception("WebSocket SQL terminal error for branch %s", branch)
+            try:
+                await websocket.send_text(f"\x1b[31mError: {e}\x1b[0m\r\n")
+                await websocket.close(code=1011)
+            except Exception:
+                pass
+
     return [
         Route("/", dashboard, methods=["GET"]),
         Route("/favicon.ico", favicon, methods=["GET"]),
@@ -868,6 +954,7 @@ def _build_routes(
         Route("/api/credentials/validate", api_credential_validate, methods=["POST"]),
         Route("/api/environments/{branch:path}/logs", api_logs, methods=["GET"]),
         WebSocketRoute("/api/environments/{branch:path}/terminal", ws_terminal),
+        WebSocketRoute("/api/environments/{branch:path}/sql", ws_sql_terminal),
     ]
 
 
