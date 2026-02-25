@@ -550,6 +550,17 @@
     </div>
   </div>
 </div>
+<div class="modal-overlay" id="sql-modal" onclick="closeSqlConsole(event)">
+  <div class="modal" style="max-width:1000px; height:80vh;">
+    <div class="modal-header">
+      <h2 id="sql-title">SQL Console</h2>
+      <button class="modal-close" onclick="closeSqlConsole()">&times;</button>
+    </div>
+    <div class="modal-body" style="flex:1; padding:0; overflow:hidden;">
+      <div id="sql-terminal" style="height:100%;"></div>
+    </div>
+  </div>
+</div>
 <div class="modal-overlay" id="create-svc-modal" onclick="closeCreateServiceModal(event)">
   <div class="modal" style="max-width:500px;">
     <div class="modal-header">
@@ -806,6 +817,8 @@ function renderEnvironments(envs) {
           '<button class="btn btn-logs" onclick="showLogs(\'' + escAttr(env.branch) + '\')">Logs</button>' +
           '<button class="btn btn-logs" onclick="openConsole(\'' + escAttr(env.branch) + '\')" ' +
             (allStopped ? 'disabled' : '') + '>Console</button>' +
+          '<button class="btn btn-logs" onclick="openSqlConsole(\'' + escAttr(env.branch) + '\')" ' +
+            (allStopped ? 'disabled' : '') + '>SQL</button>' +
           '<button class="btn btn-protect' + (env.protected ? ' active' : '') + '" ' +
             'onclick="doProtect(\'' + escAttr(env.branch) + '\',' + (env.protected ? 'true' : 'false') + ')">' +
             (env.protected ? '🔒 Protected' : '🔓 Protect') + '</button>' +
@@ -2127,9 +2140,70 @@ function closeConsole(event) {
   document.getElementById('console-modal').classList.remove('show');
 }
 
+var _sqlConsoleState = { ws: null, term: null, fitAddon: null };
+
+function openSqlConsole(branch) {
+  var modal = document.getElementById('sql-modal');
+  document.getElementById('sql-title').textContent = 'SQL \u2014 ' + branch;
+  modal.classList.add('show');
+
+  var container = document.getElementById('sql-terminal');
+  container.innerHTML = '';
+
+  var term = new Terminal({
+    theme: { background: '#0d1117', foreground: '#e6edf3', cursor: '#58a6ff' },
+    fontFamily: '"Fira Code", "Cascadia Code", Menlo, monospace',
+    fontSize: 14,
+    cursorBlink: true
+  });
+  var fitAddon = new FitAddon.FitAddon();
+  term.loadAddon(fitAddon);
+  term.open(container);
+  fitAddon.fit();
+
+  var proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  var ws = new WebSocket(proto + '//' + location.host + '/api/environments/' + encodeURIComponent(branch) + '/sql');
+
+  ws.onopen = function() {
+    ws.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }));
+  };
+  ws.onmessage = function(e) { term.write(e.data); };
+  ws.onclose = function() {
+    term.write('\r\n\x1b[31m[Session ended]\x1b[0m\r\n');
+  };
+  ws.onerror = function() {
+    term.write('\r\n\x1b[31m[Connection error]\x1b[0m\r\n');
+  };
+
+  term.onData(function(data) {
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: 'input', data: data }));
+    }
+  });
+  term.onResize(function(size) {
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: 'resize', cols: size.cols, rows: size.rows }));
+    }
+  });
+
+  _sqlConsoleState = { ws: ws, term: term, fitAddon: fitAddon };
+  term.focus();
+}
+
+function closeSqlConsole(event) {
+  if (event && event.target !== event.currentTarget) return;
+  if (_sqlConsoleState.ws) { _sqlConsoleState.ws.close(); _sqlConsoleState.ws = null; }
+  if (_sqlConsoleState.term) { _sqlConsoleState.term.dispose(); _sqlConsoleState.term = null; }
+  _sqlConsoleState.fitAddon = null;
+  document.getElementById('sql-modal').classList.remove('show');
+}
+
 window.addEventListener('resize', function() {
   if (_consoleState.fitAddon && _consoleState.term) {
     _consoleState.fitAddon.fit();
+  }
+  if (_sqlConsoleState.fitAddon && _sqlConsoleState.term) {
+    _sqlConsoleState.fitAddon.fit();
   }
 });
 
