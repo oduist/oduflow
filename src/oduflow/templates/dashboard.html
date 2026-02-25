@@ -397,6 +397,9 @@
   .license-business { background: rgba(63,185,80,0.10); color: var(--green); border: 1px solid rgba(63,185,80,0.25); }
   .license-integrator { background: rgba(88,166,255,0.10); color: var(--accent); border: 1px solid rgba(88,166,255,0.25); }
 </style>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.css">
+<script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.js"></script>
 </head>
 <body>
 
@@ -534,6 +537,17 @@
       <button class="logs-btn" onclick="fetchLogs()" title="Refresh logs">↻ Refresh</button>
     </div>
     <div class="modal-body"><pre id="logs-content">Loading...</pre></div>
+  </div>
+</div>
+<div class="modal-overlay" id="console-modal" onclick="closeConsole(event)">
+  <div class="modal" style="max-width:1000px; height:80vh;">
+    <div class="modal-header">
+      <h2 id="console-title">Console</h2>
+      <button class="modal-close" onclick="closeConsole()">&times;</button>
+    </div>
+    <div class="modal-body" style="flex:1; padding:0; overflow:hidden;">
+      <div id="console-terminal" style="height:100%;"></div>
+    </div>
   </div>
 </div>
 <div class="modal-overlay" id="create-svc-modal" onclick="closeCreateServiceModal(event)">
@@ -790,6 +804,8 @@ function renderEnvironments(envs) {
           '<button class="btn btn-sync" onclick="doAction(\'' + escAttr(env.branch) + '\',\'sync\')" ' +
             (allStopped ? 'disabled' : '') + '>Sync</button>' +
           '<button class="btn btn-logs" onclick="showLogs(\'' + escAttr(env.branch) + '\')">Logs</button>' +
+          '<button class="btn btn-logs" onclick="openConsole(\'' + escAttr(env.branch) + '\')" ' +
+            (allStopped ? 'disabled' : '') + '>Console</button>' +
           '<button class="btn btn-protect' + (env.protected ? ' active' : '') + '" ' +
             'onclick="doProtect(\'' + escAttr(env.branch) + '\',' + (env.protected ? 'true' : 'false') + ')">' +
             (env.protected ? '🔒 Protected' : '🔓 Protect') + '</button>' +
@@ -2052,6 +2068,70 @@ async function doValidateCredential(host, username) {
     }
   }
 }
+
+var _consoleState = { ws: null, term: null, fitAddon: null };
+
+function openConsole(branch) {
+  var modal = document.getElementById('console-modal');
+  document.getElementById('console-title').textContent = 'Console \u2014 ' + branch;
+  modal.classList.add('show');
+
+  var container = document.getElementById('console-terminal');
+  container.innerHTML = '';
+
+  var term = new Terminal({
+    theme: { background: '#0d1117', foreground: '#e6edf3', cursor: '#58a6ff' },
+    fontFamily: '"Fira Code", "Cascadia Code", Menlo, monospace',
+    fontSize: 14,
+    cursorBlink: true
+  });
+  var fitAddon = new FitAddon.FitAddon();
+  term.loadAddon(fitAddon);
+  term.open(container);
+  fitAddon.fit();
+
+  var proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  var ws = new WebSocket(proto + '//' + location.host + '/api/environments/' + encodeURIComponent(branch) + '/terminal');
+
+  ws.onopen = function() {
+    ws.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }));
+  };
+  ws.onmessage = function(e) { term.write(e.data); };
+  ws.onclose = function() {
+    term.write('\r\n\x1b[31m[Session ended]\x1b[0m\r\n');
+  };
+  ws.onerror = function() {
+    term.write('\r\n\x1b[31m[Connection error]\x1b[0m\r\n');
+  };
+
+  term.onData(function(data) {
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: 'input', data: data }));
+    }
+  });
+  term.onResize(function(size) {
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: 'resize', cols: size.cols, rows: size.rows }));
+    }
+  });
+
+  _consoleState = { ws: ws, term: term, fitAddon: fitAddon };
+  term.focus();
+}
+
+function closeConsole(event) {
+  if (event && event.target !== event.currentTarget) return;
+  if (_consoleState.ws) { _consoleState.ws.close(); _consoleState.ws = null; }
+  if (_consoleState.term) { _consoleState.term.dispose(); _consoleState.term = null; }
+  _consoleState.fitAddon = null;
+  document.getElementById('console-modal').classList.remove('show');
+}
+
+window.addEventListener('resize', function() {
+  if (_consoleState.fitAddon && _consoleState.term) {
+    _consoleState.fitAddon.fit();
+  }
+});
 
 loadLicense();
 loadEnvironments();
