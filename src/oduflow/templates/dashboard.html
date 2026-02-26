@@ -223,6 +223,31 @@
   .logs-toolbar .logs-btn:hover { border-color: var(--accent); color: var(--text); }
   .logs-toolbar .logs-btn.active { border-color: var(--green); color: var(--green); }
   .logs-match-count { font-size: 11px; color: var(--text-dim); white-space: nowrap; }
+  .sync-result-action {
+    display: inline-block;
+    padding: 3px 10px;
+    border-radius: 12px;
+    font-size: 12px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 8px;
+  }
+  .sync-action-none { background: rgba(139,148,158,0.15); color: var(--text-dim); }
+  .sync-action-refresh { background: rgba(88,166,255,0.15); color: var(--accent); }
+  .sync-action-restart { background: rgba(210,153,34,0.15); color: var(--yellow); }
+  .sync-action-install, .sync-action-upgrade { background: rgba(63,185,80,0.15); color: var(--green); }
+  .sync-message { font-size: 14px; margin-bottom: 12px; }
+  .sync-section { margin-bottom: 12px; }
+  .sync-section-title { font-size: 12px; font-weight: 600; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px; }
+  .sync-modules { display: flex; flex-wrap: wrap; gap: 6px; }
+  .sync-module-tag { background: rgba(88,166,255,0.1); border: 1px solid rgba(88,166,255,0.3); color: var(--accent); padding: 2px 8px; border-radius: 4px; font-size: 12px; font-family: "SFMono-Regular", Consolas, monospace; }
+  .sync-files { max-height: 200px; overflow-y: auto; }
+  .sync-files code { display: block; font-size: 12px; line-height: 1.8; color: var(--text-dim); font-family: "SFMono-Regular", Consolas, monospace; }
+  .sync-output { background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius); padding: 10px; max-height: 200px; overflow-y: auto; font-size: 12px; line-height: 1.5; font-family: "SFMono-Regular", Consolas, monospace; color: var(--text-dim); white-space: pre-wrap; word-break: break-all; }
+  .sync-exit-code { font-size: 12px; margin-top: 6px; }
+  .sync-exit-ok { color: var(--green); }
+  .sync-exit-err { color: var(--red); }
   .toast {
     position: fixed;
     bottom: 24px;
@@ -475,6 +500,15 @@
 </div>
 
 <div class="toast" id="toast"></div>
+<div class="modal-overlay" id="sync-result-modal" onclick="closeSyncResult(event)">
+  <div class="modal" style="max-width:520px;">
+    <div class="modal-header">
+      <h2 id="sync-result-title">Sync Result</h2>
+      <button class="modal-close" onclick="closeSyncResult()">&times;</button>
+    </div>
+    <div class="modal-body" id="sync-result-body"></div>
+  </div>
+</div>
 <div class="modal-overlay" id="create-modal" onclick="closeCreateModal(event)">
   <div class="modal" style="max-width:500px;">
     <div class="modal-header">
@@ -730,6 +764,47 @@ function showToast(msg, isError) {
   t.className = 'toast show' + (isError ? ' error' : '');
   clearTimeout(t._tid);
   t._tid = setTimeout(() => t.className = 'toast', 3000);
+}
+
+function closeSyncResult(event) {
+  if (event && event.target !== event.currentTarget) return;
+  document.getElementById('sync-result-modal').classList.remove('show');
+}
+
+function showSyncResult(branch, result) {
+  var actionLabels = {none: 'No changes', refresh: 'Refresh', restart: 'Restart', install: 'Install', upgrade: 'Upgrade'};
+  var action = result.action || 'none';
+  var label = actionLabels[action] || action;
+
+  var html = '<span class="sync-result-action sync-action-' + action + '">' + label + '</span>';
+  html += '<div class="sync-message">' + esc(result.message || '') + '</div>';
+
+  if (result.modules_installed && result.modules_installed.length) {
+    html += '<div class="sync-section"><div class="sync-section-title">Installed modules</div><div class="sync-modules">';
+    result.modules_installed.forEach(function(m) { html += '<span class="sync-module-tag">' + esc(m) + '</span>'; });
+    html += '</div></div>';
+  }
+  if (result.modules_upgraded && result.modules_upgraded.length) {
+    html += '<div class="sync-section"><div class="sync-section-title">Upgraded modules</div><div class="sync-modules">';
+    result.modules_upgraded.forEach(function(m) { html += '<span class="sync-module-tag">' + esc(m) + '</span>'; });
+    html += '</div></div>';
+  }
+  if (result.exit_code !== undefined && result.exit_code !== null) {
+    var ok = result.exit_code === 0;
+    html += '<div class="sync-exit-code ' + (ok ? 'sync-exit-ok' : 'sync-exit-err') + '">Exit code: ' + result.exit_code + '</div>';
+  }
+  if (result.changed_files && result.changed_files.length) {
+    html += '<div class="sync-section"><div class="sync-section-title">Changed files (' + result.changed_files.length + ')</div><div class="sync-files">';
+    result.changed_files.forEach(function(f) { html += '<code>' + esc(f) + '</code>'; });
+    html += '</div></div>';
+  }
+  if (result.output) {
+    html += '<div class="sync-section"><div class="sync-section-title">Odoo output</div><div class="sync-output">' + esc(result.output) + '</div></div>';
+  }
+
+  document.getElementById('sync-result-title').textContent = 'Sync — ' + branch;
+  document.getElementById('sync-result-body').innerHTML = html;
+  document.getElementById('sync-result-modal').classList.add('show');
 }
 
 function badgeClass(status) {
@@ -1258,7 +1333,11 @@ async function doAction(branch, action) {
     const r = await fetch(API + '/' + encodeURIComponent(branch) + '/' + action, { method: 'POST' });
     const data = await r.json();
     if (data.ok) {
-      showToast(branch + ': ' + action + ' OK');
+      if (action === 'sync' && data.result) {
+        showSyncResult(branch, data.result);
+      } else {
+        showToast(branch + ': ' + action + ' OK');
+      }
     } else {
       showToast(data.error || 'Action failed', true);
     }
