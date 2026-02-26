@@ -18,7 +18,8 @@ import docker
 from docker import DockerClient
 
 from oduflow.docker_ops.client import chown_recursive, get_client, get_odoo_uid_gid
-from oduflow.docker_ops.system_ops import _db_exists, _exec_sql, _resolve_conf
+from oduflow.docker_ops.system_ops import _copy_file_to_container, _create_pg_role, _db_exists, _drop_pg_role, _exec_sql, _resolve_conf
+from oduflow.env_credentials import create_credentials, load_credentials
 from oduflow.errors import (
     ConflictError,
     ExternalCommandError,
@@ -341,6 +342,13 @@ def _cleanup_old_environment(
             pass
 
     env_db = get_db_name(branch_name, settings.instance_id)
+
+    try:
+        creds = load_credentials(branch_name, settings.workspaces_dir, settings.db_user, settings.db_password)
+        _drop_pg_role(client, settings, creds["pg_user"])
+    except Exception:
+        pass
+
     if _db_exists(client, settings, env_db):
         try:
             _exec_sql(client, settings, f'DROP DATABASE IF EXISTS "{env_db}" WITH (FORCE);')
@@ -517,10 +525,13 @@ def create_environment(
             f'CREATE DATABASE "{env_db}";',
         )
 
+    env_creds = create_credentials(branch_name, settings.instance_id, settings.workspaces_dir)
+    _create_pg_role(client, settings, env_creds["pg_user"], env_creds["pg_password"], env_db)
+
     odoo_env = {
         "HOST": settings.shared_db_container,
-        "USER": settings.db_user,
-        "PASSWORD": settings.db_password,
+        "USER": env_creds["pg_user"],
+        "PASSWORD": env_creds["pg_password"],
     }
     odoo_volumes = {repo_path: {"bind": "/mnt/extra-addons", "mode": "rw"}}
 
@@ -536,19 +547,16 @@ def create_environment(
     else:
         base_conf_path = None
 
+    odoo_conf_to_copy: str | None = None
     if base_conf_path:
         if extra_mount_paths:
             from oduflow.extra_addons import generate_odoo_conf
             generated_conf = os.path.join(workspace_path, "odoo.conf")
             extra_container_paths = [cp for _, cp in extra_mount_paths]
             generate_odoo_conf(base_conf_path, generated_conf, extra_container_paths)
-            odoo_conf_to_mount = generated_conf
+            odoo_conf_to_copy = generated_conf
         else:
-            odoo_conf_to_mount = base_conf_path
-        odoo_volumes[odoo_conf_to_mount] = {
-            "bind": "/etc/odoo/odoo.conf",
-            "mode": "ro",
-        }
+            odoo_conf_to_copy = base_conf_path
 
     if template_name is not None:
         _mount_filestore(client, settings, branch_name, env_db, odoo_image, odoo_volumes, template_name=template_name)
@@ -601,6 +609,9 @@ def create_environment(
         run_kwargs["ports"] = {"8069/tcp": host_port}
 
     container = client.containers.run(**run_kwargs)
+
+    if odoo_conf_to_copy:
+        _copy_file_to_container(container, odoo_conf_to_copy, "/etc/odoo")
 
     setup_logs: list[str] = []
 
@@ -715,6 +726,14 @@ def delete_environment(settings: Settings, branch_name: str) -> list[str]:
         container.remove(v=True)
     except docker.errors.NotFound:
         pass
+
+    creds = load_credentials(branch_name, settings.workspaces_dir, settings.db_user, settings.db_password)
+    try:
+        _drop_pg_role(client, settings, creds["pg_user"])
+    except Exception as exc:
+        msg = f'Failed to drop PG role "{creds["pg_user"]}": {exc}'
+        logger.warning(msg, extra={"branch": branch_name})
+        warnings.append(msg)
 
     try:
         _exec_sql(
@@ -927,6 +946,9 @@ def get_environment_info(settings: Settings, branch_name: str) -> dict[str, Any]
     except docker.errors.NotFound:
         pass
 
+    creds = load_credentials(branch_name, settings.workspaces_dir, settings.db_user, settings.db_password)
+    result["db_user"] = creds["pg_user"]
+
     result["all_running"] = result["odoo"]["running"] and result["db"]["running"]
     return result
 
@@ -1122,6 +1144,15 @@ def rebuild_environment(settings: Settings, branch_name: str) -> dict[str, str]:
             except Exception as exc:
                 logger.warning("Could not re-mount filestore overlay: %s", exc)
 
+    # Re-create PG role in case PG container was recreated
+    creds = load_credentials(branch_name, settings.workspaces_dir, settings.db_user, settings.db_password)
+    if creds["pg_user"] != settings.db_user:
+        env_db = get_db_name(branch_name, settings.instance_id)
+        try:
+            _create_pg_role(client, settings, creds["pg_user"], creds["pg_password"], env_db)
+        except Exception as exc:
+            logger.warning("Could not re-create PG role: %s", exc)
+
     # Verify extra addons worktrees are intact
     extra_addons_json = labels.get("oduflow.extra_addons", "")
     if extra_addons_json:
@@ -1153,10 +1184,33 @@ def rebuild_environment(settings: Settings, branch_name: str) -> dict[str, str]:
 
     new_container = client.containers.run(**run_kwargs)
 
+    # Copy odoo.conf into the container (same resolution logic as create)
+    repo_path = get_repo_path(branch_name, settings.workspaces_dir)
+    workspace_path = get_workspace_path(branch_name, settings.workspaces_dir)
+    repo_odoo_conf = os.path.join(repo_path, "odoo.conf")
+    if os.path.isfile(repo_odoo_conf):
+        base_conf_path: str | None = repo_odoo_conf
+    elif _resolve_conf("odoo.conf").exists():
+        base_conf_path = str(_resolve_conf("odoo.conf"))
+    else:
+        base_conf_path = None
+
+    if base_conf_path:
+        extra_addons_json = labels.get("oduflow.extra_addons", "")
+        if extra_addons_json:
+            from oduflow.extra_addons import generate_odoo_conf
+            parsed = json.loads(extra_addons_json)
+            extra_dict = _normalize_extra_addons(parsed)
+            extra_container_paths = [f"/mnt/extra-addons-{rn}" for rn in extra_dict]
+            generated_conf = os.path.join(workspace_path, "odoo.conf")
+            generate_odoo_conf(base_conf_path, generated_conf, extra_container_paths)
+            _copy_file_to_container(new_container, generated_conf, "/etc/odoo")
+        else:
+            _copy_file_to_container(new_container, base_conf_path, "/etc/odoo")
+
     # ------------------------------------------------------------------
     # 5. Re-install apt packages and pip requirements
     # ------------------------------------------------------------------
-    repo_path = get_repo_path(branch_name, settings.workspaces_dir)
     setup_logs: list[str] = []
     apt_log = _install_apt_packages(new_container, repo_path)
     if apt_log:

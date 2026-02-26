@@ -5,6 +5,7 @@ import glob as glob_mod
 from docker import DockerClient
 
 from oduflow.docker_ops.system_ops import _exec_sql
+from oduflow.env_credentials import load_credentials
 from oduflow.naming import get_db_name, get_repo_path, get_resource_name
 from oduflow.settings import Settings
 
@@ -57,6 +58,8 @@ def _run_scripts_from_dir(
         logs.append(f"[SANITIZE:{label}] WARNING: container not found, skipping .py scripts")
         return logs
 
+    creds = load_credentials(branch_name, settings.workspaces_dir, settings.db_user, settings.db_password)
+
     for py_file in py_files:
         name = os.path.basename(py_file)
         try:
@@ -67,8 +70,8 @@ def _run_scripts_from_dir(
                 environment={
                     "ODOO_DB": env_db,
                     "DB_HOST": settings.shared_db_container,
-                    "DB_USER": settings.db_user,
-                    "DB_PASSWORD": settings.db_password,
+                    "DB_USER": creds["pg_user"],
+                    "DB_PASSWORD": creds["pg_password"],
                 },
             )
             output_str = output.decode("utf-8") if isinstance(output, bytes) else str(output)

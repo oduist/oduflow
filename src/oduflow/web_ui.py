@@ -852,9 +852,12 @@ def _build_routes(
                 await websocket.close(code=1011)
                 return
 
+            from oduflow.env_credentials import load_credentials
+            creds = load_credentials(branch, settings.workspaces_dir, settings.db_user, settings.db_password)
+
             exec_id = client.api.exec_create(
                 db_container.id,
-                ["psql", "-U", settings.db_user, "-d", db_name],
+                ["psql", "-U", creds["pg_user"], "-d", db_name],
                 stdin=True, tty=True, stdout=True, stderr=True,
             )["Id"]
             sock = client.api.exec_start(exec_id, detach=False, tty=True, socket=True)

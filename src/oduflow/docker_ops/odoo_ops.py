@@ -4,6 +4,7 @@ from typing import Any
 import docker
 
 from oduflow.docker_ops.client import get_client
+from oduflow.env_credentials import load_credentials
 from oduflow.errors import ExternalCommandError, NotFoundError
 from oduflow.naming import get_db_name, get_resource_name
 from oduflow.settings import Settings
@@ -23,10 +24,11 @@ def run_environment_tests(settings: Settings, branch_name: str, modules: str) ->
             f"Environment '{branch_name}' does not exist. Use create_environment first."
         )
 
+    creds = load_credentials(branch_name, settings.workspaces_dir, settings.db_user, settings.db_password)
     cmd = (
         f"odoo --test-enable --stop-after-init -i {modules} "
         f"--db_host={settings.shared_db_container} "
-        f"-r {settings.db_user} -w {settings.db_password} "
+        f"-r {creds['pg_user']} -w {creds['pg_password']} "
         f"--database={env_db}"
     )
 
@@ -268,10 +270,11 @@ def run_db_query(
             "Run 'oduflow init' first."
         )
 
+    creds = load_credentials(branch_name, settings.workspaces_dir, settings.db_user, settings.db_password)
     if output_format == "human":
-        cmd = ["psql", "-U", settings.db_user, "-d", env_db, "-c", query]
+        cmd = ["psql", "-U", creds["pg_user"], "-d", env_db, "-c", query]
     else:
-        cmd = ["psql", "-U", settings.db_user, "-d", env_db, "--csv", "-c", query]
+        cmd = ["psql", "-U", creds["pg_user"], "-d", env_db, "--csv", "-c", query]
 
     logger.info(
         "Running DB query",

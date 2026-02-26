@@ -180,6 +180,38 @@ def _exec_sql(client: DockerClient, settings: Settings, sql: str, db: str = "pos
     return result.strip()
 
 
+def _create_pg_role(client: DockerClient, settings: Settings, username: str, password: str, db_name: str) -> None:
+    safe_pw = password.replace("'", "''")
+    _exec_sql(
+        client, settings,
+        f"DO $$ BEGIN "
+        f"IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '{username}') THEN "
+        f"CREATE ROLE \"{username}\" LOGIN PASSWORD '{safe_pw}'; "
+        f"END IF; "
+        f"END $$;",
+    )
+    _exec_sql(client, settings, f'ALTER DATABASE "{db_name}" OWNER TO "{username}";')
+    logger.info("Created/ensured PG role '%s' for database '%s'", username, db_name)
+
+
+def _drop_pg_role(client: DockerClient, settings: Settings, username: str) -> None:
+    if username == settings.db_user:
+        return
+    try:
+        _exec_sql(client, settings, f'REASSIGN OWNED BY "{username}" TO "{settings.db_user}";')
+    except Exception:
+        pass
+    try:
+        _exec_sql(client, settings, f'DROP OWNED BY "{username}";')
+    except Exception:
+        pass
+    try:
+        _exec_sql(client, settings, f'DROP ROLE IF EXISTS "{username}";')
+        logger.info("Dropped PG role '%s'", username)
+    except Exception as exc:
+        logger.warning("Failed to drop PG role '%s': %s", username, exc)
+
+
 def _db_exists(client: DockerClient, settings: Settings, db_name: str) -> bool:
     result = _exec_sql(
         client,
@@ -1347,16 +1379,31 @@ def cleanup_orphans(settings: Settings, dry_run: bool = True) -> dict:
         if branch not in live_branches:
             orphan_ports.append(branch)
 
+    # 5. Orphan PG roles
+    from oduflow.env_credentials import generate_pg_username
+    role_prefix = f"u_{settings.instance_id}_"
+    roles_raw = _exec_sql(client, settings, "SELECT rolname FROM pg_roles WHERE rolcanlogin=true;")
+    all_roles = [r for r in roles_raw.splitlines() if r.startswith(role_prefix)]
+    orphan_roles: list[str] = []
+    for role in all_roles:
+        matched = any(
+            role == generate_pg_username(b, settings.instance_id)
+            for b in live_branches
+        )
+        if not matched:
+            orphan_roles.append(role)
+
     if dry_run:
         logger.info(
-            "Cleanup dry-run: %d orphan DBs, %d orphan workspaces, %d orphan ports",
-            len(orphan_dbs), len(orphan_workspaces), len(orphan_ports),
+            "Cleanup dry-run: %d orphan DBs, %d orphan workspaces, %d orphan ports, %d orphan roles",
+            len(orphan_dbs), len(orphan_workspaces), len(orphan_ports), len(orphan_roles),
         )
         return {
             "dry_run": True,
             "orphan_databases": orphan_dbs,
             "orphan_workspaces": orphan_workspaces,
             "orphan_ports": orphan_ports,
+            "orphan_roles": orphan_roles,
         }
 
     # --- Actually remove ---
@@ -1390,11 +1437,20 @@ def cleanup_orphans(settings: Settings, dry_run: bool = True) -> dict:
     if removed_ports:
         _save_registry(settings.port_registry_path, registry)
 
+    removed_roles: list[str] = []
+    for role in orphan_roles:
+        try:
+            _drop_pg_role(client, settings, role)
+            removed_roles.append(role)
+        except Exception as exc:
+            logger.warning("Failed to drop orphan PG role %s: %s", role, exc)
+
     return {
         "dry_run": False,
         "orphan_databases": removed_dbs,
         "orphan_workspaces": removed_workspaces,
         "orphan_ports": removed_ports,
+        "orphan_roles": removed_roles,
     }
 
 
