@@ -199,6 +199,18 @@ def _create_pg_role(client: DockerClient, settings: Settings, username: str, pas
         f"END $$;",
     )
     _exec_sql(client, settings, f'ALTER DATABASE "{db_name}" OWNER TO "{username}";')
+    _exec_sql(
+        client, settings,
+        f"DO $$ DECLARE r RECORD; BEGIN "
+        f"FOR r IN SELECT tablename FROM pg_tables WHERE schemaname = 'public' LOOP "
+        f"EXECUTE format('ALTER TABLE public.%I OWNER TO %I', r.tablename, '{username}'); "
+        f"END LOOP; "
+        f"FOR r IN SELECT sequencename FROM pg_sequences WHERE schemaname = 'public' LOOP "
+        f"EXECUTE format('ALTER SEQUENCE public.%I OWNER TO %I', r.sequencename, '{username}'); "
+        f"END LOOP; "
+        f"END $$;",
+        db=db_name,
+    )
     logger.info("Created/ensured PG role '%s' for database '%s'", username, db_name)
 
 
