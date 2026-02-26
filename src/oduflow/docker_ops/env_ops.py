@@ -727,14 +727,6 @@ def delete_environment(settings: Settings, branch_name: str) -> list[str]:
     except docker.errors.NotFound:
         pass
 
-    creds = load_credentials(branch_name, settings.workspaces_dir, settings.db_user, settings.db_password)
-    try:
-        _drop_pg_role(client, settings, creds["pg_user"])
-    except Exception as exc:
-        msg = f'Failed to drop PG role "{creds["pg_user"]}": {exc}'
-        logger.warning(msg, extra={"branch": branch_name})
-        warnings.append(msg)
-
     try:
         _exec_sql(
             client,
@@ -743,6 +735,14 @@ def delete_environment(settings: Settings, branch_name: str) -> list[str]:
         )
     except Exception as exc:
         msg = f'Failed to drop database "{env_db}": {exc}'
+        logger.warning(msg, extra={"branch": branch_name})
+        warnings.append(msg)
+
+    creds = load_credentials(branch_name, settings.workspaces_dir, settings.db_user, settings.db_password)
+    try:
+        _drop_pg_role(client, settings, creds["pg_user"])
+    except Exception as exc:
+        msg = f'Failed to drop PG role "{creds["pg_user"]}": {exc}'
         logger.warning(msg, extra={"branch": branch_name})
         warnings.append(msg)
 

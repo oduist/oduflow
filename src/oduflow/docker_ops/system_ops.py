@@ -231,11 +231,8 @@ def _drop_pg_role(client: DockerClient, settings: Settings, username: str) -> No
         _exec_sql(client, settings, f'DROP OWNED BY "{username}";')
     except Exception:
         pass
-    try:
-        _exec_sql(client, settings, f'DROP ROLE IF EXISTS "{username}";')
-        logger.info("Dropped PG role '%s'", username)
-    except Exception as exc:
-        logger.warning("Failed to drop PG role '%s': %s", username, exc)
+    _exec_sql(client, settings, f'DROP ROLE IF EXISTS "{username}";')
+    logger.info("Dropped PG role '%s'", username)
 
 
 def _db_exists(client: DockerClient, settings: Settings, db_name: str) -> bool:
