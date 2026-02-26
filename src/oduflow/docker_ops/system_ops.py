@@ -198,6 +198,12 @@ def _create_pg_role(client: DockerClient, settings: Settings, username: str, pas
         f"END IF; "
         f"END $$;",
     )
+    # Always sync the password — the role may already exist with a stale password
+    # from a previously deleted environment.
+    _exec_sql(
+        client, settings,
+        f"ALTER ROLE \"{username}\" WITH LOGIN PASSWORD '{safe_pw}';",
+    )
     _exec_sql(client, settings, f'ALTER DATABASE "{db_name}" OWNER TO "{username}";')
     _exec_sql(
         client, settings,
