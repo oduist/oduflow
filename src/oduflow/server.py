@@ -962,6 +962,7 @@ def _run_init(settings: Settings) -> None:
 
 
 def _copy_bundled_configs() -> None:
+    """Copy shared configs (postgresql.conf) to /etc/oduflow/."""
     import pathlib, shutil
     etc_oduflow = pathlib.Path("/etc/oduflow")
     try:
@@ -970,7 +971,7 @@ def _copy_bundled_configs() -> None:
         logger.warning("Cannot create %s (permission denied), skipping config copy", etc_oduflow)
         return
     bundled_dir = pathlib.Path(__file__).resolve().parent / "templates"
-    for conf_name in ("postgresql.conf", "odoo.conf"):
+    for conf_name in ("postgresql.conf",):
         dest = etc_oduflow / conf_name
         if not dest.is_file():
             bundled = bundled_dir / conf_name
@@ -988,10 +989,27 @@ def _run_init_instance(settings: Settings, *, update_guides: bool = False) -> No
     os.makedirs(settings.workspaces_dir, exist_ok=True)
     os.makedirs(os.path.join(settings.data_dir, "templates"), exist_ok=True)
 
-    _copy_bundled_configs()
+    import pathlib, shutil
+    bundled_dir = pathlib.Path(__file__).resolve().parent / "templates"
+
+    # Copy bundled odoo.conf to instance data dir
+    odoo_conf_dest = os.path.join(settings.data_dir, "odoo.conf")
+    if not os.path.isfile(odoo_conf_dest):
+        bundled_odoo_conf = bundled_dir / "odoo.conf"
+        if bundled_odoo_conf.is_file():
+            shutil.copy2(str(bundled_odoo_conf), odoo_conf_dest)
+            print(f"  Config: {odoo_conf_dest}")
+
+    # Seed instance-level sanitization scripts
+    sanitize_dest = os.path.join(settings.data_dir, "odoo_sanitize")
+    os.makedirs(sanitize_dest, exist_ok=True)
+    bundled_sql = bundled_dir / "01_disable_mail.sql"
+    dest_sql = os.path.join(sanitize_dest, "01_disable_mail.sql")
+    if not os.path.isfile(dest_sql) and bundled_sql.is_file():
+        shutil.copy2(str(bundled_sql), dest_sql)
+        print(f"  Sanitize script: {dest_sql}")
 
     # Copy bundled agent guides
-    import pathlib, shutil
     agent_guides_dest = os.path.join(settings.data_dir, "agent_guides")
     os.makedirs(agent_guides_dest, exist_ok=True)
     bundled_guides_dir = pathlib.Path(__file__).resolve().parent / "templates" / "agent_guides"

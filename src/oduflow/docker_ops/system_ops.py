@@ -79,6 +79,14 @@ def _resolve_conf(name: str) -> pathlib.Path:
     return bundled
 
 
+def _resolve_instance_conf(name: str, data_dir: str) -> pathlib.Path:
+    """Return {data_dir}/{name} if present, otherwise the bundled copy."""
+    inst_path = pathlib.Path(data_dir) / name
+    if inst_path.is_file():
+        return inst_path
+    return _PACKAGE_ROOT / "templates" / name
+
+
 def _ensure_traefik(client: DockerClient, settings: Settings) -> None:
     if settings.routing_mode != "traefik":
         return
@@ -395,15 +403,6 @@ def init_system(
 
     _wait_pg_ready(client, settings)
 
-    # --- Seed system-wide sanitization scripts ---
-    sanitize_dest = os.path.join(settings.etc_dir, "odoo_sanitize")
-    os.makedirs(sanitize_dest, exist_ok=True)
-    bundled_sql = _BUNDLED_SANITIZE_DIR / "01_disable_mail.sql"
-    dest_sql = os.path.join(sanitize_dest, "01_disable_mail.sql")
-    if not os.path.isfile(dest_sql):
-        shutil.copy2(str(bundled_sql), dest_sql)
-        logger.info("Copied default sanitize script to %s", dest_sql)
-
     logger.info("System initialized")
     return {"status": "initialized"}
 
@@ -625,7 +624,7 @@ def init_template(
     init_start = time.monotonic()
 
     volumes = {}
-    odoo_conf = _resolve_conf("odoo.conf")
+    odoo_conf = _resolve_instance_conf("odoo.conf", settings.data_dir)
     if odoo_conf.exists():
         volumes[str(odoo_conf)] = {"bind": "/etc/odoo/odoo.conf", "mode": "ro"}
 
@@ -817,7 +816,7 @@ def template_up(
             "mode": "rw",
         },
     }
-    odoo_conf = _resolve_conf("odoo.conf")
+    odoo_conf = _resolve_instance_conf("odoo.conf", settings.data_dir)
     if odoo_conf.exists():
         odoo_volumes[str(odoo_conf)] = {"bind": "/etc/odoo/odoo.conf", "mode": "ro"}
 

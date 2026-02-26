@@ -96,8 +96,8 @@ def sanitize_environment(
     """Sanitize environment database after provisioning.
 
     Runs sanitization scripts in two tiers:
-    1. System-wide scripts from ``{etc_dir}/odoo_sanitize/`` (managed by the
-       instance administrator, created during ``oduflow init``).
+    1. Instance-level scripts from ``{data_dir}/odoo_sanitize/`` (managed by the
+       instance administrator, created during ``oduflow init-instance``).
     2. Per-project scripts from the repository's ``.odoo_sanitize/`` folder
        (managed by the developer).
 
@@ -109,8 +109,8 @@ def sanitize_environment(
     env_db = get_db_name(branch_name, settings.instance_id)
     logs: list[str] = []
 
-    # --- System-wide sanitization ---
-    system_dir = os.path.join(settings.etc_dir, "odoo_sanitize")
+    # --- Instance-level sanitization ---
+    system_dir = os.path.join(settings.data_dir, "odoo_sanitize")
     logs.extend(_run_scripts_from_dir(system_dir, "system", client, settings, env_db, branch_name))
 
     # --- Per-project sanitization from repo ---

@@ -18,7 +18,7 @@ import docker
 from docker import DockerClient
 
 from oduflow.docker_ops.client import chown_recursive, get_client, get_odoo_uid_gid
-from oduflow.docker_ops.system_ops import _copy_file_to_container, _create_pg_role, _db_exists, _drop_pg_role, _exec_sql, _resolve_conf
+from oduflow.docker_ops.system_ops import _copy_file_to_container, _create_pg_role, _db_exists, _drop_pg_role, _exec_sql, _resolve_instance_conf
 from oduflow.env_credentials import create_credentials, load_credentials
 from oduflow.errors import (
     ConflictError,
@@ -542,8 +542,8 @@ def create_environment(
     if os.path.isfile(repo_odoo_conf):
         base_conf_path = repo_odoo_conf
         logger.info("Using odoo.conf from repository")
-    elif _resolve_conf("odoo.conf").exists():
-        base_conf_path = str(_resolve_conf("odoo.conf"))
+    elif _resolve_instance_conf("odoo.conf", settings.data_dir).exists():
+        base_conf_path = str(_resolve_instance_conf("odoo.conf", settings.data_dir))
     else:
         base_conf_path = None
 
@@ -1190,8 +1190,8 @@ def rebuild_environment(settings: Settings, branch_name: str) -> dict[str, str]:
     repo_odoo_conf = os.path.join(repo_path, "odoo.conf")
     if os.path.isfile(repo_odoo_conf):
         base_conf_path: str | None = repo_odoo_conf
-    elif _resolve_conf("odoo.conf").exists():
-        base_conf_path = str(_resolve_conf("odoo.conf"))
+    elif _resolve_instance_conf("odoo.conf", settings.data_dir).exists():
+        base_conf_path = str(_resolve_instance_conf("odoo.conf", settings.data_dir))
     else:
         base_conf_path = None
 
