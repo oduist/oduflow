@@ -205,22 +205,11 @@ def _create_pg_role(client: DockerClient, settings: Settings, username: str, pas
         f"ALTER ROLE \"{username}\" WITH LOGIN PASSWORD '{safe_pw}';",
     )
     _exec_sql(client, settings, f'ALTER DATABASE "{db_name}" OWNER TO "{username}";')
+    # Reassign all objects (tables, views, sequences, functions, types, etc.)
+    # from the superuser to the per-environment role in one shot.
     _exec_sql(
         client, settings,
-        f"DO $$ DECLARE r RECORD; BEGIN "
-        f"FOR r IN SELECT tablename FROM pg_tables WHERE schemaname = 'public' LOOP "
-        f"EXECUTE format('ALTER TABLE public.%I OWNER TO %I', r.tablename, '{username}'); "
-        f"END LOOP; "
-        f"FOR r IN SELECT viewname FROM pg_views WHERE schemaname = 'public' LOOP "
-        f"EXECUTE format('ALTER VIEW public.%I OWNER TO %I', r.viewname, '{username}'); "
-        f"END LOOP; "
-        f"FOR r IN SELECT matviewname FROM pg_matviews WHERE schemaname = 'public' LOOP "
-        f"EXECUTE format('ALTER MATERIALIZED VIEW public.%I OWNER TO %I', r.matviewname, '{username}'); "
-        f"END LOOP; "
-        f"FOR r IN SELECT sequencename FROM pg_sequences WHERE schemaname = 'public' LOOP "
-        f"EXECUTE format('ALTER SEQUENCE public.%I OWNER TO %I', r.sequencename, '{username}'); "
-        f"END LOOP; "
-        f"END $$;",
+        f'REASSIGN OWNED BY "{settings.db_user}" TO "{username}";',
         db=db_name,
     )
     logger.info("Created/ensured PG role '%s' for database '%s'", username, db_name)
