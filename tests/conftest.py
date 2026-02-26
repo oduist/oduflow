@@ -48,8 +48,13 @@ def live_environment(tmp_path_factory):
 
     yield settings
 
+    # Clean up ALL environments (heavyweight tests may create extras beyond "18.0")
     try:
-        env_ops.delete_environment(settings, "18.0")
+        for env in env_ops.list_environments(settings):
+            try:
+                env_ops.delete_environment(settings, env["branch"])
+            except Exception:
+                pass
     except Exception:
         pass
     try:
