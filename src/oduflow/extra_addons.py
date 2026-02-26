@@ -301,6 +301,12 @@ def generate_odoo_conf(
             parts.append(p)
     parser.set("options", "addons_path", ",".join(parts))
 
+    # Strip DB connection keys — these are managed via container env vars
+    # (HOST, USER, PASSWORD).  If left in the conf file the Odoo entrypoint
+    # uses them instead of the env vars, breaking per-environment credentials.
+    for key in ("db_host", "db_port", "db_user", "db_password"):
+        parser.remove_option("options", key)
+
     with open(output_path, "w") as f:
         parser.write(f)
 

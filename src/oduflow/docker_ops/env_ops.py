@@ -549,14 +549,11 @@ def create_environment(
 
     odoo_conf_to_copy: str | None = None
     if base_conf_path:
-        if extra_mount_paths:
-            from oduflow.extra_addons import generate_odoo_conf
-            generated_conf = os.path.join(workspace_path, "odoo.conf")
-            extra_container_paths = [cp for _, cp in extra_mount_paths]
-            generate_odoo_conf(base_conf_path, generated_conf, extra_container_paths)
-            odoo_conf_to_copy = generated_conf
-        else:
-            odoo_conf_to_copy = base_conf_path
+        from oduflow.extra_addons import generate_odoo_conf
+        generated_conf = os.path.join(workspace_path, "odoo.conf")
+        extra_container_paths = [cp for _, cp in extra_mount_paths] if extra_mount_paths else []
+        generate_odoo_conf(base_conf_path, generated_conf, extra_container_paths)
+        odoo_conf_to_copy = generated_conf
 
     if template_name is not None:
         _mount_filestore(client, settings, branch_name, env_db, odoo_image, odoo_volumes, template_name=template_name)
@@ -1196,17 +1193,16 @@ def rebuild_environment(settings: Settings, branch_name: str) -> dict[str, str]:
         base_conf_path = None
 
     if base_conf_path:
+        from oduflow.extra_addons import generate_odoo_conf
         extra_addons_json = labels.get("oduflow.extra_addons", "")
+        extra_container_paths: list[str] = []
         if extra_addons_json:
-            from oduflow.extra_addons import generate_odoo_conf
             parsed = json.loads(extra_addons_json)
             extra_dict = _normalize_extra_addons(parsed)
             extra_container_paths = [f"/mnt/extra-addons-{rn}" for rn in extra_dict]
-            generated_conf = os.path.join(workspace_path, "odoo.conf")
-            generate_odoo_conf(base_conf_path, generated_conf, extra_container_paths)
-            _copy_file_to_container(new_container, generated_conf, "/etc/odoo")
-        else:
-            _copy_file_to_container(new_container, base_conf_path, "/etc/odoo")
+        generated_conf = os.path.join(workspace_path, "odoo.conf")
+        generate_odoo_conf(base_conf_path, generated_conf, extra_container_paths)
+        _copy_file_to_container(new_container, generated_conf, "/etc/odoo")
 
     # ------------------------------------------------------------------
     # 5. Re-install apt packages and pip requirements
