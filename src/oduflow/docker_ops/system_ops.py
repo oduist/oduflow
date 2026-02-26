@@ -205,13 +205,9 @@ def _create_pg_role(client: DockerClient, settings: Settings, username: str, pas
         f"ALTER ROLE \"{username}\" WITH LOGIN PASSWORD '{safe_pw}';",
     )
     _exec_sql(client, settings, f'ALTER DATABASE "{db_name}" OWNER TO "{username}";')
-    # Reassign all objects (tables, views, sequences, functions, types, etc.)
-    # from the superuser to the per-environment role in one shot.
-    _exec_sql(
-        client, settings,
-        f'REASSIGN OWNED BY "{settings.db_user}" TO "{username}";',
-        db=db_name,
-    )
+    # Grant membership in the superuser role so the env role inherits
+    # ownership of all existing objects (needed for DDL during module upgrades).
+    _exec_sql(client, settings, f'GRANT "{settings.db_user}" TO "{username}";')
     logger.info("Created/ensured PG role '%s' for database '%s'", username, db_name)
 
 
@@ -219,7 +215,7 @@ def _drop_pg_role(client: DockerClient, settings: Settings, username: str) -> No
     if username == settings.db_user:
         return
     try:
-        _exec_sql(client, settings, f'REASSIGN OWNED BY "{username}" TO "{settings.db_user}";')
+        _exec_sql(client, settings, f'REVOKE "{settings.db_user}" FROM "{username}";')
     except Exception:
         pass
     try:
