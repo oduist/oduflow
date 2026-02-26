@@ -2,6 +2,7 @@ import argparse
 import functools
 import logging
 import os
+import re
 import threading
 
 from fastmcp import FastMCP
@@ -13,6 +14,8 @@ from oduflow.errors import BusyError, FlowError
 from oduflow.settings import Settings
 
 logger = logging.getLogger("oduflow")
+
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
 mcp = FastMCP("Oduflow")
 _busy = threading.Lock()
@@ -492,7 +495,7 @@ def get_environment_logs(branch_name: str, n_lines: int = 100) -> str:
         n_lines: The number of recent log lines to retrieve (default 100).
     """
     output = odoo_ops.get_environment_logs(_get_settings(), branch_name, n_lines)
-    return f"Recent logs for {branch_name}:\n\n{output}"
+    return f"Recent logs for {branch_name}:\n\n{_ANSI_RE.sub('', output)}"
 
 
 @mcp.tool()
@@ -949,7 +952,7 @@ def get_service_logs(name: str, n_lines: int = 100) -> str:
         n_lines: Number of recent log lines to retrieve (default 100).
     """
     output = service_ops.get_service_logs(_get_settings(), name, n_lines)
-    return f"Recent logs for service '{name}':\n\n{output}"
+    return f"Recent logs for service '{name}':\n\n{_ANSI_RE.sub('', output)}"
 
 
 def _run_init(settings: Settings) -> None:
