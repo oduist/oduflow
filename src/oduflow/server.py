@@ -1038,6 +1038,16 @@ def _run_init_instance(settings: Settings, *, update_guides: bool = False) -> No
                     action = "Updated" if update_guides else "Created"
                     print(f"  Agent guide {action}: {dest_file}")
 
+    # Seed instance .env from bundled .env.example
+    from oduflow.systemd import env_file_path
+    env_dest = env_file_path(settings.instance_id)
+    if not env_dest.exists():
+        bundled_env = pathlib.Path(__file__).resolve().parent / "templates" / ".env.example"
+        if bundled_env.is_file():
+            os.makedirs(str(env_dest.parent), exist_ok=True)
+            shutil.copy2(str(bundled_env), str(env_dest))
+            print(f"  Env file: {env_dest}  (edit before starting the service)")
+
     if settings.routing_mode == "traefik" and settings.base_domain:
         dynamic_dir = "/etc/oduflow/traefik"
         os.makedirs(dynamic_dir, exist_ok=True)
@@ -1381,6 +1391,12 @@ def main() -> None:
     p_call = sub.add_parser("call", help="Call an MCP tool: oduflow call <tool> [args...]")
     p_call.add_argument("call_args", nargs="*", default=[], help="Tool name and arguments")
 
+    p_sd_install = sub.add_parser("systemd-install", help="Install and enable a systemd service for Oduflow")
+    p_sd_install.add_argument("--instance", required=True, help="Instance ID (1-9)")
+
+    p_sd_uninstall = sub.add_parser("systemd-uninstall", help="Stop, disable, and remove the Oduflow systemd service")
+    p_sd_uninstall.add_argument("--instance", required=True, help="Instance ID (1-9)")
+
     args = parser.parse_args()
 
     from dotenv import load_dotenv
@@ -1402,6 +1418,16 @@ def main() -> None:
 
     if args.command == "call":
         _run_call(args.call_args)
+        return
+
+    if args.command == "systemd-install":
+        from oduflow.systemd import install as systemd_install
+        systemd_install(instance_id=args.instance)
+        return
+
+    if args.command == "systemd-uninstall":
+        from oduflow.systemd import uninstall as systemd_uninstall
+        systemd_uninstall(instance_id=args.instance)
         return
 
     if args.command == "init":

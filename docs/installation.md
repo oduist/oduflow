@@ -33,6 +33,14 @@ sudo sed -i 's/^#user_allow_other/user_allow_other/' /etc/fuse.conf
 
 ## Install Oduflow
 
+Recommended — install via [uv](https://docs.astral.sh/uv/) (manages an isolated environment automatically):
+
+```bash
+uv tool install oduflow
+```
+
+Alternative — install via pip:
+
 ```bash
 pip install oduflow
 ```
@@ -42,9 +50,13 @@ For local development:
 ```bash
 git clone https://github.com/oduist/oduflow.git
 cd oduflow
-python -m venv .venv
-source .venv/bin/activate
-pip install -e .
+uv sync          # or: python -m venv .venv && pip install -e .
+```
+
+### Upgrade
+
+```bash
+uv tool upgrade oduflow
 ```
 
 ## Configuration Reference
@@ -124,3 +136,66 @@ When `oduflow init` runs, it copies the bundled `postgresql.conf` and `odoo.conf
 ```
 
 If a repository contains an `odoo.conf` at its root, it takes priority over both the bundled and `/etc/oduflow/` versions for that specific environment.
+
+## Auto-start with systemd
+
+On Linux servers, Oduflow can be registered as a systemd service so it starts automatically on boot.
+
+### Prerequisites
+
+```bash
+# Install uv (if not already installed)
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# Install oduflow as a tool (as root)
+uv tool install oduflow
+
+# Initialize shared infrastructure and instance directories
+oduflow init
+oduflow init-instance
+```
+
+`init-instance` creates an environment file at `/etc/oduflow/instance_{ID}.env` (seeded from the bundled `.env.example`). Edit it to configure your instance — set `ODUFLOW_AUTH_TOKEN`, `EXTERNAL_HOST`, routing mode, etc.
+
+### Install the service
+
+```bash
+oduflow systemd-install --instance 1
+```
+
+This will:
+
+1. Generate a systemd unit file at `/etc/systemd/system/oduflow.service`
+2. Run `systemctl daemon-reload`
+3. Enable the service for auto-start on boot
+
+For multi-instance setups, the service is named `oduflow-{ID}.service`:
+
+```bash
+oduflow systemd-install --instance 2
+# → /etc/systemd/system/oduflow-2.service
+```
+
+### Manage the service
+
+```bash
+# Start
+systemctl start oduflow
+
+# Status
+systemctl status oduflow
+
+# Logs (follow)
+journalctl -u oduflow -f
+
+# Restart after config changes
+systemctl restart oduflow
+```
+
+### Remove the service
+
+```bash
+oduflow systemd-uninstall --instance 1
+```
+
+This stops, disables, and removes the unit file.

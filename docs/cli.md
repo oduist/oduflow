@@ -87,6 +87,23 @@ The `cleanup` command detects and removes resources that no longer have a corres
 
 By default, `cleanup` runs in **dry-run mode** and only reports what would be removed. Use `--force` to actually delete the orphaned resources.
 
+## Systemd Service
+
+```bash
+# Install and enable systemd service for instance 1
+oduflow systemd-install --instance 1
+
+# For multi-instance setups
+oduflow systemd-install --instance 2
+
+# Remove the systemd service
+oduflow systemd-uninstall --instance 1
+```
+
+The `systemd-install` command generates a unit file at `/etc/systemd/system/oduflow.service` (or `oduflow-{ID}.service` for instances 2-9), runs `daemon-reload`, and enables the service. The unit reads configuration from `/etc/oduflow/instance_{ID}.env`.
+
+See [Auto-start with systemd](installation.md#auto-start-with-systemd) for the full setup guide.
+
 ## Tool Introspection
 
 ```bash
