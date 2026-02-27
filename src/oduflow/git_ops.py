@@ -7,7 +7,7 @@ from oduflow.errors import ExternalCommandError, FlowError
 
 logger = logging.getLogger("oduflow")
 
-GIT_ENV = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
+GIT_ENV = {**os.environ, "GIT_TERMINAL_PROMPT": "0", "HOME": os.environ.get("HOME", "/root")}
 
 
 class InvalidRepoURLError(FlowError):
