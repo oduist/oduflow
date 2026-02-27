@@ -183,7 +183,30 @@ def delete_extra_repo(settings: Settings, name: str) -> dict:
     return {"name": name, "deleted": True}
 
 
-def fetch_extra_repo(settings: Settings, name: str) -> None:
+def _get_branch_refs(repo_path: str) -> dict[str, str]:
+    """Return a mapping of branch name → commit SHA for all local branches."""
+    try:
+        result = subprocess.run(
+            ["git", "-C", repo_path, "for-each-ref",
+             "--format=%(refname:short) %(objectname)", "refs/heads/"],
+            check=True, capture_output=True, text=True, timeout=10, env=GIT_ENV,
+        )
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+        return {}
+    refs: dict[str, str] = {}
+    for line in result.stdout.strip().splitlines():
+        parts = line.split(None, 1)
+        if len(parts) == 2:
+            refs[parts[0]] = parts[1]
+    return refs
+
+
+def fetch_extra_repo(settings: Settings, name: str) -> dict:
+    """Fetch latest changes and return a summary of what changed.
+
+    Returns a dict with keys: name, up_to_date, new_branches,
+    deleted_branches, updated_branches.
+    """
     path = os.path.join(settings.shared_repos_dir, name)
     if not os.path.isdir(path):
         raise NotFoundError(f"Extra repo '{name}' not found.")
@@ -203,6 +226,8 @@ def fetch_extra_repo(settings: Settings, name: str) -> None:
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
         pass  # best-effort; fetch will still run
 
+    refs_before = _get_branch_refs(path)
+
     try:
         subprocess.run(
             ["git", "-C", path, "fetch", "--all", "--prune"],
@@ -221,7 +246,39 @@ def fetch_extra_repo(settings: Settings, name: str) -> None:
             "git fetch --all --prune", -1, "Fetch timed out (120s)."
         )
 
-    logger.info("Fetched extra repo '%s'", name)
+    refs_after = _get_branch_refs(path)
+
+    new_branches = sorted(set(refs_after) - set(refs_before))
+    deleted_branches = sorted(set(refs_before) - set(refs_after))
+    updated_branches: list[dict] = []
+    for branch_name in sorted(set(refs_before) & set(refs_after)):
+        old_sha = refs_before[branch_name]
+        new_sha = refs_after[branch_name]
+        if old_sha != new_sha:
+            try:
+                count_result = subprocess.run(
+                    ["git", "-C", path, "rev-list", "--count",
+                     f"{old_sha}..{new_sha}"],
+                    check=True, capture_output=True, text=True, timeout=10,
+                    env=GIT_ENV,
+                )
+                new_commits = int(count_result.stdout.strip())
+            except (subprocess.CalledProcessError, subprocess.TimeoutExpired, ValueError):
+                new_commits = 0
+            updated_branches.append({
+                "branch": branch_name,
+                "new_commits": new_commits,
+            })
+
+    up_to_date = not new_branches and not deleted_branches and not updated_branches
+    logger.info("Fetched extra repo '%s' (up_to_date=%s)", name, up_to_date)
+    return {
+        "name": name,
+        "up_to_date": up_to_date,
+        "new_branches": new_branches,
+        "deleted_branches": deleted_branches,
+        "updated_branches": updated_branches,
+    }
 
 
 def create_worktree(
@@ -285,6 +342,52 @@ def remove_worktree(
             "Ignoring worktree removal error for %s (may already be cleaned up)",
             target_path,
         )
+
+
+def pull_extra_worktree(
+    settings: Settings, repo_name: str, branch: str, worktree_path: str
+) -> list[str]:
+    """Fetch the bare repo and reset the worktree to the branch tip.
+
+    Returns a list of changed file paths (relative to worktree root),
+    or an empty list if already up to date.
+    """
+    fetch_extra_repo(settings, repo_name)
+
+    old_head = subprocess.run(
+        ["git", "-C", worktree_path, "rev-parse", "HEAD"],
+        check=True, capture_output=True, text=True, env=GIT_ENV,
+    ).stdout.strip()
+
+    try:
+        subprocess.run(
+            ["git", "-C", worktree_path, "reset", "--hard", branch],
+            check=True, capture_output=True, text=True, env=GIT_ENV,
+        )
+    except subprocess.CalledProcessError as e:
+        raise ExternalCommandError(
+            "git reset --hard", e.returncode, e.stderr or ""
+        )
+
+    new_head = subprocess.run(
+        ["git", "-C", worktree_path, "rev-parse", "HEAD"],
+        check=True, capture_output=True, text=True, env=GIT_ENV,
+    ).stdout.strip()
+
+    if old_head == new_head:
+        return []
+
+    result = subprocess.run(
+        ["git", "-C", worktree_path, "diff", "--name-only",
+         f"{old_head}..{new_head}"],
+        check=True, capture_output=True, text=True, env=GIT_ENV,
+    )
+    changed = [f for f in result.stdout.strip().splitlines() if f]
+    logger.info(
+        "Updated worktree %s/%s: %d files changed",
+        repo_name, branch, len(changed),
+    )
+    return changed
 
 
 def generate_odoo_conf(

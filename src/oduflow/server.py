@@ -142,8 +142,22 @@ def update_extra_repo(name: str) -> str:
         name: Name of the extra repo to update (e.g. "enterprise").
     """
     from oduflow.extra_addons import fetch_extra_repo
-    fetch_extra_repo(_get_settings(), name)
-    return f"Extra repo '{name}' updated (fetched all branches)."
+    summary = fetch_extra_repo(_get_settings(), name)
+    return _format_fetch_summary(summary)
+
+
+def _format_fetch_summary(summary: dict) -> str:
+    name = summary["name"]
+    if summary["up_to_date"]:
+        return f"Extra repo '{name}': already up to date."
+    parts = [f"Extra repo '{name}' updated:"]
+    for b in summary["updated_branches"]:
+        parts.append(f"  {b['branch']}: {b['new_commits']} new commit(s)")
+    for b in summary["new_branches"]:
+        parts.append(f"  {b}: new branch")
+    for b in summary["deleted_branches"]:
+        parts.append(f"  {b}: deleted")
+    return "\n".join(parts)
 
 def _parse_extra_addons(raw: str) -> dict[str, str]:
     result = {}
@@ -621,6 +635,8 @@ def pull_and_apply(branch_name: str) -> str:
     """
     Pull latest changes from the remote repository for an environment
     and take appropriate action based on what changed.
+
+    Pulls both the main repository and any extra addon worktrees.
 
     Analyzes changed files and automatically:
     - Upgrades modules if __manifest__.py version/data/assets changed, or security XML changed

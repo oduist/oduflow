@@ -962,7 +962,7 @@ def pull_environment(settings: Settings, branch_name: str) -> dict[str, Any]:
         raise NotFoundError(f"Repository for branch '{branch_name}' not found at {repo_path}")
 
     try:
-        client.containers.get(odoo_container_name)
+        container_obj = client.containers.get(odoo_container_name)
     except docker.errors.NotFound:
         raise NotFoundError(
             f"Environment '{branch_name}' does not exist. Use create_environment first."
@@ -970,13 +970,38 @@ def pull_environment(settings: Settings, branch_name: str) -> dict[str, Any]:
 
     _trace("pull_environment(%s): git pull started", branch_name)
     changed_files = pull_repo(repo_path, branch_name)
-    if not changed_files:
+
+    # --- Pull extra addon worktrees ---
+    extra_changed_files: list[str] = []
+    extra_addons_raw = container_obj.labels.get("oduflow.extra_addons", "{}")
+    try:
+        extra_addons = json.loads(extra_addons_raw)
+    except (json.JSONDecodeError, TypeError):
+        extra_addons = {}
+
+    if extra_addons:
+        from oduflow.extra_addons import pull_extra_worktree
+        workspace_path = get_workspace_path(branch_name, settings.workspaces_dir)
+        extra_dir = os.path.join(workspace_path, "extra")
+        for repo_name, branch in extra_addons.items():
+            wt_path = os.path.join(extra_dir, repo_name)
+            if not os.path.isdir(wt_path):
+                _trace("pull_environment(%s): extra worktree %s not found, skipping", branch_name, wt_path)
+                continue
+            _trace("pull_environment(%s): pulling extra addon %s@%s", branch_name, repo_name, branch)
+            extra_files = pull_extra_worktree(settings, repo_name, branch, wt_path)
+            extra_changed_files.extend(extra_files)
+            if extra_files:
+                _trace("pull_environment(%s): extra addon %s: %d files changed", branch_name, repo_name, len(extra_files))
+
+    all_changed = changed_files + extra_changed_files
+    if not all_changed:
         _trace("pull_environment(%s): no changes, already up to date", branch_name)
         return {"action": "none", "message": "Already up to date."}
 
-    _trace("pull_environment(%s): %d files changed: %s", branch_name, len(changed_files), changed_files)
+    _trace("pull_environment(%s): %d files changed: %s", branch_name, len(all_changed), all_changed)
 
-    analysis = classify_changes(changed_files, repo_path)
+    analysis = classify_changes(all_changed, repo_path)
     action = analysis["action"]
     _trace("pull_environment(%s): classify result action=%s", branch_name, action)
 
@@ -1017,7 +1042,7 @@ def pull_environment(settings: Settings, branch_name: str) -> dict[str, Any]:
             "modules_installed": to_install,
             "modules_upgraded": to_upgrade,
             "exit_code": last_exit_code,
-            "changed_files": changed_files,
+            "changed_files": all_changed,
             "message": " ".join(messages),
             "output": "\n".join(odoo_output_parts),
         }
@@ -1029,14 +1054,14 @@ def pull_environment(settings: Settings, branch_name: str) -> dict[str, Any]:
         logger.info("Container restarted after pull", extra={"branch": branch_name})
         return {
             "action": "restart",
-            "changed_files": changed_files,
+            "changed_files": all_changed,
             "message": "Container restarted (Python files changed).",
         }
 
     _trace("pull_environment(%s): NO restart, action=refresh (hot-reload only)", branch_name)
     return {
         "action": "refresh",
-        "changed_files": changed_files,
+        "changed_files": all_changed,
         "message": "Only XML/JS changes detected. Refresh your browser (--dev=xml is active).",
     }
 

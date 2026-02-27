@@ -603,8 +603,8 @@ def _build_routes(
             return _error_response(BusyError("Another operation is in progress."))
         try:
             from oduflow.extra_addons import fetch_extra_repo
-            fetch_extra_repo(get_settings(), name)
-            return JSONResponse({"ok": True, "result": {"pulled": name}})
+            summary = fetch_extra_repo(get_settings(), name)
+            return JSONResponse({"ok": True, "result": summary})
         except FlowError as e:
             return _error_response(e)
         except Exception as e:

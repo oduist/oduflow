@@ -2016,7 +2016,7 @@ async function doPullExtraRepo(name, btn) {
     var r = await fetch(API_EXTRA_REPOS + '/' + encodeURIComponent(name) + '/pull', {method:'POST'});
     var data = await r.json();
     if (data.ok) {
-      showToast('Extra repo "' + name + '" updated');
+      showExtraRepoUpdateResult(name, data.result);
       await loadExtraRepos();
     } else {
       showToast(data.error || 'Update failed', true);
@@ -2027,6 +2027,38 @@ async function doPullExtraRepo(name, btn) {
     btn.disabled = false;
     btn.textContent = 'Update';
   }
+}
+
+function showExtraRepoUpdateResult(name, result) {
+  if (result.up_to_date) {
+    showToast('Extra repo "' + name + '": already up to date');
+    return;
+  }
+  var html = '';
+  if (result.updated_branches && result.updated_branches.length) {
+    html += '<div class="sync-section"><div class="sync-section-title">Updated branches</div><div class="sync-modules">';
+    result.updated_branches.forEach(function(b) {
+      html += '<span class="sync-module-tag">' + esc(b.branch) + ' — ' + b.new_commits + ' new commit(s)</span>';
+    });
+    html += '</div></div>';
+  }
+  if (result.new_branches && result.new_branches.length) {
+    html += '<div class="sync-section"><div class="sync-section-title">New branches</div><div class="sync-modules">';
+    result.new_branches.forEach(function(b) {
+      html += '<span class="sync-module-tag">' + esc(b) + '</span>';
+    });
+    html += '</div></div>';
+  }
+  if (result.deleted_branches && result.deleted_branches.length) {
+    html += '<div class="sync-section"><div class="sync-section-title">Deleted branches</div><div class="sync-modules">';
+    result.deleted_branches.forEach(function(b) {
+      html += '<span class="sync-module-tag" style="opacity:0.6;text-decoration:line-through">' + esc(b) + '</span>';
+    });
+    html += '</div></div>';
+  }
+  document.getElementById('sync-result-title').textContent = 'Update — ' + name;
+  document.getElementById('sync-result-body').innerHTML = html;
+  document.getElementById('sync-result-modal').classList.add('show');
 }
 
 async function doProtectExtraRepo(name, isProtected) {
