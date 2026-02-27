@@ -46,7 +46,7 @@ dmypy.json
 .ruff_cache/
 
 # Docker
-.dockerignore
+
 
 # OS
 .DS_Store

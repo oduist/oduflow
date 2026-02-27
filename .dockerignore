@@ -1,0 +1,14 @@
+.git
+.github
+.venv
+.pytest_cache
+.amp
+.zencoder
+__pycache__
+site
+dist
+tests
+docs
+*.pem
+*.egg-info
+uv.lock
