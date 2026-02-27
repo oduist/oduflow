@@ -95,5 +95,4 @@ source .venv/bin/activate && mkdocs gh-deploy --force
 Site: https://oduist.github.io/oduflow/
 
 ## Agent workflow
-
-Per AGENTS.md: always explain understanding → present plan → get explicit confirmation before writing code.
+@AGENTS.md
