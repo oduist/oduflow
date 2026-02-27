@@ -63,3 +63,5 @@ generate_license.py
 # MkDocs build output
 site/
 .amp
+.claude
+.entire

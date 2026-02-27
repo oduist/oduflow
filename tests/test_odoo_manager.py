@@ -111,6 +111,8 @@ class TestDestroySystem:
 
 
 class TestCreateEnvironment:
+    @patch("oduflow.extra_addons.generate_odoo_conf", return_value="/tmp/flow-test/workspaces/feature-payments/odoo.conf")
+    @patch("oduflow.docker_ops.env_ops._copy_file_to_container")
     @patch("oduflow.docker_ops.env_ops._create_pg_role")
     @patch("oduflow.docker_ops.env_ops.create_credentials", return_value={"pg_user": "u_1_feature-payments", "pg_password": "test-pw"})
     @patch("oduflow.docker_ops.env_ops._ensure_system_ready")
@@ -124,7 +126,7 @@ class TestCreateEnvironment:
     @patch("oduflow.docker_ops.env_ops.os.chmod")
     @patch("oduflow.docker_ops.env_ops.os.makedirs")
     @patch("oduflow.docker_ops.env_ops.os.path.exists", return_value=False)
-    def test_create(self, mock_exists, mock_makedirs, mock_chmod, mock_run, mock_alloc, mock_used, mock_mount, mock_db_exists, mock_sql, mock_uid_gid, mock_ready, mock_creds, mock_role, mock_docker_client):
+    def test_create(self, mock_exists, mock_makedirs, mock_chmod, mock_run, mock_alloc, mock_used, mock_mount, mock_db_exists, mock_sql, mock_uid_gid, mock_ready, mock_creds, mock_role, mock_copy_conf, mock_gen_conf, mock_docker_client):
         mock_odoo = MagicMock()
         mock_odoo.exec_run.return_value = (0, b"OK")
         mock_docker_client.containers.run.return_value = mock_odoo
@@ -161,6 +163,8 @@ class TestCreateEnvironment:
             env_ops.create_environment(TEST_SETTINGS, "main", "https://github.com/org/repo.git", "odoo:15.0")
 
 
+    @patch("oduflow.extra_addons.generate_odoo_conf", return_value="/tmp/flow-test/workspaces/feature-no-tpl/odoo.conf")
+    @patch("oduflow.docker_ops.env_ops._copy_file_to_container")
     @patch("oduflow.docker_ops.env_ops._create_pg_role")
     @patch("oduflow.docker_ops.env_ops.create_credentials", return_value={"pg_user": "u_1_feature-no-tpl", "pg_password": "test-pw"})
     @patch("oduflow.docker_ops.env_ops._ensure_system_ready")
@@ -174,7 +178,7 @@ class TestCreateEnvironment:
     @patch("oduflow.docker_ops.env_ops.os.chmod")
     @patch("oduflow.docker_ops.env_ops.os.makedirs")
     @patch("oduflow.docker_ops.env_ops.os.path.exists", return_value=False)
-    def test_create_no_template(self, mock_exists, mock_makedirs, mock_chmod, mock_run, mock_alloc, mock_used, mock_mount, mock_db_exists, mock_sql, mock_uid_gid, mock_ready, mock_creds, mock_role, mock_docker_client):
+    def test_create_no_template(self, mock_exists, mock_makedirs, mock_chmod, mock_run, mock_alloc, mock_used, mock_mount, mock_db_exists, mock_sql, mock_uid_gid, mock_ready, mock_creds, mock_role, mock_copy_conf, mock_gen_conf, mock_docker_client):
         mock_odoo = MagicMock()
         mock_odoo.exec_run.return_value = (0, b"OK")
         mock_docker_client.containers.run.return_value = mock_odoo

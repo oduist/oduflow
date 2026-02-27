@@ -3,6 +3,7 @@ import functools
 import logging
 import os
 import re
+import sys
 import threading
 
 from fastmcp import FastMCP
@@ -1328,18 +1329,31 @@ def _run_call(argv: list[str]) -> None:
         sys.exit(1)
 
 
+def _get_version() -> str:
+    """Return the installed package version."""
+    from importlib.metadata import version, PackageNotFoundError
+    try:
+        return version("oduflow")
+    except PackageNotFoundError:
+        return "dev"
+
+
 def main() -> None:
     """Entry point for the Oduflow MCP server."""
-    parser = argparse.ArgumentParser(prog="oduflow", description="Oduflow — Odoo dev environment manager",
-                                     usage="oduflow [-h] [--env ENV] <command> ...")
-    parser.add_argument("--env", default=None, metavar="FILE", help="Path to .env file (default: .env in current dir)")
+    parser = argparse.ArgumentParser(prog="oduflow", description="Oduflow — Odoo dev environment manager")
+    parser.add_argument("--version", action="version", version=f"oduflow {_get_version()}")
+    parser.add_argument("--env", default=None, metavar="FILE", help="Path to .env file (default: /etc/oduflow/instance_{ID}.env)")
     sub = parser.add_subparsers(dest="command", title="commands", metavar="")
+
+    p_run = sub.add_parser("run-instance", help="Start the Oduflow MCP server")
+    p_run.add_argument("--instance", default="1", help="Instance ID (default: 1). Used to locate .env when --env is not set")
 
     p_init = sub.add_parser("init", help="Initialize shared infrastructure (network, DB)")
     p_init.add_argument("--license", default="", metavar="FILE", dest="license_file",
                         help="Path to license.key file to install to /etc/oduflow/license.key")
 
     p_init_inst = sub.add_parser("init-instance", help="Initialize per-instance directories (workspaces, templates)")
+    p_init_inst.add_argument("--instance", default="1", help="Instance ID (default: 1)")
     p_init_inst.add_argument("--update-guides", action="store_true", default=False,
                              help="Overwrite existing agent guides with the latest bundled versions")
 
@@ -1399,18 +1413,11 @@ def main() -> None:
 
     args = parser.parse_args()
 
-    from dotenv import load_dotenv
-    load_dotenv(args.env)
+    # --- Commands that don't need .env / Settings -----------------------
 
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(name)s %(levelname)s %(message)s",
-    )
-    logging.getLogger("docket").setLevel(logging.WARNING)
-
-    global _settings
-    _settings = Settings.from_env()
-    _settings.validate()
+    if args.command is None:
+        parser.print_help()
+        sys.exit(0)
 
     if args.command == "list":
         _print_tools(verbose=args.verbose)
@@ -1429,6 +1436,34 @@ def main() -> None:
         from oduflow.systemd import uninstall as systemd_uninstall
         systemd_uninstall(instance_id=args.instance)
         return
+
+    # --- Resolve and load .env ------------------------------------------
+
+    env_file = args.env
+    if env_file is None and args.command == "run-instance":
+        from oduflow.systemd import env_file_path
+        candidate = env_file_path(args.instance)
+        if candidate.exists():
+            env_file = str(candidate)
+
+    from dotenv import load_dotenv
+    load_dotenv(env_file)
+
+    # --instance flag overrides ODUFLOW_INSTANCE_ID from .env
+    if hasattr(args, "instance") and args.instance:
+        os.environ["ODUFLOW_INSTANCE_ID"] = args.instance
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(name)s %(levelname)s %(message)s",
+    )
+    logging.getLogger("docket").setLevel(logging.WARNING)
+
+    global _settings
+    _settings = Settings.from_env()
+    _settings.validate()
+
+    # --- Commands that need Settings ------------------------------------
 
     if args.command == "init":
         _run_init(_settings)
@@ -1486,6 +1521,15 @@ def main() -> None:
         _run_cleanup(_settings, dry_run=not args.force)
         return
 
+    # --- run-instance: start the MCP server -----------------------------
+
+    if args.command == "run-instance":
+        _start_server()
+        return
+
+
+def _start_server() -> None:
+    """Start the MCP server (HTTP or stdio)."""
     transport_str = os.getenv("ODUFLOW_TRANSPORT", "http")
 
     if transport_str == "http":

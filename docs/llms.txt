@@ -25,18 +25,32 @@ sudo sed -i 's/^#user_allow_other/user_allow_other/' /etc/fuse.conf
 
 ### Step 2: Install Oduflow
 
+Recommended — install via [uv](https://docs.astral.sh/uv/):
+
+```bash
+uv tool install oduflow
+```
+
+Alternative — install via pip:
+
+```bash
+pip install oduflow
+```
+
+For local development:
+
 ```bash
 git clone https://github.com/oduist/oduflow.git
 cd oduflow
-python -m venv .venv
-source .venv/bin/activate
-pip install .
+uv sync          # or: python -m venv .venv && pip install -e .
 ```
 
 ### Step 3: Configure
 
+All settings are configured via environment variables. On servers, `oduflow init-instance` seeds the file at `/etc/oduflow/instance_{ID}.env` and `oduflow run-instance` picks it up automatically. For local development, pass the path explicitly:
+
 ```bash
-cp .env.example .env
+oduflow --env .env run-instance
 ```
 
 Key environment variables:
@@ -58,10 +72,14 @@ Key environment variables:
 ### Step 4: Initialize the system
 
 ```bash
+# Initialize shared infrastructure (network, DB, Traefik)
 oduflow init
+
+# Initialize per-instance directories (workspaces, templates)
+oduflow init-instance --instance 1
 ```
 
-This creates the shared Docker network, PostgreSQL container, and (optionally) Traefik reverse proxy.
+This creates the shared Docker network, PostgreSQL container, and (optionally) Traefik reverse proxy. `init-instance` seeds `/etc/oduflow/instance_1.env` from the bundled `.env.example` — edit it before starting the server.
 
 ### Step 5: Set up a template
 
@@ -82,10 +100,25 @@ oduflow reload-template
 ### Step 6: Start the MCP server
 
 ```bash
-oduflow
+oduflow run-instance
 ```
 
 The server starts on `http://0.0.0.0:8000`. MCP endpoint: `http://<host>:8000/mcp`.
+
+### Step 7 (optional): Auto-start with systemd
+
+```bash
+# Install and enable systemd service for instance 1
+oduflow systemd-install --instance 1
+
+# Manage the service
+systemctl start oduflow
+systemctl status oduflow
+journalctl -u oduflow -f
+
+# Remove the service
+oduflow systemd-uninstall --instance 1
+```
 
 ## MCP Client Configuration
 

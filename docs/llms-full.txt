@@ -111,7 +111,7 @@ To set up a template database, use `oduflow init-template` (see [Template Manage
 ## 3. Start the MCP server
 
 ```bash
-oduflow
+oduflow run-instance
 ```
 
 The server starts on `http://0.0.0.0:8000` by default (configurable via `ODUFLOW_HOST` / `ODUFLOW_PORT`).
@@ -151,6 +151,14 @@ sudo sed -i 's/^#user_allow_other/user_allow_other/' /etc/fuse.conf
 
 ## Install Oduflow
 
+Recommended — install via [uv](https://docs.astral.sh/uv/) (manages an isolated environment automatically):
+
+```bash
+uv tool install oduflow
+```
+
+Alternative — install via pip:
+
 ```bash
 pip install oduflow
 ```
@@ -160,17 +168,23 @@ For local development:
 ```bash
 git clone https://github.com/oduist/oduflow.git
 cd oduflow
-python -m venv .venv
-source .venv/bin/activate
-pip install -e .
+uv sync          # or: python -m venv .venv && pip install -e .
+```
+
+### Upgrade
+
+```bash
+uv tool upgrade oduflow
 ```
 
 ## Configuration Reference
 
-All settings are configured via environment variables. Oduflow uses [python-dotenv](https://pypi.org/project/python-dotenv/) and loads a `.env` file from the working directory on startup.
+All settings are configured via environment variables. Oduflow uses [python-dotenv](https://pypi.org/project/python-dotenv/) and loads a `.env` file on startup.
+
+On servers, `oduflow init-instance` seeds the file at `/etc/oduflow/instance_{ID}.env` and `oduflow run-instance` picks it up automatically. For local development, pass the path explicitly:
 
 ```bash
-cp .env.example .env
+oduflow --env .env run-instance
 ```
 
 ### Server
@@ -1263,12 +1277,24 @@ All tools are accessible via MCP clients (Cursor, Cline, Amp, etc.) and the CLI 
 oduflow --env /path/to/.env <command>
 ```
 
-## Server & System Commands
+## Running the Server
 
 ```bash
-# Start the MCP server (default command)
-oduflow
+# Start the MCP server (instance 1 by default)
+oduflow run-instance
 
+# Start a specific instance
+oduflow run-instance --instance 2
+
+# Start with a custom .env file
+oduflow --env /path/to/.env run-instance
+```
+
+By default, `run-instance` loads the environment file from `/etc/oduflow/instance_{ID}.env`.
+
+## System Commands
+
+```bash
 # Initialize shared infrastructure (network, DB, Traefik)
 oduflow init
 
@@ -1276,13 +1302,26 @@ oduflow init
 oduflow init --license /path/to/license.key
 
 # Initialize per-instance directories (workspaces, templates)
-oduflow init-instance
+oduflow init-instance --instance 1
 
 # Update agent guides to the latest bundled versions (overwrites existing)
-oduflow init-instance --update-guides
+oduflow init-instance --instance 1 --update-guides
 
 # Destroy all shared infrastructure (requires no active environments)
 oduflow destroy
+```
+
+## Systemd Service
+
+```bash
+# Install and enable systemd service for instance 1
+oduflow systemd-install --instance 1
+
+# For multi-instance setups
+oduflow systemd-install --instance 2
+
+# Remove the systemd service
+oduflow systemd-uninstall --instance 1
 ```
 
 ## Template Commands
@@ -1428,13 +1467,12 @@ Set `ODUFLOW_INSTANCE_ID` (1-9) and optionally `ODUFLOW_DATA_DIR` to isolate ins
 
 ```bash
 # Instance 1
-export ODUFLOW_INSTANCE_ID=1
-oduflow init-instance
+oduflow init-instance --instance 1
+oduflow run-instance --instance 1
 
 # Instance 2 (separate terminal / process)
-export ODUFLOW_INSTANCE_ID=2
-export ODUFLOW_PORT=8001
-oduflow init-instance
+oduflow init-instance --instance 2
+oduflow --env /etc/oduflow/instance_2.env run-instance --instance 2
 ```
 
 Databases are namespaced by instance ID (e.g. `oduflow_1_main`, `oduflow_2_main`), and containers are labeled with `oduflow.instance={ID}` for filtering.
@@ -1598,7 +1636,7 @@ docker exec oduflow oduflow init
 docker network connect oduflow-net oduflow
 
 # 4. Initialize instance directories
-docker exec oduflow oduflow init-instance
+docker exec oduflow oduflow init-instance --instance 1
 ```
 
 Alternatively, start with `--network oduflow-net` if the network already exists.
@@ -1615,7 +1653,7 @@ docker exec oduflow oduflow init
 docker network connect oduflow-net oduflow
 
 # Create instance directories (workspaces, templates)
-docker exec oduflow oduflow init-instance
+docker exec oduflow oduflow init-instance --instance 1
 ```
 
 To set up a template database:
@@ -1671,7 +1709,7 @@ After `docker compose up -d`, run initialization:
 
 ```bash
 docker compose exec oduflow oduflow init
-docker compose exec oduflow oduflow init-instance
+docker compose exec oduflow oduflow init-instance --instance 1
 ```
 
 ## Security Notes

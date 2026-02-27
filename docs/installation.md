@@ -61,10 +61,12 @@ uv tool upgrade oduflow
 
 ## Configuration Reference
 
-All settings are configured via environment variables. Oduflow uses [python-dotenv](https://pypi.org/project/python-dotenv/) and loads a `.env` file from the working directory on startup.
+All settings are configured via environment variables. Oduflow uses [python-dotenv](https://pypi.org/project/python-dotenv/) and loads a `.env` file on startup.
+
+On servers, `oduflow init-instance` seeds the file at `/etc/oduflow/instance_{ID}.env` and `oduflow run-instance` picks it up automatically. For local development, pass the path explicitly:
 
 ```bash
-cp .env.example .env
+oduflow --env .env run-instance
 ```
 
 ### Server
@@ -152,7 +154,7 @@ uv tool install oduflow
 
 # Initialize shared infrastructure and instance directories
 oduflow init
-oduflow init-instance
+oduflow init-instance --instance 1
 ```
 
 `init-instance` creates an environment file at `/etc/oduflow/instance_{ID}.env` (seeded from the bundled `.env.example`). Edit it to configure your instance — set `ODUFLOW_AUTH_TOKEN`, `EXTERNAL_HOST`, routing mode, etc.

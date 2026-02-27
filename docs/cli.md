@@ -5,16 +5,31 @@
 ## Global Options
 
 ```bash
-# Use a custom .env file (default: .env in current directory)
+# Show version
+oduflow --version
+
+# Use a custom .env file
 oduflow --env /path/to/.env <command>
 ```
 
-## Server & System Commands
+## Running the Server
 
 ```bash
-# Start the MCP server (default command)
-oduflow
+# Start the MCP server (instance 1 by default)
+oduflow run-instance
 
+# Start a specific instance
+oduflow run-instance --instance 2
+
+# Start with a custom .env file
+oduflow --env /path/to/.env run-instance
+```
+
+By default, `run-instance` loads the environment file from `/etc/oduflow/instance_{ID}.env`. Use the global `--env` flag to override.
+
+## System Commands
+
+```bash
 # Initialize shared infrastructure (network, DB, Traefik)
 oduflow init
 
@@ -22,10 +37,10 @@ oduflow init
 oduflow init --license /path/to/license.key
 
 # Initialize per-instance directories (workspaces, templates)
-oduflow init-instance
+oduflow init-instance --instance 1
 
 # Update agent guides to the latest bundled versions (overwrites existing)
-oduflow init-instance --update-guides
+oduflow init-instance --instance 1 --update-guides
 
 # Destroy all shared infrastructure (requires no active environments)
 oduflow destroy

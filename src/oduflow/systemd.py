@@ -20,8 +20,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart={oduflow_bin}
-EnvironmentFile={env_file}
+ExecStart={oduflow_bin} run-instance --instance {instance_id}
 WorkingDirectory=/
 Restart=on-failure
 RestartSec=5
@@ -87,7 +86,6 @@ def install(instance_id: str) -> None:
     unit_content = UNIT_TEMPLATE.format(
         instance_id=instance_id,
         oduflow_bin=oduflow_bin,
-        env_file=env_file,
         syslog_id=syslog_id,
     )
 
