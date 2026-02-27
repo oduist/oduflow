@@ -21,3 +21,16 @@ source .venv/bin/activate && mkdocs gh-deploy --force
 Documentation dependencies are listed in `requirements-docs.txt`.
 
 The site is hosted at: https://oduist.github.io/oduflow/
+
+## Publishing Docker Image
+
+When asked to publish a Docker image, build and push to Docker Hub:
+
+```bash
+# Read version from pyproject.toml, then:
+docker build -t oduist/oduflow:<VERSION> -t oduist/oduflow:latest .
+docker push oduist/oduflow:<VERSION>
+docker push oduist/oduflow:latest
+```
+
+Registry: hub.docker.com, repository: `oduist/oduflow`
