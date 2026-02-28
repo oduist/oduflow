@@ -1,5 +1,6 @@
 import logging
 import os
+import re
 import subprocess
 from urllib.parse import urlparse
 
@@ -31,6 +32,26 @@ class InvalidRepoURLError(FlowError):
 
 class RepoAuthError(FlowError):
     """Repository authentication failed. Call setup_repo_auth first."""
+
+
+def validate_repo_url(repo_url: str) -> None:
+    """Reject non-HTTPS repository URLs early.
+
+    SSH URLs (``git@host:path`` or ``ssh://``) cause the server to hang
+    because SSH prompts for host-key verification interactively.
+    """
+    # SCP-like SSH syntax: git@github.com:owner/repo.git
+    if re.match(r"^[a-zA-Z0-9._-]+@[a-zA-Z0-9._-]+:", repo_url):
+        raise InvalidRepoURLError(
+            "SSH repository URLs are not supported. "
+            "Use HTTPS format: https://github.com/owner/repo.git"
+        )
+    parsed = urlparse(repo_url)
+    if parsed.scheme not in ("https", "http"):
+        raise InvalidRepoURLError(
+            f"Only HTTPS repository URLs are supported (got {parsed.scheme or 'unknown'}://). "
+            "Use format: https://github.com/owner/repo.git"
+        )
 
 
 def _parse_authenticated_url(repo_url: str) -> tuple[str, str, str, str]:
@@ -226,9 +247,9 @@ def delete_credential(host: str, username: str, cred_file: str) -> bool:
     return removed
 
 
-def pull_repo(repo_path: str, branch: str) -> list[str]:
+def pull_repo(repo_path: str, branch: str, cred_file: str = "") -> list[str]:
     """Pull latest changes and return list of changed file paths."""
-    env = _GIT_BASE_ENV
+    env = git_env_for_team(cred_file) if cred_file else _GIT_BASE_ENV
 
     old_head = subprocess.run(
         ["git", "-C", repo_path, "rev-parse", "HEAD"],

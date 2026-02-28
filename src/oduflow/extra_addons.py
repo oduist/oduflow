@@ -13,7 +13,7 @@ from oduflow.errors import (
     NotFoundError,
     ProtectedError,
 )
-from oduflow.git_ops import RepoAuthError
+from oduflow.git_ops import RepoAuthError, git_env_for_team
 from oduflow.naming import sanitize_repo_url
 from oduflow.settings import Settings, TeamSettings
 
@@ -51,6 +51,7 @@ def clone_extra_repo(
     from oduflow.git_ops import inject_credential_user
 
     clone_url = inject_credential_user(repo_url, git_user)
+    cred_env = git_env_for_team(team.git_credentials_file())
 
     try:
         subprocess.run(
@@ -59,13 +60,13 @@ def clone_extra_repo(
             capture_output=True,
             text=True,
             timeout=120,
-            env=GIT_ENV,
+            env=cred_env,
         )
     except subprocess.CalledProcessError as e:
         stderr = e.stderr or ""
         if any(kw in stderr for kw in _AUTH_ERROR_KEYWORDS):
             raise RepoAuthError(
-                f"Authentication failed for '{repo_url}'. "
+                f"Authentication failed for '{sanitize_repo_url(repo_url)}'. "
                 "Use setup_repo_auth to configure credentials first."
             )
         raise ExternalCommandError("git clone --bare", e.returncode, stderr)
@@ -277,6 +278,7 @@ def fetch_extra_repo(team: TeamSettings, name: str) -> dict:
         pass  # best-effort; fetch will still run
 
     refs_before = _get_branch_refs(path)
+    cred_env = git_env_for_team(team.git_credentials_file())
 
     try:
         subprocess.run(
@@ -285,7 +287,7 @@ def fetch_extra_repo(team: TeamSettings, name: str) -> dict:
             capture_output=True,
             text=True,
             timeout=120,
-            env=GIT_ENV,
+            env=cred_env,
         )
     except subprocess.CalledProcessError as e:
         raise ExternalCommandError(

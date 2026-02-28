@@ -29,7 +29,7 @@ from oduflow.errors import (
     PrerequisiteNotMetError,
     ProtectedError,
 )
-from oduflow.git_ops import RepoAuthError
+from oduflow.git_ops import RepoAuthError, git_env_for_team
 from oduflow.naming import (
     get_db_name,
     get_env_hostname,
@@ -514,7 +514,7 @@ def create_environment(
 
     os.makedirs(workspace_path, exist_ok=True)
 
-    git_env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
+    git_env = git_env_for_team(team.git_credentials_file())
 
     from oduflow.git_ops import inject_credential_user
 
@@ -550,9 +550,8 @@ def create_environment(
         error_msg = e.stderr.decode("utf-8") if e.stderr else str(e)
         if any(kw.lower() in error_msg.lower() for kw in auth_keywords):
             raise RepoAuthError(
-                f"Git authentication failed for {repo_url}. "
-                f"Call 'setup_repo_auth' first with URL in format "
-                f"https://user:PAT@github.com/owner/repo.git to cache credentials."
+                f"Git authentication failed for {sanitize_repo_url(repo_url)}. "
+                f"Call 'setup_repo_auth' first to cache credentials."
             )
         raise ExternalCommandError("git clone", e.returncode, error_msg)
     except subprocess.TimeoutExpired:
@@ -1098,7 +1097,9 @@ def pull_environment(
         )
 
     _trace("pull_environment(%s): git pull started", branch_name)
-    changed_files = pull_repo(repo_path, branch_name)
+    changed_files = pull_repo(
+        repo_path, branch_name, cred_file=team.git_credentials_file()
+    )
 
     # --- Pull extra addon worktrees ---
     extra_changed_files: list[str] = []

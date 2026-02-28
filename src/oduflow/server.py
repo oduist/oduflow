@@ -155,10 +155,11 @@ def add_extra_repo(name: str, repo_url: str, ctx: Context = None) -> str:
 
     Args:
         name: Short name for the repo (e.g. "enterprise", "custom-themes").
-        repo_url: Git URL of the repository (HTTPS or SSH).
+        repo_url: HTTPS URL of the repository (e.g. https://github.com/owner/repo.git).
     """
     from oduflow.extra_addons import clone_extra_repo
 
+    git_ops.validate_repo_url(repo_url)
     team = _resolve_team(ctx)
     result = clone_extra_repo(team, name, repo_url)
     return f"Extra repo '{result['name']}' cloned successfully.\nPath: {result['path']}"
@@ -317,6 +318,7 @@ def create_environment(
         raise ValueError(
             "repo_url is required (not found in template metadata either)."
         )
+    git_ops.validate_repo_url(effective_repo_url)
     if not effective_odoo_image:
         raise ValueError(
             "odoo_image is required (not found in template metadata either)."
