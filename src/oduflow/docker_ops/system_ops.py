@@ -166,7 +166,7 @@ def _ensure_traefik(client: DockerClient, settings: Settings) -> None:
         pass
 
     client.containers.run(
-        "traefik:v3.6",
+        "traefik:v3",
         name=settings.traefik_container,
         detach=True,
         network=settings.shared_network,
