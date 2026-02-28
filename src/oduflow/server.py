@@ -1777,6 +1777,23 @@ def main() -> None:
     )
     logging.getLogger("docker").setLevel(logging.WARNING)
 
+    # Bootstrap: if `init` and no config exists, copy the bundled default
+    if args.command == "init":
+        try:
+            find_toml()
+        except FileNotFoundError:
+            import pathlib
+            import shutil
+
+            from oduflow.settings import _resolve_etc_dir
+
+            dest_dir = _resolve_etc_dir()
+            os.makedirs(dest_dir, exist_ok=True)
+            bundled = pathlib.Path(__file__).resolve().parent / "templates" / "oduflow.toml"
+            dest = os.path.join(dest_dir, "oduflow.toml")
+            shutil.copy2(str(bundled), dest)
+            print(f"Config created: {dest}")
+
     global _settings
     _settings = _get_settings()
 
