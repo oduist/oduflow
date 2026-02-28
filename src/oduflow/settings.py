@@ -127,6 +127,15 @@ class Settings:
                 return team
         return None
 
+    def get_team_by_hostname(self, hostname: str) -> TeamSettings | None:
+        if not hostname:
+            return None
+        hostname = hostname.split(":")[0]  # Strip port
+        for team in self.teams.values():
+            if team.hostname == hostname:
+                return team
+        return None
+
     def get_team_by_ui_password(self, password: str) -> TeamSettings | None:
         if not password:
             return None

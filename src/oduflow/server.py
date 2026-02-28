@@ -41,12 +41,28 @@ def _get_settings() -> Settings:
 
 
 def _resolve_team(ctx: Context | None) -> TeamSettings:
-    """Resolve the team from MCP Context (client_id set by auth token)."""
+    """Resolve the team from MCP Context.
+
+    Priority: auth token → Host header hostname → single-team → team "1".
+    """
     settings = _get_settings()
+    # 1. Token-based: client_id set by auth provider
     team_id = ctx.client_id if ctx and ctx.client_id else None
     if team_id and team_id in settings.teams:
         return settings.teams[team_id]
-    # Fallback: single team or default team "1"
+    # 2. Hostname-based: match Host header against team hostnames
+    if ctx:
+        try:
+            from fastmcp.server.dependencies import get_http_request
+
+            request = get_http_request()
+            host = request.headers.get("host", "")
+            team = settings.get_team_by_hostname(host)
+            if team:
+                return team
+        except Exception:
+            pass
+    # 3. Fallback: single team or default team "1"
     if len(settings.teams) == 1:
         return next(iter(settings.teams.values()))
     return settings.get_team("1")
