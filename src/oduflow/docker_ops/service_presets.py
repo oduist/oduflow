@@ -51,12 +51,12 @@ def save_preset(
     port: int,
     hostname: str | None = None,
     env_vars: dict[str, str] | None = None,
-    base_domain: str = "",
+    base_hostname: str = "",
 ) -> dict:
     """Save (or overwrite) a single service preset and return it."""
     short_hostname = hostname or ""
-    if short_hostname and base_domain:
-        suffix = f".{base_domain}"
+    if short_hostname and base_hostname:
+        suffix = f".{base_hostname}"
         if short_hostname.endswith(suffix):
             short_hostname = short_hostname[: -len(suffix)]
     preset = {

@@ -25,7 +25,6 @@ def _test_settings(tmp_dir: str) -> tuple[Settings, TeamSettings]:
     )
     settings = Settings(
         routing_mode="port",
-        external_host="localhost",
         db_user="odoo",
         db_password="odoo",
         prefix=_TEST_PREFIX,

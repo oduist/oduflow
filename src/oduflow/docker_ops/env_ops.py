@@ -451,11 +451,11 @@ def create_environment(
         if existing.status == "running":
             existing.reload()
             if settings.routing_mode == "traefik":
-                url = f"https://{get_env_hostname(branch_name, settings.base_domain)}"
+                url = f"https://{get_env_hostname(branch_name, team.hostname)}"
             else:
                 ports = existing.ports.get("8069/tcp")
                 host_port = ports[0]["HostPort"] if ports else "?"
-                url = f"http://{settings.external_host}:{host_port}"
+                url = f"http://{team.hostname}:{host_port}"
             raise ConflictError(
                 f"Environment for branch '{branch_name}' already exists and is running at {url}."
             )
@@ -487,7 +487,7 @@ def create_environment(
     if settings.routing_mode == "traefik":
         slug = slugify_branch(branch_name)
         traefik_router = f"oduflow-{slug}"
-        traefik_host = get_env_hostname(branch_name, settings.base_domain)
+        traefik_host = get_env_hostname(branch_name, team.hostname)
         labels.update(
             {
                 "traefik.enable": "true",
@@ -507,8 +507,7 @@ def create_environment(
             "image": odoo_image,
             "prefix": settings.prefix,
             "routing_mode": settings.routing_mode,
-            "base_domain": settings.base_domain,
-            "external_host": settings.external_host,
+            "hostname": team.hostname,
             "workspaces_dir": team.workspaces_dir,
         },
     )
@@ -741,9 +740,9 @@ def create_environment(
         setup_logs.extend(sanitize_logs)
 
     if settings.routing_mode == "traefik":
-        url = f"https://{get_env_hostname(branch_name, settings.base_domain)}"
+        url = f"https://{get_env_hostname(branch_name, team.hostname)}"
     else:
-        url = f"http://{settings.external_host}:{host_port}"
+        url = f"http://{team.hostname}:{host_port}"
     logger.info(
         "Environment created",
         extra={"branch": branch_name, "url": url, "container": odoo_container_name},
@@ -911,7 +910,7 @@ def list_environments(settings: Settings, team: TeamSettings) -> list[dict[str, 
         if "-odoo" in container.name:
             if settings.routing_mode == "traefik":
                 envs[branch]["url"] = (
-                    f"https://{get_env_hostname(branch, settings.base_domain)}/web?debug=1"
+                    f"https://{get_env_hostname(branch, team.hostname)}/web?debug=1"
                 )
             else:
                 ports = container.attrs.get("NetworkSettings", {}).get("Ports", {})
@@ -921,7 +920,7 @@ def list_environments(settings: Settings, team: TeamSettings) -> list[dict[str, 
                         host_port = mappings[0].get("HostPort")
                         if host_port:
                             envs[branch]["url"] = (
-                                f"http://{settings.external_host}:{host_port}/web?debug=1"
+                                f"http://{team.hostname}:{host_port}/web?debug=1"
                             )
 
         envs[branch]["containers"].append(container_info)
@@ -1034,7 +1033,7 @@ def get_environment_info(
 
         if settings.routing_mode == "traefik":
             result["url"] = (
-                f"https://{get_env_hostname(branch_name, settings.base_domain)}/web?debug=1"
+                f"https://{get_env_hostname(branch_name, team.hostname)}/web?debug=1"
             )
         else:
             ports = odoo_container.attrs.get("NetworkSettings", {}).get("Ports", {})
@@ -1044,7 +1043,7 @@ def get_environment_info(
                     host_port = mappings[0].get("HostPort")
                     if host_port:
                         result["url"] = (
-                            f"http://{settings.external_host}:{host_port}/web?debug=1"
+                            f"http://{team.hostname}:{host_port}/web?debug=1"
                         )
 
         stats = _get_one_container_stats(odoo_container)
@@ -1430,9 +1429,9 @@ def rebuild_environment(
     # 6. Build URL and return result
     # ------------------------------------------------------------------
     if settings.routing_mode == "traefik":
-        url = f"https://{get_env_hostname(branch_name, settings.base_domain)}"
+        url = f"https://{get_env_hostname(branch_name, team.hostname)}"
     else:
-        url = f"http://{settings.external_host}:{host_port}"
+        url = f"http://{team.hostname}:{host_port}"
 
     env_db = get_db_name(branch_name)
     workspace = get_workspace_path(branch_name, team.workspaces_dir)

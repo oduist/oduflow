@@ -15,7 +15,6 @@ TEST_TEAM = TeamSettings(
 )
 
 TEST_SETTINGS = Settings(
-    external_host="localhost",
     base_data_dir="/tmp/flow-test",
     db_user="odoo",
     db_password="odoo",

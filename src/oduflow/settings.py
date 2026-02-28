@@ -20,6 +20,7 @@ class TeamSettings:
     """Per-team settings (isolated workspaces, templates, credentials, ports)."""
 
     team_id: str
+    hostname: str = "localhost"
     auth_token: str = ""
     ui_password: str = ""
     port_range_start: int = 50000
@@ -79,9 +80,7 @@ class Settings:
 
     # Routing
     routing_mode: str = "port"
-    base_domain: str = ""
     acme_email: str = ""
-    external_host: str = "localhost"
 
     # Database
     db_user: str = "odoo"
@@ -147,13 +146,16 @@ class Settings:
             raise ValueError("routing_mode must be 'port' or 'traefik'")
 
         if self.routing_mode == "traefik":
-            if not self.base_domain:
-                raise ValueError("base_domain must be set when routing_mode=traefik")
             if not self.acme_email:
                 raise ValueError("acme_email must be set when routing_mode=traefik")
 
         # Validate per-team settings
         for team in self.teams.values():
+            if self.routing_mode == "traefik" and not team.hostname:
+                raise ValueError(
+                    f"Team '{team.team_id}': hostname must be set "
+                    "when routing_mode=traefik"
+                )
             if team.port_range_start >= team.port_range_end:
                 raise ValueError(
                     f"Team '{team.team_id}': invalid port range "
@@ -202,8 +204,14 @@ class Settings:
             else:
                 port_start, port_end = 50000, 50100
 
+            raw_hostname = str(
+                team_cfg.get("hostname", routing.get("hostname", "localhost"))
+            )
+            hostname = re.sub(r"^https?://", "", raw_hostname).strip()
+
             teams[team_id] = TeamSettings(
                 team_id=team_id,
+                hostname=hostname,
                 auth_token=str(team_cfg.get("auth_token", "")),
                 ui_password=str(team_cfg.get("ui_password", "")),
                 port_range_start=port_start,
@@ -211,13 +219,6 @@ class Settings:
                 data_dir=team_data_dir,
                 port_registry_path=os.path.join(team_data_dir, "ports.json"),
             )
-
-        base_domain = routing.get("base_domain", "")
-        if isinstance(base_domain, str):
-            base_domain = re.sub(r"^https?://", "", base_domain).strip()
-        external_host = routing.get("external_host", "localhost")
-        if isinstance(external_host, str):
-            external_host = re.sub(r"^https?://", "", external_host)
 
         trace = bool(server.get("trace", False))
         if trace:
@@ -228,9 +229,7 @@ class Settings:
             port=int(server.get("port", 8000)),
             trace=trace,
             routing_mode=str(routing.get("mode", "port")).strip().lower(),
-            base_domain=base_domain,
             acme_email=str(routing.get("acme_email", "")).strip(),
-            external_host=external_host,
             db_user=str(database.get("user", "odoo")),
             db_password=str(database.get("password", "odoo")),
             postgres_image=str(database.get("image", "postgres:15")),

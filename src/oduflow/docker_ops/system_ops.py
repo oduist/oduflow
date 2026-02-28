@@ -856,7 +856,7 @@ def template_up(
             existing.reload()
             ports = existing.ports.get("8069/tcp")
             host_port = ports[0]["HostPort"] if ports else "?"
-            url = f"http://{settings.external_host}:{host_port}"
+            url = f"http://{team.hostname}:{host_port}"
             raise ConflictError(
                 f"Template editor is already running at {url}. "
                 f"Use --template-down to stop it first."
@@ -955,7 +955,7 @@ def template_up(
     with open(metadata_path, "w") as f:
         json.dump(metadata, f, indent=2)
 
-    url = f"http://{settings.external_host}:{host_port}"
+    url = f"http://{team.hostname}:{host_port}"
     logger.info(
         "Template editor started at %s (container=%s)", url, _TEMPLATE_EDITOR_CONTAINER
     )

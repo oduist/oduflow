@@ -93,9 +93,9 @@ def create_service(
 
     if settings.routing_mode == "traefik":
         if not hostname:
-            hostname = f"{name}.{settings.base_domain}"
+            hostname = f"{name}.{team.hostname}"
         elif "." not in hostname:
-            hostname = f"{hostname}.{settings.base_domain}"
+            hostname = f"{hostname}.{team.hostname}"
         labels["traefik.enable"] = "true"
         labels[f"traefik.http.routers.{container_name}.rule"] = f"Host(`{hostname}`)"
         labels[f"traefik.http.routers.{container_name}.entrypoints"] = "websecure"
@@ -106,7 +106,7 @@ def create_service(
         url = f"https://{hostname}"
     else:
         run_kwargs["ports"] = {f"{port}/tcp": port}
-        url = f"http://{settings.external_host}:{port}"
+        url = f"http://{team.hostname}:{port}"
 
     if env_vars:
         run_kwargs["environment"] = env_vars
@@ -123,7 +123,7 @@ def create_service(
             port,
             hostname=hostname,
             env_vars=env_vars,
-            base_domain=settings.base_domain,
+            base_hostname=team.hostname,
         )
     except Exception:
         logger.warning("Failed to save service preset for %s", name, exc_info=True)
@@ -217,7 +217,7 @@ def list_services(settings: Settings, team: TeamSettings) -> list[dict]:
                         for mapping in mappings:
                             host_port = mapping.get("HostPort")
                             if host_port:
-                                url = f"http://{settings.external_host}:{host_port}"
+                                url = f"http://{team.hostname}:{host_port}"
                                 break
                     break  # only process first port entry
 

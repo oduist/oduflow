@@ -7,8 +7,6 @@ port = 8000
 # ── Routing ───────────────────────────────────────────
 [routing]
 mode = "port"                   # "port" | "traefik"
-external_host = "localhost"
-# base_domain = "dev.example.com"   # required for traefik
 # acme_email = "admin@example.com"  # required for traefik
 
 # ── Database ──────────────────────────────────────────
@@ -27,6 +25,7 @@ overlay_threshold_mb = 50         # filestore size limit for overlay vs copy
 # At least one [team.*] section is required.
 
 [team.1]
+hostname = "localhost"            # port: http://{hostname}:{port}, traefik: https://{slug}.{hostname}
 auth_token = ""                   # MCP bearer token (empty = auth disabled)
 ui_password = ""                  # Web UI password (empty = UI open)
 port_range = [50000, 50100]       # port range for Odoo containers

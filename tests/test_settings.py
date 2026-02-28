@@ -5,7 +5,6 @@ from oduflow.settings import Settings, TeamSettings
 class TestSettings:
     def test_defaults(self):
         s = Settings()
-        assert s.external_host == "localhost"
         assert s.db_user == "odoo"
         assert s.routing_mode == "port"
 
@@ -28,7 +27,7 @@ class TestSettings:
     def test_frozen(self):
         s = Settings()
         with pytest.raises(AttributeError):
-            s.external_host = "changed"  # type: ignore[misc]
+            s.routing_mode = "changed"  # type: ignore[misc]
 
     def test_get_team(self):
         team = TeamSettings(team_id="1")
@@ -62,6 +61,7 @@ class TestTeamSettings:
     def test_defaults(self):
         t = TeamSettings(team_id="1")
         assert t.team_id == "1"
+        assert t.hostname == "localhost"
         assert t.port_range_start == 50000
         assert t.port_range_end == 50100
 

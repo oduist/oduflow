@@ -15,7 +15,6 @@ TEST_TEAM = TeamSettings(
 )
 
 TEST_SETTINGS = Settings(
-    external_host="localhost",
     base_data_dir="/tmp/flow-test",
     db_user="odoo",
     db_password="odoo",
@@ -24,6 +23,7 @@ TEST_SETTINGS = Settings(
 
 TRAEFIK_TEAM = TeamSettings(
     team_id="1",
+    hostname="example.com",
     data_dir="/tmp/flow-test",
     port_registry_path="/tmp/flow-test/ports.json",
     port_range_start=50000,
@@ -32,9 +32,7 @@ TRAEFIK_TEAM = TeamSettings(
 
 TRAEFIK_SETTINGS = Settings(
     routing_mode="traefik",
-    base_domain="example.com",
     acme_email="admin@example.com",
-    external_host="example.com",
     base_data_dir="/tmp/flow-test",
     db_user="odoo",
     db_password="odoo",
