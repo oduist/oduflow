@@ -8,11 +8,8 @@ import subprocess
 
 logger = logging.getLogger("oduflow")
 
-_TRACE = os.environ.get("ODUFLOW_TRACE") == "1"
-
-
 def _trace(msg: str, *args: object) -> None:
-    if _TRACE:
+    if os.environ.get("ODUFLOW_TRACE") == "1":
         logger.info("[TRACE] " + msg, *args)
 
 

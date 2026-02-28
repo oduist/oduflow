@@ -75,6 +75,7 @@ class Settings:
     # Server
     host: str = "0.0.0.0"
     port: int = 8000
+    trace: bool = False
 
     # Routing
     routing_mode: str = "port"
@@ -218,9 +219,14 @@ class Settings:
         if isinstance(external_host, str):
             external_host = re.sub(r"^https?://", "", external_host)
 
+        trace = bool(server.get("trace", False))
+        if trace:
+            os.environ["ODUFLOW_TRACE"] = "1"
+
         return Settings(
             host=str(server.get("host", "0.0.0.0")),
             port=int(server.get("port", 8000)),
+            trace=trace,
             routing_mode=str(routing.get("mode", "port")).strip().lower(),
             base_domain=base_domain,
             acme_email=str(routing.get("acme_email", "")).strip(),
