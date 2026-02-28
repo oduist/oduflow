@@ -1904,7 +1904,7 @@ def _start_server() -> None:
     from fastmcp.server.http import create_streamable_http_app
 
     settings = _get_settings()
-    host = settings.host
+    host = "0.0.0.0" if settings.routing_mode == "traefik" else settings.host
     port = settings.port
 
     # Build auth from per-team tokens
