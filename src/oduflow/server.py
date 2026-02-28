@@ -1918,7 +1918,6 @@ def _start_server() -> None:
         from fastmcp.server.auth.providers.jwt import StaticTokenVerifier
 
         auth = StaticTokenVerifier(tokens=tokens)
-        logger.info("HTTP Bearer token auth ENABLED (%d token(s))", len(tokens))
     else:
         logger.warning("HTTP auth DISABLED (no auth_token set in any team)")
 
@@ -1928,13 +1927,14 @@ def _start_server() -> None:
 
     mount_web_ui(app, _get_settings, _locks)
 
-    if settings.routing_mode == "traefik":
-        for tid, team in settings.teams.items():
-            logger.info(
-                "Web UI [team.%s] available at https://%s/", tid, team.hostname
-            )
-    else:
-        logger.info("Web UI available at http://%s:%d/", host, port)
+    for tid, team in settings.teams.items():
+        if settings.routing_mode == "traefik":
+            url = f"https://{team.hostname}/"
+        else:
+            url = f"http://{host}:{port}/"
+        mcp_status = "MCP token ON" if team.auth_token else "MCP token OFF"
+        ui_status = "UI auth ON" if team.ui_password else "UI auth OFF"
+        logger.info("[team.%s] %s (%s, %s)", tid, url, mcp_status, ui_status)
 
     import uvicorn
 
