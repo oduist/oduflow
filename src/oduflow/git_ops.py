@@ -7,7 +7,22 @@ from oduflow.errors import ExternalCommandError, FlowError
 
 logger = logging.getLogger("oduflow")
 
-GIT_ENV = {**os.environ, "GIT_TERMINAL_PROMPT": "0", "HOME": os.environ.get("HOME", "/root")}
+# Base env for git operations (no credentials — just disables interactive prompts)
+_GIT_BASE_ENV = {
+    **os.environ,
+    "GIT_TERMINAL_PROMPT": "0",
+    "HOME": os.environ.get("HOME", "/root"),
+}
+
+
+def git_env_for_team(cred_file: str) -> dict[str, str]:
+    """Build a git environment dict with per-team credential helper."""
+    return {
+        **_GIT_BASE_ENV,
+        "GIT_CONFIG_COUNT": "1",
+        "GIT_CONFIG_KEY_0": "credential.helper",
+        "GIT_CONFIG_VALUE_0": f"store --file {cred_file}",
+    }
 
 
 class InvalidRepoURLError(FlowError):
@@ -32,48 +47,50 @@ def _parse_authenticated_url(repo_url: str) -> tuple[str, str, str, str]:
     return clean_url, parsed.hostname or "", parsed.username, parsed.password
 
 
-def _store_git_credentials(host: str, username: str, password: str) -> None:
-    ensure_credential_helper()
+def _store_git_credentials(
+    host: str, username: str, password: str, cred_file: str
+) -> None:
+    os.makedirs(os.path.dirname(cred_file), exist_ok=True)
+    env = git_env_for_team(cred_file)
 
     credential_input = (
-        f"protocol=https\n"
-        f"host={host}\n"
-        f"username={username}\n"
-        f"password={password}\n"
-        f"\n"
+        f"protocol=https\nhost={host}\nusername={username}\npassword={password}\n\n"
     )
     subprocess.run(
         ["git", "credential", "approve"],
         input=credential_input.encode(),
         check=True,
         capture_output=True,
-        env=GIT_ENV,
+        env=env,
     )
     logger.info("Git credentials stored for host=%s user=%s", host, username)
 
 
-def setup_repo_auth(repo_url: str) -> dict[str, str]:
+def setup_repo_auth(repo_url: str, cred_file: str) -> dict[str, str]:
     clean_url, host, username, password = _parse_authenticated_url(repo_url)
 
-    _store_git_credentials(host, username, password)
+    _store_git_credentials(host, username, password, cred_file)
 
+    env = git_env_for_team(cred_file)
     try:
         subprocess.run(
             ["git", "ls-remote", "--heads", clean_url],
             check=True,
             capture_output=True,
             timeout=30,
-            env=GIT_ENV,
+            env=env,
         )
     except subprocess.CalledProcessError as e:
         error_msg = e.stderr.decode("utf-8") if e.stderr else str(e)
         raise ExternalCommandError(
-            "git ls-remote (auth test)", e.returncode,
+            "git ls-remote (auth test)",
+            e.returncode,
             f"Credentials saved but access check failed: {error_msg}",
         )
     except subprocess.TimeoutExpired:
         raise ExternalCommandError(
-            "git ls-remote (auth test)", -1,
+            "git ls-remote (auth test)",
+            -1,
             "Access check timed out (30s).",
         )
 
@@ -81,32 +98,13 @@ def setup_repo_auth(repo_url: str) -> dict[str, str]:
     return {"repo_url": clean_url, "host": host, "status": "authenticated"}
 
 
-def _get_etc_dir() -> str:
-    from oduflow.settings import Settings
-    return Settings._default_etc_dir()
-
-
-def _credentials_file() -> str:
-    return os.path.join(_get_etc_dir(), ".git-credentials")
-
-
-def ensure_credential_helper() -> None:
-    cred_file = _credentials_file()
-    os.makedirs(os.path.dirname(cred_file), exist_ok=True)
-    subprocess.run(
-        ["git", "config", "--global", "credential.helper",
-         f"store --file {cred_file}"],
-        check=True,
-        capture_output=True,
-        env=GIT_ENV,
-    )
-
-
 def inject_credential_user(repo_url: str, git_user: str) -> str:
     """Inject username into repo URL for credential matching."""
     if not git_user:
         return repo_url
     parsed = urlparse(repo_url)
+    if parsed.scheme not in ("https", "http") or not parsed.hostname:
+        return repo_url
     if parsed.username:
         return repo_url
     netloc = f"{git_user}@{parsed.hostname}"
@@ -115,8 +113,7 @@ def inject_credential_user(repo_url: str, git_user: str) -> str:
     return parsed._replace(netloc=netloc).geturl()
 
 
-def list_credentials() -> list[dict]:
-    cred_file = _credentials_file()
+def list_credentials(cred_file: str) -> list[dict]:
     if not os.path.exists(cred_file):
         return []
 
@@ -132,21 +129,22 @@ def list_credentials() -> list[dict]:
                 continue
             if not parsed.hostname or not parsed.username:
                 continue
-            results.append({
-                "host": parsed.hostname,
-                "username": parsed.username,
-                "token_masked": (parsed.password or "")[:4] + "****"
-                if parsed.password and len(parsed.password) > 4
-                else "****",
-            })
+            results.append(
+                {
+                    "host": parsed.hostname,
+                    "username": parsed.username,
+                    "token_masked": (parsed.password or "")[:4] + "****"
+                    if parsed.password and len(parsed.password) > 4
+                    else "****",
+                }
+            )
     return results
 
 
-def validate_credential(host: str, username: str) -> str:
+def validate_credential(host: str, username: str, cred_file: str) -> str:
     from urllib.request import Request, urlopen
     from urllib.error import URLError, HTTPError
 
-    cred_file = _credentials_file()
     if not os.path.exists(cred_file):
         return "invalid"
 
@@ -185,6 +183,7 @@ def validate_credential(host: str, username: str) -> str:
             req.add_header("PRIVATE-TOKEN", token)
         elif host == "bitbucket.org":
             import base64
+
             b64 = base64.b64encode(f"{username}:{token}".encode()).decode()
             req.add_header("Authorization", f"Basic {b64}")
         req.add_header("User-Agent", "oduflow")
@@ -196,8 +195,7 @@ def validate_credential(host: str, username: str) -> str:
         return "unknown"
 
 
-def delete_credential(host: str, username: str) -> bool:
-    cred_file = _credentials_file()
+def delete_credential(host: str, username: str, cred_file: str) -> bool:
     if not os.path.exists(cred_file):
         return False
 
@@ -229,31 +227,39 @@ def delete_credential(host: str, username: str) -> bool:
 
 
 def pull_repo(repo_path: str, branch: str) -> list[str]:
-    """Pull latest changes and return list of changed file paths (relative to repo root)."""
+    """Pull latest changes and return list of changed file paths."""
+    env = _GIT_BASE_ENV
+
     old_head = subprocess.run(
         ["git", "-C", repo_path, "rev-parse", "HEAD"],
         check=True,
         capture_output=True,
         text=True,
-        env=GIT_ENV,
+        env=env,
     ).stdout.strip()
 
     try:
         subprocess.run(
-            ["git", "-C", repo_path, "fetch", "origin",
-             f"+refs/heads/{branch}:refs/remotes/origin/{branch}"],
+            [
+                "git",
+                "-C",
+                repo_path,
+                "fetch",
+                "origin",
+                f"+refs/heads/{branch}:refs/remotes/origin/{branch}",
+            ],
             check=True,
             capture_output=True,
             text=True,
             timeout=60,
-            env=GIT_ENV,
+            env=env,
         )
         subprocess.run(
             ["git", "-C", repo_path, "reset", "--hard", f"origin/{branch}"],
             check=True,
             capture_output=True,
             text=True,
-            env=GIT_ENV,
+            env=env,
         )
     except subprocess.CalledProcessError as e:
         error_msg = e.stderr or str(e)
@@ -266,39 +272,32 @@ def pull_repo(repo_path: str, branch: str) -> list[str]:
         check=True,
         capture_output=True,
         text=True,
-        env=GIT_ENV,
+        env=env,
     ).stdout.strip()
 
     if old_head == new_head:
         return []
 
     result = subprocess.run(
-        ["git", "-C", repo_path, "diff", "--name-only", f"{old_head}..{new_head}"],
+        [
+            "git",
+            "-C",
+            repo_path,
+            "diff",
+            "--name-only",
+            f"{old_head}..{new_head}",
+        ],
         check=True,
         capture_output=True,
         text=True,
-        env=GIT_ENV,
+        env=env,
     )
     return [f for f in result.stdout.strip().splitlines() if f]
-
-
-def inject_credential_user(repo_url: str, git_user: str) -> str:
-    """Inject *username* into an HTTPS repo URL so git credential-store can match it."""
-    if not git_user:
-        return repo_url
-    parsed = urlparse(repo_url)
-    if parsed.scheme not in ("https", "http") or not parsed.hostname:
-        return repo_url
-    if parsed.username:
-        return repo_url
-    netloc = f"{git_user}@{parsed.hostname}"
-    if parsed.port:
-        netloc += f":{parsed.port}"
-    return parsed._replace(netloc=netloc).geturl()
 
 
 def parse_manifest(manifest_path: str) -> dict:
     """Parse an Odoo __manifest__.py file and return its dict."""
     import ast
+
     with open(manifest_path, "r") as f:
         return ast.literal_eval(f.read())

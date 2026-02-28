@@ -7,7 +7,7 @@ from docker import DockerClient
 from oduflow.docker_ops.system_ops import _exec_sql
 from oduflow.env_credentials import load_credentials
 from oduflow.naming import get_db_name, get_repo_path, get_resource_name
-from oduflow.settings import Settings
+from oduflow.settings import Settings, TeamSettings
 
 logger = logging.getLogger("oduflow")
 
@@ -17,6 +17,7 @@ def _run_scripts_from_dir(
     label: str,
     client: DockerClient,
     settings: Settings,
+    team: TeamSettings,
     env_db: str,
     branch_name: str,
 ) -> list[str]:
@@ -55,10 +56,14 @@ def _run_scripts_from_dir(
     try:
         container = client.containers.get(odoo_container_name)
     except _docker.errors.NotFound:
-        logs.append(f"[SANITIZE:{label}] WARNING: container not found, skipping .py scripts")
+        logs.append(
+            f"[SANITIZE:{label}] WARNING: container not found, skipping .py scripts"
+        )
         return logs
 
-    creds = load_credentials(branch_name, settings.workspaces_dir, settings.db_user, settings.db_password)
+    creds = load_credentials(
+        branch_name, team.workspaces_dir, settings.db_user, settings.db_password
+    )
 
     for py_file in py_files:
         name = os.path.basename(py_file)
@@ -74,10 +79,20 @@ def _run_scripts_from_dir(
                     "DB_PASSWORD": creds["pg_password"],
                 },
             )
-            output_str = output.decode("utf-8") if isinstance(output, bytes) else str(output)
+            output_str = (
+                output.decode("utf-8") if isinstance(output, bytes) else str(output)
+            )
             if exit_code != 0:
-                logger.warning("[%s] Sanitize script %s failed (exit %d): %s", label, name, exit_code, output_str)
-                logs.append(f"[SANITIZE:{label}] WARNING: {name} failed (exit {exit_code})")
+                logger.warning(
+                    "[%s] Sanitize script %s failed (exit %d): %s",
+                    label,
+                    name,
+                    exit_code,
+                    output_str,
+                )
+                logs.append(
+                    f"[SANITIZE:{label}] WARNING: {name} failed (exit {exit_code})"
+                )
             else:
                 logger.info("[%s] Executed sanitize script %s", label, name)
                 logs.append(f"[SANITIZE:{label}] Executed {name}")
@@ -91,13 +106,14 @@ def _run_scripts_from_dir(
 def sanitize_environment(
     client: DockerClient,
     settings: Settings,
+    team: TeamSettings,
     branch_name: str,
 ) -> list[str]:
     """Sanitize environment database after provisioning.
 
     Runs sanitization scripts in two tiers:
-    1. Instance-level scripts from ``{data_dir}/odoo_sanitize/`` (managed by the
-       instance administrator, created during ``oduflow init-instance``).
+    1. Team-level scripts from ``{data_dir}/odoo_sanitize/`` (managed by the
+       team administrator, created during ``oduflow init``).
     2. Per-project scripts from the repository's ``.odoo_sanitize/`` folder
        (managed by the developer).
 
@@ -106,16 +122,24 @@ def sanitize_environment(
 
     Returns a list of human-readable log lines describing what was done.
     """
-    env_db = get_db_name(branch_name, settings.instance_id)
+    env_db = get_db_name(branch_name, team.team_id)
     logs: list[str] = []
 
-    # --- Instance-level sanitization ---
-    system_dir = os.path.join(settings.data_dir, "odoo_sanitize")
-    logs.extend(_run_scripts_from_dir(system_dir, "system", client, settings, env_db, branch_name))
+    # --- Team-level sanitization ---
+    system_dir = os.path.join(team.data_dir, "odoo_sanitize")
+    logs.extend(
+        _run_scripts_from_dir(
+            system_dir, "system", client, settings, team, env_db, branch_name
+        )
+    )
 
     # --- Per-project sanitization from repo ---
-    repo_path = get_repo_path(branch_name, settings.workspaces_dir)
+    repo_path = get_repo_path(branch_name, team.workspaces_dir)
     repo_dir = os.path.join(repo_path, ".odoo_sanitize")
-    logs.extend(_run_scripts_from_dir(repo_dir, "repo", client, settings, env_db, branch_name))
+    logs.extend(
+        _run_scripts_from_dir(
+            repo_dir, "repo", client, settings, team, env_db, branch_name
+        )
+    )
 
     return logs

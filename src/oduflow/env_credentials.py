@@ -10,9 +10,9 @@ logger = logging.getLogger("oduflow")
 _CREDENTIALS_FILE = "env_credentials.json"
 
 
-def generate_pg_username(branch_name: str, instance_id: str) -> str:
+def generate_pg_username(branch_name: str, team_id: str) -> str:
     slug = slugify_branch(branch_name)
-    username = f"u_{instance_id}_{slug}"
+    username = f"u_{team_id}_{slug}"
     return username[:63]
 
 
@@ -20,8 +20,10 @@ def generate_pg_password() -> str:
     return secrets.token_urlsafe(18)
 
 
-def create_credentials(branch_name: str, instance_id: str, workspaces_dir: str) -> dict[str, str]:
-    username = generate_pg_username(branch_name, instance_id)
+def create_credentials(
+    branch_name: str, team_id: str, workspaces_dir: str
+) -> dict[str, str]:
+    username = generate_pg_username(branch_name, team_id)
     password = generate_pg_password()
     creds = {"pg_user": username, "pg_password": password}
 
@@ -31,7 +33,9 @@ def create_credentials(branch_name: str, instance_id: str, workspaces_dir: str) 
     with open(creds_path, "w") as f:
         json.dump(creds, f)
 
-    logger.info("Created PG credentials for branch '%s' (user=%s)", branch_name, username)
+    logger.info(
+        "Created PG credentials for branch '%s' (user=%s)", branch_name, username
+    )
     return creds
 
 

@@ -1,29 +1,31 @@
 """Manage service preset configurations (save / restore / list / delete).
 
-Presets are persisted as a single JSON file at ``{settings.data_dir}/service_presets.json``.
+Presets are persisted as a single JSON file at ``{team.data_dir}/service_presets.json``.
 """
+
+from __future__ import annotations
 
 import json
 import logging
 import os
 
 from oduflow.errors import NotFoundError
-from oduflow.settings import Settings
+from oduflow.settings import TeamSettings
 
 logger = logging.getLogger("oduflow")
 
 
-def _presets_path(settings: Settings) -> str:
+def _presets_path(team: TeamSettings) -> str:
     """Return the absolute path to the presets JSON file."""
-    return os.path.join(settings.data_dir, "service_presets.json")
+    return os.path.join(team.data_dir, "service_presets.json")
 
 
-def _load_presets(settings: Settings) -> dict:
+def _load_presets(team: TeamSettings) -> dict:
     """Read and return all presets from disk.
 
     Returns an empty dict when the file does not exist or contains invalid JSON.
     """
-    path = _presets_path(settings)
+    path = _presets_path(team)
     if not os.path.exists(path):
         return {}
     try:
@@ -34,26 +36,27 @@ def _load_presets(settings: Settings) -> dict:
         return {}
 
 
-def _save_presets(settings: Settings, data: dict) -> None:
+def _save_presets(team: TeamSettings, data: dict) -> None:
     """Persist *data* to the presets JSON file, creating parent dirs if needed."""
-    path = _presets_path(settings)
+    path = _presets_path(team)
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", encoding="utf-8") as fh:
         json.dump(data, fh, indent=2)
 
 
 def save_preset(
-    settings: Settings,
+    team: TeamSettings,
     name: str,
     image: str,
     port: int,
     hostname: str | None = None,
     env_vars: dict[str, str] | None = None,
+    base_domain: str = "",
 ) -> dict:
     """Save (or overwrite) a single service preset and return it."""
     short_hostname = hostname or ""
-    if short_hostname and settings.base_domain:
-        suffix = f".{settings.base_domain}"
+    if short_hostname and base_domain:
+        suffix = f".{base_domain}"
         if short_hostname.endswith(suffix):
             short_hostname = short_hostname[: -len(suffix)]
     preset = {
@@ -62,37 +65,37 @@ def save_preset(
         "hostname": short_hostname,
         "env_vars": env_vars if env_vars is not None else {},
     }
-    data = _load_presets(settings)
+    data = _load_presets(team)
     data[name] = preset
-    _save_presets(settings, data)
+    _save_presets(team, data)
     return preset
 
 
-def list_presets(settings: Settings) -> list[dict]:
+def list_presets(team: TeamSettings) -> list[dict]:
     """Return all presets as a sorted list of dicts (each includes a ``name`` key)."""
-    data = _load_presets(settings)
+    data = _load_presets(team)
     return sorted(
         [{"name": name, **preset} for name, preset in data.items()],
         key=lambda p: p["name"],
     )
 
 
-def get_preset(settings: Settings, name: str) -> dict:
+def get_preset(team: TeamSettings, name: str) -> dict:
     """Return a single preset dict (with ``name`` key) or raise :class:`NotFoundError`."""
-    data = _load_presets(settings)
+    data = _load_presets(team)
     if name not in data:
         raise NotFoundError(f"Service preset '{name}' not found")
     return {"name": name, **data[name]}
 
 
-def delete_preset(settings: Settings, name: str) -> dict:
+def delete_preset(team: TeamSettings, name: str) -> dict:
     """Remove a preset from disk and return ``{"name": name}``.
 
     Raises :class:`NotFoundError` if the preset does not exist.
     """
-    data = _load_presets(settings)
+    data = _load_presets(team)
     if name not in data:
         raise NotFoundError(f"Service preset '{name}' not found")
     del data[name]
-    _save_presets(settings, data)
+    _save_presets(team, data)
     return {"name": name}

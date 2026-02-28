@@ -7,10 +7,15 @@ import shutil
 import subprocess
 
 from oduflow.docker_ops.client import get_client
-from oduflow.errors import ConflictError, ExternalCommandError, NotFoundError, ProtectedError
+from oduflow.errors import (
+    ConflictError,
+    ExternalCommandError,
+    NotFoundError,
+    ProtectedError,
+)
 from oduflow.git_ops import RepoAuthError
 from oduflow.naming import sanitize_repo_url
-from oduflow.settings import Settings
+from oduflow.settings import Settings, TeamSettings
 
 logger = logging.getLogger("oduflow")
 
@@ -28,20 +33,23 @@ _AUTH_ERROR_KEYWORDS = (
 )
 
 
-def clone_extra_repo(settings: Settings, name: str, repo_url: str, git_user: str = "") -> dict:
+def clone_extra_repo(
+    team: TeamSettings, name: str, repo_url: str, git_user: str = ""
+) -> dict:
     if not _NAME_RE.match(name):
         raise ValueError(
             f"Invalid repo name '{name}': only [a-zA-Z0-9_-] allowed, "
             "no dots or slashes, max 63 chars."
         )
 
-    target = os.path.join(settings.shared_repos_dir, name)
+    target = os.path.join(team.shared_repos_dir, name)
     if os.path.exists(target):
         raise ConflictError(f"Extra repo '{name}' already exists at {target}")
 
-    os.makedirs(settings.shared_repos_dir, exist_ok=True)
+    os.makedirs(team.shared_repos_dir, exist_ok=True)
 
     from oduflow.git_ops import inject_credential_user
+
     clone_url = inject_credential_user(repo_url, git_user)
 
     try:
@@ -62,24 +70,33 @@ def clone_extra_repo(settings: Settings, name: str, repo_url: str, git_user: str
             )
         raise ExternalCommandError("git clone --bare", e.returncode, stderr)
     except subprocess.TimeoutExpired:
-        raise ExternalCommandError(
-            "git clone --bare", -1, "Clone timed out (120s)."
-        )
+        raise ExternalCommandError("git clone --bare", -1, "Clone timed out (120s).")
 
     # git clone --bare does not set a fetch refspec, so subsequent
     # git fetch --all would only write to FETCH_HEAD without updating
     # local branches.  Configure the refspec explicitly.
     subprocess.run(
-        ["git", "-C", target, "config", "remote.origin.fetch", "+refs/heads/*:refs/heads/*"],
-        check=True, capture_output=True, text=True, timeout=10, env=GIT_ENV,
+        [
+            "git",
+            "-C",
+            target,
+            "config",
+            "remote.origin.fetch",
+            "+refs/heads/*:refs/heads/*",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=10,
+        env=GIT_ENV,
     )
 
     logger.info("Cloned extra repo '%s' from %s", name, repo_url)
     return {"name": name, "repo_url": repo_url, "path": target}
 
 
-def list_extra_repos(settings: Settings) -> list[dict]:
-    repos_dir = settings.shared_repos_dir
+def list_extra_repos(team: TeamSettings) -> list[dict]:
+    repos_dir = team.shared_repos_dir
     if not os.path.isdir(repos_dir):
         return []
 
@@ -113,18 +130,25 @@ def list_extra_repos(settings: Settings) -> list[dict]:
             branches = []
 
         protected = os.path.exists(os.path.join(path, ".protected"))
-        result.append({"name": entry, "repo_url": sanitize_repo_url(url), "branches": branches, "protected": protected})
+        result.append(
+            {
+                "name": entry,
+                "repo_url": sanitize_repo_url(url),
+                "branches": branches,
+                "protected": protected,
+            }
+        )
 
     return result
 
 
-def is_extra_repo_protected(settings: Settings, name: str) -> bool:
-    path = os.path.join(settings.shared_repos_dir, name)
+def is_extra_repo_protected(team: TeamSettings, name: str) -> bool:
+    path = os.path.join(team.shared_repos_dir, name)
     return os.path.exists(os.path.join(path, ".protected"))
 
 
-def protect_extra_repo(settings: Settings, name: str) -> dict:
-    path = os.path.join(settings.shared_repos_dir, name)
+def protect_extra_repo(team: TeamSettings, name: str) -> dict:
+    path = os.path.join(team.shared_repos_dir, name)
     if not os.path.isdir(path):
         raise NotFoundError(f"Extra repo '{name}' not found.")
     marker = os.path.join(path, ".protected")
@@ -133,8 +157,8 @@ def protect_extra_repo(settings: Settings, name: str) -> dict:
     return {"name": name, "protected": True}
 
 
-def unprotect_extra_repo(settings: Settings, name: str) -> dict:
-    path = os.path.join(settings.shared_repos_dir, name)
+def unprotect_extra_repo(team: TeamSettings, name: str) -> dict:
+    path = os.path.join(team.shared_repos_dir, name)
     if not os.path.isdir(path):
         raise NotFoundError(f"Extra repo '{name}' not found.")
     marker = os.path.join(path, ".protected")
@@ -144,19 +168,21 @@ def unprotect_extra_repo(settings: Settings, name: str) -> dict:
     return {"name": name, "protected": False}
 
 
-def delete_extra_repo(settings: Settings, name: str) -> dict:
-    path = os.path.join(settings.shared_repos_dir, name)
+def delete_extra_repo(settings: Settings, team: TeamSettings, name: str) -> dict:
+    path = os.path.join(team.shared_repos_dir, name)
     if not os.path.exists(path):
         raise NotFoundError(f"Extra repo '{name}' not found.")
 
-    if is_extra_repo_protected(settings, name):
-        raise ProtectedError(f"Extra repo '{name}' is protected. Unprotect it before deleting.")
+    if is_extra_repo_protected(team, name):
+        raise ProtectedError(
+            f"Extra repo '{name}' is protected. Unprotect it before deleting."
+        )
 
     client = get_client()
     filters = {
         "label": [
             f"{settings.managed_label}=true",
-            f"{settings.instance_label}={settings.instance_id}",
+            f"{settings.team_label}={team.team_id}",
         ]
     }
     dependent: list[str] = []
@@ -187,9 +213,19 @@ def _get_branch_refs(repo_path: str) -> dict[str, str]:
     """Return a mapping of branch name → commit SHA for all local branches."""
     try:
         result = subprocess.run(
-            ["git", "-C", repo_path, "for-each-ref",
-             "--format=%(refname:short) %(objectname)", "refs/heads/"],
-            check=True, capture_output=True, text=True, timeout=10, env=GIT_ENV,
+            [
+                "git",
+                "-C",
+                repo_path,
+                "for-each-ref",
+                "--format=%(refname:short) %(objectname)",
+                "refs/heads/",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=10,
+            env=GIT_ENV,
         )
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
         return {}
@@ -201,13 +237,13 @@ def _get_branch_refs(repo_path: str) -> dict[str, str]:
     return refs
 
 
-def fetch_extra_repo(settings: Settings, name: str) -> dict:
+def fetch_extra_repo(team: TeamSettings, name: str) -> dict:
     """Fetch latest changes and return a summary of what changed.
 
     Returns a dict with keys: name, up_to_date, new_branches,
     deleted_branches, updated_branches.
     """
-    path = os.path.join(settings.shared_repos_dir, name)
+    path = os.path.join(team.shared_repos_dir, name)
     if not os.path.isdir(path):
         raise NotFoundError(f"Extra repo '{name}' not found.")
 
@@ -215,12 +251,26 @@ def fetch_extra_repo(settings: Settings, name: str) -> dict:
     try:
         result = subprocess.run(
             ["git", "-C", path, "config", "--get", "remote.origin.fetch"],
-            capture_output=True, text=True, timeout=10, env=GIT_ENV,
+            capture_output=True,
+            text=True,
+            timeout=10,
+            env=GIT_ENV,
         )
         if result.returncode != 0 or not result.stdout.strip():
             subprocess.run(
-                ["git", "-C", path, "config", "remote.origin.fetch", "+refs/heads/*:refs/heads/*"],
-                check=True, capture_output=True, text=True, timeout=10, env=GIT_ENV,
+                [
+                    "git",
+                    "-C",
+                    path,
+                    "config",
+                    "remote.origin.fetch",
+                    "+refs/heads/*:refs/heads/*",
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=10,
+                env=GIT_ENV,
             )
             logger.info("Added missing fetch refspec for extra repo '%s'", name)
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
@@ -257,18 +307,26 @@ def fetch_extra_repo(settings: Settings, name: str) -> dict:
         if old_sha != new_sha:
             try:
                 count_result = subprocess.run(
-                    ["git", "-C", path, "rev-list", "--count",
-                     f"{old_sha}..{new_sha}"],
-                    check=True, capture_output=True, text=True, timeout=10,
+                    ["git", "-C", path, "rev-list", "--count", f"{old_sha}..{new_sha}"],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
                     env=GIT_ENV,
                 )
                 new_commits = int(count_result.stdout.strip())
-            except (subprocess.CalledProcessError, subprocess.TimeoutExpired, ValueError):
+            except (
+                subprocess.CalledProcessError,
+                subprocess.TimeoutExpired,
+                ValueError,
+            ):
                 new_commits = 0
-            updated_branches.append({
-                "branch": branch_name,
-                "new_commits": new_commits,
-            })
+            updated_branches.append(
+                {
+                    "branch": branch_name,
+                    "new_commits": new_commits,
+                }
+            )
 
     up_to_date = not new_branches and not deleted_branches and not updated_branches
     logger.info("Fetched extra repo '%s' (up_to_date=%s)", name, up_to_date)
@@ -282,15 +340,13 @@ def fetch_extra_repo(settings: Settings, name: str) -> dict:
 
 
 def create_worktree(
-    settings: Settings, repo_name: str, branch: str, target_path: str
+    team: TeamSettings, repo_name: str, branch: str, target_path: str
 ) -> str:
-    bare_path = os.path.join(settings.shared_repos_dir, repo_name)
+    bare_path = os.path.join(team.shared_repos_dir, repo_name)
     if not os.path.isdir(bare_path):
-        raise NotFoundError(
-            f"Extra repo '{repo_name}' not found. Add it first."
-        )
+        raise NotFoundError(f"Extra repo '{repo_name}' not found. Add it first.")
 
-    fetch_extra_repo(settings, repo_name)
+    fetch_extra_repo(team, repo_name)
 
     subprocess.run(
         ["git", "-C", bare_path, "worktree", "prune"],
@@ -302,7 +358,16 @@ def create_worktree(
 
     try:
         subprocess.run(
-            ["git", "-C", bare_path, "worktree", "add", "--detach", target_path, branch],
+            [
+                "git",
+                "-C",
+                bare_path,
+                "worktree",
+                "add",
+                "--detach",
+                target_path,
+                branch,
+            ],
             check=True,
             capture_output=True,
             text=True,
@@ -318,15 +383,15 @@ def create_worktree(
 
     logger.info(
         "Created worktree for %s branch '%s' at %s",
-        repo_name, branch, target_path,
+        repo_name,
+        branch,
+        target_path,
     )
     return target_path
 
 
-def remove_worktree(
-    settings: Settings, repo_name: str, target_path: str
-) -> None:
-    bare_path = os.path.join(settings.shared_repos_dir, repo_name)
+def remove_worktree(team: TeamSettings, repo_name: str, target_path: str) -> None:
+    bare_path = os.path.join(team.shared_repos_dir, repo_name)
     try:
         subprocess.run(
             ["git", "-C", bare_path, "worktree", "remove", target_path, "--force"],
@@ -337,7 +402,11 @@ def remove_worktree(
             env=GIT_ENV,
         )
         logger.info("Removed worktree %s from repo %s", target_path, repo_name)
-    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError):
+    except (
+        subprocess.CalledProcessError,
+        subprocess.TimeoutExpired,
+        FileNotFoundError,
+    ):
         logger.debug(
             "Ignoring worktree removal error for %s (may already be cleaned up)",
             target_path,
@@ -345,47 +414,58 @@ def remove_worktree(
 
 
 def pull_extra_worktree(
-    settings: Settings, repo_name: str, branch: str, worktree_path: str
+    team: TeamSettings, repo_name: str, branch: str, worktree_path: str
 ) -> list[str]:
     """Fetch the bare repo and reset the worktree to the branch tip.
 
     Returns a list of changed file paths (relative to worktree root),
     or an empty list if already up to date.
     """
-    fetch_extra_repo(settings, repo_name)
+    fetch_extra_repo(team, repo_name)
 
     old_head = subprocess.run(
         ["git", "-C", worktree_path, "rev-parse", "HEAD"],
-        check=True, capture_output=True, text=True, env=GIT_ENV,
+        check=True,
+        capture_output=True,
+        text=True,
+        env=GIT_ENV,
     ).stdout.strip()
 
     try:
         subprocess.run(
             ["git", "-C", worktree_path, "reset", "--hard", branch],
-            check=True, capture_output=True, text=True, env=GIT_ENV,
+            check=True,
+            capture_output=True,
+            text=True,
+            env=GIT_ENV,
         )
     except subprocess.CalledProcessError as e:
-        raise ExternalCommandError(
-            "git reset --hard", e.returncode, e.stderr or ""
-        )
+        raise ExternalCommandError("git reset --hard", e.returncode, e.stderr or "")
 
     new_head = subprocess.run(
         ["git", "-C", worktree_path, "rev-parse", "HEAD"],
-        check=True, capture_output=True, text=True, env=GIT_ENV,
+        check=True,
+        capture_output=True,
+        text=True,
+        env=GIT_ENV,
     ).stdout.strip()
 
     if old_head == new_head:
         return []
 
     result = subprocess.run(
-        ["git", "-C", worktree_path, "diff", "--name-only",
-         f"{old_head}..{new_head}"],
-        check=True, capture_output=True, text=True, env=GIT_ENV,
+        ["git", "-C", worktree_path, "diff", "--name-only", f"{old_head}..{new_head}"],
+        check=True,
+        capture_output=True,
+        text=True,
+        env=GIT_ENV,
     )
     changed = [f for f in result.stdout.strip().splitlines() if f]
     logger.info(
         "Updated worktree %s/%s: %d files changed",
-        repo_name, branch, len(changed),
+        repo_name,
+        branch,
+        len(changed),
     )
     return changed
 
@@ -413,5 +493,7 @@ def generate_odoo_conf(
     with open(output_path, "w") as f:
         parser.write(f)
 
-    logger.info("Generated Odoo config at %s with extra paths: %s", output_path, extra_paths)
+    logger.info(
+        "Generated Odoo config at %s with extra paths: %s", output_path, extra_paths
+    )
     return output_path

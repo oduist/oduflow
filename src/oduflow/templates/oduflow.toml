@@ -1,0 +1,31 @@
+# ── Server ────────────────────────────────────────────
+[server]
+host = "0.0.0.0"
+port = 8000
+
+# ── Routing ───────────────────────────────────────────
+[routing]
+mode = "port"                   # "port" | "traefik"
+external_host = "localhost"
+# base_domain = "dev.example.com"   # required for traefik
+# acme_email = "admin@example.com"  # required for traefik
+
+# ── Database ──────────────────────────────────────────
+[database]
+user = "odoo"
+password = "odoo"
+image = "postgres:15"
+
+# ── Storage ───────────────────────────────────────────
+[storage]
+# data_dir = "/srv/oduflow"       # default: /srv/oduflow or ~/.oduflow/data
+overlay_threshold_mb = 50         # filestore size limit for overlay vs copy
+
+# ── Teams ─────────────────────────────────────────────
+# Each team gets isolated workspaces, templates, credentials and services.
+# At least one [team.*] section is required.
+
+[team.1]
+auth_token = ""                   # MCP bearer token (empty = auth disabled)
+ui_password = ""                  # Web UI password (empty = UI open)
+port_range = [50000, 50100]       # port range for Odoo containers
