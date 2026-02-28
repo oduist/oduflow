@@ -105,6 +105,43 @@ def _resolve_instance_conf(name: str, data_dir: str) -> pathlib.Path:
     return _PACKAGE_ROOT / "templates" / name
 
 
+def _write_traefik_dynamic_config(settings: Settings, config_path: str) -> None:
+    """Generate traefik dynamic config that routes each team's hostname to oduflow."""
+    routers: dict = {}
+    for team_id, team in settings.teams.items():
+        if not team.hostname:
+            continue
+        router_name = f"oduflow-team-{team_id}"
+        routers[router_name] = {
+            "rule": f"Host(`{team.hostname}`)",
+            "service": "oduflow",
+            "entryPoints": ["websecure"],
+            "tls": {"certResolver": "letsencrypt"},
+        }
+
+    if not routers:
+        return
+
+    config = {
+        "http": {
+            "routers": routers,
+            "services": {
+                "oduflow": {
+                    "loadBalancer": {
+                        "servers": [
+                            {"url": f"http://host.docker.internal:{settings.port}"}
+                        ]
+                    }
+                }
+            },
+        }
+    }
+
+    with open(config_path, "w") as f:
+        json.dump(config, f, indent=2)
+    logger.info("Traefik dynamic config written to %s", config_path)
+
+
 def _ensure_traefik(client: DockerClient, settings: Settings) -> None:
     if settings.routing_mode != "traefik":
         return
@@ -117,6 +154,9 @@ def _ensure_traefik(client: DockerClient, settings: Settings) -> None:
         client.volumes.create(settings.traefik_acme_volume, labels=system_labels)
         logger.info("Created volume %s", settings.traefik_acme_volume)
 
+    traefik_config = "/etc/oduflow/traefik.json"
+    _write_traefik_dynamic_config(settings, traefik_config)
+
     try:
         t = client.containers.get(settings.traefik_container)
         if t.status != "running":
@@ -124,9 +164,6 @@ def _ensure_traefik(client: DockerClient, settings: Settings) -> None:
         return
     except docker.errors.NotFound:
         pass
-
-    dynamic_dir = "/etc/oduflow/traefik"
-    os.makedirs(dynamic_dir, exist_ok=True)
 
     client.containers.run(
         "traefik:v3.6",
@@ -138,14 +175,14 @@ def _ensure_traefik(client: DockerClient, settings: Settings) -> None:
         volumes={
             "/var/run/docker.sock": {"bind": "/var/run/docker.sock", "mode": "ro"},
             settings.traefik_acme_volume: {"bind": "/acme", "mode": "rw"},
-            dynamic_dir: {"bind": "/etc/traefik/dynamic/", "mode": "ro"},
+            traefik_config: {"bind": "/etc/traefik/dynamic/oduflow.json", "mode": "ro"},
         },
         command=[
             "--log.level=INFO",
             "--providers.docker=true",
             "--providers.docker.exposedbydefault=false",
             f"--providers.docker.network={settings.shared_network}",
-            "--providers.file.directory=/etc/traefik/dynamic/",
+            "--providers.file.filename=/etc/traefik/dynamic/oduflow.json",
             "--providers.file.watch=true",
             "--entrypoints.web.address=:80",
             "--entrypoints.websecure.address=:443",

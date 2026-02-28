@@ -1927,7 +1927,14 @@ def _start_server() -> None:
     from oduflow.web_ui import mount_web_ui
 
     mount_web_ui(app, _get_settings, _locks)
-    logger.info("Web UI available at http://%s:%d/", host, port)
+
+    if settings.routing_mode == "traefik":
+        for tid, team in settings.teams.items():
+            logger.info(
+                "Web UI [team.%s] available at https://%s/", tid, team.hostname
+            )
+    else:
+        logger.info("Web UI available at http://%s:%d/", host, port)
 
     import uvicorn
 
