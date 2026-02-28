@@ -1209,6 +1209,13 @@ def _run_init(settings: Settings) -> None:
     for team_id, team in settings.teams.items():
         os.makedirs(team.workspaces_dir, exist_ok=True)
         os.makedirs(os.path.join(team.data_dir, "templates"), exist_ok=True)
+        os.makedirs(team.shared_repos_dir, exist_ok=True)
+
+        # Initialize empty service presets file
+        presets_path = os.path.join(team.data_dir, "service_presets.json")
+        if not os.path.isfile(presets_path):
+            with open(presets_path, "w") as f:
+                f.write("{}\n")
 
         # Copy bundled odoo.conf to team data dir
         odoo_conf_dest = os.path.join(team.data_dir, "odoo.conf")
@@ -1242,6 +1249,8 @@ def _run_init(settings: Settings) -> None:
         print(f"  Team {team_id} initialized.")
         print(f"    Workspaces: {team.workspaces_dir}")
         print(f"    Templates: {os.path.join(team.data_dir, 'templates')}")
+        print(f"    Shared repos: {team.shared_repos_dir}")
+        print(f"    Service presets: {presets_path}")
 
 
 def _copy_bundled_configs() -> None:
