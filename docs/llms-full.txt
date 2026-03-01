@@ -1,17 +1,164 @@
-# Oduflow — Full Documentation
+# Oduflow
 
 > AI-first Odoo development and CI tool powered by reusable database templates. Provisions isolated, ephemeral Odoo environments on Docker — one per git branch — and exposes them to AI coding agents via MCP.
 
-- Repository: https://github.com/oduist/oduflow
-- Website: https://oduflow.dev
-- Docs: https://docs.oduflow.dev
+## Installation
+
+### System Requirements
+
+- Docker (Docker Engine or Docker Desktop)
+- Python 3.10+
+- Git
+- fuse-overlayfs (for filestore overlay mounting; not needed on macOS)
+
+### Install
+
+Recommended — install via [uv](https://docs.astral.sh/uv/):
+
+```bash
+uv tool install oduflow
+```
+
+Alternative — install via pip:
+
+```bash
+pip install oduflow
+```
+
+### Configure
+
+All settings are configured via `oduflow.toml` (searched in `/etc/oduflow/` then `~/.oduflow/`, or set `ODUFLOW_TOML`).
+
+Minimal configuration:
+
+```toml
+[team.1]
+hostname = "localhost"
+```
+
+Full configuration reference:
+
+```toml
+[server]
+host = "0.0.0.0"                     # HTTP bind address
+port = 8000                           # HTTP port
+
+[routing]
+mode = "port"                         # "port" | "traefik" (auto-HTTPS)
+# acme_email = "admin@example.com"    # required for traefik mode
+
+[database]
+user = "odoo"
+password = "odoo"
+image = "postgres:15"
+
+[storage]
+# data_dir = "/srv/oduflow"           # default: /srv/oduflow or ~/.oduflow/data
+overlay_threshold_mb = 50             # filestore size threshold for overlay vs copy
+
+[team.1]
+hostname = "localhost"
+auth_token = ""                       # MCP bearer token (empty = auth disabled)
+ui_password = ""                      # Web UI password (empty = UI open)
+port_range = [50000, 50100]           # port range for Odoo containers
+```
+
+### Initialize
+
+```bash
+oduflow init              # Create shared Docker network, PostgreSQL, team directories
+```
+
+### Set up a template
+
+```bash
+# From scratch
+oduflow init-template --odoo-image odoo:17.0 --template-name default
+
+# From production dump
+# Place dump.sql and filestore/ into {data_dir}/team_1/templates/default/ then:
+oduflow reload-template default
+```
+
+### Start the MCP server
+
+```bash
+oduflow
+```
+
+The server starts on `http://0.0.0.0:8000`. MCP endpoint: `http://<host>:8000/mcp`.
+
+## MCP Client Configuration
+
+### Cursor / Windsurf
+
+`.cursor/mcp.json` or `.windsurf/mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "oduflow": {
+      "type": "http",
+      "url": "https://<your-oduflow-host>/mcp",
+      "headers": {
+        "Authorization": "Bearer <your-token>"
+      }
+    }
+  }
+}
+```
+
+### Claude Desktop / Amp
+
+Same JSON format in `claude_desktop_config.json` or `.amp/settings.json`.
+
+## Core MCP Tools
+
+- `create_environment` — provision a new Odoo environment for a branch
+- `delete_environment` — tear down an environment
+- `start_environment` / `stop_environment` / `restart_environment` — lifecycle control
+- `rebuild_environment` — re-create the container from the same image, preserving DB and filestore
+- `install_odoo_modules` — install Odoo modules
+- `upgrade_odoo_modules` — upgrade Odoo modules
+- `run_odoo_tests` — run Odoo tests for specific modules
+- `pull_and_apply` — pull latest code and auto-install/upgrade/restart as needed
+- `get_environment_logs` — retrieve container logs
+- `exec_in_odoo` — execute shell commands inside the Odoo container
+- `read_file_in_odoo` — read a text file or list a directory inside the container (supports line ranges)
+- `run_db_query` — execute SQL queries against the environment's PostgreSQL database
+- `reset_admin_password` — reset the admin user password (default: "test")
+- `list_environments` / `get_environment_info` — inspect environments
+- `create_service` / `delete_service` / `update_service` / `list_services` / `get_service_logs` — manage auxiliary services
+- `list_service_presets` / `restore_service` / `delete_service_preset` — manage service presets
+- `save_as_template` / `delete_template` / `list_templates` — template management
+- `import_template_from_odoo` — import a template from a running Odoo instance
+- `setup_repo_auth` — cache git credentials for private repositories
+- `add_extra_repo` / `list_extra_repos` / `update_extra_repo` / `delete_extra_repo` — manage extra addons repositories
+- `get_agent_instructions` — get AI agent instructions for using Oduflow
+- `get_odoo_development_guide` — get Odoo development standards guide for a specific version (15–19)
+
+## Typical Agent Workflow
+
+1. Call `list_environments` to check if an environment for the branch exists
+2. If not, call `create_environment` with `branch_name`, `template_name`, `repo_url`, and `odoo_image`
+3. Write code, `git push`, then call `pull_and_apply` (auto-detects what to do)
+4. Use `install_odoo_modules` / `run_odoo_tests` / `get_environment_logs` to verify
+5. Call `delete_environment` when the task is done
+
+## Links
+
+- Repository: <https://github.com/oduist/oduflow>
+- Documentation: <https://docs.oduflow.dev>
 - License: Polyform Noncommercial 1.0.0
+- Website: <https://oduflow.dev>
 
 ---
 
 # Oduflow
 
 [TOC]
+
+[![Oduflow Dashboard](img/envs.png)](img/envs.png)
 
 An **AI-first** Odoo development and CI tool, powered by **reusable database templates**. Oduflow provisions isolated, ephemeral Odoo environments on Docker — one per git branch — and exposes them to AI coding agents via [MCP](https://modelcontextprotocol.io/), creating a **closed feedback loop** that enables fully autonomous Odoo development.
 
@@ -93,14 +240,16 @@ The agent writes code, installs the module, reads the traceback, fixes the error
 
 ## 1. Configure
 
-```bash
-cp .env.example .env
-# Edit .env — at minimum set paths and optionally ODUFLOW_AUTH_TOKEN
+Create `oduflow.toml` (searched in `/etc/oduflow/` then `~/.oduflow/`, or set `ODUFLOW_TOML`):
+
+```toml
+[team.1]
+hostname = "localhost"
 ```
 
 ## 2. Initialize the system
 
-Create the shared Docker network, PostgreSQL container, and Traefik reverse proxy:
+Create the shared Docker network, PostgreSQL container, and all team directories:
 
 ```bash
 oduflow init
@@ -111,16 +260,14 @@ To set up a template database, use `oduflow init-template` (see [Template Manage
 ## 3. Start the MCP server
 
 ```bash
-oduflow run-instance
+oduflow
 ```
 
-The server starts on `http://0.0.0.0:8000` by default (configurable via `ODUFLOW_HOST` / `ODUFLOW_PORT`).
+The server starts on `http://0.0.0.0:8000` by default (configurable via `[server]` section in `oduflow.toml`).
 
 ## 4. Connect an MCP client
 
 Point your MCP client (Cursor, Cline, Amp, etc.) to `http://<host>:8000/mcp`.
-
-For stdio transport, set `ODUFLOW_TRANSPORT=stdio` and run `oduflow` as a subprocess.
 
 ---
 
@@ -134,6 +281,14 @@ For stdio transport, set `ODUFLOW_TRANSPORT=stdio` and run `oduflow` as a subpro
 - **Python 3.10+**
 - **Git**
 - **fuse-overlayfs** (for filestore overlay mounting)
+
+!!! note "macOS support"
+    On macOS, Docker Desktop runs containers inside a Linux VM and projects
+    files via VirtioFS. **fuse-overlayfs is not needed** — filestore overlays
+    are skipped and a plain directory is used instead.
+    File ownership (`chown`) is handled automatically: Oduflow detects the
+    `PermissionError` that VirtioFS raises and falls back to running `chown`
+    inside a throwaway container. No extra configuration is required.
 
 ### Install fuse-overlayfs
 
@@ -179,84 +334,180 @@ uv tool upgrade oduflow
 
 ## Configuration Reference
 
-All settings are configured via environment variables. Oduflow uses [python-dotenv](https://pypi.org/project/python-dotenv/) and loads a `.env` file on startup.
+All settings are configured via a TOML file. Oduflow searches for `oduflow.toml` in the following order:
 
-On servers, `oduflow init-instance` seeds the file at `/etc/oduflow/instance_{ID}.env` and `oduflow run-instance` picks it up automatically. For local development, pass the path explicitly:
+1. `ODUFLOW_TOML` environment variable (explicit path)
+2. `/etc/oduflow/oduflow.toml`
+3. `~/.oduflow/oduflow.toml`
+
+If no config file exists when running `oduflow init`, the bundled default is automatically copied to the appropriate location.
+
+### Minimal configuration
+
+```toml
+[team.1]
+hostname = "localhost"
+```
+
+### Full configuration reference
+
+```toml
+# ── Server ────────────────────────────────────────────
+[server]
+host = "0.0.0.0"           # HTTP server bind address
+port = 8000                 # HTTP server port
+# trace = false             # verbose tracing for git analysis & env ops
+
+# ── Routing ───────────────────────────────────────────
+[routing]
+mode = "port"               # "port" (direct host port) | "traefik" (reverse proxy with auto-HTTPS)
+# acme_email = "admin@example.com"  # required when mode = "traefik"
+
+# ── Database ──────────────────────────────────────────
+[database]
+user = "odoo"               # PostgreSQL user for the shared database container
+password = "odoo"           # PostgreSQL password
+image = "postgres:15"       # PostgreSQL Docker image
+
+# ── Storage ───────────────────────────────────────────
+[storage]
+# data_dir = "/srv/oduflow"         # base directory for all data (default: /srv/oduflow or ~/.oduflow/data)
+overlay_threshold_mb = 50            # template filestore size threshold (MB) — larger uses fuse-overlayfs, smaller uses copy
+
+# ── Teams ─────────────────────────────────────────────
+# Each team gets isolated workspaces, templates, credentials, and services.
+# At least one [team.*] section is required.
+
+[team.1]
+hostname = "localhost"               # port mode: http://{hostname}:{port}, traefik mode: https://{slug}.{hostname}
+auth_token = ""                      # MCP bearer token (empty = MCP auth disabled)
+ui_password = ""                     # Web UI password (empty = UI auth disabled)
+port_range = [50000, 50100]          # port range for Odoo containers [start, end)
+```
+
+### Server settings
+
+| Key | Default | Description |
+|---|---|---|
+| `[server].host` | `0.0.0.0` | HTTP server bind address |
+| `[server].port` | `8000` | HTTP server port |
+| `[server].trace` | `false` | Enable detailed trace logging for git analysis and environment operations |
+
+### Routing settings
+
+| Key | Default | Description |
+|---|---|---|
+| `[routing].mode` | `port` | `port` — direct host port mapping; `traefik` — reverse proxy with auto-HTTPS |
+| `[routing].acme_email` | *(empty)* | Let's Encrypt email for TLS certificates. Required when `mode = "traefik"` |
+
+### Database settings
+
+| Key | Default | Description |
+|---|---|---|
+| `[database].user` | `odoo` | PostgreSQL user for the shared database container |
+| `[database].password` | `odoo` | PostgreSQL password |
+| `[database].image` | `postgres:15` | PostgreSQL Docker image |
+
+### Storage settings
+
+| Key | Default | Description |
+|---|---|---|
+| `[storage].data_dir` | `/srv/oduflow` or `~/.oduflow/data` | Base directory for all data. Team data directories are `team_{ID}` subdirectories inside |
+| `[storage].overlay_threshold_mb` | `50` | Template filestore size threshold (MB). Templates smaller than this use a simple copy per environment; larger templates use fuse-overlayfs. The decision is stored in `metadata.json` at template creation time |
+
+### Per-team settings
+
+Each `[team.*]` section defines an isolated team with its own workspaces, templates, credentials, and services. At least one team is required.
+
+| Key | Default | Description |
+|---|---|---|
+| `hostname` | `localhost` | Team hostname. In port mode: `http://{hostname}:{port}`. In traefik mode: `https://{slug}.{hostname}` |
+| `auth_token` | *(empty)* | Bearer token for MCP HTTP auth. Empty = MCP auth disabled for this team |
+| `ui_password` | *(empty)* | Password for Web UI Basic auth (user: `admin`). Separate from MCP auth token. Empty = UI auth disabled |
+| `port_range` | `[50000, 50100]` | Port range for Odoo containers `[start, end)` — supports up to 100 concurrent environments |
+
+Team data is stored at `{data_dir}/team_{ID}/`:
+
+```
+team_{ID}/
+├── workspaces/           # Per-branch environments
+├── templates/            # Reusable database snapshots
+├── shared_repos/         # Extra addon repositories (bare clones)
+├── ports.json            # Port registry
+├── .git-credentials      # Git credentials for this team
+└── agent_guides/         # AI agent guides (markdown)
+```
+
+### Configuration file overrides
+
+When `oduflow init` runs, it copies the bundled `postgresql.conf` and `odoo.conf` to the config directory. These files take **priority** over the bundled defaults — edit them to customize PostgreSQL tuning or Odoo settings globally:
+
+```
+/etc/oduflow/             (or ~/.oduflow/conf/)
+  oduflow.toml            ← main configuration file
+  postgresql.conf         ← custom PostgreSQL tuning (used by oduflow-db)
+  odoo.conf               ← custom Odoo defaults (used by new environments)
+  license.key             ← license file (optional)
+  traefik/                ← Traefik dynamic configuration (auto-generated)
+```
+
+If a repository contains an `odoo.conf` at its root, it takes priority over both the bundled and system-level versions for that specific environment.
+
+## Auto-start with systemd
+
+On Linux servers, Oduflow can be registered as a systemd service so it starts automatically on boot.
+
+### Prerequisites
 
 ```bash
-oduflow --env .env run-instance
+# Install uv (if not already installed)
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# Install oduflow as a tool (as root)
+uv tool install oduflow
+
+# Create the configuration file
+# (oduflow init will auto-create a default oduflow.toml if none exists)
+
+# Initialize shared infrastructure and all team directories
+oduflow init
 ```
 
-### Server
+### Install the service
 
-| Variable | Default | Description |
-|---|---|---|
-| `ODUFLOW_TRANSPORT` | `http` | Transport mode: `http` or `stdio` |
-| `ODUFLOW_HOST` | `0.0.0.0` | HTTP server bind address |
-| `ODUFLOW_PORT` | `8000` | HTTP server port |
-| `ODUFLOW_AUTH_TOKEN` | *(empty)* | Bearer token for MCP HTTP auth. Empty = MCP auth disabled |
-| `ODUFLOW_UI_PASSWORD` | *(empty)* | Password for Web UI Basic auth (user: `admin`). Separate from MCP auth token. Empty = UI auth disabled |
-| `ODUFLOW_STATELESS_HTTP` | `true` | When `true`, the MCP HTTP transport runs in stateless mode (no session tracking). Set to `false` to enable session-based communication |
-
-### Paths
-
-| Variable | Default | Description |
-|---|---|---|
-| `ODUFLOW_INSTANCE_ID` | `1` | Instance identifier (1-9). Allows running multiple independent Oduflow instances. See [Multi-Instance Support](multi-instance.md) |
-| `ODUFLOW_DATA_DIR` | `/srv/oduflow` | Base directory for all data (dumps, workspaces, ports) |
-| `ODUFLOW_WORKSPACES_DIR` | `$ODUFLOW_DATA_DIR/instance_{ID}/workspaces` | Root directory for environment workspaces |
-| `ODUFLOW_ETC_DIR` | `/etc/oduflow` or `~/.oduflow/conf` | Config and credentials directory. Defaults to `/etc/oduflow` when writable (Docker), otherwise `~/.oduflow/conf` |
-| `ODUFLOW_PORT_REGISTRY` | `$ODUFLOW_DATA_DIR/instance_{ID}/ports.json` | JSON file for stable port assignments |
-
-Template folder structure: `$ODUFLOW_DATA_DIR/instance_{ID}/templates/<name>/dump.sql` (or `dump.pgdump`) and `$ODUFLOW_DATA_DIR/instance_{ID}/templates/<name>/filestore/`.
-
-### Network / Host
-
-| Variable | Default | Description |
-|---|---|---|
-| `EXTERNAL_HOST` | `localhost` | Hostname or IP used to construct environment URLs |
-| `PORT_RANGE_START` | `50000` | Start of the port range for Odoo containers (inclusive) |
-| `PORT_RANGE_END` | `50100` | End of the port range (exclusive) — supports up to 100 concurrent environments |
-
-### Routing
-
-| Variable | Default | Description |
-|---|---|---|
-| `ODUFLOW_ROUTING_MODE` | `port` | `port` — direct host port mapping; `traefik` — reverse proxy with auto-HTTPS |
-| `ODUFLOW_BASE_DOMAIN` | *(empty)* | Base domain for Traefik routing (e.g. `dev.example.com`). Required when `ODUFLOW_ROUTING_MODE=traefik` |
-| `ODUFLOW_ACME_EMAIL` | *(empty)* | Let's Encrypt email for TLS certificates. Required when `ODUFLOW_ROUTING_MODE=traefik` |
-
-### Filestore
-
-| Variable | Default | Description |
-|---|---|---|
-| `ODUFLOW_OVERLAY_THRESHOLD_MB` | `50` | Template filestore size threshold (MB). Templates smaller than this use a simple copy per environment; larger templates use fuse-overlayfs (saves disk). The decision is stored in `metadata.json` at template creation time. |
-
-### Database
-
-| Variable | Default | Description |
-|---|---|---|
-| `ODOO_DB_USER` | `odoo` | PostgreSQL user for the shared database container |
-| `ODOO_DB_PASSWORD` | `odoo` | PostgreSQL password |
-
-### Debug
-
-| Variable | Default | Description |
-|---|---|---|
-| `ODUFLOW_TRACE` | *(empty)* | Set to `1` to enable detailed trace logging for git analysis and environment operations (file classification, field change detection, pull actions) |
-
-### Configuration File Overrides
-
-When `oduflow init` runs, it copies the bundled `postgresql.conf` and `odoo.conf` to `/etc/oduflow/`. These files take **priority** over the bundled defaults — edit them to customize PostgreSQL tuning or Odoo settings globally:
-
-```
-/etc/oduflow/
-  postgresql.conf      ← custom PostgreSQL tuning (used by oduflow-db)
-  odoo.conf            ← custom Odoo defaults (used by new environments)
-  traefik/             ← Traefik dynamic configuration (auto-generated per instance)
+```bash
+oduflow systemd-install
 ```
 
-If a repository contains an `odoo.conf` at its root, it takes priority over both the bundled and `/etc/oduflow/` versions for that specific environment.
+This will:
+
+1. Generate a systemd unit file at `/etc/systemd/system/oduflow.service`
+2. Run `systemctl daemon-reload`
+3. Enable the service for auto-start on boot
+
+### Manage the service
+
+```bash
+# Start
+systemctl start oduflow
+
+# Status
+systemctl status oduflow
+
+# Logs (follow)
+journalctl -u oduflow -f
+
+# Restart after config changes
+systemctl restart oduflow
+```
+
+### Remove the service
+
+```bash
+oduflow systemd-uninstall
+```
+
+This stops, disables, and removes the unit file.
 
 ---
 
@@ -270,7 +521,7 @@ The most common workflow — test your changes against real production data:
 
 ```bash
 # Create an environment for your feature branch
-oduflow call create_environment feature-login https://github.com/company/odoo-addons.git odoo:17.0
+oduflow call create_environment feature-login default https://github.com/company/odoo-addons.git odoo:17.0
 
 # Make changes, push to remote, then pull into the environment
 oduflow call pull_and_apply feature-login
@@ -286,7 +537,7 @@ Reproduce a production bug with real data:
 
 ```bash
 # Spin up an environment with production data
-oduflow call create_environment bug-12345 https://github.com/company/odoo-addons.git odoo:17.0
+oduflow call create_environment bug-12345 default https://github.com/company/odoo-addons.git odoo:17.0
 
 # Debug inside the container
 oduflow call exec_in_odoo bug-12345 "python3 -c 'import odoo; ...'"
@@ -300,7 +551,7 @@ oduflow call exec_in_odoo bug-12345 "psql -h oduflow-db -U odoo -d oduflow_bug-1
 Run Odoo tests in an isolated environment:
 
 ```bash
-oduflow call create_environment test-suite https://github.com/company/odoo-addons.git odoo:17.0
+oduflow call create_environment test-suite default https://github.com/company/odoo-addons.git odoo:17.0
 oduflow call run_odoo_tests test-suite sale_custom,invoice_custom
 oduflow call delete_environment test-suite
 ```
@@ -311,15 +562,15 @@ Start a new Odoo project from scratch:
 
 ```bash
 # Generate a clean template with common modules
-oduflow init-template --odoo-image odoo:17.0 --modules base,web,contacts,sale,purchase,stock
+oduflow init-template --odoo-image odoo:17.0 --template-name default --modules base,web,contacts,sale,purchase,stock
 
 # Customize the template interactively
-oduflow template-up --odoo-image odoo:17.0
+oduflow template-up --odoo-image odoo:17.0 --template-name default
 # → Install additional modules, configure settings, create demo users in the browser
-oduflow template-down
+oduflow template-down --template-name default
 
 # Now create environments that start with your customized setup
-oduflow call create_environment dev https://github.com/company/new-project.git odoo:17.0
+oduflow call create_environment dev default https://github.com/company/new-project.git odoo:17.0
 ```
 
 ## 🔄 Multiple Odoo Versions
@@ -332,8 +583,8 @@ oduflow init-template --odoo-image odoo:15.0 --template-name v15
 oduflow init-template --odoo-image odoo:17.0 --template-name v17
 
 # Create environments targeting specific versions
-oduflow call create_environment legacy-fix https://github.com/company/v15-addons.git odoo:15.0 v15
-oduflow call create_environment new-feature https://github.com/company/v17-addons.git odoo:17.0 v17
+oduflow call create_environment legacy-fix v15 https://github.com/company/v15-addons.git odoo:15.0
+oduflow call create_environment new-feature v17 https://github.com/company/v17-addons.git odoo:17.0
 ```
 
 ## 🤖 AI-Assisted Development
@@ -367,7 +618,7 @@ Add the Oduflow MCP server to your agent's configuration. The exact format depen
 }
 ```
 
-Replace `<your-oduflow-host>` with your Oduflow server address (e.g. `localhost:8000` or `oduflow.example.com`). The Bearer token must match the `ODUFLOW_AUTH_TOKEN` configured on the server.
+Replace `<your-oduflow-host>` with your Oduflow server address (e.g. `localhost:8000` or `oduflow.example.com`). The Bearer token must match the `auth_token` configured for your team in `oduflow.toml`.
 
 ### Recommended Agent Rule (Cursor / Windsurf / Amp)
 
@@ -412,7 +663,7 @@ Set up a full-stack development environment:
 
 ```bash
 # Create the Odoo environment
-oduflow call create_environment dev https://github.com/company/odoo-addons.git odoo:17.0
+oduflow call create_environment dev default https://github.com/company/odoo-addons.git odoo:17.0
 
 # Add Redis for caching
 oduflow call create_service redis redis:7 6379
@@ -431,7 +682,7 @@ Use `oduflow call` in your CI pipeline:
 # .github/workflows/test.yml
 steps:
   - name: Create test environment
-    run: oduflow call create_environment ci-${{ github.sha }} ${{ github.repository }} odoo:17.0
+    run: oduflow call create_environment ci-${{ github.sha }} default ${{ github.repository }} odoo:17.0
 
   - name: Install and test
     run: |
@@ -452,7 +703,7 @@ You can create a template from a running Odoo instance, from a manual database b
 The easiest way — Oduflow downloads the backup, extracts it, auto-detects the Odoo version, and loads the template in one command:
 
 ```bash
-oduflow import-template https://my-odoo.example.com master_password
+oduflow import-template https://my-odoo.example.com master_password --template-name default
 ```
 
 Options:
@@ -470,10 +721,10 @@ This is also available as an MCP tool (`import_template_from_odoo`) for AI agent
 4. Place them into the template directory:
 
 ```bash
-mkdir -p $ODUFLOW_DATA_DIR/instance_{ID}/templates/myproject
+mkdir -p {data_dir}/team_{ID}/templates/myproject
 # Copy or move the extracted files
-cp dump.sql $ODUFLOW_DATA_DIR/instance_{ID}/templates/myproject/
-cp -r filestore $ODUFLOW_DATA_DIR/instance_{ID}/templates/myproject/
+cp dump.sql {data_dir}/team_{ID}/templates/myproject/
+cp -r filestore {data_dir}/team_{ID}/templates/myproject/
 ```
 
 5. Load the template into PostgreSQL:
@@ -487,7 +738,7 @@ oduflow reload-template myproject
 Simply copy the entire template directory and reload:
 
 ```bash
-cp -r /other/oduflow/templates/myproject $ODUFLOW_DATA_DIR/instance_{ID}/templates/myproject
+cp -r /other/oduflow/templates/myproject {data_dir}/team_{ID}/templates/myproject
 oduflow reload-template myproject
 ```
 
@@ -500,7 +751,7 @@ Evolve your template as the project grows:
 
 ```bash
 # 1. Create an environment for template changes
-oduflow call create_environment template-update https://github.com/company/odoo-addons.git odoo:17.0
+oduflow call create_environment template-update default https://github.com/company/odoo-addons.git odoo:17.0
 
 # 2. Install new modules
 oduflow call install_odoo_modules template-update accounting,hr,project
@@ -509,7 +760,7 @@ oduflow call install_odoo_modules template-update accounting,hr,project
 oduflow call run_odoo_tests template-update accounting,hr,project
 
 # 4. Save as the new template
-oduflow call save_as_template template-update
+oduflow call save_as_template template-update default
 
 # 5. All future environments will include these modules pre-installed
 ```
@@ -519,6 +770,8 @@ oduflow call save_as_template template-update
 # Template Management
 
 [TOC]
+
+[![Templates Dashboard](img/templates.png)](img/templates.png)
 
 Templates are the foundation of Oduflow's instant environment creation. A template consists of a PostgreSQL dump file and an optional filestore directory.
 
@@ -531,27 +784,27 @@ If you don't have a production database dump — for example, you're starting a 
 ### Generate a clean template
 
 ```bash
-oduflow init-template --odoo-image odoo:17.0
+oduflow init-template --odoo-image odoo:17.0 --template-name default
 ```
 
 If a `dump.sql` or filestore already exists, the command will refuse to run. Use `--force` to overwrite:
 
 ```bash
-oduflow init-template --odoo-image odoo:17.0 --force
+oduflow init-template --odoo-image odoo:17.0 --template-name default --force
 ```
 
 This will:
 
 1. Start a PostgreSQL container (if not already running)
 2. Run a temporary Odoo container that initializes a fresh database with the `base` module
-3. Dump the database to `$ODUFLOW_DATA_DIR/instance_{ID}/templates/default/dump.pgdump`
-4. Extract the filestore to `$ODUFLOW_DATA_DIR/instance_{ID}/templates/default/filestore/`
+3. Dump the database to `{data_dir}/team_{ID}/templates/{name}/dump.pgdump`
+4. Extract the filestore to `{data_dir}/team_{ID}/templates/{name}/filestore/`
 5. Load the dump into the template database automatically
 
 ### Install additional modules during generation
 
 ```bash
-oduflow init-template --odoo-image odoo:17.0 --modules base,web,contacts,sale
+oduflow init-template --odoo-image odoo:17.0 --template-name default --modules base,web,contacts,sale
 ```
 
 ### Named templates for different projects
@@ -563,13 +816,13 @@ oduflow init-template --odoo-image odoo:15.0 --template-name legacy-v15
 
 ## From a Production Dump
 
-Place your dump file at `$ODUFLOW_DATA_DIR/instance_{ID}/templates/default/dump.sql` (plain SQL) or `dump.pgdump` (PostgreSQL custom format) and optionally copy the filestore:
+Place your dump file at `{data_dir}/team_{ID}/templates/default/dump.sql` (plain SQL) or `dump.pgdump` (PostgreSQL custom format) and optionally copy the filestore:
 
 ```bash
-mkdir -p /srv/oduflow/instance_1/templates/default/
-cp /path/to/production.sql /srv/oduflow/instance_1/templates/default/dump.sql
-cp -r /path/to/filestore/ /srv/oduflow/instance_1/templates/default/filestore/
-oduflow init
+mkdir -p /srv/oduflow/team_1/templates/default/
+cp /path/to/production.sql /srv/oduflow/team_1/templates/default/dump.sql
+cp -r /path/to/filestore/ /srv/oduflow/team_1/templates/default/filestore/
+oduflow reload-template default
 ```
 
 ## Editing the Template Database
@@ -579,7 +832,7 @@ Once you have a template, you can modify it interactively — install modules, c
 **Start the template editor:**
 
 ```bash
-oduflow template-up --odoo-image odoo:17.0
+oduflow template-up --odoo-image odoo:17.0 --template-name default
 ```
 
 This starts an Odoo container that works **directly** with the template database and filestore (no overlays, no copies). Open the printed URL in your browser, log in, and make any changes you need.
@@ -587,7 +840,7 @@ This starts an Odoo container that works **directly** with the template database
 **Save and stop:**
 
 ```bash
-oduflow template-down
+oduflow template-down --template-name default
 ```
 
 This stops the container, dumps the updated database, and restores the PostgreSQL template flag. The filestore is already updated in place since it was mounted directly.
@@ -599,7 +852,7 @@ All environments created after this will be based on the updated template.
 When you've made significant changes in a branch environment (installed modules, created configurations), you can save it as the new template:
 
 ```bash
-oduflow template-from-env my-branch
+oduflow template-from-env my-branch --template-name default
 oduflow template-from-env my-branch --template-name myproject  # save to a named template
 ```
 
@@ -621,8 +874,8 @@ This operation:
 Update the template from a newer production dump without touching the filestore:
 
 ```bash
-oduflow reload-template --dump-path /path/to/new.dump
-oduflow reload-template --template-name myproject --dump-path /path/to/new.dump
+oduflow reload-template default --dump-path /path/to/new.dump
+oduflow reload-template myproject --dump-path /path/to/new.dump
 ```
 
 ## Listing and Dropping Templates
@@ -631,8 +884,8 @@ oduflow reload-template --template-name myproject --dump-path /path/to/new.dump
 # List all template profiles with their status
 oduflow list-templates
 
-# Drop a named template (removes DB + files from disk)
-oduflow drop-template myproject
+# Delete a template profile (removes DB + files from disk)
+oduflow delete-template myproject
 ```
 
 ## Template Metadata
@@ -654,21 +907,21 @@ Each template profile can contain a `metadata.json` file that stores defaults an
 
 When `create_environment` is called with a template name, `repo_url`, `odoo_image`, and `extra_addons` are automatically loaded from metadata if not explicitly provided. This means after importing or configuring a template, you can create environments with just `branch_name` and `template_name` — all other parameters are inherited.
 
-The `use_overlay` flag determines whether new environments use fuse-overlayfs (for large filestores) or a simple copy (for small ones). It is set automatically based on `ODUFLOW_OVERLAY_THRESHOLD_MB` when the template is created.
+The `use_overlay` flag determines whether new environments use fuse-overlayfs (for large filestores) or a simple copy (for small ones). It is set automatically based on `overlay_threshold_mb` (in `[storage]`) when the template is created.
 
 ## Template Decision Matrix
 
 | Scenario | Command |
 |---|---|
-| New project, no existing database | `oduflow init-template --odoo-image odoo:17.0` |
-| Regenerate template from scratch | `oduflow init-template --odoo-image odoo:17.0 --force` |
+| New project, no existing database | `oduflow init-template --odoo-image odoo:17.0 --template-name default` |
+| Regenerate template from scratch | `oduflow init-template --odoo-image odoo:17.0 --template-name default --force` |
 | Named template for a specific project | `oduflow init-template --odoo-image odoo:17.0 --template-name myproject` |
-| Have a production dump file | Place dump at `$ODUFLOW_DATA_DIR/instance_{ID}/templates/default/dump.sql` and run `oduflow init` |
-| Need to install modules or configure the template | `oduflow template-up --odoo-image odoo:17.0` / `oduflow template-down` |
-| Update the template from a newer production dump | `oduflow reload-template --dump-path /path/to/new.dump` |
-| Save a branch environment as template | `oduflow template-from-env my-branch` |
+| Have a production dump file | Place dump at `{data_dir}/team_{ID}/templates/default/dump.sql` and run `oduflow reload-template default` |
+| Need to install modules or configure the template | `oduflow template-up --odoo-image odoo:17.0 --template-name default` / `oduflow template-down --template-name default` |
+| Update the template from a newer production dump | `oduflow reload-template default --dump-path /path/to/new.dump` |
+| Save a branch environment as template | `oduflow template-from-env my-branch --template-name default` |
 | List all templates | `oduflow list-templates` |
-| Drop a named template | `oduflow drop-template myproject` |
+| Delete a template | `oduflow delete-template myproject` |
 
 ---
 
@@ -676,23 +929,25 @@ The `use_overlay` flag determines whether new environments use fuse-overlayfs (f
 
 [TOC]
 
+[![Environments Dashboard](img/envs.png)](img/envs.png)
+
 ## Creating Environments
 
 ```bash
-# Create from existing branch with default template
-oduflow call create_environment feature-login https://github.com/owner/repo.git odoo:17.0
-
-# Create with a named template
-oduflow call create_environment feature-login https://github.com/owner/repo.git odoo:17.0 myproject
+# Create with a named template (template_name, repo_url, odoo_image)
+oduflow call create_environment feature-login myproject https://github.com/owner/repo.git odoo:17.0
 
 # Create without a template (fresh Odoo with -i base)
-oduflow call create_environment feature-login https://github.com/owner/repo.git odoo:17.0 none
+oduflow call create_environment feature-login none https://github.com/owner/repo.git odoo:17.0
+
+# Create with JSON arguments (more explicit)
+oduflow call create_environment '{"branch_name":"feature-login","template_name":"myproject","repo_url":"https://github.com/owner/repo.git","odoo_image":"odoo:17.0"}'
 ```
 
 When creating an environment, Oduflow:
 
 1. **Clones the repository** — shallow clone (`--depth 1`) for speed
-2. **Creates the database** — `CREATE DATABASE ... TEMPLATE odoo_ref_default` for instant copy, or empty DB when `template=none`
+2. **Creates the database** — `CREATE DATABASE ... TEMPLATE oduflow_template_{team_id}_{name}` for instant copy, or empty DB when `template=none`
 3. **Mounts the filestore overlay** — fuse-overlayfs with the template as lower layer
 4. **Detects UID/GID** — runs `id` in the Odoo image to set correct file ownership
 5. **Installs dependencies** — auto-installs from `apt_packages.txt` and `requirements.txt` if present in the repo
@@ -730,6 +985,83 @@ libfontconfig1
 libxrender1
 xfonts-75dpi
 ```
+
+## Database Sanitization
+
+When an environment is created from a template, Oduflow **automatically sanitizes** the database to prevent the test instance from sending real emails or polling mailboxes. This is enabled by default (`sanitize=True`).
+
+Sanitization uses a **two-tier** approach:
+
+1. **Team-level scripts** from `{team_data_dir}/odoo_sanitize/` — managed by the administrator, shared across all environments in the team
+2. **Per-project scripts** from `.odoo_sanitize/` in the repository root — managed by the developer, specific to the project
+
+Both folders support `.sql` and `.py` files, executed in alphabetical order (first all `.sql`, then all `.py`). Team-level scripts run first, then per-project scripts.
+
+### Team-level sanitization
+
+During `oduflow init`, the folder `{team_data_dir}/odoo_sanitize/` is created and seeded with a default script:
+
+**`01_disable_mail.sql`** — disables incoming and outgoing mail servers:
+
+```sql
+-- Disable incoming mail servers (fetchmail)
+UPDATE fetchmail_server SET active = false WHERE active = true;
+
+-- Disable outgoing mail servers
+UPDATE ir_mail_server SET active = false WHERE active = true;
+```
+
+The team administrator can add, modify, or remove scripts in this folder to control sanitization for all environments in the team.
+
+!!! tip
+    To disable additional cron jobs team-wide, create `{team_data_dir}/odoo_sanitize/02_disable_crons.sql`:
+    ```sql
+    UPDATE ir_cron SET active = false;
+    ```
+
+### Per-project sanitization
+
+You can add project-specific sanitization by placing scripts in a `.odoo_sanitize/` folder in your repository root:
+
+| File type | Execution method |
+|-----------|-----------------|
+| `*.sql`   | Executed directly against the environment database via `psql` |
+| `*.py`    | Executed inside the Odoo container via `python3 -c` |
+
+**Example SQL script** (`.odoo_sanitize/01_clean_partners.sql`):
+
+```sql
+UPDATE res_partner SET email = 'test@example.com' WHERE email IS NOT NULL;
+```
+
+**Example Python script** (`.odoo_sanitize/02_reset_passwords.py`):
+
+```python
+import os, psycopg2
+conn = psycopg2.connect(
+    host=os.environ["DB_HOST"],
+    dbname=os.environ["ODOO_DB"],
+    user=os.environ["DB_USER"],
+    password=os.environ["DB_PASSWORD"],
+)
+with conn.cursor() as cr:
+    cr.execute("UPDATE res_partner SET email = 'test@example.com' WHERE email IS NOT NULL")
+    conn.commit()
+conn.close()
+```
+
+Python scripts receive the following environment variables: `ODOO_DB`, `DB_HOST`, `DB_USER`, `DB_PASSWORD`.
+
+### Disabling sanitization
+
+Pass `sanitize=false` when creating an environment to skip all sanitization (both team-level and per-project):
+
+```bash
+oduflow call create_environment '{"branch_name":"my-branch","template_name":"mytemplate","repo_url":"https://...","odoo_image":"odoo:17.0","sanitize":false}'
+```
+
+!!! note
+    Sanitization only runs when creating from a template. Environments created without a template (`template=none`) are not sanitized since they start with a clean database.
 
 ## Lifecycle Management
 
@@ -847,6 +1179,9 @@ oduflow call read_file_in_odoo feature-login /mnt/extra-addons/
 
 # Check the generated Odoo config
 oduflow call read_file_in_odoo feature-login /etc/odoo/odoo.conf
+
+# Verify file presence after pull_and_apply
+oduflow call read_file_in_odoo feature-login /mnt/extra-addons/my_module/__manifest__.py
 ```
 
 - If the path is a **directory**, returns a listing (like `ls -la`).
@@ -854,7 +1189,8 @@ oduflow call read_file_in_odoo feature-login /etc/odoo/odoo.conf
 - **Binary files** are not supported — use `exec_in_odoo` for binary operations.
 - The optional `read_range` parameter accepts a `"START:END"` format (e.g. `"1:50"`, `"100:200"`) to read only specific lines.
 
-Prefer `read_file_in_odoo` over `exec_in_odoo` with `cat` or `ls` commands — it handles file type detection, size limits, and binary file rejection automatically.
+!!! tip
+    Prefer `read_file_in_odoo` over `exec_in_odoo` with `cat` or `ls` commands — it handles file type detection, size limits, and binary file rejection automatically.
 
 ## Executing Commands Inside Environments
 
@@ -891,7 +1227,8 @@ The terminal is accessible from the environment card in the Web Dashboard. It su
 
 The WebSocket endpoint is `ws://<host>:<port>/api/environments/{branch}/terminal`.
 
-The terminal requires the environment container to be running. If the container is stopped, the terminal will display an error message.
+!!! note
+    The terminal requires the environment container to be running. If the container is stopped, the terminal will display an error message.
 
 ## Environment Protection
 
@@ -928,6 +1265,8 @@ Click the **🔓 Protect** button on any environment card to toggle protection. 
 # Auxiliary Services
 
 [TOC]
+
+[![Services Dashboard](img/services.png)](img/services.png)
 
 Oduflow can manage sidecar containers for auxiliary services your Odoo instance depends on — Redis, Meilisearch, Elasticsearch, RabbitMQ, or any other Docker-based service.
 
@@ -978,7 +1317,7 @@ The `update_service` operation:
 
 ## Service Presets
 
-Every time a service is created, its configuration (image, port, hostname, environment variables) is automatically saved as a **preset** in `$ODUFLOW_DATA_DIR/instance_{ID}/service_presets.json`. This allows you to restore a service after deletion without re-entering its configuration.
+Every time a service is created, its configuration (image, port, hostname, environment variables) is automatically saved as a **preset** in `{team_data_dir}/service_presets.json`. This allows you to restore a service after deletion without re-entering its configuration.
 
 ```bash
 # List saved presets
@@ -997,12 +1336,14 @@ oduflow call delete_service_preset redis
 
 [TOC]
 
+[![Extra Addons Dashboard](img/extra_addons.png)](img/extra_addons.png)
+
 Oduflow supports mounting **extra addon repositories** (e.g. Odoo Enterprise, third-party themes) into environments. Extra repos are cloned once at the instance level and shared across environments via git worktrees.
 
 ## Architecture
 
 ```
-$ODUFLOW_DATA_DIR/instance_{ID}/
+{data_dir}/team_{ID}/
   shared_repos/
     enterprise/          ← bare git clone (shared)
     custom-themes/       ← bare git clone (shared)
@@ -1059,9 +1400,11 @@ Extra repos can also be managed from the **Web Dashboard** under the "Extra Addo
 
 ## Protecting Extra Repos
 
-Extra addon repositories can be **protected** from accidental deletion, similar to environment protection. A protected repo cannot be deleted until protection is removed.
+Extra addon repositories can be **protected** from accidental deletion, similar to [environment protection](environments.md#environment-protection). A protected repo cannot be deleted until protection is removed.
 
 Protection state is stored as a `.protected` marker file in the bare repository directory.
+
+### Via REST API
 
 ```bash
 # Protect an extra repo
@@ -1071,7 +1414,12 @@ curl -X POST http://localhost:8000/api/extra-repos/enterprise/protect
 curl -X POST http://localhost:8000/api/extra-repos/enterprise/unprotect
 ```
 
-Extra repo protection can also be toggled from the **Extra Addons** tab in the Web Dashboard.
+### Via Web Dashboard
+
+Extra repo protection can be toggled from the **Extra Addons** tab in the Web Dashboard. When protected:
+
+- The **Delete** button is disabled
+- Attempting to delete via API returns a `ProtectedError`
 
 ## Updating Extra Repos
 
@@ -1111,6 +1459,8 @@ oduflow call create_environment feature-x ... "enterprise:17.0"
 
 ## Web Dashboard
 
+[![Web Dashboard — Agent Guides](img/agent_guides.png)](img/agent_guides.png)
+
 When running in HTTP mode, a web dashboard is available at the server root (`http://<host>:<port>/`). It provides:
 
 - **Environment list** with status indicators (running / stopped / partial)
@@ -1128,7 +1478,7 @@ When running in HTTP mode, a web dashboard is available at the server root (`htt
 
 ## REST API Endpoints
 
-All endpoints return JSON with an `ok` field. Authentication via HTTP Basic auth when `ODUFLOW_UI_PASSWORD` is set (user: `admin`, password: the configured value). This is separate from the MCP Bearer token auth (`ODUFLOW_AUTH_TOKEN`).
+All endpoints return JSON with an `ok` field. Authentication via HTTP Basic auth when `ui_password` is set in `oduflow.toml` (user: `admin`, password: the configured value). This is separate from the MCP Bearer token auth (`auth_token`).
 
 ### Environments
 
@@ -1212,6 +1562,8 @@ All endpoints return JSON with an `ok` field. Authentication via HTTP Basic auth
 
 [TOC]
 
+[![Agent Instructions](img/agent_instructions.png)](img/agent_instructions.png)
+
 All tools are accessible via MCP clients (Cursor, Cline, Amp, etc.) and the CLI (`oduflow call`). A subset is also available via the [REST API](web-api.md).
 
 | Tool | Mutex | Description |
@@ -1262,7 +1614,7 @@ All tools are accessible via MCP clients (Cursor, Cline, Amp, etc.) and the CLI 
 | `get_odoo_development_guide` | | Get Odoo development standards guide for a specific version (15–19) |
 
 !!! info "Mutex"
-    Tools marked with ✓ acquire a global lock. If another mutexed operation is in progress, the call is rejected with `BusyError` ("Another operation is in progress. Try again later.").
+    Tools marked with ✓ acquire a per-branch or per-team lock. Operations on different branches can run in parallel, but if another operation on the **same branch** (or team, for team-level tools) is in progress, the call is rejected with `BusyError` ("Another operation is in progress. Try again later.").
 
 ---
 
@@ -1273,103 +1625,80 @@ All tools are accessible via MCP clients (Cursor, Cline, Amp, etc.) and the CLI 
 ## Global Options
 
 ```bash
-# Use a custom .env file (default: .env in current directory)
-oduflow --env /path/to/.env <command>
+# Show version
+oduflow --version
 ```
 
 ## Running the Server
 
 ```bash
-# Start the MCP server (instance 1 by default)
-oduflow run-instance
-
-# Start a specific instance
-oduflow run-instance --instance 2
-
-# Start with a custom .env file
-oduflow --env /path/to/.env run-instance
+# Start the MCP server (reads oduflow.toml automatically)
+oduflow
 ```
 
-By default, `run-instance` loads the environment file from `/etc/oduflow/instance_{ID}.env`.
+By default, the server starts on `http://0.0.0.0:8000`. Configuration is loaded from `oduflow.toml` (see [Installation](installation.md#configuration-reference)).
 
 ## System Commands
 
 ```bash
-# Initialize shared infrastructure (network, DB, Traefik)
+# Initialize shared infrastructure (network, DB, Traefik) and all team directories
 oduflow init
 
 # Initialize and install a license in one step
 oduflow init --license /path/to/license.key
 
-# Initialize per-instance directories (workspaces, templates)
-oduflow init-instance --instance 1
-
-# Update agent guides to the latest bundled versions (overwrites existing)
-oduflow init-instance --instance 1 --update-guides
-
 # Destroy all shared infrastructure (requires no active environments)
 oduflow destroy
 ```
 
-## Systemd Service
-
-```bash
-# Install and enable systemd service for instance 1
-oduflow systemd-install --instance 1
-
-# For multi-instance setups
-oduflow systemd-install --instance 2
-
-# Remove the systemd service
-oduflow systemd-uninstall --instance 1
-```
-
 ## Template Commands
+
+All template commands accept `--team` to specify the team ID (default: `1`).
 
 ```bash
 # Generate a clean template from a Docker image
-oduflow init-template --odoo-image odoo:17.0 --template-name myproject [--modules base,web,sale] [--force]
+oduflow init-template --odoo-image odoo:17.0 --template-name myproject [--modules base,web,sale] [--force] [--team 1]
 
 # Start interactive template editor
-oduflow template-up --odoo-image odoo:17.0 --template-name myproject
+oduflow template-up --odoo-image odoo:17.0 --template-name myproject [--team 1]
 
 # Stop template editor and save changes
-oduflow template-down --template-name myproject
-
-# Reload template DB from a dump file
-oduflow reload-template <template_name> [--dump-path /path/to/new.dump]
+oduflow template-down --template-name myproject [--team 1]
 
 # Save a branch environment as the new template
-oduflow template-from-env <branch> --template-name myproject
+oduflow template-from-env <branch> --template-name myproject [--team 1]
+
+# Reload template DB from a dump file
+oduflow reload-template <template_name> [--dump-path /path/to/new.dump] [--team 1]
 
 # List all template profiles
-oduflow list-templates
+oduflow list-templates [--team 1]
 
 # Delete a template profile
-oduflow delete-template <template_name>
+oduflow delete-template <template_name> [--team 1]
 
 # Import a template from a running Odoo instance
-oduflow import-template <odoo_url> <master_pwd> --template-name myproject [--db-name <db>]
+oduflow import-template <odoo_url> <master_pwd> --template-name myproject [--db-name <db>] [--team 1]
 ```
 
 ## Service Commands
 
 ```bash
 # List all managed services
-oduflow list-services
+oduflow list-services [--team 1]
 ```
 
 ## Maintenance Commands
 
 ```bash
 # Show orphaned databases, workspaces, and port entries (dry-run by default)
-oduflow cleanup
+oduflow cleanup [--team 1]
 
 # Same as above — only show what would be removed
-oduflow cleanup --dry-run
+oduflow cleanup --dry-run [--team 1]
 
 # Actually remove orphaned resources
-oduflow cleanup --force
+oduflow cleanup --force [--team 1]
 ```
 
 The `cleanup` command detects and removes resources that no longer have a corresponding running or stopped container:
@@ -1379,6 +1708,20 @@ The `cleanup` command detects and removes resources that no longer have a corres
 - **Orphan port entries** — entries in `ports.json` that have no matching environment container
 
 By default, `cleanup` runs in **dry-run mode** and only reports what would be removed. Use `--force` to actually delete the orphaned resources.
+
+## Systemd Service
+
+```bash
+# Install and enable systemd service
+oduflow systemd-install
+
+# Remove the systemd service
+oduflow systemd-uninstall
+```
+
+The `systemd-install` command generates a unit file at `/etc/systemd/system/oduflow.service`, runs `daemon-reload`, and enables the service.
+
+See [Auto-start with systemd](installation.md#auto-start-with-systemd) for the full setup guide.
 
 ## Tool Introspection
 
@@ -1396,7 +1739,7 @@ You can invoke any registered MCP tool directly from the terminal using `oduflow
 oduflow call
 
 # Call a tool with positional arguments (mapped to parameters in order)
-oduflow call create_environment dev https://github.com/owner/repo.git odoo:17.0
+oduflow call create_environment dev "" https://github.com/owner/repo.git odoo:17.0
 oduflow call delete_environment dev
 oduflow call list_environments
 oduflow call get_environment_logs main 50
@@ -1430,20 +1773,23 @@ For production-like access with HTTPS, Oduflow can deploy a **Traefik** reverse 
 
    Every environment will get a subdomain: `feature-login.dev.example.com`, `fix-invoice.dev.example.com`, etc.
 
-2. **Set the environment variables** in `.env`:
+2. **Set the configuration** in `oduflow.toml`:
 
-   ```bash
-   ODUFLOW_ROUTING_MODE=traefik
-   ODUFLOW_BASE_DOMAIN=dev.example.com
-   ODUFLOW_ACME_EMAIL=admin@example.com
+   ```toml
+   [routing]
+   mode = "traefik"
+   acme_email = "admin@example.com"
+
+   [team.1]
+   hostname = "dev.example.com"
    ```
 
-3. **Run `oduflow init`** (or restart the server). Oduflow will create a Traefik v3.6 container that:
+3. **Run `oduflow init`** (or restart the server). Oduflow will create a Traefik v3 container that:
    - Listens on ports 80 and 443
    - Automatically redirects HTTP to HTTPS
    - Obtains a separate TLS certificate from Let's Encrypt for each environment subdomain via HTTP-01 challenge
    - Routes requests to the correct Odoo container based on the subdomain
-   - Also routes the Oduflow server itself via `ODUFLOW_BASE_DOMAIN`
+   - Also routes the Oduflow server itself via the team `hostname`
 
 ## How certificates work
 
@@ -1457,27 +1803,93 @@ Auxiliary services also get Traefik routing. A service named `meilisearch` with 
 
 ---
 
-# Multi-Instance Support
+# Multi-Team Support
 
 [TOC]
 
-Oduflow supports running **multiple independent instances** on a single machine. Each instance has its own environments, templates, services, and port registry, while sharing the Docker network and PostgreSQL container.
+Oduflow supports running **multiple isolated teams** within a single server instance. Each team has its own environments, templates, services, credentials, and port registry, while sharing the Docker network and PostgreSQL container.
 
-Set `ODUFLOW_INSTANCE_ID` (1-9) and optionally `ODUFLOW_DATA_DIR` to isolate instances:
+## Configuration
 
-```bash
-# Instance 1
-oduflow init-instance --instance 1
-oduflow run-instance --instance 1
+Define teams in `oduflow.toml` using `[team.*]` sections:
 
-# Instance 2 (separate terminal / process)
-oduflow init-instance --instance 2
-oduflow --env /etc/oduflow/instance_2.env run-instance --instance 2
+```toml
+[team.1]
+hostname = "team-a.example.com"
+auth_token = "token-team-a"
+ui_password = "pass-a"
+port_range = [50000, 50050]
+
+[team.2]
+hostname = "team-b.example.com"
+auth_token = "token-team-b"
+ui_password = "pass-b"
+port_range = [50050, 50100]
 ```
 
-Databases are namespaced by instance ID (e.g. `oduflow_1_main`, `oduflow_2_main`), and containers are labeled with `oduflow.instance={ID}` for filtering.
+Each team gets a dedicated data directory under the base `data_dir`:
 
-For the full guide — lifecycle, naming conventions, shared vs. per-instance resources — see **[MULTI_INSTANCE.md](https://github.com/oduist/oduflow/blob/main/MULTI_INSTANCE.md)**.
+```
+/srv/oduflow/
+├── team_1/
+│   ├── workspaces/
+│   ├── templates/
+│   ├── shared_repos/
+│   ├── ports.json
+│   ├── .git-credentials
+│   └── agent_guides/
+├── team_2/
+│   ├── workspaces/
+│   ├── templates/
+│   ├── shared_repos/
+│   ├── ports.json
+│   ├── .git-credentials
+│   └── agent_guides/
+```
+
+## Team Resolution
+
+When an MCP tool is called, Oduflow resolves the team using the following priority:
+
+1. **Auth token** — matches the Bearer token against `auth_token` values in team configs
+2. **Host header** — matches the HTTP `Host` header against team `hostname` values
+3. **Single team** — if only one team is configured, uses it automatically
+4. **Default** — falls back to team `"1"`
+
+## Shared vs. Per-Team Resources
+
+| Resource | Scope |
+|---|---|
+| Docker network (`oduflow-net`) | Shared |
+| PostgreSQL container (`oduflow-db`) | Shared |
+| Traefik container (`oduflow-traefik`) | Shared |
+| Environments (workspaces, containers) | Per-team |
+| Templates (DB snapshots, filestores) | Per-team |
+| Extra addon repositories | Per-team |
+| Auxiliary services | Per-team |
+| Port assignments | Per-team |
+| Git credentials | Per-team |
+
+## Database Naming
+
+Databases are namespaced by team ID:
+
+- Environment DB: `oduflow_{team_id}_{slugified_branch}` (e.g. `oduflow_1_feature-login`)
+- Template DB: `oduflow_template_{team_id}_{template_name}` (e.g. `oduflow_template_1_default`)
+
+Containers are labeled with `oduflow.team={team_id}` for filtering.
+
+## CLI Team Selection
+
+CLI template and service commands accept a `--team` flag:
+
+```bash
+oduflow init-template --odoo-image odoo:17.0 --template-name myproject --team 2
+oduflow list-templates --team 2
+oduflow cleanup --team 2
+```
+
+The default is `--team 1`.
 
 ---
 
@@ -1487,40 +1899,51 @@ For the full guide — lifecycle, naming conventions, shared vs. per-instance re
 
 ## MCP HTTP Auth
 
-When `ODUFLOW_AUTH_TOKEN` is set, the MCP endpoint (`/mcp`) requires a Bearer token:
+When `auth_token` is set for a team in `oduflow.toml`, the MCP endpoint (`/mcp`) requires a Bearer token:
 
 ```
 Authorization: Bearer <your-token>
 ```
 
-This is implemented via FastMCP's `StaticTokenVerifier`.
+Each team can have its own auth token:
+
+```toml
+[team.1]
+auth_token = "secret-token-team-1"
+
+[team.2]
+auth_token = "secret-token-team-2"
+```
+
+The token is used to both authenticate and identify the team. This is implemented via FastMCP's `StaticTokenVerifier`.
 
 ## Web Dashboard Auth
 
 The web dashboard and REST API use HTTP Basic authentication with a **separate** password:
 
 - **Username**: `admin`
-- **Password**: value of `ODUFLOW_UI_PASSWORD`
+- **Password**: value of `ui_password` from `oduflow.toml`
 
-This is independent from the MCP Bearer token (`ODUFLOW_AUTH_TOKEN`). Credentials are compared using `hmac.compare_digest` to prevent timing attacks.
+This is independent from the MCP Bearer token (`auth_token`). Credentials are compared using `hmac.compare_digest` to prevent timing attacks.
 
 ## When auth is disabled
 
-MCP auth and Web UI auth are configured independently:
+MCP auth and Web UI auth are configured independently per team:
 
-- If `ODUFLOW_AUTH_TOKEN` is empty, the MCP endpoint runs without authentication
-- If `ODUFLOW_UI_PASSWORD` is empty, the web dashboard runs without authentication
+- If `auth_token` is empty, the MCP endpoint runs without authentication
+- If `ui_password` is empty, the web dashboard runs without authentication
 
-Warnings are logged on startup for each:
+Warnings are logged on startup for each team:
 
 ```
-WARNING  HTTP auth DISABLED (ODUFLOW_AUTH_TOKEN not set)
-WARNING  Web UI auth DISABLED (ODUFLOW_UI_PASSWORD not set)
+INFO  [team.1] http://localhost:8000/ (MCP token OFF, UI auth OFF)
 ```
 
 ## Git Credentials
 
-Private repository credentials are stored in the git credential store (at `$ODUFLOW_ETC_DIR/.git-credentials`) via the `setup_repo_auth` tool. The clean URL (without credentials) is always used in Docker labels and logs — credentials are never exposed.
+[![Credentials Management](img/credentials.png)](img/credentials.png)
+
+Private repository credentials are stored in the git credential store at `{team_data_dir}/.git-credentials` (per-team) via the `setup_repo_auth` tool. The clean URL (without credentials) is always used in Docker labels and logs — credentials are never exposed.
 
 ### Managing credentials via MCP
 
@@ -1580,19 +2003,7 @@ docker run -d \
   --name oduflow \
   -p 8000:8000 \
   -v /var/run/docker.sock:/var/run/docker.sock \
-  -v oduflow_data:/srv/oduflow/instance_1 \
-  oduflow
-```
-
-### With `.env` file
-
-```bash
-docker run -d \
-  --name oduflow \
-  --env-file .env \
-  -p 8000:8000 \
-  -v /var/run/docker.sock:/var/run/docker.sock \
-  -v oduflow_data:/srv/oduflow/instance_1 \
+  -v oduflow_data:/srv/oduflow \
   oduflow
 ```
 
@@ -1602,10 +2013,9 @@ docker run -d \
 docker run -d \
   --name oduflow \
   --restart unless-stopped \
-  --env-file .env \
   -p 8000:8000 \
   -v /var/run/docker.sock:/var/run/docker.sock \
-  -v oduflow_data:/srv/oduflow/instance_1 \
+  -v oduflow_data:/srv/oduflow \
   -v /etc/oduflow:/etc/oduflow \
   oduflow
 ```
@@ -1615,8 +2025,8 @@ docker run -d \
 | Mount | Purpose |
 |---|---|
 | `/var/run/docker.sock` | **Required.** Gives Oduflow access to the host Docker daemon to manage Odoo containers, PostgreSQL, Traefik, etc. |
-| `/srv/oduflow/instance_1` | Oduflow data directory (`ODUFLOW_DATA_DIR`). Contains workspaces, templates, port registry. Use a named volume or a host path to persist data across container restarts. |
-| `/etc/oduflow` | System configuration directory. Contains license key, database settings, default `odoo.conf`, and other configuration files. Mount to persist configuration across container restarts. |
+| `/srv/oduflow` | Oduflow data directory. Contains team directories with workspaces, templates, port registry. Use a named volume or a host path to persist data across container restarts. |
+| `/etc/oduflow` | System configuration directory. Contains `oduflow.toml`, license key, `postgresql.conf`, default `odoo.conf`, and other configuration files. Mount to persist configuration across container restarts. |
 
 ## Networking
 
@@ -1626,7 +2036,8 @@ The Oduflow container must be on the same Docker network as the containers it cr
 # 1. Start Oduflow
 docker run -d --name oduflow -p 8000:8000 \
   -v /var/run/docker.sock:/var/run/docker.sock \
-  -v oduflow_data:/srv/oduflow/instance_1 \
+  -v oduflow_data:/srv/oduflow \
+  -v /etc/oduflow:/etc/oduflow \
   oduflow
 
 # 2. Initialize shared infrastructure (creates oduflow-net, PostgreSQL, etc.)
@@ -1634,50 +2045,54 @@ docker exec oduflow oduflow init
 
 # 3. Connect Oduflow to the shared network
 docker network connect oduflow-net oduflow
-
-# 4. Initialize instance directories
-docker exec oduflow oduflow init-instance --instance 1
 ```
 
 Alternatively, start with `--network oduflow-net` if the network already exists.
 
 ## Initialization
 
-On first run, you need to initialize the shared infrastructure and instance:
+On first run, you need to initialize the shared infrastructure:
 
 ```bash
-# Create shared Docker network, PostgreSQL container
+# Create shared Docker network, PostgreSQL container, and team directories
 docker exec oduflow oduflow init
 
 # Connect to the shared network
 docker network connect oduflow-net oduflow
-
-# Create instance directories (workspaces, templates)
-docker exec oduflow oduflow init-instance --instance 1
 ```
 
 To set up a template database:
 
 ```bash
 # From scratch (clean Odoo with specified modules)
-docker exec oduflow oduflow init-template --odoo-image odoo:17.0 --modules base,web,contacts
+docker exec oduflow oduflow init-template --odoo-image odoo:17.0 --template-name default --modules base,web,contacts
 
 # Or import from a running Odoo instance
-docker exec oduflow oduflow call import_template_from_odoo https://my-odoo.example.com master_password
+docker exec oduflow oduflow import-template https://my-odoo.example.com master_password --template-name default
 ```
 
-## Environment Variables
+## Configuration
 
-All environment variables from `.env.example` are supported. Key ones for Docker:
+Oduflow reads its configuration from `oduflow.toml`. When running in Docker, mount the config directory:
 
-| Variable | Default | Description |
-|---|---|---|
-| `ODUFLOW_TRANSPORT` | `http` | Transport mode: `http` or `stdio` |
-| `ODUFLOW_HOST` | `0.0.0.0` | Bind address |
-| `ODUFLOW_PORT` | `8000` | HTTP port |
-| `ODUFLOW_AUTH_TOKEN` | *(empty)* | Bearer token for MCP auth (empty = disabled) |
-| `ODUFLOW_DATA_DIR` | `/srv/oduflow/instance_1` | Data directory |
-| `EXTERNAL_HOST` | `localhost` | Hostname used in generated URLs |
+```bash
+-v /etc/oduflow:/etc/oduflow
+```
+
+Key configuration settings in `oduflow.toml`:
+
+```toml
+[server]
+host = "0.0.0.0"
+port = 8000
+
+[team.1]
+hostname = "localhost"
+auth_token = "your-secret-token"   # MCP auth (empty = disabled)
+ui_password = "your-ui-password"   # Web UI auth (empty = disabled)
+```
+
+See [Installation — Configuration Reference](installation.md#configuration-reference) for all options.
 
 ## Docker Compose
 
@@ -1689,9 +2104,8 @@ services:
       - "8000:8000"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      - oduflow_data:/srv/oduflow/instance_1
+      - oduflow_data:/srv/oduflow
       - oduflow_etc:/etc/oduflow
-    env_file: .env
     restart: unless-stopped
     networks:
       - oduflow-net
@@ -1709,18 +2123,17 @@ After `docker compose up -d`, run initialization:
 
 ```bash
 docker compose exec oduflow oduflow init
-docker compose exec oduflow oduflow init-instance --instance 1
 ```
 
 ## Security Notes
 
 - Mounting the Docker socket gives the container **full control** over the host Docker daemon. This is equivalent to root access on the host. Only run Oduflow in trusted environments.
-- Set `ODUFLOW_AUTH_TOKEN` to protect the MCP endpoint.
-- Set `ODUFLOW_UI_PASSWORD` to protect the Web UI.
+- Set `auth_token` in `[team.*]` to protect the MCP endpoint.
+- Set `ui_password` in `[team.*]` to protect the Web UI.
 
 ## Privileged Mode and fuse-overlayfs
 
-Oduflow uses `fuse-overlayfs` for efficient filestore sharing when templates exceed `ODUFLOW_OVERLAY_THRESHOLD_MB` (default: 50 MB). This requires the `/dev/fuse` device inside the container.
+Oduflow uses `fuse-overlayfs` for efficient filestore sharing when templates exceed `overlay_threshold_mb` (default: 50 MB). This requires the `/dev/fuse` device inside the container.
 
 If your templates are small (under the threshold), Oduflow falls back to simple file copy and no special privileges are needed.
 
@@ -1733,14 +2146,15 @@ docker run -d \
   --cap-add SYS_ADMIN \
   -p 8000:8000 \
   -v /var/run/docker.sock:/var/run/docker.sock \
-  -v oduflow_data:/srv/oduflow_data_1 \
+  -v oduflow_data:/srv/oduflow \
   oduflow
 ```
 
-Alternatively, raise the threshold to avoid overlayfs entirely:
+Alternatively, set a high threshold in `oduflow.toml` to avoid overlayfs entirely:
 
-```bash
-ODUFLOW_OVERLAY_THRESHOLD_MB=999999
+```toml
+[storage]
+overlay_threshold_mb = 999999
 ```
 
 ---
@@ -1756,14 +2170,15 @@ ODUFLOW_OVERLAY_THRESHOLD_MB=999999
 │                   MCP Clients                    │
 │         (Cursor, Cline, Amp, Claude, …)          │
 └────────────────────┬─────────────────────────────┘
-                     │  MCP (Streamable HTTP / stdio)
+                     │  MCP (Streamable HTTP)
 ┌────────────────────▼─────────────────────────────┐
 │  server.py — FastMCP transport layer             │
 │  • MCP tool definitions (32 tools)               │
-│  • Global mutex for heavy operations             │
-│  • Unified error handler (FlowError → ValueError)│
+│  • Per-branch / per-team / system locking        │
+│  • Unified error handler (FlowError → ToolError) │
 │  • Web UI mount (Starlette)                      │
 │  • Bearer token auth (MCP) / Basic auth (Web UI) │
+│  • Team resolution (token → Host → default)      │
 └────────────────────┬─────────────────────────────┘
                      │
      ┌───────────────┼───────────────────┐
@@ -1797,30 +2212,35 @@ ODUFLOW_OVERLAY_THRESHOLD_MB=999999
 | Decision | Rationale |
 |---|---|
 | Single process, single uvicorn worker | Designed for a single developer or small team; no shared-state problems |
-| `threading.Lock` mutex | Heavy operations (create/delete env, install modules) reject concurrent requests with `BusyError` instead of queuing |
+| Granular `LockManager` (per-branch, per-team, system) | Operations on different branches run in parallel; same-branch operations are serialised with `BusyError` |
 | Docker SDK only (no subprocess for Docker) | Consistent error handling; `put_archive` replaces `docker cp` |
 | fuse-overlayfs for filestore | Copy-on-write sharing of a large template filestore across all environments |
 | Stable port registry (`ports.json`) | Port assignments survive container restarts; eliminates TOCTOU race conditions |
-| Typed error hierarchy | `FlowError` base with `NotFoundError`, `BusyError`, `ConflictError`, `PrerequisiteNotMetError`, `ExternalCommandError` — clients can distinguish error types |
+| Typed error hierarchy | `FlowError` base with `NotFoundError`, `BusyError`, `ConflictError`, `PrerequisiteNotMetError`, `ExternalCommandError`, `ProtectedError` — clients can distinguish error types |
 | Traefik routing mode (optional) | Automatic HTTPS with Let's Encrypt for production-like setups |
 | Dual dump format support | Accepts both plain SQL (`.sql`) and PostgreSQL custom format (`.pgdump`) dumps |
 | Auto-detection of UID/GID | Resolves Odoo container's UID:GID from the image to set correct file permissions |
+| TOML-based multi-team config | Per-team isolation with shared infrastructure; settings loaded from `oduflow.toml` |
 
 ## Project Structure
 
 ```
 src/oduflow/
-  server.py            # MCP transport: tool definitions, error handler, mutex, CLI
-  settings.py          # @dataclass Settings with from_env() and validate()
-  errors.py            # FlowError hierarchy (6 error classes)
+  server.py            # MCP transport: tool definitions, error handler, locking, CLI
+  settings.py          # @dataclass Settings, loads from oduflow.toml (TOML)
+  errors.py            # FlowError hierarchy (7 error classes)
   models.py            # EnvironmentRef dataclass
   naming.py            # Pure functions: slugify, db name, resource name, paths, URL sanitization
+  locking.py           # LockManager with per-branch, per-team, and system locks
   git_ops.py           # Git clone, pull, credential management, manifest parsing
   git_analysis.py      # Classify changed files → install / upgrade / restart / refresh
   port_registry.py     # Stable port allocation with JSON persistence
   web_ui.py            # Starlette-based dashboard, REST API, Basic auth middleware
   extra_addons.py      # Extra addon repo management (clone, worktree, odoo.conf generation)
+  env_credentials.py   # Per-environment PostgreSQL credentials
+  sanitizer.py         # DB sanitization (SQL/Python scripts)
   licensing.py         # License verification and installation (RSA signatures)
+  systemd.py           # Systemd service install/uninstall
 
   docker_ops/
     client.py           # docker.from_env() wrapper + UID/GID auto-detection
@@ -1834,11 +2254,12 @@ src/oduflow/
     stats.py            # Container and system CPU/RAM stats (parallel collection)
 
   templates/
+    oduflow.toml          # Default TOML configuration (copied on first `oduflow init`)
     odoo.conf             # Odoo configuration template (addons path, limits, security)
     postgresql.conf       # PostgreSQL tuning (shared_buffers, WAL, autovacuum, etc.)
     dashboard.html        # Web dashboard UI (single-page application)
     favicon.ico           # Dashboard favicon
-    agent_guides/         # AI agent guides (copied to $ODUFLOW_DATA_DIR/instance_{ID}/agent_guides on init-instance)
+    agent_guides/         # AI agent guides (copied to team data dirs on init)
       agent_guide.md      # Main agent instructions for Oduflow MCP tools
       odoo_15_guide.md    # Odoo 15 development standards
       odoo_16_guide.md    # Odoo 16 development standards
@@ -1854,7 +2275,7 @@ tests/                  # Unit and integration tests (pytest)
 Each branch gets an isolated workspace:
 
 ```
-$ODUFLOW_DATA_DIR/instance_{ID}/workspaces/{branch}/
+{data_dir}/team_{ID}/workspaces/{branch}/
   repo/                ← shallow git clone (--depth 1)
   filestore_upper/     ← overlay upper layer (branch-specific changes)
   filestore_work/      ← overlay work directory (required by overlayfs)
@@ -1864,6 +2285,38 @@ $ODUFLOW_DATA_DIR/instance_{ID}/workspaces/{branch}/
 
 When `template_name="none"` (no template), the filestore is a plain directory (no overlay).
 
+You can verify active overlay mounts with `df -h` — each environment with a template gets its own `fuse-overlayfs` mount:
+
+```
+$ df -h
+Filesystem                         Size  Used Avail Use% Mounted on
+/dev/mapper/ubuntu--vg-ubuntu--lv   97G   74G   19G  81% /
+fuse-overlayfs                      97G   74G   19G  81% /srv/oduflow/team_1/workspaces/manuf-plan/filestore
+fuse-overlayfs                      97G   74G   19G  81% /srv/oduflow/team_1/workspaces/fixing-landing/filestore
+```
+
+## File Ownership (macOS vs Linux)
+
+Odoo containers run as `uid=101 gid=101`. Oduflow must set this ownership on
+workspace files so the container can read/write them. The behaviour differs
+between platforms:
+
+| | Linux | macOS (Docker Desktop) |
+|---|---|---|
+| **Docker runtime** | Native — UID/GID are shared between host and container | Runs inside a Linux VM; files are projected via VirtioFS |
+| **Host file ownership** | Matches container UID (e.g. `101:101`) | Always shown as the macOS user regardless of in-container owner |
+| **`os.chown` from host** | Works (when running as root) | Raises `PermissionError` — VirtioFS ignores host-side chown |
+
+To handle both platforms transparently, Oduflow uses **`chown_recursive()`**
+(`docker_ops/client.py`):
+
+1. **Try host-side `os.chown`** — fast, works on Linux.
+2. **On `PermissionError`** — fall back to `chown -R` inside a throwaway
+   container with the target path bind-mounted. The chown happens inside the
+   VM where it takes effect normally.
+
+This means no manual ownership fixups are ever needed on either platform.
+
 ## Docker Resources
 
 | Resource | Name | Description |
@@ -1871,29 +2324,42 @@ When `template_name="none"` (no template), the filestore is a plain directory (n
 | **Network** | `oduflow-net` | Shared bridge network for all containers |
 | **DB container** | `oduflow-db` | PostgreSQL 15, shared across all environments |
 | **DB volume** | `oduflow-db-data` | Persistent database storage |
-| **Template DB** | `odoo_ref_<name>` | Created from the dump file, used as PostgreSQL template |
+| **Template DB** | `oduflow_template_{team_id}_{name}` | Created from the dump file, used as PostgreSQL template |
+| **Environment DB** | `oduflow_{team_id}_{branch}` | Created from template DB via `CREATE DATABASE ... TEMPLATE` |
 | **Odoo containers** | `oduflow-{branch}-odoo` | One per environment |
 | **Service containers** | `oduflow-svc-{name}` | One per auxiliary service |
 | **Traefik** (optional) | `oduflow-traefik` | Reverse proxy with auto-HTTPS |
 | **Traefik volume** (optional) | `oduflow-traefik-acme` | Let's Encrypt certificate storage |
 
-All containers are labeled with `oduflow.managed=true` for discovery and management.
+All containers are labeled with `oduflow.managed=true` and `oduflow.team={team_id}` for discovery and management.
+
+## Concurrency & Locking
+
+Oduflow uses a granular `LockManager` (`locking.py`) instead of a single global mutex:
+
+| Lock Level | Scope | Example Operations |
+|---|---|---|
+| **Per-branch** | One operation per branch at a time | `create_environment`, `delete_environment`, `install_odoo_modules`, `pull_and_apply` |
+| **Per-team** | One team-level operation at a time | `add_extra_repo`, `setup_repo_auth`, `create_service` |
+| **System** | One system operation at a time | `init`, `destroy` |
+
+Operations on **different branches** run in parallel. If a lock cannot be acquired, the tool immediately returns `BusyError` (no queuing).
 
 ## Error Handling
 
 Oduflow uses a typed error hierarchy for clear error reporting:
 
-| Error | HTTP Status | Description |
-|---|:---:|---|
-| `FlowError` | 400 | Base error for all operations |
-| `BusyError` | 409 | Another mutexed operation is in progress |
-| `NotFoundError` | 404 | Environment, service, or resource not found |
-| `ConflictError` | 400 | Resource already exists (e.g. environment already running) |
-| `PrerequisiteNotMetError` | 400 | System not initialized, Docker not running, or dependency missing |
-| `ExternalCommandError` | 400 | Git, psql, or Docker command failed (includes command, exit code, output) |
-| `ProtectedError` | 400 | Environment is protected and cannot be deleted |
+| Error | Description |
+|---|---|
+| `FlowError` | Base error for all operations |
+| `BusyError` | Another operation is in progress (lock not available) |
+| `NotFoundError` | Environment, service, or resource not found |
+| `ConflictError` | Resource already exists (e.g. environment already running) |
+| `PrerequisiteNotMetError` | System not initialized, Docker not running, or dependency missing |
+| `ExternalCommandError` | Git, psql, or Docker command failed (includes command, exit code, output) |
+| `ProtectedError` | Environment or extra repo is protected and cannot be deleted |
 
-MCP clients receive errors as `ValueError` with a descriptive message. REST API clients receive JSON with `{"ok": false, "error": "..."}`.
+MCP clients receive errors as `ToolError` with a descriptive message. REST API clients receive JSON with `{"ok": false, "error": "..."}`.
 
 ## PostgreSQL Tuning
 
@@ -1962,71 +2428,6 @@ License keys are RSA-signed and verified against a built-in public key. Invalid 
 ---
 
 For business use or integrator licenses, visit [oduflow.dev](https://oduflow.dev).
-
----
-
-# Changelog: 1.0.1 → 1.10.1
-
-## Features
-
-- Refactor Agent Guides into multi-guide system with Odoo version-specific development guides ([8680a18](https://github.com/oduist/oduflow/commit/8680a18b284ba1a7e0e2de9a2d0c5b9af489af69))
-- Add `import_template_from_odoo` — import templates from running Odoo instances ([a6d53fc](https://github.com/oduist/oduflow/commit/a6d53fc988e5c387c2d49d98436a530fee3bab19))
-- Store `use_overlay` flag in template metadata instead of computing filestore size on every env creation ([e393c44](https://github.com/oduist/oduflow/commit/e393c445fbc040ea451c6876aa82a35b1d5ff392))
-- Show `use_overlay` mode in CLI `list-templates` and dashboard UI ([cf85489](https://github.com/oduist/oduflow/commit/cf854894eeb8c33e13b05599652a7e6894c8b4f0))
-- Show template name in `get_environment_info` and dashboard UI ([e79a6ae](https://github.com/oduist/oduflow/commit/e79a6ae80917d9d64e5b22d5ca0c61e78ed0019e))
-- Add Sync button to environment UI ([66ceed8](https://github.com/oduist/oduflow/commit/66ceed8ef8747b3f679ad1ed7ed62aeab8e779b6))
-- Add `ODUFLOW_TRACE=1` trace logging for sync/classify pipeline ([af7b9bc](https://github.com/oduist/oduflow/commit/af7b9bcb55ba43cb4daaaa884cfc9edcfd59a9cb))
-- Docker deploy added ([e934bea](https://github.com/oduist/oduflow/commit/e934bea4e9e72e5259c94b6bd54c558e4a0e4daf))
-- Append `/web?debug=1` to environment URLs in dashboard ([ff913ad](https://github.com/oduist/oduflow/commit/ff913ada0ff1406b505c5fa103e85977b57d0428))
-- Add `ODUFLOW_STATELESS_HTTP` option (enabled by default) ([362e449](https://github.com/oduist/oduflow/commit/362e449335d813c3a3326161f8b6a0c04041e665))
-- Add logo to Web UI header ([6fd52ce](https://github.com/oduist/oduflow/commit/6fd52ce17369f30d889aa09fb847bfb136dfeae9))
-- Add `run_db_query` MCP tool for executing SQL queries against environment databases ([d7b1b44](https://github.com/oduist/oduflow/commit/d7b1b44d3a378d1357125526860b6a459fc8bbf1))
-- Credentials management UI + git auth improvements ([259164e](https://github.com/oduist/oduflow/commit/259164ebcbd74a1216e5585e2d93c1526a6d69ae))
-- Per-user git credentials for repo operations ([5c28100](https://github.com/oduist/oduflow/commit/5c28100df0b9072c0b1da85a230ba06e6fd45bf8))
-- Add `oduflow cleanup` CLI command to remove orphaned resources ([d1fa09c](https://github.com/oduist/oduflow/commit/d1fa09cf346726892653f724f0ce4a47de19a8b5))
-- Add protect/unprotect for extra repos ([1245d6c](https://github.com/oduist/oduflow/commit/1245d6c5f953ac876c52d113ba5b43d82c94a0af))
-- Add `update_extra_repo` MCP tool; remove one-off migration SQL ([3c678cc](https://github.com/oduist/oduflow/commit/3c678ccffe26060043a3deb28095ed66150c1108))
-- Report elapsed time in `create_environment` response ([90ca9e1](https://github.com/oduist/oduflow/commit/90ca9e19ea1beb6957c30066cbec1a4f78f14927))
-- Show filestore and dump sizes in template listing ([a1403a7](https://github.com/oduist/oduflow/commit/a1403a7737d071b42f3052214ae3eef7684c4f65))
-- Add Recreate button for environments in web UI ([31afb9e](https://github.com/oduist/oduflow/commit/31afb9e7a28d7e785d05849783db36927f851137))
-
-## Fixes
-
-- Show friendly error when Docker is not available ([5df6df7](https://github.com/oduist/oduflow/commit/5df6df71f6f4886c815f59b1f7469884beb30045))
-- Service logs filtering and state isolation from env logs ([9926c2a](https://github.com/oduist/oduflow/commit/9926c2aa6946f80c7e0ef6ac0c51cddaac7a9612))
-- Update `test_settings` to match current Settings API ([b92fe80](https://github.com/oduist/oduflow/commit/b92fe800e75c466384cb3f8290543c3b56183f3c))
-- Restart container after successful module installation ([b819c65](https://github.com/oduist/oduflow/commit/b819c65c4eb526ba4a51f97682c239b377bc1319))
-- Fix tests: expect `ToolError` instead of `ValueError` ([dcf7f23](https://github.com/oduist/oduflow/commit/dcf7f23c7d608603e2fdd589a0471ea594026432))
-- License load fix ([8e66e8f](https://github.com/oduist/oduflow/commit/8e66e8f005ac4aa1f8fdd64a50bd84e639459319))
-- Stream dump file to container to avoid OOM; save dump to workspace on `reload-template --dump-path` ([8615fe2](https://github.com/oduist/oduflow/commit/8615fe29354943110b3c75def142ad2a9ab3d292))
-- Eliminate OOM in all container file extraction (`init_template`, `template_down`, `publish_env_as_template`) ([b40395b](https://github.com/oduist/oduflow/commit/b40395b769480e09cc340c3c68f8dd31217f1cab))
-- Surface database drop failures as warnings in `delete_environment` ([02a628b](https://github.com/oduist/oduflow/commit/02a628b4ebc59e142791f8d88539d0a4a6d865c7))
-- Use `odoo_image` version as fallback branch for extra addons worktree ([ea297fd](https://github.com/oduist/oduflow/commit/ea297fdf4d81bc06a7bd0c22f89cb1b8427582c0))
-- Configure fetch refspec for bare extra repos so `git fetch` updates branches ([54bc937](https://github.com/oduist/oduflow/commit/54bc9373e55569f85db0fe2737691d1a9cb10be3))
-
-## Documentation
-
-- Rework README — add missing config vars, licensing, template metadata, CLI flags ([0b8de7e](https://github.com/oduist/oduflow/commit/0b8de7eea6cb92cffc7678fc9e7c6101f7463df4))
-- Restructure README — reorder sections, remove odoo.sh comparison, merge internals ([70af4df](https://github.com/oduist/oduflow/commit/70af4df31e3295db864a034d6afbc43e21218ad2))
-- Update README.md ([fe6674f](https://github.com/oduist/oduflow/commit/fe6674ff41ccdcf0a0e4e2f9cab0400f287b2af6))
-- Add MkDocs with Material theme, build site to docs/ for GitHub Pages ([bbcf1e9](https://github.com/oduist/oduflow/commit/bbcf1e90691ad96368fd7b6c9270870f64a39311))
-- Switch to GitBook theme, use gh-pages branch for deployment ([3cfbbb2](https://github.com/oduist/oduflow/commit/3cfbbb261fabba064e0877430ae5dceeac91d88b))
-- Add `requirements-docs.txt` for mkdocs setup ([b620ff5](https://github.com/oduist/oduflow/commit/b620ff57153623f5b47cfcec89b261389ea81936))
-- Split README into structured mkdocs documentation ([c52084f](https://github.com/oduist/oduflow/commit/c52084f0772fc0abe1564a384e0341b0907d35ae))
-- Add database migrations workflow guide for agents ([63629fd](https://github.com/oduist/oduflow/commit/63629fd267170e1af7a3e5d1d162653da61f99bc))
-- Document extra addons pinning behavior in environments ([651f877](https://github.com/oduist/oduflow/commit/651f8778266fd350399bd1605c32ad4ea96e9e77))
-
-## Refactor
-
-- Rename CLI command `promote` to `template-from-env` ([ecaaf84](https://github.com/oduist/oduflow/commit/ecaaf84c1a8bf205ed6b3451ec0d58f0842dce58))
-- Rename template DB prefix to `oduflow_template_{id}_{name}`, make `template_name` required ([c3bee0f](https://github.com/oduist/oduflow/commit/c3bee0fbeece89253860389ad144461d4d291861))
-
-## Chore
-
-- Make dev guide hint more assertive in `create_environment` output ([b9933ce](https://github.com/oduist/oduflow/commit/b9933cec0b72aa4832c711a9fbea8ffae9d10b7e))
-- Clean up startup logs: use websockets-sansio, suppress docker noise ([a486d87](https://github.com/oduist/oduflow/commit/a486d87da6c7fdf94ae4711d13fe2b12553ad225))
-- Add `site/` to `.gitignore`, remove tracked build output ([b36e832](https://github.com/oduist/oduflow/commit/b36e8327eacc900a44f0ea65a0e585b9005a3dc6))
-- Add `logo.png` to tracked files for package distribution ([935f5f7](https://github.com/oduist/oduflow/commit/935f5f764d0544d32627c48e046596c0fa441fe8))
 
 ---
 

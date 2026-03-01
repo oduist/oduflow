@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import logging
 from typing import Any
 
@@ -7,15 +9,17 @@ from oduflow.docker_ops.client import get_client
 from oduflow.env_credentials import load_credentials
 from oduflow.errors import ExternalCommandError, NotFoundError
 from oduflow.naming import get_db_name, get_resource_name
-from oduflow.settings import Settings
+from oduflow.settings import Settings, TeamSettings
 
 logger = logging.getLogger("oduflow")
 
 
-def run_environment_tests(settings: Settings, branch_name: str, modules: str) -> str:
+def run_environment_tests(
+    settings: Settings, team: TeamSettings, branch_name: str, modules: str
+) -> str:
     client = get_client()
     odoo_container_name = get_resource_name(branch_name, "odoo", settings.prefix)
-    env_db = get_db_name(branch_name, settings.instance_id)
+    env_db = get_db_name(branch_name, team.team_id)
 
     try:
         container = client.containers.get(odoo_container_name)
@@ -24,7 +28,9 @@ def run_environment_tests(settings: Settings, branch_name: str, modules: str) ->
             f"Environment '{branch_name}' does not exist. Use create_environment first."
         )
 
-    creds = load_credentials(branch_name, settings.workspaces_dir, settings.db_user, settings.db_password)
+    creds = load_credentials(
+        branch_name, team.workspaces_dir, settings.db_user, settings.db_password
+    )
     cmd = (
         f"odoo --test-enable --stop-after-init -i {modules} "
         f"--db_host={settings.shared_db_container} "
@@ -43,7 +49,9 @@ def run_environment_tests(settings: Settings, branch_name: str, modules: str) ->
     return str(output)
 
 
-def get_environment_logs(settings: Settings, branch_name: str, n_lines: int = 100) -> str:
+def get_environment_logs(
+    settings: Settings, branch_name: str, n_lines: int = 100
+) -> str:
     client = get_client()
     odoo_container_name = get_resource_name(branch_name, "odoo", settings.prefix)
 
@@ -60,14 +68,14 @@ def get_environment_logs(settings: Settings, branch_name: str, n_lines: int = 10
 
 
 def _run_odoo_module_command(
-    settings: Settings, branch_name: str, flag: str, *modules: str
+    settings: Settings, team: TeamSettings, branch_name: str, flag: str, *modules: str
 ) -> dict[str, Any]:
     if not modules:
         raise ValueError("At least one module name is required.")
 
     client = get_client()
     odoo_container_name = get_resource_name(branch_name, "odoo", settings.prefix)
-    env_db = get_db_name(branch_name, settings.instance_id)
+    env_db = get_db_name(branch_name, team.team_id)
 
     try:
         container = client.containers.get(odoo_container_name)
@@ -81,7 +89,8 @@ def _run_odoo_module_command(
 
     action = "Installing" if flag == "-i" else "Upgrading"
     logger.info(
-        "%s modules", action,
+        "%s modules",
+        action,
         extra={"branch": branch_name, "modules": modules_str},
     )
     exit_code, output = container.exec_run(cmd)
@@ -94,12 +103,16 @@ def _run_odoo_module_command(
     }
 
 
-def upgrade_odoo_modules(settings: Settings, branch_name: str, *modules: str) -> dict[str, Any]:
-    return _run_odoo_module_command(settings, branch_name, "-u", *modules)
+def upgrade_odoo_modules(
+    settings: Settings, team: TeamSettings, branch_name: str, *modules: str
+) -> dict[str, Any]:
+    return _run_odoo_module_command(settings, team, branch_name, "-u", *modules)
 
 
-def install_odoo_modules(settings: Settings, branch_name: str, *modules: str) -> dict[str, Any]:
-    return _run_odoo_module_command(settings, branch_name, "-i", *modules)
+def install_odoo_modules(
+    settings: Settings, team: TeamSettings, branch_name: str, *modules: str
+) -> dict[str, Any]:
+    return _run_odoo_module_command(settings, team, branch_name, "-i", *modules)
 
 
 _FILE_SIZE_LIMIT = 100 * 1024  # 100KB
@@ -125,27 +138,41 @@ def read_file_in_environment(
 
     # Check if path exists and determine its type
     exit_code, output = container.exec_run(
-        ["sh", "-c", f'if [ -d "{path}" ]; then echo DIR; elif [ -f "{path}" ]; then echo FILE; else echo NOTFOUND; fi']
+        [
+            "sh",
+            "-c",
+            f'if [ -d "{path}" ]; then echo DIR; elif [ -f "{path}" ]; then echo FILE; else echo NOTFOUND; fi',
+        ]
     )
-    path_type = (output.decode("utf-8") if isinstance(output, bytes) else str(output)).strip()
+    path_type = (
+        output.decode("utf-8") if isinstance(output, bytes) else str(output)
+    ).strip()
 
     if path_type == "NOTFOUND":
         return {"error": f"Path not found: {path}"}
 
     if path_type == "DIR":
         exit_code, output = container.exec_run(["ls", "-la", path])
-        output_str = output.decode("utf-8") if isinstance(output, bytes) else str(output)
+        output_str = (
+            output.decode("utf-8") if isinstance(output, bytes) else str(output)
+        )
         return {"type": "directory", "output": output_str}
 
     # It's a file — check if binary
     exit_code, output = container.exec_run(["file", "--mime", path])
-    mime_str = (output.decode("utf-8") if isinstance(output, bytes) else str(output)).strip()
+    mime_str = (
+        output.decode("utf-8") if isinstance(output, bytes) else str(output)
+    ).strip()
     if "charset=binary" in mime_str:
-        return {"error": f"Binary file, cannot display: {path}\nUse exec_in_odoo for binary file operations."}
+        return {
+            "error": f"Binary file, cannot display: {path}\nUse exec_in_odoo for binary file operations."
+        }
 
     # Check file size
     exit_code, output = container.exec_run(["stat", "-c", "%s", path])
-    size_str = (output.decode("utf-8") if isinstance(output, bytes) else str(output)).strip()
+    size_str = (
+        output.decode("utf-8") if isinstance(output, bytes) else str(output)
+    ).strip()
     try:
         file_size = int(size_str)
     except ValueError:
@@ -155,16 +182,25 @@ def read_file_in_environment(
         # Parse "START:END" format
         parts = read_range.split(":")
         if len(parts) != 2:
-            return {"error": f"Invalid read_range format: '{read_range}'. Expected 'START:END' (e.g. '1:50')."}
+            return {
+                "error": f"Invalid read_range format: '{read_range}'. Expected 'START:END' (e.g. '1:50')."
+            }
         try:
             start, end = int(parts[0]), int(parts[1])
         except ValueError:
-            return {"error": f"Invalid read_range format: '{read_range}'. START and END must be integers."}
-        exit_code, output = container.exec_run(
-            ["sed", "-n", f"{start},{end}p", path]
+            return {
+                "error": f"Invalid read_range format: '{read_range}'. START and END must be integers."
+            }
+        exit_code, output = container.exec_run(["sed", "-n", f"{start},{end}p", path])
+        output_str = (
+            output.decode("utf-8") if isinstance(output, bytes) else str(output)
         )
-        output_str = output.decode("utf-8") if isinstance(output, bytes) else str(output)
-        return {"type": "file", "output": output_str, "size": file_size, "range": read_range}
+        return {
+            "type": "file",
+            "output": output_str,
+            "size": file_size,
+            "range": read_range,
+        }
 
     # No range — enforce size limit
     if file_size > _FILE_SIZE_LIMIT:
@@ -209,11 +245,11 @@ def exec_in_environment(
 
 
 def reset_admin_password(
-    settings: Settings, branch_name: str, new_password: str = "test"
+    settings: Settings, team: TeamSettings, branch_name: str, new_password: str = "test"
 ) -> dict[str, str]:
     client = get_client()
     odoo_container_name = get_resource_name(branch_name, "odoo", settings.prefix)
-    env_db = get_db_name(branch_name, settings.instance_id)
+    env_db = get_db_name(branch_name, team.team_id)
 
     try:
         container = client.containers.get(odoo_container_name)
@@ -224,12 +260,15 @@ def reset_admin_password(
 
     # Hash the password using passlib inside the Odoo container
     hash_cmd = [
-        "python3", "-c",
+        "python3",
+        "-c",
         "from passlib.context import CryptContext; "
         f"print(CryptContext(['pbkdf2_sha512']).hash({new_password!r}))",
     ]
     exit_code, output = container.exec_run(hash_cmd)
-    hashed = (output.decode("utf-8") if isinstance(output, bytes) else str(output)).strip()
+    hashed = (
+        output.decode("utf-8") if isinstance(output, bytes) else str(output)
+    ).strip()
     if exit_code != 0:
         raise ExternalCommandError("python3 (passlib hash)", exit_code, hashed)
 
@@ -245,7 +284,9 @@ def reset_admin_password(
     sql = f"UPDATE res_users SET password = '{hashed}' WHERE login = 'admin'"
     psql_cmd = ["psql", "-U", settings.db_user, "-d", env_db, "-c", sql]
     exit_code, output = db_container.exec_run(psql_cmd)
-    output_str = (output.decode("utf-8") if isinstance(output, bytes) else str(output)).strip()
+    output_str = (
+        output.decode("utf-8") if isinstance(output, bytes) else str(output)
+    ).strip()
     if exit_code != 0:
         raise ExternalCommandError("psql", exit_code, output_str)
 
@@ -257,10 +298,14 @@ def reset_admin_password(
 
 
 def run_db_query(
-    settings: Settings, branch_name: str, query: str, output_format: str = "csv"
+    settings: Settings,
+    team: TeamSettings,
+    branch_name: str,
+    query: str,
+    output_format: str = "csv",
 ) -> dict[str, Any]:
     client = get_client()
-    env_db = get_db_name(branch_name, settings.instance_id)
+    env_db = get_db_name(branch_name, team.team_id)
 
     try:
         db_container = client.containers.get(settings.shared_db_container)
@@ -270,7 +315,9 @@ def run_db_query(
             "Run 'oduflow init' first."
         )
 
-    creds = load_credentials(branch_name, settings.workspaces_dir, settings.db_user, settings.db_password)
+    creds = load_credentials(
+        branch_name, team.workspaces_dir, settings.db_user, settings.db_password
+    )
     if output_format == "human":
         cmd = ["psql", "-U", creds["pg_user"], "-d", env_db, "-c", query]
     else:

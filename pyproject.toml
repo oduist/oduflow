@@ -12,9 +12,10 @@ keywords = ["odoo", "mcp", "docker", "development", "ci"]
 dependencies = [
     "fastmcp==2.14.3",
     "docker",
-    "python-dotenv",
+
     "packaging",
     "cryptography",
+    "tomli>=2.0; python_version < '3.11'",
 ]
 
 [project.urls]

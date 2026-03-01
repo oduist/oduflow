@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import logging
 import re
 
@@ -6,23 +8,48 @@ import docker
 from oduflow.docker_ops.client import get_client
 from oduflow.docker_ops import service_presets
 from oduflow.errors import ConflictError, NotFoundError, PrerequisiteNotMetError
-from oduflow.settings import Settings
+from oduflow.settings import Settings, TeamSettings
 
 logger = logging.getLogger("oduflow")
 
 _SYSTEM_ENV_KEYS = {
-    "PATH", "HOME", "HOSTNAME", "TERM", "LANG", "LC_ALL",
-    "GOPATH", "JAVA_HOME", "SHLVL", "PWD", "OLDPWD", "SHELL",
-    "USER", "LOGNAME", "MAIL", "EDITOR", "VISUAL", "PAGER",
-    "LESS", "LESSOPEN", "LESSCLOSE", "LS_COLORS",
-    "XDG_RUNTIME_DIR", "XDG_DATA_DIRS", "XDG_CONFIG_DIRS", "XDG_CACHE_HOME",
-    "DISPLAY", "GPG_AGENT_INFO", "SSH_AUTH_SOCK", "SSH_AGENT_PID",
+    "PATH",
+    "HOME",
+    "HOSTNAME",
+    "TERM",
+    "LANG",
+    "LC_ALL",
+    "GOPATH",
+    "JAVA_HOME",
+    "SHLVL",
+    "PWD",
+    "OLDPWD",
+    "SHELL",
+    "USER",
+    "LOGNAME",
+    "MAIL",
+    "EDITOR",
+    "VISUAL",
+    "PAGER",
+    "LESS",
+    "LESSOPEN",
+    "LESSCLOSE",
+    "LS_COLORS",
+    "XDG_RUNTIME_DIR",
+    "XDG_DATA_DIRS",
+    "XDG_CONFIG_DIRS",
+    "XDG_CACHE_HOME",
+    "DISPLAY",
+    "GPG_AGENT_INFO",
+    "SSH_AUTH_SOCK",
+    "SSH_AGENT_PID",
     "DBUS_SESSION_BUS_ADDRESS",
 }
 
 
 def create_service(
     settings: Settings,
+    team: TeamSettings,
     name: str,
     image: str,
     port: int,
@@ -45,15 +72,13 @@ def create_service(
     try:
         existing = client.containers.get(container_name)
         if existing.status == "running":
-            raise ConflictError(
-                f"Service '{name}' already exists and is running."
-            )
+            raise ConflictError(f"Service '{name}' already exists and is running.")
     except docker.errors.NotFound:
         pass
 
     labels = {
         "oduflow.managed": "true",
-        "oduflow.instance": settings.instance_id,
+        "oduflow.team": team.team_id,
         "oduflow.service": name,
     }
 
@@ -68,18 +93,20 @@ def create_service(
 
     if settings.routing_mode == "traefik":
         if not hostname:
-            hostname = f"{name}.{settings.base_domain}"
+            hostname = f"{name}.{team.hostname}"
         elif "." not in hostname:
-            hostname = f"{hostname}.{settings.base_domain}"
+            hostname = f"{hostname}.{team.hostname}"
         labels["traefik.enable"] = "true"
         labels[f"traefik.http.routers.{container_name}.rule"] = f"Host(`{hostname}`)"
         labels[f"traefik.http.routers.{container_name}.entrypoints"] = "websecure"
         labels[f"traefik.http.routers.{container_name}.tls.certresolver"] = "le"
-        labels[f"traefik.http.services.{container_name}.loadbalancer.server.port"] = str(port)
+        labels[f"traefik.http.services.{container_name}.loadbalancer.server.port"] = (
+            str(port)
+        )
         url = f"https://{hostname}"
     else:
         run_kwargs["ports"] = {f"{port}/tcp": port}
-        url = f"http://{settings.external_host}:{port}"
+        url = f"http://{team.hostname}:{port}"
 
     if env_vars:
         run_kwargs["environment"] = env_vars
@@ -90,9 +117,13 @@ def create_service(
     # Auto-save preset for future restore
     try:
         service_presets.save_preset(
-            settings, name, image, port,
+            team,
+            name,
+            image,
+            port,
             hostname=hostname,
             env_vars=env_vars,
+            base_hostname=team.hostname,
         )
     except Exception:
         logger.warning("Failed to save service preset for %s", name, exc_info=True)
@@ -124,14 +155,14 @@ def delete_service(settings: Settings, name: str) -> dict[str, str]:
     }
 
 
-def list_services(settings: Settings) -> list[dict]:
+def list_services(settings: Settings, team: TeamSettings) -> list[dict]:
     client = get_client()
     containers = client.containers.list(
         all=True,
         filters={
             "label": [
                 f"{settings.managed_label}=true",
-                f"{settings.instance_label}={settings.instance_id}"
+                f"{settings.team_label}={team.team_id}",
             ]
         },
     )
@@ -161,7 +192,9 @@ def list_services(settings: Settings) -> list[dict]:
 
         if settings.routing_mode == "traefik":
             rule_label = f"traefik.http.routers.oduflow-svc-{svc_name}.rule"
-            port_label = f"traefik.http.services.oduflow-svc-{svc_name}.loadbalancer.server.port"
+            port_label = (
+                f"traefik.http.services.oduflow-svc-{svc_name}.loadbalancer.server.port"
+            )
 
             rule_value = container.labels.get(rule_label, "")
             match = re.search(r"Host\(`([^`]+)`\)", rule_value)
@@ -184,24 +217,26 @@ def list_services(settings: Settings) -> list[dict]:
                         for mapping in mappings:
                             host_port = mapping.get("HostPort")
                             if host_port:
-                                url = f"http://{settings.external_host}:{host_port}"
+                                url = f"http://{team.hostname}:{host_port}"
                                 break
                     break  # only process first port entry
 
-        result.append({
-            "name": svc_name,
-            "container_name": container_name,
-            "image": image,
-            "status": status,
-            "port": port_num,
-            "url": url,
-            "env_vars": env_vars,
-        })
+        result.append(
+            {
+                "name": svc_name,
+                "container_name": container_name,
+                "image": image,
+                "status": status,
+                "port": port_num,
+                "url": url,
+                "env_vars": env_vars,
+            }
+        )
 
     return result
 
 
-def update_service(settings: Settings, name: str) -> dict[str, str]:
+def update_service(settings: Settings, team: TeamSettings, name: str) -> dict[str, str]:
     """Pull the latest image for a service and re-create it with the same settings."""
     client = get_client()
     container_name = f"oduflow-svc-{name}"
@@ -257,9 +292,7 @@ def update_service(settings: Settings, name: str) -> dict[str, str]:
                     break
 
     if port is None:
-        raise NotFoundError(
-            f"Cannot determine port for service '{name}'."
-        )
+        raise NotFoundError(f"Cannot determine port for service '{name}'.")
 
     # Capture old image digest
     old_digest = container.image.id  # e.g. sha256:abc...
@@ -281,7 +314,9 @@ def update_service(settings: Settings, name: str) -> dict[str, str]:
             "new_digest": new_digest,
         }
 
-    logger.info("Image changed for service %s: %s -> %s", name, old_digest[:19], new_digest[:19])
+    logger.info(
+        "Image changed for service %s: %s -> %s", name, old_digest[:19], new_digest[:19]
+    )
 
     # Stop and remove the old container
     container.stop()
@@ -291,6 +326,7 @@ def update_service(settings: Settings, name: str) -> dict[str, str]:
     # Re-create with the same settings
     result = create_service(
         settings,
+        team,
         name=name,
         image=old_image,
         port=port,

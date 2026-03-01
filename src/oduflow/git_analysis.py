@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import ast
 import logging
 import os
@@ -6,11 +8,8 @@ import subprocess
 
 logger = logging.getLogger("oduflow")
 
-_TRACE = os.environ.get("ODUFLOW_TRACE") == "1"
-
-
 def _trace(msg: str, *args: object) -> None:
-    if _TRACE:
+    if os.environ.get("ODUFLOW_TRACE") == "1":
         logger.info("[TRACE] " + msg, *args)
 
 
@@ -141,7 +140,12 @@ def classify_changes(changed_files: list[str], repo_path: str) -> dict:
 
         if os.path.basename(f) == "__manifest__.py" and module:
             manifest_action = _check_manifest_changes(f, module, repo_path)
-            _trace("  file=%s ext=manifest module=%s -> manifest_action=%s", f, module, manifest_action)
+            _trace(
+                "  file=%s ext=manifest module=%s -> manifest_action=%s",
+                f,
+                module,
+                manifest_action,
+            )
             if manifest_action == "install":
                 modules_to_install.add(module)
             elif manifest_action == "upgrade":
@@ -155,7 +159,9 @@ def classify_changes(changed_files: list[str], repo_path: str) -> dict:
                 field_changed = _check_field_changes(f, repo_path)
                 if field_changed:
                     modules_to_upgrade.add(module)
-            _trace("  file=%s ext=.py module=%s field_changed=%s", f, module, field_changed)
+            _trace(
+                "  file=%s ext=.py module=%s field_changed=%s", f, module, field_changed
+            )
             continue
 
         if ext == ".xml":
@@ -163,7 +169,11 @@ def classify_changes(changed_files: list[str], repo_path: str) -> dict:
                 xml_security.append(f)
                 if module not in modules_to_install:
                     modules_to_upgrade.add(module)
-                _trace("  file=%s ext=.xml module=%s -> security/data XML, UPGRADE", f, module)
+                _trace(
+                    "  file=%s ext=.xml module=%s -> security/data XML, UPGRADE",
+                    f,
+                    module,
+                )
             else:
                 xml_hot.append(f)
                 _trace("  file=%s ext=.xml module=%s -> hot-reload XML", f, module)
@@ -189,8 +199,12 @@ def classify_changes(changed_files: list[str], repo_path: str) -> dict:
 
     if modules_to_install or modules_to_upgrade:
         action = "install" if modules_to_install else "upgrade"
-        _trace("classify_changes RESULT: action=%s install=%s upgrade=%s",
-               action, sorted(modules_to_install), sorted(modules_to_upgrade))
+        _trace(
+            "classify_changes RESULT: action=%s install=%s upgrade=%s",
+            action,
+            sorted(modules_to_install),
+            sorted(modules_to_upgrade),
+        )
         return {
             "action": action,
             "modules_to_install": sorted(modules_to_install),
@@ -199,7 +213,9 @@ def classify_changes(changed_files: list[str], repo_path: str) -> dict:
         }
 
     if py_changed:
-        _trace("classify_changes RESULT: action=restart (Python files changed, no field/manifest changes)")
+        _trace(
+            "classify_changes RESULT: action=restart (Python files changed, no field/manifest changes)"
+        )
         return {
             "action": "restart",
             "modules_to_upgrade": [],
@@ -252,8 +268,12 @@ def _check_manifest_changes(
 
     if old_manifest.get("version") != new_manifest.get("version"):
         logger.info("Module %s: version changed", module)
-        _trace("_check_manifest(%s) -> version changed %s -> %s, UPGRADE",
-               module, old_manifest.get("version"), new_manifest.get("version"))
+        _trace(
+            "_check_manifest(%s) -> version changed %s -> %s, UPGRADE",
+            module,
+            old_manifest.get("version"),
+            new_manifest.get("version"),
+        )
         return "upgrade"
 
     for key in MANIFEST_KEYS_WITH_FILES:

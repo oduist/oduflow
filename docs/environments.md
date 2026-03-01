@@ -7,20 +7,20 @@
 ## Creating Environments
 
 ```bash
-# Create from existing branch with default template
-oduflow call create_environment feature-login https://github.com/owner/repo.git odoo:17.0
-
-# Create with a named template
-oduflow call create_environment feature-login https://github.com/owner/repo.git odoo:17.0 myproject
+# Create with a named template (template_name, repo_url, odoo_image)
+oduflow call create_environment feature-login myproject https://github.com/owner/repo.git odoo:17.0
 
 # Create without a template (fresh Odoo with -i base)
-oduflow call create_environment feature-login https://github.com/owner/repo.git odoo:17.0 none
+oduflow call create_environment feature-login none https://github.com/owner/repo.git odoo:17.0
+
+# Create with JSON arguments (more explicit)
+oduflow call create_environment '{"branch_name":"feature-login","template_name":"myproject","repo_url":"https://github.com/owner/repo.git","odoo_image":"odoo:17.0"}'
 ```
 
 When creating an environment, Oduflow:
 
 1. **Clones the repository** — shallow clone (`--depth 1`) for speed
-2. **Creates the database** — `CREATE DATABASE ... TEMPLATE odoo_ref_default` for instant copy, or empty DB when `template=none`
+2. **Creates the database** — `CREATE DATABASE ... TEMPLATE oduflow_template_{team_id}_{name}` for instant copy, or empty DB when `template=none`
 3. **Mounts the filestore overlay** — fuse-overlayfs with the template as lower layer
 4. **Detects UID/GID** — runs `id` in the Odoo image to set correct file ownership
 5. **Installs dependencies** — auto-installs from `apt_packages.txt` and `requirements.txt` if present in the repo
@@ -65,14 +65,14 @@ When an environment is created from a template, Oduflow **automatically sanitize
 
 Sanitization uses a **two-tier** approach:
 
-1. **System-wide scripts** from `/etc/oduflow/odoo_sanitize/` — managed by the instance administrator, shared across all environments
+1. **Team-level scripts** from `{team_data_dir}/odoo_sanitize/` — managed by the administrator, shared across all environments in the team
 2. **Per-project scripts** from `.odoo_sanitize/` in the repository root — managed by the developer, specific to the project
 
-Both folders support `.sql` and `.py` files, executed in alphabetical order (first all `.sql`, then all `.py`). System-wide scripts run first, then per-project scripts.
+Both folders support `.sql` and `.py` files, executed in alphabetical order (first all `.sql`, then all `.py`). Team-level scripts run first, then per-project scripts.
 
-### System-wide sanitization
+### Team-level sanitization
 
-During `oduflow init`, the folder `/etc/oduflow/odoo_sanitize/` is created and seeded with a default script:
+During `oduflow init`, the folder `{team_data_dir}/odoo_sanitize/` is created and seeded with a default script:
 
 **`01_disable_mail.sql`** — disables incoming and outgoing mail servers:
 
@@ -84,10 +84,10 @@ UPDATE fetchmail_server SET active = false WHERE active = true;
 UPDATE ir_mail_server SET active = false WHERE active = true;
 ```
 
-The instance administrator can add, modify, or remove scripts in this folder to control sanitization for all environments on the instance.
+The team administrator can add, modify, or remove scripts in this folder to control sanitization for all environments in the team.
 
 !!! tip
-    To disable additional cron jobs system-wide, create `/etc/oduflow/odoo_sanitize/02_disable_crons.sql`:
+    To disable additional cron jobs team-wide, create `{team_data_dir}/odoo_sanitize/02_disable_crons.sql`:
     ```sql
     UPDATE ir_cron SET active = false;
     ```
@@ -127,10 +127,10 @@ Python scripts receive the following environment variables: `ODOO_DB`, `DB_HOST`
 
 ### Disabling sanitization
 
-Pass `sanitize=false` when creating an environment to skip all sanitization (both system-wide and per-project):
+Pass `sanitize=false` when creating an environment to skip all sanitization (both team-level and per-project):
 
 ```bash
-oduflow call create_environment my-branch mytemplate "" "" "" false
+oduflow call create_environment '{"branch_name":"my-branch","template_name":"mytemplate","repo_url":"https://...","odoo_image":"odoo:17.0","sanitize":false}'
 ```
 
 !!! note

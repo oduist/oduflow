@@ -1,6 +1,5 @@
 import json
-import pytest
-from oduflow.settings import Settings
+from oduflow.settings import Settings, TeamSettings
 from oduflow.docker_ops.system_ops import _file_size_mb, _update_template_sizes
 
 
@@ -19,6 +18,20 @@ class TestFileSizeMb:
         assert _file_size_mb(str(f)) == 0.0
 
 
+def _make_team_and_settings(tmp_path):
+    """Helper to create a TeamSettings + Settings pair with data_dir at tmp_path."""
+    team = TeamSettings(
+        team_id="1",
+        data_dir=str(tmp_path),
+        port_registry_path=str(tmp_path / "ports.json"),
+    )
+    settings = Settings(
+        base_data_dir=str(tmp_path),
+        teams={"1": team},
+    )
+    return team, settings
+
+
 class TestUpdateTemplateSizes:
     def _make_template(self, tmp_path, name="default"):
         tpl_dir = tmp_path / "templates" / name
@@ -31,13 +44,13 @@ class TestUpdateTemplateSizes:
         # Create dump
         dump = tpl_dir / "dump.pgdump"
         dump.write_bytes(b"\x00" * 1024 * 256)  # 0.25 MB
-        return Settings(data_dir=str(tmp_path))
+        return _make_team_and_settings(tmp_path)
 
     def test_sizes_saved_to_metadata(self, tmp_path):
-        settings = self._make_template(tmp_path)
-        _update_template_sizes(settings, "default")
+        team, settings = self._make_template(tmp_path)
+        _update_template_sizes(team, settings, "default")
 
-        meta_path = settings.get_template_metadata_path("default")
+        meta_path = team.get_template_metadata_path("default")
         with open(meta_path) as f:
             meta = json.load(f)
 
@@ -45,12 +58,12 @@ class TestUpdateTemplateSizes:
         assert abs(meta["dump_size_mb"] - 0.25) < 0.05
 
     def test_preserves_existing_metadata(self, tmp_path):
-        settings = self._make_template(tmp_path)
-        meta_path = settings.get_template_metadata_path("default")
+        team, settings = self._make_template(tmp_path)
+        meta_path = team.get_template_metadata_path("default")
         with open(meta_path, "w") as f:
             json.dump({"odoo_image": "odoo:17.0", "use_overlay": False}, f)
 
-        _update_template_sizes(settings, "default")
+        _update_template_sizes(team, settings, "default")
 
         with open(meta_path) as f:
             meta = json.load(f)
@@ -61,9 +74,9 @@ class TestUpdateTemplateSizes:
         assert "dump_size_mb" in meta
 
     def test_with_provided_metadata(self, tmp_path):
-        settings = self._make_template(tmp_path)
+        team, settings = self._make_template(tmp_path)
         provided = {"odoo_image": "odoo:18.0", "custom_key": "value"}
-        result = _update_template_sizes(settings, "default", metadata=provided)
+        result = _update_template_sizes(team, settings, "default", metadata=provided)
 
         assert result["odoo_image"] == "odoo:18.0"
         assert result["custom_key"] == "value"
@@ -74,11 +87,11 @@ class TestUpdateTemplateSizes:
         tpl_dir = tmp_path / "templates" / "bare"
         tpl_dir.mkdir(parents=True)
         (tpl_dir / "dump.pgdump").write_bytes(b"\x00" * 1024 * 1024)  # 1 MB
-        settings = Settings(data_dir=str(tmp_path))
+        team, settings = _make_team_and_settings(tmp_path)
 
-        _update_template_sizes(settings, "bare")
+        _update_template_sizes(team, settings, "bare")
 
-        with open(settings.get_template_metadata_path("bare")) as f:
+        with open(team.get_template_metadata_path("bare")) as f:
             meta = json.load(f)
 
         assert meta["filestore_size_mb"] == 0.0
@@ -89,11 +102,11 @@ class TestUpdateTemplateSizes:
         fs_dir = tpl_dir / "filestore"
         fs_dir.mkdir(parents=True)
         (fs_dir / "file.bin").write_bytes(b"\x00" * 1024 * 1024)  # 1 MB
-        settings = Settings(data_dir=str(tmp_path))
+        team, settings = _make_team_and_settings(tmp_path)
 
-        _update_template_sizes(settings, "nodump")
+        _update_template_sizes(team, settings, "nodump")
 
-        with open(settings.get_template_metadata_path("nodump")) as f:
+        with open(team.get_template_metadata_path("nodump")) as f:
             meta = json.load(f)
 
         assert meta["filestore_size_mb"] == 1.0

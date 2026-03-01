@@ -24,10 +24,18 @@ def get_odoo_uid_gid(client: DockerClient, image: str) -> str:
     if image in _uid_gid_cache:
         return _uid_gid_cache[image]
     try:
-        raw = client.containers.run(
-            image, "id", entrypoint="", remove=True,
-        ).decode().strip()
+        raw = (
+            client.containers.run(
+                image,
+                "id",
+                entrypoint="",
+                remove=True,
+            )
+            .decode()
+            .strip()
+        )
         import re
+
         uid_m = re.search(r"uid=(\d+)", raw)
         gid_m = re.search(r"gid=(\d+)", raw)
         if uid_m and gid_m:
@@ -35,14 +43,20 @@ def get_odoo_uid_gid(client: DockerClient, image: str) -> str:
         else:
             raise ValueError(f"unexpected id output: {raw}")
     except Exception as e:
-        logger.warning("Could not detect UID:GID from image %s: %s, falling back to 100:101", image, e)
+        logger.warning(
+            "Could not detect UID:GID from image %s: %s, falling back to 100:101",
+            image,
+            e,
+        )
         result = "100:101"
     _uid_gid_cache[image] = result
     logger.debug("Detected UID:GID for %s: %s", image, result)
     return result
 
 
-def chown_recursive(path: str, uid: int, gid: int, client: DockerClient, image: str) -> None:
+def chown_recursive(
+    path: str, uid: int, gid: int, client: DockerClient, image: str
+) -> None:
     """Recursively chown *path* to *uid*:*gid*.
 
     Tries host-side ``os.chown`` first (works on Linux as root).

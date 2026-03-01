@@ -1,10 +1,12 @@
+from __future__ import annotations
+
 import logging
 import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 
 from oduflow.docker_ops.client import get_client
-from oduflow.settings import Settings
+from oduflow.settings import Settings, TeamSettings
 
 logger = logging.getLogger("oduflow")
 
@@ -14,13 +16,17 @@ def _calc_cpu_percent(stats: dict) -> float:
     cpu = stats.get("cpu_stats", {})
     precpu = stats.get("precpu_stats", {})
 
-    cpu_delta = cpu.get("cpu_usage", {}).get("total_usage", 0) - precpu.get("cpu_usage", {}).get("total_usage", 0)
+    cpu_delta = cpu.get("cpu_usage", {}).get("total_usage", 0) - precpu.get(
+        "cpu_usage", {}
+    ).get("total_usage", 0)
     system_delta = cpu.get("system_cpu_usage", 0) - precpu.get("system_cpu_usage", 0)
 
     if system_delta <= 0 or cpu_delta < 0:
         return 0.0
 
-    num_cpus = cpu.get("online_cpus") or len(cpu.get("cpu_usage", {}).get("percpu_usage", []) or [1])
+    num_cpus = cpu.get("online_cpus") or len(
+        cpu.get("cpu_usage", {}).get("percpu_usage", []) or [1]
+    )
     return round((cpu_delta / system_delta) * num_cpus * 100.0, 1)
 
 
@@ -47,14 +53,16 @@ def _get_one_container_stats(container) -> dict[str, Any] | None:
             "cpu_percent": _calc_cpu_percent(stats),
             "mem_usage_mb": round(actual_mem / (1024 * 1024), 1),
             "mem_limit_mb": round(mem_limit / (1024 * 1024), 1),
-            "mem_percent": round((actual_mem / mem_limit) * 100.0, 1) if mem_limit > 0 else 0.0,
+            "mem_percent": round((actual_mem / mem_limit) * 100.0, 1)
+            if mem_limit > 0
+            else 0.0,
         }
     except Exception:
         logger.debug("Failed to get stats for %s", container.name, exc_info=True)
         return None
 
 
-def get_container_stats(settings: Settings) -> list[dict[str, Any]]:
+def get_container_stats(settings: Settings, team: TeamSettings) -> list[dict[str, Any]]:
     """Collect CPU/RAM stats for all managed containers in parallel."""
     client = get_client()
     containers = client.containers.list(
@@ -62,7 +70,7 @@ def get_container_stats(settings: Settings) -> list[dict[str, Any]]:
         filters={
             "label": [
                 f"{settings.managed_label}=true",
-                f"{settings.instance_label}={settings.instance_id}"
+                f"{settings.team_label}={team.team_id}",
             ]
         },
     )

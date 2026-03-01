@@ -1,6 +1,5 @@
 import os
 import textwrap
-import pytest
 
 from oduflow.git_analysis import (
     classify_changes,
@@ -8,7 +7,6 @@ from oduflow.git_analysis import (
     _is_security_path,
     _is_data_path,
     _extract_field_lines,
-    _check_field_changes,
 )
 
 
@@ -108,7 +106,6 @@ class TestClassifyChanges:
 
         os.makedirs(tmp_path / ".git", exist_ok=True)
 
-        import subprocess
         from unittest.mock import patch
 
         with patch("subprocess.run") as mock_run:
@@ -127,10 +124,11 @@ class TestClassifyChanges:
         new_manifest = "{'name': 'CRM', 'version': '15.0.1.0.0', 'data': ['views/crm.xml', 'views/new.xml']}"
         (module_dir / "__manifest__.py").write_text(new_manifest)
 
-        import subprocess
         from unittest.mock import patch
 
-        old_manifest = "{'name': 'CRM', 'version': '15.0.1.0.0', 'data': ['views/crm.xml']}"
+        old_manifest = (
+            "{'name': 'CRM', 'version': '15.0.1.0.0', 'data': ['views/crm.xml']}"
+        )
         with patch("subprocess.run") as mock_run:
             mock_run.return_value = type("Result", (), {"stdout": old_manifest})()
 
@@ -146,7 +144,6 @@ class TestClassifyChanges:
         new_manifest = "{'name': 'Sale Updated', 'version': '15.0.1.0.0', 'data': []}"
         (module_dir / "__manifest__.py").write_text(new_manifest)
 
-        import subprocess
         from unittest.mock import patch
 
         old_manifest = "{'name': 'Sale', 'version': '15.0.1.0.0', 'data': []}"
@@ -234,13 +231,15 @@ class TestClassifyChanges:
         (tmp_path / "sale" / "__manifest__.py").write_text(
             "{'name': 'Sale', 'version': '17.0.1.0.0'}"
         )
-        (module_dir / "sale.py").write_text(textwrap.dedent("""\
+        (module_dir / "sale.py").write_text(
+            textwrap.dedent("""\
             from odoo import fields, models
 
             class SaleOrder(models.Model):
                 name = fields.Char(string='Name')
                 customer_code = fields.Char(string='Customer Code')
-        """))
+        """)
+        )
 
         from unittest.mock import patch
 
@@ -264,12 +263,14 @@ class TestClassifyChanges:
         (tmp_path / "crm" / "__manifest__.py").write_text(
             "{'name': 'CRM', 'version': '17.0.1.0.0'}"
         )
-        (module_dir / "lead.py").write_text(textwrap.dedent("""\
+        (module_dir / "lead.py").write_text(
+            textwrap.dedent("""\
             from odoo import fields, models
 
             class CrmLead(models.Model):
                 name = fields.Char(string='Name')
-        """))
+        """)
+        )
 
         from unittest.mock import patch
 
@@ -294,12 +295,14 @@ class TestClassifyChanges:
         (tmp_path / "sale" / "__manifest__.py").write_text(
             "{'name': 'Sale', 'version': '17.0.1.0.0'}"
         )
-        (module_dir / "sale.py").write_text(textwrap.dedent("""\
+        (module_dir / "sale.py").write_text(
+            textwrap.dedent("""\
             from odoo import fields, models
 
             class SaleOrder(models.Model):
                 name = fields.Char(string='Name', required=True)
-        """))
+        """)
+        )
 
         from unittest.mock import patch
 
@@ -323,7 +326,8 @@ class TestClassifyChanges:
         (tmp_path / "sale" / "__manifest__.py").write_text(
             "{'name': 'Sale', 'version': '17.0.1.0.0'}"
         )
-        (module_dir / "sale.py").write_text(textwrap.dedent("""\
+        (module_dir / "sale.py").write_text(
+            textwrap.dedent("""\
             from odoo import fields, models
 
             class SaleOrder(models.Model):
@@ -331,7 +335,8 @@ class TestClassifyChanges:
 
                 def action_confirm(self):
                     return True
-        """))
+        """)
+        )
 
         from unittest.mock import patch
 
@@ -360,11 +365,15 @@ class TestExtractFieldLines:
 
     def test_no_spaces(self):
         source = "customer_code=fields.Char(string='Code')\n"
-        assert _extract_field_lines(source) == {"customer_code=fields.Char(string='Code')"}
+        assert _extract_field_lines(source) == {
+            "customer_code=fields.Char(string='Code')"
+        }
 
     def test_many2one(self):
         source = "    partner_id = fields.Many2one('res.partner')\n"
-        assert _extract_field_lines(source) == {"partner_id = fields.Many2one('res.partner')"}
+        assert _extract_field_lines(source) == {
+            "partner_id = fields.Many2one('res.partner')"
+        }
 
     def test_no_fields(self):
         source = "def create(self, vals):\n    return super().create(vals)\n"

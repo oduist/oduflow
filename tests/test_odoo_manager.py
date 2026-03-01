@@ -4,25 +4,32 @@ from unittest.mock import MagicMock, patch
 
 from oduflow.docker_ops import system_ops, env_ops, odoo_ops
 from oduflow.errors import ConflictError, NotFoundError, PrerequisiteNotMetError
-from oduflow.settings import Settings
+from oduflow.settings import Settings, TeamSettings
 
-TEST_SETTINGS = Settings(
-    external_host="localhost",
+TEST_TEAM = TeamSettings(
+    team_id="1",
+    data_dir="/tmp/flow-test",
+    port_registry_path="/tmp/flow-test/ports.json",
     port_range_start=50000,
     port_range_end=50100,
-    data_dir="/tmp/flow-test",
+)
+
+TEST_SETTINGS = Settings(
+    base_data_dir="/tmp/flow-test",
     db_user="odoo",
     db_password="odoo",
-    port_registry_path="/tmp/flow-test/ports.json",
     etc_dir="/tmp/flow-test/etc",
+    teams={"1": TEST_TEAM},
 )
 
 
 @pytest.fixture
 def mock_docker_client():
-    with patch("oduflow.docker_ops.system_ops.get_client") as sys_mock, \
-         patch("oduflow.docker_ops.env_ops.get_client") as env_mock, \
-         patch("oduflow.docker_ops.odoo_ops.get_client") as odoo_mock:
+    with (
+        patch("oduflow.docker_ops.system_ops.get_client") as sys_mock,
+        patch("oduflow.docker_ops.env_ops.get_client") as env_mock,
+        patch("oduflow.docker_ops.odoo_ops.get_client") as odoo_mock,
+    ):
         client_instance = MagicMock()
         sys_mock.return_value = client_instance
         env_mock.return_value = client_instance
@@ -58,7 +65,9 @@ class TestInitSystem:
 
     @patch("oduflow.docker_ops.system_ops._db_exists", return_value=True)
     @patch("oduflow.docker_ops.system_ops._wait_pg_ready")
-    def test_init_system_already_initialized(self, mock_pg, mock_db_exists, mock_docker_client):
+    def test_init_system_already_initialized(
+        self, mock_pg, mock_db_exists, mock_docker_client
+    ):
         mock_docker_client.networks.get.return_value = MagicMock()
         mock_docker_client.volumes.get.return_value = MagicMock()
         db_container = MagicMock()
@@ -77,7 +86,7 @@ class TestDestroySystem:
         container.name = "oduflow-main-odoo"
         mock_docker_client.containers.list.return_value = [container]
 
-        with pytest.raises(ConflictError, match="Active environments exist"):
+        with pytest.raises(ConflictError, match="Active environments"):
             system_ops.destroy_system(TEST_SETTINGS)
 
     def test_destroy_clean(self, mock_docker_client):
@@ -111,10 +120,16 @@ class TestDestroySystem:
 
 
 class TestCreateEnvironment:
-    @patch("oduflow.extra_addons.generate_odoo_conf", return_value="/tmp/flow-test/workspaces/feature-payments/odoo.conf")
+    @patch(
+        "oduflow.extra_addons.generate_odoo_conf",
+        return_value="/tmp/flow-test/workspaces/feature-payments/odoo.conf",
+    )
     @patch("oduflow.docker_ops.env_ops._copy_file_to_container")
     @patch("oduflow.docker_ops.env_ops._create_pg_role")
-    @patch("oduflow.docker_ops.env_ops.create_credentials", return_value={"pg_user": "u_1_feature-payments", "pg_password": "test-pw"})
+    @patch(
+        "oduflow.docker_ops.env_ops.create_credentials",
+        return_value={"pg_user": "u_1_feature-payments", "pg_password": "test-pw"},
+    )
     @patch("oduflow.docker_ops.env_ops._ensure_system_ready")
     @patch("oduflow.docker_ops.env_ops.get_odoo_uid_gid", return_value="100:101")
     @patch("oduflow.docker_ops.env_ops._exec_sql")
@@ -126,13 +141,37 @@ class TestCreateEnvironment:
     @patch("oduflow.docker_ops.env_ops.os.chmod")
     @patch("oduflow.docker_ops.env_ops.os.makedirs")
     @patch("oduflow.docker_ops.env_ops.os.path.exists", return_value=False)
-    def test_create(self, mock_exists, mock_makedirs, mock_chmod, mock_run, mock_alloc, mock_used, mock_mount, mock_db_exists, mock_sql, mock_uid_gid, mock_ready, mock_creds, mock_role, mock_copy_conf, mock_gen_conf, mock_docker_client):
+    def test_create(
+        self,
+        mock_exists,
+        mock_makedirs,
+        mock_chmod,
+        mock_run,
+        mock_alloc,
+        mock_used,
+        mock_mount,
+        mock_db_exists,
+        mock_sql,
+        mock_uid_gid,
+        mock_ready,
+        mock_creds,
+        mock_role,
+        mock_copy_conf,
+        mock_gen_conf,
+        mock_docker_client,
+    ):
         mock_odoo = MagicMock()
         mock_odoo.exec_run.return_value = (0, b"OK")
         mock_docker_client.containers.run.return_value = mock_odoo
         mock_docker_client.containers.get.side_effect = docker.errors.NotFound("nf")
 
-        result = env_ops.create_environment(TEST_SETTINGS, "feature/payments", "https://github.com/org/repo.git", "odoo:15.0")
+        result = env_ops.create_environment(
+            TEST_SETTINGS,
+            TEST_TEAM,
+            "feature/payments",
+            "https://github.com/org/repo.git",
+            "odoo:15.0",
+        )
 
         assert result["url"] == "http://localhost:50000"
         assert result["database"] == "oduflow_1_feature-payments"
@@ -145,28 +184,51 @@ class TestCreateEnvironment:
 
     @patch("oduflow.docker_ops.env_ops._db_exists", return_value=True)
     @patch("oduflow.docker_ops.env_ops._ensure_system_ready")
-    def test_create_already_exists(self, mock_ready, mock_db_exists, mock_docker_client):
+    def test_create_already_exists(
+        self, mock_ready, mock_db_exists, mock_docker_client
+    ):
         existing = MagicMock()
         existing.status = "running"
         existing.ports = {"8069/tcp": [{"HostPort": "50000"}]}
         mock_docker_client.containers.get.return_value = existing
 
         with pytest.raises(ConflictError, match="already exists"):
-            env_ops.create_environment(TEST_SETTINGS, "main", "https://github.com/org/repo.git", "odoo:15.0")
+            env_ops.create_environment(
+                TEST_SETTINGS,
+                TEST_TEAM,
+                "main",
+                "https://github.com/org/repo.git",
+                "odoo:15.0",
+            )
 
     @patch("oduflow.docker_ops.env_ops._db_exists", return_value=True)
     @patch("oduflow.docker_ops.env_ops._ensure_system_ready")
-    def test_create_system_not_ready(self, mock_ready, mock_db_exists, mock_docker_client):
-        mock_ready.side_effect = PrerequisiteNotMetError("flow-db not found. Run init_system first.")
+    def test_create_system_not_ready(
+        self, mock_ready, mock_db_exists, mock_docker_client
+    ):
+        mock_ready.side_effect = PrerequisiteNotMetError(
+            "flow-db not found. Run init_system first."
+        )
 
         with pytest.raises(PrerequisiteNotMetError, match="init_system"):
-            env_ops.create_environment(TEST_SETTINGS, "main", "https://github.com/org/repo.git", "odoo:15.0")
+            env_ops.create_environment(
+                TEST_SETTINGS,
+                TEST_TEAM,
+                "main",
+                "https://github.com/org/repo.git",
+                "odoo:15.0",
+            )
 
-
-    @patch("oduflow.extra_addons.generate_odoo_conf", return_value="/tmp/flow-test/workspaces/feature-no-tpl/odoo.conf")
+    @patch(
+        "oduflow.extra_addons.generate_odoo_conf",
+        return_value="/tmp/flow-test/workspaces/feature-no-tpl/odoo.conf",
+    )
     @patch("oduflow.docker_ops.env_ops._copy_file_to_container")
     @patch("oduflow.docker_ops.env_ops._create_pg_role")
-    @patch("oduflow.docker_ops.env_ops.create_credentials", return_value={"pg_user": "u_1_feature-no-tpl", "pg_password": "test-pw"})
+    @patch(
+        "oduflow.docker_ops.env_ops.create_credentials",
+        return_value={"pg_user": "u_1_feature-no-tpl", "pg_password": "test-pw"},
+    )
     @patch("oduflow.docker_ops.env_ops._ensure_system_ready")
     @patch("oduflow.docker_ops.env_ops.get_odoo_uid_gid", return_value="100:101")
     @patch("oduflow.docker_ops.env_ops._exec_sql")
@@ -178,13 +240,38 @@ class TestCreateEnvironment:
     @patch("oduflow.docker_ops.env_ops.os.chmod")
     @patch("oduflow.docker_ops.env_ops.os.makedirs")
     @patch("oduflow.docker_ops.env_ops.os.path.exists", return_value=False)
-    def test_create_no_template(self, mock_exists, mock_makedirs, mock_chmod, mock_run, mock_alloc, mock_used, mock_mount, mock_db_exists, mock_sql, mock_uid_gid, mock_ready, mock_creds, mock_role, mock_copy_conf, mock_gen_conf, mock_docker_client):
+    def test_create_no_template(
+        self,
+        mock_exists,
+        mock_makedirs,
+        mock_chmod,
+        mock_run,
+        mock_alloc,
+        mock_used,
+        mock_mount,
+        mock_db_exists,
+        mock_sql,
+        mock_uid_gid,
+        mock_ready,
+        mock_creds,
+        mock_role,
+        mock_copy_conf,
+        mock_gen_conf,
+        mock_docker_client,
+    ):
         mock_odoo = MagicMock()
         mock_odoo.exec_run.return_value = (0, b"OK")
         mock_docker_client.containers.run.return_value = mock_odoo
         mock_docker_client.containers.get.side_effect = docker.errors.NotFound("nf")
 
-        result = env_ops.create_environment(TEST_SETTINGS, "feature/no-tpl", "https://github.com/org/repo.git", "odoo:15.0", template_name=None)
+        result = env_ops.create_environment(
+            TEST_SETTINGS,
+            TEST_TEAM,
+            "feature/no-tpl",
+            "https://github.com/org/repo.git",
+            "odoo:15.0",
+            template_name=None,
+        )
 
         assert result["url"] == "http://localhost:50001"
         assert result["database"] == "oduflow_1_feature-no-tpl"
@@ -203,23 +290,42 @@ class TestCreateEnvironment:
 
 class TestDeleteEnvironment:
     @patch("oduflow.docker_ops.env_ops._drop_pg_role")
-    @patch("oduflow.docker_ops.env_ops.load_credentials", return_value={"pg_user": "u_1_feature-payments", "pg_password": "test-pw"})
+    @patch(
+        "oduflow.docker_ops.env_ops.load_credentials",
+        return_value={"pg_user": "u_1_feature-payments", "pg_password": "test-pw"},
+    )
     @patch("oduflow.docker_ops.env_ops.release_port")
     @patch("oduflow.docker_ops.env_ops._exec_sql")
     @patch("oduflow.docker_ops.env_ops.shutil.rmtree")
-    @patch("oduflow.docker_ops.env_ops.os.path.exists", side_effect=lambda p: ".protected" not in p)
-    def test_delete(self, mock_exists, mock_rmtree, mock_sql, mock_release, mock_load_creds, mock_drop_role, mock_docker_client):
+    @patch(
+        "oduflow.docker_ops.env_ops.os.path.exists",
+        side_effect=lambda p: ".protected" not in p,
+    )
+    def test_delete(
+        self,
+        mock_exists,
+        mock_rmtree,
+        mock_sql,
+        mock_release,
+        mock_load_creds,
+        mock_drop_role,
+        mock_docker_client,
+    ):
         container = MagicMock()
         mock_docker_client.containers.get.return_value = container
 
-        env_ops.delete_environment(TEST_SETTINGS, "feature/payments")
+        env_ops.delete_environment(TEST_SETTINGS, TEST_TEAM, "feature/payments")
 
         container.stop.assert_called_once()
         container.remove.assert_called_once()
-        mock_drop_role.assert_called_once_with(mock_docker_client, TEST_SETTINGS, "u_1_feature-payments")
+        mock_drop_role.assert_called_once_with(
+            mock_docker_client, TEST_SETTINGS, "u_1_feature-payments"
+        )
         mock_sql.assert_called_once()
         mock_rmtree.assert_called_once()
-        mock_release.assert_called_once_with(TEST_SETTINGS.port_registry_path, "feature/payments")
+        mock_release.assert_called_once_with(
+            TEST_TEAM.port_registry_path, "feature/payments"
+        )
 
 
 class TestRestartEnvironment:
@@ -244,7 +350,7 @@ class TestStopEnvironment:
         container = MagicMock()
         mock_docker_client.containers.get.return_value = container
 
-        result = env_ops.stop_environment(TEST_SETTINGS, "main")
+        result = env_ops.stop_environment(TEST_SETTINGS, TEST_TEAM, "main")
 
         assert "oduflow-main-odoo" in result["stopped"]
         container.stop.assert_called_once()
@@ -270,7 +376,10 @@ class TestStartEnvironment:
 
 
 class TestGetEnvironmentInfo:
-    @patch("oduflow.docker_ops.env_ops.load_credentials", return_value={"pg_user": "u_1_main", "pg_password": "test-pw"})
+    @patch(
+        "oduflow.docker_ops.env_ops.load_credentials",
+        return_value={"pg_user": "u_1_main", "pg_password": "test-pw"},
+    )
     def test_all_running(self, mock_load_creds, mock_docker_client):
         odoo = MagicMock()
         odoo.status = "running"
@@ -291,7 +400,7 @@ class TestGetEnvironmentInfo:
 
         mock_docker_client.containers.get.side_effect = get_container
 
-        result = env_ops.get_environment_info(TEST_SETTINGS, "main")
+        result = env_ops.get_environment_info(TEST_SETTINGS, TEST_TEAM, "main")
 
         assert result["all_running"] is True
         assert result["db"]["name"] == "oduflow-db"
@@ -308,7 +417,9 @@ class TestInstallModules:
         container.exec_run.return_value = (0, b"OK")
         mock_docker_client.containers.get.return_value = container
 
-        result = odoo_ops.install_odoo_modules(TEST_SETTINGS, "main", "sale", "crm")
+        result = odoo_ops.install_odoo_modules(
+            TEST_SETTINGS, TEST_TEAM, "main", "sale", "crm"
+        )
 
         assert result["exit_code"] == 0
         args = container.exec_run.call_args[0][0]
@@ -322,7 +433,7 @@ class TestUpgradeModules:
         container.exec_run.return_value = (0, b"OK")
         mock_docker_client.containers.get.return_value = container
 
-        result = odoo_ops.upgrade_odoo_modules(TEST_SETTINGS, "main", "sale")
+        result = odoo_ops.upgrade_odoo_modules(TEST_SETTINGS, TEST_TEAM, "main", "sale")
 
         assert result["exit_code"] == 0
         args = container.exec_run.call_args[0][0]
@@ -331,13 +442,18 @@ class TestUpgradeModules:
 
 
 class TestRunEnvironmentTests:
-    @patch("oduflow.docker_ops.odoo_ops.load_credentials", return_value={"pg_user": "u_1_main", "pg_password": "test-pw"})
+    @patch(
+        "oduflow.docker_ops.odoo_ops.load_credentials",
+        return_value={"pg_user": "u_1_main", "pg_password": "test-pw"},
+    )
     def test_run(self, mock_load_creds, mock_docker_client):
         container = MagicMock()
         container.exec_run.return_value = (0, b"All tests passed")
         mock_docker_client.containers.get.return_value = container
 
-        output = odoo_ops.run_environment_tests(TEST_SETTINGS, "main", "base")
+        output = odoo_ops.run_environment_tests(
+            TEST_SETTINGS, TEST_TEAM, "main", "base"
+        )
 
         assert "All tests passed" in output
         args = container.exec_run.call_args[0][0]

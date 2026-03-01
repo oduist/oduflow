@@ -4,36 +4,48 @@ from unittest.mock import MagicMock, patch
 
 from oduflow.docker_ops import service_ops, system_ops
 from oduflow.errors import ConflictError, NotFoundError, PrerequisiteNotMetError
-from oduflow.settings import Settings
+from oduflow.settings import Settings, TeamSettings
 
-TEST_SETTINGS = Settings(
-    external_host="localhost",
+TEST_TEAM = TeamSettings(
+    team_id="1",
+    data_dir="/tmp/flow-test",
+    port_registry_path="/tmp/flow-test/ports.json",
     port_range_start=50000,
     port_range_end=50100,
-    data_dir="/tmp/flow-test",
+)
+
+TEST_SETTINGS = Settings(
+    base_data_dir="/tmp/flow-test",
     db_user="odoo",
     db_password="odoo",
+    teams={"1": TEST_TEAM},
+)
+
+TRAEFIK_TEAM = TeamSettings(
+    team_id="1",
+    hostname="example.com",
+    data_dir="/tmp/flow-test",
     port_registry_path="/tmp/flow-test/ports.json",
+    port_range_start=50000,
+    port_range_end=50100,
 )
 
 TRAEFIK_SETTINGS = Settings(
     routing_mode="traefik",
-    base_domain="example.com",
     acme_email="admin@example.com",
-    external_host="example.com",
-    port_range_start=50000,
-    port_range_end=50100,
-    data_dir="/tmp/flow-test",
+    base_data_dir="/tmp/flow-test",
     db_user="odoo",
     db_password="odoo",
-    port_registry_path="/tmp/flow-test/ports.json",
+    teams={"1": TRAEFIK_TEAM},
 )
 
 
 @pytest.fixture
 def mock_docker_client():
-    with patch("oduflow.docker_ops.service_ops.get_client") as svc_mock, \
-         patch("oduflow.docker_ops.system_ops.get_client") as sys_mock:
+    with (
+        patch("oduflow.docker_ops.service_ops.get_client") as svc_mock,
+        patch("oduflow.docker_ops.system_ops.get_client") as sys_mock,
+    ):
         client_instance = MagicMock()
         svc_mock.return_value = client_instance
         sys_mock.return_value = client_instance
@@ -48,7 +60,9 @@ class TestCreateService:
         mock_docker_client.containers.get.side_effect = docker.errors.NotFound("nf")
         mock_docker_client.containers.run.return_value = MagicMock()
 
-        result = service_ops.create_service(TEST_SETTINGS, "redis", "redis:7", 6379)
+        result = service_ops.create_service(
+            TEST_SETTINGS, TEST_TEAM, "redis", "redis:7", 6379
+        )
 
         assert result["name"] == "redis"
         assert result["container_name"] == "oduflow-svc-redis"
@@ -68,15 +82,29 @@ class TestCreateService:
         mock_docker_client.containers.get.side_effect = docker.errors.NotFound("nf")
         mock_docker_client.containers.run.return_value = MagicMock()
 
-        result = service_ops.create_service(TRAEFIK_SETTINGS, "meilisearch", "getmeili/meilisearch:v1.6", 7700)
+        result = service_ops.create_service(
+            TRAEFIK_SETTINGS,
+            TRAEFIK_TEAM,
+            "meilisearch",
+            "getmeili/meilisearch:v1.6",
+            7700,
+        )
 
         assert result["url"] == "https://meilisearch.example.com"
 
         run_kwargs = mock_docker_client.containers.run.call_args
         labels = run_kwargs[1]["labels"]
         assert labels["traefik.enable"] == "true"
-        assert labels["traefik.http.routers.oduflow-svc-meilisearch.rule"] == "Host(`meilisearch.example.com`)"
-        assert labels["traefik.http.services.oduflow-svc-meilisearch.loadbalancer.server.port"] == "7700"
+        assert (
+            labels["traefik.http.routers.oduflow-svc-meilisearch.rule"]
+            == "Host(`meilisearch.example.com`)"
+        )
+        assert (
+            labels[
+                "traefik.http.services.oduflow-svc-meilisearch.loadbalancer.server.port"
+            ]
+            == "7700"
+        )
         # No port mapping in traefik mode
         assert "ports" not in run_kwargs[1]
 
@@ -86,12 +114,20 @@ class TestCreateService:
         mock_docker_client.containers.run.return_value = MagicMock()
 
         result = service_ops.create_service(
-            TRAEFIK_SETTINGS, "redis", "redis:7", 6379, hostname="my-redis.example.com"
+            TRAEFIK_SETTINGS,
+            TRAEFIK_TEAM,
+            "redis",
+            "redis:7",
+            6379,
+            hostname="my-redis.example.com",
         )
 
         assert result["url"] == "https://my-redis.example.com"
         labels = mock_docker_client.containers.run.call_args[1]["labels"]
-        assert labels["traefik.http.routers.oduflow-svc-redis.rule"] == "Host(`my-redis.example.com`)"
+        assert (
+            labels["traefik.http.routers.oduflow-svc-redis.rule"]
+            == "Host(`my-redis.example.com`)"
+        )
 
     def test_create_with_env_vars(self, mock_docker_client):
         mock_docker_client.networks.get.return_value = MagicMock()
@@ -99,7 +135,14 @@ class TestCreateService:
         mock_docker_client.containers.run.return_value = MagicMock()
 
         env = {"MEILI_MASTER_KEY": "abc123", "MEILI_ENV": "production"}
-        result = service_ops.create_service(TEST_SETTINGS, "meili", "getmeili/meilisearch:v1.6", 7700, env_vars=env)
+        service_ops.create_service(
+            TEST_SETTINGS,
+            TEST_TEAM,
+            "meili",
+            "getmeili/meilisearch:v1.6",
+            7700,
+            env_vars=env,
+        )
 
         run_kwargs = mock_docker_client.containers.run.call_args
         assert run_kwargs[1]["environment"] == env
@@ -109,7 +152,7 @@ class TestCreateService:
         mock_docker_client.containers.get.side_effect = docker.errors.NotFound("nf")
         mock_docker_client.containers.run.return_value = MagicMock()
 
-        service_ops.create_service(TEST_SETTINGS, "redis", "redis:7", 6379)
+        service_ops.create_service(TEST_SETTINGS, TEST_TEAM, "redis", "redis:7", 6379)
 
         run_kwargs = mock_docker_client.containers.run.call_args
         assert "environment" not in run_kwargs[1]
@@ -121,7 +164,9 @@ class TestCreateService:
         mock_docker_client.containers.get.return_value = existing
 
         with pytest.raises(ConflictError, match="already exists"):
-            service_ops.create_service(TEST_SETTINGS, "redis", "redis:7", 6379)
+            service_ops.create_service(
+                TEST_SETTINGS, TEST_TEAM, "redis", "redis:7", 6379
+            )
 
         mock_docker_client.containers.run.assert_not_called()
 
@@ -129,7 +174,9 @@ class TestCreateService:
         mock_docker_client.networks.get.side_effect = docker.errors.NotFound("nf")
 
         with pytest.raises(PrerequisiteNotMetError, match="init_system"):
-            service_ops.create_service(TEST_SETTINGS, "redis", "redis:7", 6379)
+            service_ops.create_service(
+                TEST_SETTINGS, TEST_TEAM, "redis", "redis:7", 6379
+            )
 
         mock_docker_client.containers.run.assert_not_called()
 
@@ -171,7 +218,7 @@ class TestListServices:
         }
         mock_docker_client.containers.list.return_value = [container]
 
-        result = service_ops.list_services(TEST_SETTINGS)
+        result = service_ops.list_services(TEST_SETTINGS, TEST_TEAM)
 
         assert len(result) == 1
         svc = result[0]
@@ -199,7 +246,7 @@ class TestListServices:
         container.attrs = {"Config": {"Env": []}}
         mock_docker_client.containers.list.return_value = [container]
 
-        result = service_ops.list_services(TRAEFIK_SETTINGS)
+        result = service_ops.list_services(TRAEFIK_SETTINGS, TRAEFIK_TEAM)
 
         assert len(result) == 1
         svc = result[0]
@@ -209,7 +256,7 @@ class TestListServices:
     def test_list_empty(self, mock_docker_client):
         mock_docker_client.containers.list.return_value = []
 
-        result = service_ops.list_services(TEST_SETTINGS)
+        result = service_ops.list_services(TEST_SETTINGS, TEST_TEAM)
 
         assert result == []
 
@@ -219,7 +266,7 @@ class TestListServices:
         container.labels = {"oduflow.managed": "true", "oduflow.branch": "main"}
         mock_docker_client.containers.list.return_value = [container]
 
-        result = service_ops.list_services(TEST_SETTINGS)
+        result = service_ops.list_services(TEST_SETTINGS, TEST_TEAM)
 
         assert result == []
 
@@ -246,7 +293,7 @@ class TestListServices:
         }
         mock_docker_client.containers.list.return_value = [container]
 
-        result = service_ops.list_services(TEST_SETTINGS)
+        result = service_ops.list_services(TEST_SETTINGS, TEST_TEAM)
 
         env = result[0]["env_vars"]
         assert env == {"MEILI_MASTER_KEY": "abc", "MEILI_ENV": "production"}
@@ -267,7 +314,7 @@ class TestListServices:
         }
         mock_docker_client.containers.list.return_value = [container]
 
-        result = service_ops.list_services(TEST_SETTINGS)
+        result = service_ops.list_services(TEST_SETTINGS, TEST_TEAM)
 
         assert result[0]["image"] == "unknown"
 
@@ -284,7 +331,7 @@ class TestListServices:
         }
         mock_docker_client.containers.list.return_value = [container]
 
-        result = service_ops.list_services(TEST_SETTINGS)
+        result = service_ops.list_services(TEST_SETTINGS, TEST_TEAM)
 
         svc = result[0]
         assert svc["port"] == 6379
@@ -298,7 +345,9 @@ class TestUpdateService:
         container.image.tags = ["redis:7"]
         container.labels = {"oduflow.managed": "true", "oduflow.service": "redis"}
         container.attrs = {
-            "NetworkSettings": {"Ports": {"6379/tcp": [{"HostIp": "0.0.0.0", "HostPort": "6379"}]}},
+            "NetworkSettings": {
+                "Ports": {"6379/tcp": [{"HostIp": "0.0.0.0", "HostPort": "6379"}]}
+            },
             "Config": {"Env": ["REDIS_PASSWORD=secret", "PATH=/usr/bin", "HOME=/root"]},
         }
 
@@ -311,7 +360,7 @@ class TestUpdateService:
         mock_docker_client.networks.get.return_value = MagicMock()
         mock_docker_client.containers.run.return_value = MagicMock()
 
-        result = service_ops.update_service(TEST_SETTINGS, "redis")
+        result = service_ops.update_service(TEST_SETTINGS, TEST_TEAM, "redis")
 
         assert result["name"] == "redis"
         assert result["image"] == "redis:7"
@@ -346,15 +395,20 @@ class TestUpdateService:
         mock_docker_client.networks.get.return_value = MagicMock()
         mock_docker_client.containers.run.return_value = MagicMock()
 
-        result = service_ops.update_service(TRAEFIK_SETTINGS, "meili")
+        result = service_ops.update_service(TRAEFIK_SETTINGS, TRAEFIK_TEAM, "meili")
 
         assert result["url"] == "https://meili.example.com"
-        mock_docker_client.images.pull.assert_called_once_with("getmeili/meilisearch:v1.6")
+        mock_docker_client.images.pull.assert_called_once_with(
+            "getmeili/meilisearch:v1.6"
+        )
 
         # Verify traefik labels are restored
         run_kwargs = mock_docker_client.containers.run.call_args
         labels = run_kwargs[1]["labels"]
-        assert labels["traefik.http.routers.oduflow-svc-meili.rule"] == "Host(`meili.example.com`)"
+        assert (
+            labels["traefik.http.routers.oduflow-svc-meili.rule"]
+            == "Host(`meili.example.com`)"
+        )
 
     def test_update_no_env_vars(self, mock_docker_client):
         """When the container has no custom env vars, env_vars=None is passed to create."""
@@ -362,7 +416,9 @@ class TestUpdateService:
         container.image.tags = ["redis:7"]
         container.labels = {"oduflow.managed": "true", "oduflow.service": "redis"}
         container.attrs = {
-            "NetworkSettings": {"Ports": {"6379/tcp": [{"HostIp": "0.0.0.0", "HostPort": "6379"}]}},
+            "NetworkSettings": {
+                "Ports": {"6379/tcp": [{"HostIp": "0.0.0.0", "HostPort": "6379"}]}
+            },
             "Config": {"Env": ["PATH=/usr/bin", "HOME=/root"]},
         }
 
@@ -373,7 +429,7 @@ class TestUpdateService:
         mock_docker_client.networks.get.return_value = MagicMock()
         mock_docker_client.containers.run.return_value = MagicMock()
 
-        service_ops.update_service(TEST_SETTINGS, "redis")
+        service_ops.update_service(TEST_SETTINGS, TEST_TEAM, "redis")
 
         run_kwargs = mock_docker_client.containers.run.call_args
         assert "environment" not in run_kwargs[1]
@@ -382,7 +438,7 @@ class TestUpdateService:
         mock_docker_client.containers.get.side_effect = docker.errors.NotFound("nf")
 
         with pytest.raises(NotFoundError, match="Service 'redis' not found"):
-            service_ops.update_service(TEST_SETTINGS, "redis")
+            service_ops.update_service(TEST_SETTINGS, TEST_TEAM, "redis")
 
     def test_update_image_fallback_to_config(self, mock_docker_client):
         """When image.tags is empty, fall back to Config.Image."""
@@ -390,7 +446,9 @@ class TestUpdateService:
         container.image.tags = []
         container.labels = {"oduflow.managed": "true", "oduflow.service": "redis"}
         container.attrs = {
-            "NetworkSettings": {"Ports": {"6379/tcp": [{"HostIp": "0.0.0.0", "HostPort": "6379"}]}},
+            "NetworkSettings": {
+                "Ports": {"6379/tcp": [{"HostIp": "0.0.0.0", "HostPort": "6379"}]}
+            },
             "Config": {"Image": "redis:7-alpine", "Env": []},
         }
 
@@ -401,7 +459,7 @@ class TestUpdateService:
         mock_docker_client.networks.get.return_value = MagicMock()
         mock_docker_client.containers.run.return_value = MagicMock()
 
-        result = service_ops.update_service(TEST_SETTINGS, "redis")
+        result = service_ops.update_service(TEST_SETTINGS, TEST_TEAM, "redis")
 
         assert result["image"] == "redis:7-alpine"
         mock_docker_client.images.pull.assert_called_once_with("redis:7-alpine")
@@ -410,7 +468,9 @@ class TestUpdateService:
 class TestGetServiceLogs:
     def test_logs(self, mock_docker_client):
         container = MagicMock()
-        container.logs.return_value = b"2025-01-01T00:00:00Z log line 1\n2025-01-01T00:00:01Z log line 2"
+        container.logs.return_value = (
+            b"2025-01-01T00:00:00Z log line 1\n2025-01-01T00:00:01Z log line 2"
+        )
         mock_docker_client.containers.get.return_value = container
 
         output = service_ops.get_service_logs(TEST_SETTINGS, "redis", 50)

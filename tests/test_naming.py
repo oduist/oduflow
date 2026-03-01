@@ -1,4 +1,12 @@
-from oduflow.naming import slugify_branch, get_db_name, get_resource_name, get_template_db_name, get_workspace_path, get_repo_path, get_filestore_paths
+from oduflow.naming import (
+    slugify_branch,
+    get_db_name,
+    get_resource_name,
+    get_template_db_name,
+    get_workspace_path,
+    get_repo_path,
+    get_filestore_paths,
+)
 
 
 class TestSlugifyBranch:
@@ -41,11 +49,13 @@ class TestGetDbName:
     def test_complex(self):
         assert get_db_name("hotfix/CRM-123/fix") == "oduflow_1_hotfix-crm-123-fix"
 
-    def test_with_instance_id(self):
-        assert get_db_name("main", instance_id="2") == "oduflow_2_main"
+    def test_with_team_id(self):
+        assert get_db_name("main", team_id="2") == "oduflow_2_main"
 
-    def test_feature_with_instance_id(self):
-        assert get_db_name("feature/payments", instance_id="3") == "oduflow_3_feature-payments"
+    def test_feature_with_team_id(self):
+        assert (
+            get_db_name("feature/payments", team_id="3") == "oduflow_3_feature-payments"
+        )
 
 
 class TestGetResourceName:
@@ -53,7 +63,10 @@ class TestGetResourceName:
         assert get_resource_name("main", "odoo") == "oduflow-main-odoo"
 
     def test_slash_branch(self):
-        assert get_resource_name("feature/payments", "odoo") == "oduflow-feature-payments-odoo"
+        assert (
+            get_resource_name("feature/payments", "odoo")
+            == "oduflow-feature-payments-odoo"
+        )
 
     def test_custom_prefix(self):
         assert get_resource_name("main", "odoo", prefix="test-") == "test-main-odoo"
@@ -64,7 +77,10 @@ class TestGetWorkspacePath:
         assert get_workspace_path("main", "/tmp/ws") == "/tmp/ws/main"
 
     def test_slash(self):
-        assert get_workspace_path("feature/payments", "/tmp/ws") == "/tmp/ws/feature-payments"
+        assert (
+            get_workspace_path("feature/payments", "/tmp/ws")
+            == "/tmp/ws/feature-payments"
+        )
 
 
 class TestGetRepoPath:
@@ -72,7 +88,10 @@ class TestGetRepoPath:
         assert get_repo_path("main", "/tmp/ws") == "/tmp/ws/main/repo"
 
     def test_slash(self):
-        assert get_repo_path("feature/payments", "/tmp/ws") == "/tmp/ws/feature-payments/repo"
+        assert (
+            get_repo_path("feature/payments", "/tmp/ws")
+            == "/tmp/ws/feature-payments/repo"
+        )
 
 
 class TestGetFilestorePaths:
@@ -96,13 +115,18 @@ class TestGetTemplateDbName:
         assert get_template_db_name("prod") == "oduflow_template_1_prod"
 
     def test_custom_name(self):
-        assert get_template_db_name("myproject-v17") == "oduflow_template_1_myproject-v17"
+        assert (
+            get_template_db_name("myproject-v17") == "oduflow_template_1_myproject-v17"
+        )
 
     def test_slash(self):
         assert get_template_db_name("client/prod") == "oduflow_template_1_client-prod"
 
-    def test_with_instance_id(self):
-        assert get_template_db_name("prod", instance_id="2") == "oduflow_template_2_prod"
+    def test_with_team_id(self):
+        assert get_template_db_name("prod", team_id="2") == "oduflow_template_2_prod"
 
-    def test_named_with_instance_id(self):
-        assert get_template_db_name("myproject-v17", instance_id="3") == "oduflow_template_3_myproject-v17"
+    def test_named_with_team_id(self):
+        assert (
+            get_template_db_name("myproject-v17", team_id="3")
+            == "oduflow_template_3_myproject-v17"
+        )

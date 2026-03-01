@@ -48,14 +48,17 @@ def _build_params():
 @pytest.mark.integration
 @pytest.mark.parametrize("scenario", _build_params())
 def test_scenario(scenario, live_environment):
-    settings = live_environment
-    with patch("oduflow.server._get_settings", return_value=settings):
+    settings, team = live_environment
+    with (
+        patch("oduflow.server._get_settings", return_value=settings),
+        patch("oduflow.server._resolve_team", return_value=team),
+    ):
         if "cli" in scenario:
-            result = call_cli(scenario["cli"], settings=settings, **scenario.get("args", {}))
+            result = call_cli(
+                scenario["cli"], settings=settings, **scenario.get("args", {})
+            )
         else:
             result = call_tool(scenario["tool"], **scenario.get("args", {}))
     assert isinstance(result, str), f"Expected str, got {type(result)}"
     for expected in scenario.get("expect_contains", []):
-        assert expected in result, (
-            f"Expected '{expected}' in result.\nGot: {result}"
-        )
+        assert expected in result, f"Expected '{expected}' in result.\nGot: {result}"

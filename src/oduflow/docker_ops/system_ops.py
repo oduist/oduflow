@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import gzip
 import json
 import logging
@@ -12,9 +14,14 @@ import docker
 from docker import DockerClient
 
 from oduflow.docker_ops.client import chown_recursive, get_client, get_odoo_uid_gid
-from oduflow.errors import ConflictError, ExternalCommandError, NotFoundError, PrerequisiteNotMetError
+from oduflow.errors import (
+    ConflictError,
+    ExternalCommandError,
+    NotFoundError,
+    PrerequisiteNotMetError,
+)
 from oduflow.naming import get_db_name, get_template_db_name
-from oduflow.settings import Settings
+from oduflow.settings import Settings, TeamSettings
 
 logger = logging.getLogger("oduflow")
 
@@ -22,8 +29,11 @@ _PACKAGE_ROOT = pathlib.Path(__file__).resolve().parents[1]
 _BUNDLED_PG_CONF = _PACKAGE_ROOT / "templates" / "postgresql.conf"
 _BUNDLED_ODOO_CONF = _PACKAGE_ROOT / "templates" / "odoo.conf"
 _BUNDLED_SANITIZE_DIR = _PACKAGE_ROOT / "templates"
+
+
 def _get_etc_dir() -> pathlib.Path:
     from oduflow.settings import Settings
+
     return pathlib.Path(Settings._default_etc_dir())
 
 
@@ -35,11 +45,16 @@ def _file_size_mb(path: str) -> float:
         return 0.0
 
 
-def _update_template_sizes(settings: Settings, template_name: str, metadata: dict | None = None) -> dict:
+def _update_template_sizes(
+    team: TeamSettings,
+    settings: Settings,
+    template_name: str,
+    metadata: dict | None = None,
+) -> dict:
     """Compute filestore/dump sizes and persist them into template metadata."""
     from oduflow.docker_ops.env_ops import _dir_size_mb
 
-    metadata_path = settings.get_template_metadata_path(template_name)
+    metadata_path = team.get_template_metadata_path(template_name)
     if metadata is None:
         if os.path.isfile(metadata_path):
             with open(metadata_path) as f:
@@ -47,8 +62,8 @@ def _update_template_sizes(settings: Settings, template_name: str, metadata: dic
         else:
             metadata = {}
 
-    fs_path = settings.get_template_filestore_path(template_name)
-    dump_path = settings.get_template_sql_path(template_name)
+    fs_path = team.get_template_filestore_path(template_name)
+    dump_path = team.get_template_sql_path(template_name)
     fs_size = round(_dir_size_mb(fs_path), 1) if os.path.isdir(fs_path) else 0.0
     metadata["filestore_size_mb"] = fs_size
     metadata["dump_size_mb"] = round(_file_size_mb(dump_path), 1)
@@ -65,7 +80,10 @@ def _normalize_extra_addons(raw_addons) -> dict[str, str]:
     if isinstance(raw_addons, dict):
         return raw_addons
     if isinstance(raw_addons, list):
-        logger.warning("Legacy list format for extra_addons (no branch info), skipping: %s", raw_addons)
+        logger.warning(
+            "Legacy list format for extra_addons (no branch info), skipping: %s",
+            raw_addons,
+        )
         return {}
     return {}
 
@@ -87,6 +105,43 @@ def _resolve_instance_conf(name: str, data_dir: str) -> pathlib.Path:
     return _PACKAGE_ROOT / "templates" / name
 
 
+def _write_traefik_dynamic_config(settings: Settings, config_path: str) -> None:
+    """Generate traefik dynamic config that routes each team's hostname to oduflow."""
+    routers: dict = {}
+    for team_id, team in settings.teams.items():
+        if not team.hostname:
+            continue
+        router_name = f"oduflow-team-{team_id}"
+        routers[router_name] = {
+            "rule": f"Host(`{team.hostname}`)",
+            "service": "oduflow",
+            "entryPoints": ["websecure"],
+            "tls": {"certResolver": "letsencrypt"},
+        }
+
+    if not routers:
+        return
+
+    config = {
+        "http": {
+            "routers": routers,
+            "services": {
+                "oduflow": {
+                    "loadBalancer": {
+                        "servers": [
+                            {"url": f"http://host.docker.internal:{settings.port}"}
+                        ]
+                    }
+                }
+            },
+        }
+    }
+
+    with open(config_path, "w") as f:
+        json.dump(config, f, indent=2)
+    logger.info("Traefik dynamic config written to %s", config_path)
+
+
 def _ensure_traefik(client: DockerClient, settings: Settings) -> None:
     if settings.routing_mode != "traefik":
         return
@@ -99,6 +154,9 @@ def _ensure_traefik(client: DockerClient, settings: Settings) -> None:
         client.volumes.create(settings.traefik_acme_volume, labels=system_labels)
         logger.info("Created volume %s", settings.traefik_acme_volume)
 
+    traefik_config = "/etc/oduflow/traefik.json"
+    _write_traefik_dynamic_config(settings, traefik_config)
+
     try:
         t = client.containers.get(settings.traefik_container)
         if t.status != "running":
@@ -107,11 +165,8 @@ def _ensure_traefik(client: DockerClient, settings: Settings) -> None:
     except docker.errors.NotFound:
         pass
 
-    dynamic_dir = "/etc/oduflow/traefik"
-    os.makedirs(dynamic_dir, exist_ok=True)
-
     client.containers.run(
-        "traefik:v3.6",
+        "traefik:v3",
         name=settings.traefik_container,
         detach=True,
         network=settings.shared_network,
@@ -120,23 +175,22 @@ def _ensure_traefik(client: DockerClient, settings: Settings) -> None:
         volumes={
             "/var/run/docker.sock": {"bind": "/var/run/docker.sock", "mode": "ro"},
             settings.traefik_acme_volume: {"bind": "/acme", "mode": "rw"},
-            dynamic_dir: {"bind": "/etc/traefik/dynamic/", "mode": "ro"},
+            traefik_config: {"bind": "/etc/traefik/dynamic/oduflow.json", "mode": "ro"},
         },
         command=[
             "--log.level=INFO",
             "--providers.docker=true",
             "--providers.docker.exposedbydefault=false",
             f"--providers.docker.network={settings.shared_network}",
-            "--providers.file.directory=/etc/traefik/dynamic/",
+            "--providers.file.filename=/etc/traefik/dynamic/oduflow.json",
             "--providers.file.watch=true",
             "--entrypoints.web.address=:80",
             "--entrypoints.websecure.address=:443",
-            "--entrypoints.web.http.redirections.entrypoint.to=websecure",
-            "--entrypoints.web.http.redirections.entrypoint.scheme=https",
-            "--certificatesresolvers.le.acme.httpchallenge=true",
-            "--certificatesresolvers.le.acme.httpchallenge.entrypoint=web",
-            f"--certificatesresolvers.le.acme.email={settings.acme_email}",
-            "--certificatesresolvers.le.acme.storage=/acme/acme.json",
+            "--entrypoints.web.http.redirections.entryPoint.to=websecure",
+            "--entrypoints.web.http.redirections.entryPoint.scheme=https",
+            "--certificatesresolvers.letsencrypt.acme.httpchallenge.entrypoint=web",
+            f"--certificatesresolvers.letsencrypt.acme.email={settings.acme_email}",
+            "--certificatesresolvers.letsencrypt.acme.storage=/acme/acme.json",
         ],
         labels=system_labels,
         restart_policy={"Name": "unless-stopped"},
@@ -144,7 +198,9 @@ def _ensure_traefik(client: DockerClient, settings: Settings) -> None:
     logger.info("Created container %s", settings.traefik_container)
 
 
-def _destroy_traefik(client: DockerClient, settings: Settings, removed: list[str]) -> None:
+def _destroy_traefik(
+    client: DockerClient, settings: Settings, removed: list[str]
+) -> None:
     try:
         t = client.containers.get(settings.traefik_container)
         t.stop()
@@ -172,12 +228,12 @@ def _wait_pg_ready(client: DockerClient, settings: Settings, timeout: int = 30) 
             if exit_code2 == 0:
                 return
         time.sleep(1)
-    raise PrerequisiteNotMetError(
-        f"PostgreSQL did not become ready within {timeout}s"
-    )
+    raise PrerequisiteNotMetError(f"PostgreSQL did not become ready within {timeout}s")
 
 
-def _exec_sql(client: DockerClient, settings: Settings, sql: str, db: str = "postgres") -> str:
+def _exec_sql(
+    client: DockerClient, settings: Settings, sql: str, db: str = "postgres"
+) -> str:
     container = client.containers.get(settings.shared_db_container)
     exit_code, output = container.exec_run(
         ["psql", "-U", settings.db_user, "-d", db, "-tAc", sql]
@@ -188,10 +244,13 @@ def _exec_sql(client: DockerClient, settings: Settings, sql: str, db: str = "pos
     return result.strip()
 
 
-def _create_pg_role(client: DockerClient, settings: Settings, username: str, password: str, db_name: str) -> None:
+def _create_pg_role(
+    client: DockerClient, settings: Settings, username: str, password: str, db_name: str
+) -> None:
     safe_pw = password.replace("'", "''")
     _exec_sql(
-        client, settings,
+        client,
+        settings,
         f"DO $$ BEGIN "
         f"IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '{username}') THEN "
         f"CREATE ROLE \"{username}\" LOGIN PASSWORD '{safe_pw}'; "
@@ -201,7 +260,8 @@ def _create_pg_role(client: DockerClient, settings: Settings, username: str, pas
     # Always sync the password — the role may already exist with a stale password
     # from a previously deleted environment.
     _exec_sql(
-        client, settings,
+        client,
+        settings,
         f"ALTER ROLE \"{username}\" WITH LOGIN PASSWORD '{safe_pw}';",
     )
     _exec_sql(client, settings, f'ALTER DATABASE "{db_name}" OWNER TO "{username}";')
@@ -239,11 +299,12 @@ def _decompress_if_gzip(path: str) -> str:
     """Decompress .gz file to temporary location if needed. Return path to uncompressed file."""
     if not path.endswith(".gz"):
         return path
-    
+
     import tempfile
+
     with tempfile.NamedTemporaryFile(delete=False, suffix=".sql") as tmp:
         tmp_path = tmp.name
-    
+
     try:
         with gzip.open(path, "rb") as f_in:
             with open(tmp_path, "wb") as f_out:
@@ -271,7 +332,9 @@ def _is_text_dump(path: str) -> bool:
         return False
 
 
-def _copy_file_to_container(container: docker.models.containers.Container, src_path: str, dest_dir: str) -> None:
+def _copy_file_to_container(
+    container: docker.models.containers.Container, src_path: str, dest_dir: str
+) -> None:
     import tempfile
 
     with tempfile.NamedTemporaryFile(suffix=".tar", delete=False) as tmp:
@@ -285,7 +348,9 @@ def _copy_file_to_container(container: docker.models.containers.Container, src_p
         os.remove(tmp_path)
 
 
-def _copy_file_from_container(container: docker.models.containers.Container, container_path: str, dest_path: str) -> None:
+def _copy_file_from_container(
+    container: docker.models.containers.Container, container_path: str, dest_path: str
+) -> None:
     import tempfile
 
     chunks, _ = container.get_archive(container_path)
@@ -298,7 +363,9 @@ def _copy_file_from_container(container: docker.models.containers.Container, con
             member = tar.getmembers()[0]
             f = tar.extractfile(member)
             if f is None:
-                raise ExternalCommandError("get_archive", -1, f"Could not extract {container_path} from tar")
+                raise ExternalCommandError(
+                    "get_archive", -1, f"Could not extract {container_path} from tar"
+                )
             with open(dest_path, "wb") as out:
                 shutil.copyfileobj(f, out)
     finally:
@@ -322,9 +389,11 @@ def _extract_archive_from_container(
         extracted = 0
         with tarfile.open(tmp_path, mode="r") as tar:
             for member in tar.getmembers():
-                if not member.name.startswith(prefix) and member.name != prefix.rstrip("/"):
+                if not member.name.startswith(prefix) and member.name != prefix.rstrip(
+                    "/"
+                ):
                     continue
-                rel = member.name[len(prefix):]
+                rel = member.name[len(prefix) :]
                 if not rel:
                     continue
                 member.name = rel
@@ -345,14 +414,16 @@ def _ensure_iptables_accept(client: DockerClient, network_name: str) -> None:
     try:
         subprocess.run(
             ["iptables", "-C", "INPUT", "-i", bridge_iface, "-j", "ACCEPT"],
-            check=True, capture_output=True,
+            check=True,
+            capture_output=True,
         )
         logger.debug("iptables ACCEPT rule already exists for %s", bridge_iface)
     except (subprocess.CalledProcessError, FileNotFoundError):
         try:
             subprocess.run(
                 ["iptables", "-I", "INPUT", "-i", bridge_iface, "-j", "ACCEPT"],
-                check=True, capture_output=True,
+                check=True,
+                capture_output=True,
             )
             logger.info("Added iptables ACCEPT rule for interface %s", bridge_iface)
         except (subprocess.CalledProcessError, FileNotFoundError) as exc:
@@ -394,8 +465,14 @@ def init_system(
             detach=True,
             network=settings.shared_network,
             volumes={
-                settings.shared_db_volume: {"bind": "/var/lib/postgresql/data", "mode": "rw"},
-                str(_resolve_conf("postgresql.conf")): {"bind": "/etc/postgresql/postgresql.conf", "mode": "ro"},
+                settings.shared_db_volume: {
+                    "bind": "/var/lib/postgresql/data",
+                    "mode": "rw",
+                },
+                str(_resolve_conf("postgresql.conf")): {
+                    "bind": "/etc/postgresql/postgresql.conf",
+                    "mode": "ro",
+                },
             },
             command=["postgres", "-c", "config_file=/etc/postgresql/postgresql.conf"],
             environment={
@@ -415,12 +492,13 @@ def init_system(
 
 def reload_template(
     settings: Settings,
+    team: TeamSettings,
     template_name: str,
     dump_path: str | None = None,
 ) -> dict[str, str]:
     client = get_client()
-    tpl_db = get_template_db_name(template_name, settings.instance_id)
-    resolved_dump = dump_path or settings.get_template_sql_path(template_name)
+    tpl_db = get_template_db_name(template_name, team.team_id)
+    resolved_dump = dump_path or team.get_template_sql_path(template_name)
 
     if not os.path.isfile(resolved_dump):
         raise NotFoundError(f"Dump file not found: {resolved_dump}")
@@ -451,20 +529,41 @@ def reload_template(
         use_psql = _is_text_dump(decompressed_dump)
 
         if use_psql:
-            restore_cmd = ["psql", "-U", settings.db_user, "-d", tpl_db, "-f", f"/tmp/{tmp_name}"]
+            restore_cmd = [
+                "psql",
+                "-U",
+                settings.db_user,
+                "-d",
+                tpl_db,
+                "-f",
+                f"/tmp/{tmp_name}",
+            ]
         else:
-            restore_cmd = ["pg_restore", "-U", settings.db_user, "-d", tpl_db, f"/tmp/{tmp_name}"]
+            restore_cmd = [
+                "pg_restore",
+                "-U",
+                settings.db_user,
+                "-d",
+                tpl_db,
+                f"/tmp/{tmp_name}",
+            ]
 
-        logger.info("DB restore started, template_db=%s, dump=%s", tpl_db, resolved_dump)
+        logger.info(
+            "DB restore started, template_db=%s, dump=%s", tpl_db, resolved_dump
+        )
         restore_start = time.monotonic()
 
         exit_code, output = db_container.exec_run(restore_cmd)
 
         restore_elapsed = time.monotonic() - restore_start
-        output_str = output.decode("utf-8") if isinstance(output, bytes) else str(output)
+        output_str = (
+            output.decode("utf-8") if isinstance(output, bytes) else str(output)
+        )
 
         if exit_code != 0:
-            logger.error("DB restore failed after %.1fs: %s", restore_elapsed, output_str)
+            logger.error(
+                "DB restore failed after %.1fs: %s", restore_elapsed, output_str
+            )
             cmd_name = "psql" if use_psql else "pg_restore"
             raise ExternalCommandError(cmd_name, exit_code, output_str)
 
@@ -478,7 +577,7 @@ def reload_template(
         table_count = _exec_sql(
             client,
             settings,
-            f"SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='public' AND table_type='BASE TABLE';",
+            "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='public' AND table_type='BASE TABLE';",
             tpl_db,
         ).strip()
 
@@ -488,20 +587,24 @@ def reload_template(
             num_tables = 0
 
         if num_tables == 0:
-            error_msg = f"Dump restore succeeded but no tables found in database {tpl_db}"
+            error_msg = (
+                f"Dump restore succeeded but no tables found in database {tpl_db}"
+            )
             logger.error(error_msg)
             raise ExternalCommandError("restore", 1, error_msg)
 
         logger.info("Verified %d tables in restored database %s", num_tables, tpl_db)
 
         if dump_path:
-            tpl_dir = settings.get_template_dir(template_name)
+            tpl_dir = team.get_template_dir(template_name)
             os.makedirs(tpl_dir, exist_ok=True)
             dest_name = "dump.sql" if use_psql else "dump.pgdump"
             other_name = "dump.pgdump" if use_psql else "dump.sql"
             dest_path = os.path.join(tpl_dir, dest_name)
             other_path = os.path.join(tpl_dir, other_name)
-            if not os.path.exists(dest_path) or not os.path.samefile(dump_path, dest_path):
+            if not os.path.exists(dest_path) or not os.path.samefile(
+                dump_path, dest_path
+            ):
                 shutil.copy2(dump_path, dest_path)
             if os.path.isfile(other_path):
                 os.remove(other_path)
@@ -514,8 +617,13 @@ def reload_template(
             f"UPDATE pg_database SET datistemplate=true WHERE datname='{tpl_db}';",
         )
 
-        _update_template_sizes(settings, template_name)
-        logger.info("Template DB reloaded, template_db=%s, restore_time=%.1fs, tables=%d", tpl_db, restore_elapsed, num_tables)
+        _update_template_sizes(team, settings, template_name)
+        logger.info(
+            "Template DB reloaded, template_db=%s, restore_time=%.1fs, tables=%d",
+            tpl_db,
+            restore_elapsed,
+            num_tables,
+        )
         return {
             "status": "reloaded",
             "template_db": tpl_db,
@@ -530,23 +638,25 @@ def reload_template(
                 os.remove(decompressed_dump)
                 logger.debug("Cleaned up decompressed dump at %s", decompressed_dump)
             except OSError as e:
-                logger.warning("Failed to cleanup decompressed dump %s: %s", decompressed_dump, e)
+                logger.warning(
+                    "Failed to cleanup decompressed dump %s: %s", decompressed_dump, e
+                )
 
 
 def init_template(
     settings: Settings,
+    team: TeamSettings,
     template_name: str,
     odoo_image: str = "odoo:17.0",
     modules: str = "base",
     force: bool = False,
 ) -> dict[str, str]:
-    template_sql_path = settings.get_template_sql_path(template_name)
-    template_filestore_path = settings.get_template_filestore_path(template_name)
+    template_sql_path = team.get_template_sql_path(template_name)
+    template_filestore_path = team.get_template_filestore_path(template_name)
 
     existing_dump = os.path.exists(template_sql_path)
-    existing_filestore = (
-        os.path.exists(template_filestore_path)
-        and any(True for _ in pathlib.Path(template_filestore_path).rglob("*") if _.is_file())
+    existing_filestore = os.path.exists(template_filestore_path) and any(
+        True for _ in pathlib.Path(template_filestore_path).rglob("*") if _.is_file()
     )
 
     if (existing_dump or existing_filestore) and not force:
@@ -556,8 +666,7 @@ def init_template(
         if existing_filestore:
             parts.append(f"filestore ({template_filestore_path})")
         raise RuntimeError(
-            f"Existing data found: {', '.join(parts)}. "
-            "Use --force to overwrite."
+            f"Existing data found: {', '.join(parts)}. Use --force to overwrite."
         )
 
     if force:
@@ -569,7 +678,10 @@ def init_template(
             logger.info("Removed existing %s", template_filestore_path)
 
     client = get_client()
-    logger.info("Generating template dump from clean Odoo", extra={"image": odoo_image, "modules": modules})
+    logger.info(
+        "Generating template dump from clean Odoo",
+        extra={"image": odoo_image, "modules": modules},
+    )
 
     system_labels = {settings.managed_label: "true", settings.system_label: "true"}
 
@@ -596,8 +708,14 @@ def init_template(
             detach=True,
             network=settings.shared_network,
             volumes={
-                settings.shared_db_volume: {"bind": "/var/lib/postgresql/data", "mode": "rw"},
-                str(_resolve_conf("postgresql.conf")): {"bind": "/etc/postgresql/postgresql.conf", "mode": "ro"},
+                settings.shared_db_volume: {
+                    "bind": "/var/lib/postgresql/data",
+                    "mode": "rw",
+                },
+                str(_resolve_conf("postgresql.conf")): {
+                    "bind": "/etc/postgresql/postgresql.conf",
+                    "mode": "ro",
+                },
             },
             command=["postgres", "-c", "config_file=/etc/postgresql/postgresql.conf"],
             environment={
@@ -626,11 +744,15 @@ def init_template(
     except docker.errors.NotFound:
         pass
 
-    logger.info("Starting Odoo container for base init (image=%s, modules=%s)", odoo_image, modules)
+    logger.info(
+        "Starting Odoo container for base init (image=%s, modules=%s)",
+        odoo_image,
+        modules,
+    )
     init_start = time.monotonic()
 
     volumes = {}
-    odoo_conf = _resolve_instance_conf("odoo.conf", settings.data_dir)
+    odoo_conf = _resolve_instance_conf("odoo.conf", team.data_dir)
     if odoo_conf.exists():
         volumes[str(odoo_conf)] = {"bind": "/etc/odoo/odoo.conf", "mode": "ro"}
 
@@ -658,7 +780,8 @@ def init_template(
         temp_container.remove(v=True)
         _exec_sql(client, settings, f"DROP DATABASE IF EXISTS {build_db} WITH (FORCE);")
         raise ExternalCommandError(
-            "odoo --stop-after-init", exit_code,
+            "odoo --stop-after-init",
+            exit_code,
             f"Odoo init failed after {init_elapsed:.1f}s.\nLast logs:\n{logs}",
         )
 
@@ -668,11 +791,21 @@ def init_template(
 
     db_container = client.containers.get(settings.shared_db_container)
     dump_cmd = [
-        "pg_dump", "-U", settings.db_user, "-Fp", "-f", f"/tmp/{build_db}.dump", build_db,
+        "pg_dump",
+        "-U",
+        settings.db_user,
+        "-Fp",
+        "-f",
+        f"/tmp/{build_db}.dump",
+        build_db,
     ]
     exit_code_dump, output_dump = db_container.exec_run(dump_cmd)
     if exit_code_dump != 0:
-        msg = output_dump.decode("utf-8") if isinstance(output_dump, bytes) else str(output_dump)
+        msg = (
+            output_dump.decode("utf-8")
+            if isinstance(output_dump, bytes)
+            else str(output_dump)
+        )
         temp_container.remove(v=True)
         _exec_sql(client, settings, f"DROP DATABASE IF EXISTS {build_db} WITH (FORCE);")
         raise ExternalCommandError("pg_dump", exit_code_dump, msg)
@@ -691,9 +824,14 @@ def init_template(
     try:
         src_fs_prefix = f"Odoo/filestore/{build_db}/"
         extracted = _extract_archive_from_container(
-            temp_container, odoo_data_container_path, template_filestore_path, src_fs_prefix,
+            temp_container,
+            odoo_data_container_path,
+            template_filestore_path,
+            src_fs_prefix,
         )
-        logger.info("Filestore extracted to %s (%d files)", template_filestore_path, extracted)
+        logger.info(
+            "Filestore extracted to %s (%d files)", template_filestore_path, extracted
+        )
 
     except docker.errors.NotFound:
         logger.info(
@@ -714,18 +852,25 @@ def init_template(
     logger.info("Temporary database dropped")
 
     logger.info("Template generation complete, loading into template DB")
-    result = reload_template(settings, template_name=template_name)
+    result = reload_template(settings, team, template_name=template_name)
 
     metadata = {"odoo_image": odoo_image}
     from oduflow.docker_ops.env_ops import _dir_size_mb
+
     fs_size = _dir_size_mb(template_filestore_path)
     metadata["use_overlay"] = fs_size >= settings.overlay_threshold_mb
-    metadata = _update_template_sizes(settings, template_name, metadata)
-    logger.info("Template metadata saved (use_overlay=%s, filestore=%.0f MB)", metadata["use_overlay"], fs_size)
+    metadata = _update_template_sizes(team, settings, template_name, metadata)
+    logger.info(
+        "Template metadata saved (use_overlay=%s, filestore=%.0f MB)",
+        metadata["use_overlay"],
+        fs_size,
+    )
 
     result["generated_dump"] = template_sql_path
     result["generated_filestore"] = template_filestore_path
-    result["filestore_files"] = sum(1 for _ in pathlib.Path(template_filestore_path).rglob("*") if _.is_file())
+    result["filestore_files"] = sum(
+        1 for _ in pathlib.Path(template_filestore_path).rglob("*") if _.is_file()
+    )
     return result
 
 
@@ -735,11 +880,12 @@ _TEMPLATE_EDITOR_BRANCH = "__template__"
 
 def template_up(
     settings: Settings,
+    team: TeamSettings,
     odoo_image: str,
     template_name: str,
 ) -> dict[str, str]:
     client = get_client()
-    tpl_db = get_template_db_name(template_name, settings.instance_id)
+    tpl_db = get_template_db_name(template_name, team.team_id)
 
     try:
         existing = client.containers.get(_TEMPLATE_EDITOR_CONTAINER)
@@ -747,7 +893,7 @@ def template_up(
             existing.reload()
             ports = existing.ports.get("8069/tcp")
             host_port = ports[0]["HostPort"] if ports else "?"
-            url = f"http://{settings.external_host}:{host_port}"
+            url = f"http://{team.hostname}:{host_port}"
             raise ConflictError(
                 f"Template editor is already running at {url}. "
                 f"Use --template-down to stop it first."
@@ -771,8 +917,7 @@ def template_up(
 
     if not _db_exists(client, settings, tpl_db):
         raise PrerequisiteNotMetError(
-            f"Template database '{tpl_db}' not found. "
-            f"Run init-template first."
+            f"Template database '{tpl_db}' not found. Run init-template first."
         )
 
     _exec_sql(
@@ -782,7 +927,7 @@ def template_up(
     )
     logger.info("Template flag removed from %s", tpl_db)
 
-    template_filestore_path = settings.get_template_filestore_path(template_name)
+    template_filestore_path = team.get_template_filestore_path(template_name)
     os.makedirs(template_filestore_path, exist_ok=True)
 
     odoo_uid_gid = get_odoo_uid_gid(client, odoo_image)
@@ -790,7 +935,7 @@ def template_up(
     uid, gid = int(uid_str), int(gid_str)
     chown_recursive(template_filestore_path, uid, gid, client, odoo_image)
 
-    sessions_path = os.path.join(settings.get_template_dir(template_name), "sessions")
+    sessions_path = os.path.join(team.get_template_dir(template_name), "sessions")
     os.makedirs(sessions_path, mode=0o777, exist_ok=True)
     os.chmod(sessions_path, 0o777)
     chown_recursive(sessions_path, uid, gid, client, odoo_image)
@@ -800,10 +945,10 @@ def template_up(
 
     used_ports = _get_used_ports(client, settings)
     host_port = allocate_port(
-        settings.port_registry_path,
+        team.port_registry_path,
         _TEMPLATE_EDITOR_BRANCH,
-        settings.port_range_start,
-        settings.port_range_end,
+        team.port_range_start,
+        team.port_range_end,
         used_ports=used_ports,
     )
 
@@ -822,11 +967,11 @@ def template_up(
             "mode": "rw",
         },
     }
-    odoo_conf = _resolve_instance_conf("odoo.conf", settings.data_dir)
+    odoo_conf = _resolve_instance_conf("odoo.conf", team.data_dir)
     if odoo_conf.exists():
         odoo_volumes[str(odoo_conf)] = {"bind": "/etc/odoo/odoo.conf", "mode": "ro"}
 
-    container = client.containers.run(
+    client.containers.run(
         odoo_image,
         name=_TEMPLATE_EDITOR_CONTAINER,
         detach=True,
@@ -838,7 +983,7 @@ def template_up(
         command=f"odoo -d {tpl_db} --dev=xml",
     )
 
-    metadata_path = settings.get_template_metadata_path(template_name)
+    metadata_path = team.get_template_metadata_path(template_name)
     metadata = {}
     if os.path.isfile(metadata_path):
         with open(metadata_path) as f:
@@ -847,8 +992,10 @@ def template_up(
     with open(metadata_path, "w") as f:
         json.dump(metadata, f, indent=2)
 
-    url = f"http://{settings.external_host}:{host_port}"
-    logger.info("Template editor started at %s (container=%s)", url, _TEMPLATE_EDITOR_CONTAINER)
+    url = f"http://{team.hostname}:{host_port}"
+    logger.info(
+        "Template editor started at %s (container=%s)", url, _TEMPLATE_EDITOR_CONTAINER
+    )
 
     return {
         "status": "running",
@@ -859,9 +1006,11 @@ def template_up(
     }
 
 
-def template_down(settings: Settings, template_name: str) -> dict[str, str]:
+def template_down(
+    settings: Settings, team: TeamSettings, template_name: str
+) -> dict[str, str]:
     client = get_client()
-    tpl_db = get_template_db_name(template_name, settings.instance_id)
+    tpl_db = get_template_db_name(template_name, team.team_id)
 
     try:
         container = client.containers.get(_TEMPLATE_EDITOR_CONTAINER)
@@ -876,17 +1025,24 @@ def template_down(settings: Settings, template_name: str) -> dict[str, str]:
     logger.info("Template editor container removed")
 
     from oduflow.port_registry import release_port
-    release_port(settings.port_registry_path, _TEMPLATE_EDITOR_BRANCH)
+
+    release_port(team.port_registry_path, _TEMPLATE_EDITOR_BRANCH)
 
     _wait_pg_ready(client, settings)
 
-    template_sql_path = settings.get_template_sql_path(template_name)
+    template_sql_path = team.get_template_sql_path(template_name)
     os.makedirs(os.path.dirname(template_sql_path), exist_ok=True)
 
     db_container = client.containers.get(settings.shared_db_container)
     dump_file = f"/tmp/{tpl_db}.dump"
     dump_cmd = [
-        "pg_dump", "-U", settings.db_user, "-Fc", "-f", dump_file, tpl_db,
+        "pg_dump",
+        "-U",
+        settings.db_user,
+        "-Fc",
+        "-f",
+        dump_file,
+        tpl_db,
     ]
 
     logger.info("Dumping template database %s", tpl_db)
@@ -906,32 +1062,36 @@ def template_down(settings: Settings, template_name: str) -> dict[str, str]:
     )
     logger.info("Template flag restored on %s", tpl_db)
 
-    _update_template_sizes(settings, template_name)
+    _update_template_sizes(team, settings, template_name)
 
     return {
         "status": "stopped",
         "dump": template_sql_path,
-        "filestore": settings.get_template_filestore_path(template_name),
+        "filestore": team.get_template_filestore_path(template_name),
         "database": tpl_db,
     }
 
 
-def publish_env_as_template(settings: Settings, branch_name: str, template_name: str) -> dict[str, str]:
+def publish_env_as_template(
+    settings: Settings, team: TeamSettings, branch_name: str, template_name: str
+) -> dict[str, str]:
     from oduflow.docker_ops import env_ops
     from oduflow.naming import get_db_name, get_filestore_paths
 
     client = get_client()
-    tpl_db = get_template_db_name(template_name, settings.instance_id)
-    env_db = get_db_name(branch_name, settings.instance_id)
+    tpl_db = get_template_db_name(template_name, team.team_id)
+    env_db = get_db_name(branch_name, team.team_id)
 
     if not _db_exists(client, settings, env_db):
-        raise NotFoundError(f"Database '{env_db}' for branch '{branch_name}' not found.")
+        raise NotFoundError(
+            f"Database '{env_db}' for branch '{branch_name}' not found."
+        )
 
     _wait_pg_ready(client, settings)
     db_container = client.containers.get(settings.shared_db_container)
 
     # 1. pg_dump branch DB → new template dump
-    dump_path = settings.get_template_sql_path(template_name)
+    dump_path = team.get_template_sql_path(template_name)
     os.makedirs(os.path.dirname(dump_path), exist_ok=True)
     dump_file = f"/tmp/{env_db}.dump"
     dump_cmd = ["pg_dump", "-U", settings.db_user, "-Fc", "-f", dump_file, env_db]
@@ -947,20 +1107,23 @@ def publish_env_as_template(settings: Settings, branch_name: str, template_name:
     logger.info("Branch dump saved to %s", dump_path)
 
     # 2. Reload template DB from new dump
-    reload_template(settings, template_name=template_name, dump_path=dump_path)
+    reload_template(settings, team, template_name=template_name, dump_path=dump_path)
 
     # 3. Collect active branches that use THIS template AND overlay mount
-    active_envs = env_ops.list_environments(settings)
+    active_envs = env_ops.list_environments(settings, team)
     active_branches = [
-        e["branch"] for e in active_envs
+        e["branch"]
+        for e in active_envs
         if e.get("template_name") == template_name
-        and os.path.ismount(get_filestore_paths(e["branch"], settings.workspaces_dir)["merged"])
+        and os.path.ismount(
+            get_filestore_paths(e["branch"], team.workspaces_dir)["merged"]
+        )
     ]
 
     # 4. Snapshot the source branch's merged filestore (while overlay is still mounted)
-    branch_paths = get_filestore_paths(branch_name, settings.workspaces_dir)
+    branch_paths = get_filestore_paths(branch_name, team.workspaces_dir)
     branch_merged = branch_paths["merged"]
-    template_filestore_path = settings.get_template_filestore_path(template_name)
+    template_filestore_path = team.get_template_filestore_path(template_name)
 
     if os.path.isdir(branch_merged) and os.path.ismount(branch_merged):
         # Overlay-mounted filestore — snapshot while still mounted
@@ -978,7 +1141,9 @@ def publish_env_as_template(settings: Settings, branch_name: str, template_name:
         logger.info("Snapshot of plain filestore created for branch %s", branch_name)
     else:
         snapshot_dir = None
-        logger.warning("Branch filestore %s not found, skipping filestore update", branch_merged)
+        logger.warning(
+            "Branch filestore %s not found, skipping filestore update", branch_merged
+        )
 
     # 5. Unmount all overlays
     for branch in active_branches:
@@ -1001,7 +1166,9 @@ def publish_env_as_template(settings: Settings, branch_name: str, template_name:
             shutil.rmtree(snapshot_dir)
         logger.info("Template filestore replaced from branch %s", branch_name)
 
-        promoted_container_name = f"{settings.prefix}{branch_name.replace('/', '-')}-odoo"
+        promoted_container_name = (
+            f"{settings.prefix}{branch_name.replace('/', '-')}-odoo"
+        )
         try:
             pc = client.containers.get(promoted_container_name)
             promoted_image = pc.image.tags[0] if pc.image.tags else "odoo:17.0"
@@ -1009,13 +1176,15 @@ def publish_env_as_template(settings: Settings, branch_name: str, template_name:
             promoted_image = "odoo:17.0"
         odoo_uid_gid = get_odoo_uid_gid(client, promoted_image)
         uid_str, gid_str = odoo_uid_gid.split(":")
-        chown_recursive(template_filestore_path, int(uid_str), int(gid_str), client, promoted_image)
+        chown_recursive(
+            template_filestore_path, int(uid_str), int(gid_str), client, promoted_image
+        )
         logger.info("Template filestore chowned to %s", odoo_uid_gid)
 
     # 7. Reset filestores to new template baseline
     for branch in active_branches:
         try:
-            bp = get_filestore_paths(branch, settings.workspaces_dir)
+            bp = get_filestore_paths(branch, team.workspaces_dir)
 
             if os.path.ismount(bp["merged"]):
                 env_ops._unmount_filestore(branch, settings)
@@ -1042,8 +1211,10 @@ def publish_env_as_template(settings: Settings, branch_name: str, template_name:
             except (docker.errors.NotFound, IndexError):
                 image = "odoo:17.0"
 
-            env_db = get_db_name(branch, settings.instance_id)
-            env_ops._mount_filestore(client, settings, branch, env_db, image, {}, template_name=template_name)
+            env_db = get_db_name(branch, team.team_id)
+            env_ops._mount_filestore(
+                client, settings, branch, env_db, image, {}, template_name=template_name
+            )
             logger.info("Filestore reset for branch %s", branch)
 
             try:
@@ -1056,7 +1227,6 @@ def publish_env_as_template(settings: Settings, branch_name: str, template_name:
             logger.warning("Could not reset filestore for %s: %s", branch, e)
 
     # Save template metadata from source environment
-    metadata_path = settings.get_template_metadata_path(template_name)
     promoted_container_name = f"{settings.prefix}{branch_name.replace('/', '-')}-odoo"
     metadata = {}
     try:
@@ -1073,10 +1243,18 @@ def publish_env_as_template(settings: Settings, branch_name: str, template_name:
                 pass
     except docker.errors.NotFound:
         pass
-    fs_size = env_ops._dir_size_mb(template_filestore_path) if os.path.isdir(template_filestore_path) else 0.0
+    fs_size = (
+        env_ops._dir_size_mb(template_filestore_path)
+        if os.path.isdir(template_filestore_path)
+        else 0.0
+    )
     metadata["use_overlay"] = fs_size >= settings.overlay_threshold_mb
-    metadata = _update_template_sizes(settings, template_name, metadata)
-    logger.info("Template metadata saved (use_overlay=%s, filestore=%.0f MB)", metadata["use_overlay"], fs_size)
+    metadata = _update_template_sizes(team, settings, template_name, metadata)
+    logger.info(
+        "Template metadata saved (use_overlay=%s, filestore=%.0f MB)",
+        metadata["use_overlay"],
+        fs_size,
+    )
 
     return {
         "status": "promoted",
@@ -1096,17 +1274,20 @@ def destroy_system(settings: Settings) -> dict[str, str]:
     containers = client.containers.list(all=True, filters=filters)
     system_names = {settings.shared_db_container, settings.traefik_container}
     env_containers = [
-        c for c in containers
+        c
+        for c in containers
         if c.labels.get(settings.branch_label) and c.name not in system_names
     ]
     svc_containers = [
-        c for c in containers
+        c
+        for c in containers
         if c.labels.get("oduflow.service") and c.name not in system_names
     ]
     blocking = env_containers + svc_containers
     if blocking:
         names = [c.name for c in blocking]
         from oduflow.errors import ConflictError
+
         if svc_containers and not env_containers:
             raise ConflictError(
                 f"Active environments/services exist: {', '.join(names)}. Delete them first."
@@ -1152,6 +1333,7 @@ def destroy_system(settings: Settings) -> dict[str, str]:
 
 def import_from_odoo(
     settings: Settings,
+    team: TeamSettings,
     odoo_url: str,
     master_pwd: str,
     db_name: str = "",
@@ -1173,7 +1355,9 @@ def import_from_odoo(
     if not db_name:
         req = urllib.request.Request(
             f"{base}/web/database/list",
-            data=json.dumps({"jsonrpc": "2.0", "method": "call", "params": {}}).encode(),
+            data=json.dumps(
+                {"jsonrpc": "2.0", "method": "call", "params": {}}
+            ).encode(),
             headers={"Content-Type": "application/json"},
         )
         with urllib.request.urlopen(req, timeout=30) as resp:
@@ -1193,7 +1377,11 @@ def import_from_odoo(
     logger.info("Downloading backup from %s (db=%s)...", base, db_name)
     boundary = "----OduflowBoundary"
     parts = []
-    for field_name, field_value in [("master_pwd", master_pwd), ("name", db_name), ("backup_format", "zip")]:
+    for field_name, field_value in [
+        ("master_pwd", master_pwd),
+        ("name", db_name),
+        ("backup_format", "zip"),
+    ]:
         parts.append(
             f"--{boundary}\r\n"
             f'Content-Disposition: form-data; name="{field_name}"\r\n\r\n'
@@ -1210,16 +1398,17 @@ def import_from_odoo(
     )
 
     download_start = time.monotonic()
-    tmp_zip = os.path.join(settings.data_dir, "tmp_odoo_backup.zip")
-    os.makedirs(settings.data_dir, exist_ok=True)
+    tmp_zip = os.path.join(team.data_dir, "tmp_odoo_backup.zip")
+    os.makedirs(team.data_dir, exist_ok=True)
     try:
         with urllib.request.urlopen(req, timeout=600) as resp:
             content_type = resp.headers.get("Content-Type", "")
             if "zip" not in content_type and "octet" not in content_type:
                 body = resp.read(2000).decode("utf-8", errors="replace")
                 raise ExternalCommandError(
-                    "odoo backup", -1,
-                    f"Unexpected response (Content-Type: {content_type}): {body}"
+                    "odoo backup",
+                    -1,
+                    f"Unexpected response (Content-Type: {content_type}): {body}",
                 )
             with open(tmp_zip, "wb") as f:
                 while True:
@@ -1236,9 +1425,9 @@ def import_from_odoo(
     logger.info("Backup downloaded in %.1fs (%.1f MB)", download_elapsed, zip_size_mb)
 
     # 3. Extract ZIP
-    template_dir = settings.get_template_dir(template_name)
+    template_dir = team.get_template_dir(template_name)
     template_sql_path = os.path.join(template_dir, "dump.sql")
-    template_filestore_path = settings.get_template_filestore_path(template_name)
+    template_filestore_path = team.get_template_filestore_path(template_name)
 
     os.makedirs(template_dir, exist_ok=True)
 
@@ -1264,7 +1453,7 @@ def import_from_odoo(
             for member in zf.namelist():
                 if not member.startswith(fs_prefix):
                     continue
-                rel = member[len(fs_prefix):]
+                rel = member[len(fs_prefix) :]
                 if not rel:
                     continue
                 # Skip checklist/ symlink-like entries
@@ -1278,8 +1467,16 @@ def import_from_odoo(
                     with zf.open(member) as src, open(target, "wb") as dst:
                         shutil.copyfileobj(src, dst)
 
-            fs_count = sum(1 for f in pathlib.Path(template_filestore_path).rglob("*") if f.is_file())
-            logger.info("Extracted filestore to %s (%d files)", template_filestore_path, fs_count)
+            fs_count = sum(
+                1
+                for f in pathlib.Path(template_filestore_path).rglob("*")
+                if f.is_file()
+            )
+            logger.info(
+                "Extracted filestore to %s (%d files)",
+                template_filestore_path,
+                fs_count,
+            )
     finally:
         if os.path.exists(tmp_zip):
             os.remove(tmp_zip)
@@ -1298,11 +1495,11 @@ def import_from_odoo(
         "pg_version": manifest.get("pg_version", ""),
         "modules": manifest.get("modules", {}),
     }
-    _update_template_sizes(settings, template_name, metadata)
+    _update_template_sizes(team, settings, template_name, metadata)
     logger.info("Metadata saved for template %s", template_name)
 
     # 6. Load dump into PostgreSQL
-    result = reload_template(settings, template_name=template_name)
+    result = reload_template(settings, team, template_name=template_name)
 
     return {
         "status": "imported",
@@ -1317,7 +1514,9 @@ def import_from_odoo(
     }
 
 
-def cleanup_orphans(settings: Settings, dry_run: bool = True) -> dict:
+def cleanup_orphans(
+    settings: Settings, team: TeamSettings, dry_run: bool = True
+) -> dict:
     """Find and remove orphaned databases, workspaces, and port registry entries.
 
     An orphan is a resource whose branch has no corresponding Docker container.
@@ -1334,7 +1533,7 @@ def cleanup_orphans(settings: Settings, dry_run: bool = True) -> dict:
     filters = {
         "label": [
             f"{settings.managed_label}=true",
-            f"{settings.instance_label}={settings.instance_id}",
+            f"{settings.team_label}={team.team_id}",
         ]
     }
     live_branches: set[str] = set()
@@ -1343,11 +1542,12 @@ def cleanup_orphans(settings: Settings, dry_run: bool = True) -> dict:
         if branch:
             live_branches.add(branch)
 
-    db_prefix = f"oduflow_{settings.instance_id}_"
+    db_prefix = f"oduflow_{team.team_id}_"
 
     # 2. Orphan databases
     rows = _exec_sql(
-        client, settings,
+        client,
+        settings,
         "SELECT datname FROM pg_database WHERE datistemplate=false AND datname NOT IN ('postgres','template0','template1');",
     )
     all_dbs = [r for r in rows.splitlines() if r]
@@ -1357,43 +1557,43 @@ def cleanup_orphans(settings: Settings, dry_run: bool = True) -> dict:
         if not db_name.startswith(db_prefix):
             continue
         # Reverse-map: strip prefix to get the slug, then check if any live branch produces this db name
-        matched = any(get_db_name(b, settings.instance_id) == db_name for b in live_branches)
+        matched = any(get_db_name(b, team.team_id) == db_name for b in live_branches)
         if not matched:
             orphan_dbs.append(db_name)
 
     # 3. Orphan workspace directories
     orphan_workspaces: list[str] = []
-    if os.path.isdir(settings.workspaces_dir):
-        for entry in os.listdir(settings.workspaces_dir):
-            entry_path = os.path.join(settings.workspaces_dir, entry)
+    if os.path.isdir(team.workspaces_dir):
+        for entry in os.listdir(team.workspaces_dir):
+            entry_path = os.path.join(team.workspaces_dir, entry)
             if not os.path.isdir(entry_path):
                 continue
             # Protected workspaces are never cleaned up
             if os.path.exists(os.path.join(entry_path, ".protected")):
                 continue
-            matched = any(
-                entry == b.replace("/", "-") for b in live_branches
-            )
+            matched = any(entry == b.replace("/", "-") for b in live_branches)
             if not matched:
                 orphan_workspaces.append(entry)
 
     # 4. Orphan port registry entries
     orphan_ports: list[str] = []
-    registry = _load_registry(settings.port_registry_path)
+    registry = _load_registry(team.port_registry_path)
     for branch in list(registry.keys()):
         if branch not in live_branches:
             orphan_ports.append(branch)
 
     # 5. Orphan PG roles
     from oduflow.env_credentials import generate_pg_username
-    role_prefix = f"u_{settings.instance_id}_"
-    roles_raw = _exec_sql(client, settings, "SELECT rolname FROM pg_roles WHERE rolcanlogin=true;")
+
+    role_prefix = f"u_{team.team_id}_"
+    roles_raw = _exec_sql(
+        client, settings, "SELECT rolname FROM pg_roles WHERE rolcanlogin=true;"
+    )
     all_roles = [r for r in roles_raw.splitlines() if r.startswith(role_prefix)]
     orphan_roles: list[str] = []
     for role in all_roles:
         matched = any(
-            role == generate_pg_username(b, settings.instance_id)
-            for b in live_branches
+            role == generate_pg_username(b, team.team_id) for b in live_branches
         )
         if not matched:
             orphan_roles.append(role)
@@ -1401,7 +1601,10 @@ def cleanup_orphans(settings: Settings, dry_run: bool = True) -> dict:
     if dry_run:
         logger.info(
             "Cleanup dry-run: %d orphan DBs, %d orphan workspaces, %d orphan ports, %d orphan roles",
-            len(orphan_dbs), len(orphan_workspaces), len(orphan_ports), len(orphan_roles),
+            len(orphan_dbs),
+            len(orphan_workspaces),
+            len(orphan_ports),
+            len(orphan_roles),
         )
         return {
             "dry_run": True,
@@ -1415,7 +1618,9 @@ def cleanup_orphans(settings: Settings, dry_run: bool = True) -> dict:
     removed_dbs: list[str] = []
     for db_name in orphan_dbs:
         try:
-            _exec_sql(client, settings, f'DROP DATABASE IF EXISTS "{db_name}" WITH (FORCE);')
+            _exec_sql(
+                client, settings, f'DROP DATABASE IF EXISTS "{db_name}" WITH (FORCE);'
+            )
             removed_dbs.append(db_name)
             logger.info("Dropped orphan database %s", db_name)
         except Exception as exc:
@@ -1423,10 +1628,11 @@ def cleanup_orphans(settings: Settings, dry_run: bool = True) -> dict:
 
     removed_workspaces: list[str] = []
     for entry in orphan_workspaces:
-        entry_path = os.path.join(settings.workspaces_dir, entry)
+        entry_path = os.path.join(team.workspaces_dir, entry)
         try:
             # Unmount any overlay before removing
             from oduflow.docker_ops.env_ops import _unmount_filestore
+
             _unmount_filestore(entry, settings)
             shutil.rmtree(entry_path)
             removed_workspaces.append(entry)
@@ -1440,7 +1646,7 @@ def cleanup_orphans(settings: Settings, dry_run: bool = True) -> dict:
         removed_ports.append(branch)
         logger.info("Released orphan port for branch '%s'", branch)
     if removed_ports:
-        _save_registry(settings.port_registry_path, registry)
+        _save_registry(team.port_registry_path, registry)
 
     removed_roles: list[str] = []
     for role in orphan_roles:
@@ -1459,17 +1665,23 @@ def cleanup_orphans(settings: Settings, dry_run: bool = True) -> dict:
     }
 
 
-def delete_template(settings: Settings, template_name: str) -> dict[str, str]:
+def delete_template(
+    settings: Settings, team: TeamSettings, template_name: str
+) -> dict[str, str]:
     client = get_client()
-    tpl_db = get_template_db_name(template_name, settings.instance_id)
+    tpl_db = get_template_db_name(template_name, team.team_id)
 
     if _db_exists(client, settings, tpl_db):
         _wait_pg_ready(client, settings)
-        _exec_sql(client, settings, f"UPDATE pg_database SET datistemplate=false WHERE datname='{tpl_db}';")
+        _exec_sql(
+            client,
+            settings,
+            f"UPDATE pg_database SET datistemplate=false WHERE datname='{tpl_db}';",
+        )
         _exec_sql(client, settings, f'DROP DATABASE IF EXISTS "{tpl_db}" WITH (FORCE);')
         logger.info("Dropped template DB %s", tpl_db)
 
-    template_dir_path = settings.get_template_dir(template_name)
+    template_dir_path = team.get_template_dir(template_name)
     if os.path.isdir(template_dir_path):
         shutil.rmtree(template_dir_path)
         logger.info("Removed template directory %s", template_dir_path)
@@ -1477,36 +1689,38 @@ def delete_template(settings: Settings, template_name: str) -> dict[str, str]:
     return {"status": "dropped", "template_name": template_name, "template_db": tpl_db}
 
 
-def list_templates(settings: Settings) -> list[dict]:
+def list_templates(settings: Settings, team: TeamSettings) -> list[dict]:
     client = get_client()
-    templates = settings.list_templates()
+    templates = team.list_templates()
     result = []
     for template_name in templates:
-        tpl_db = get_template_db_name(template_name, settings.instance_id)
-        has_sql = os.path.isfile(settings.get_template_sql_path(template_name))
-        has_filestore = os.path.isdir(settings.get_template_filestore_path(template_name))
+        tpl_db = get_template_db_name(template_name, team.team_id)
+        has_sql = os.path.isfile(team.get_template_sql_path(template_name))
+        has_filestore = os.path.isdir(team.get_template_filestore_path(template_name))
         db_loaded = _db_exists(client, settings, tpl_db)
         metadata = {}
-        metadata_path = settings.get_template_metadata_path(template_name)
+        metadata_path = team.get_template_metadata_path(template_name)
         if os.path.isfile(metadata_path):
             with open(metadata_path) as f:
                 metadata = json.load(f)
         if "filestore_size_mb" not in metadata or "dump_size_mb" not in metadata:
-            metadata = _update_template_sizes(settings, template_name, metadata)
-        result.append({
-            "template_name": template_name,
-            "template_db": tpl_db,
-            "has_sql": has_sql,
-            "has_filestore": has_filestore,
-            "db_loaded": db_loaded,
-            "odoo_image": metadata.get("odoo_image", ""),
-            "repo_url": metadata.get("repo_url", ""),
-            "git_user": metadata.get("git_user", ""),
-            "extra_addons": _normalize_extra_addons(
-                metadata.get("extra_addons", {}),
-            ),
-            "use_overlay": metadata.get("use_overlay"),
-            "filestore_size_mb": metadata.get("filestore_size_mb"),
-            "dump_size_mb": metadata.get("dump_size_mb"),
-        })
+            metadata = _update_template_sizes(team, settings, template_name, metadata)
+        result.append(
+            {
+                "template_name": template_name,
+                "template_db": tpl_db,
+                "has_sql": has_sql,
+                "has_filestore": has_filestore,
+                "db_loaded": db_loaded,
+                "odoo_image": metadata.get("odoo_image", ""),
+                "repo_url": metadata.get("repo_url", ""),
+                "git_user": metadata.get("git_user", ""),
+                "extra_addons": _normalize_extra_addons(
+                    metadata.get("extra_addons", {}),
+                ),
+                "use_overlay": metadata.get("use_overlay"),
+                "filestore_size_mb": metadata.get("filestore_size_mb"),
+                "dump_size_mb": metadata.get("dump_size_mb"),
+            }
+        )
     return result

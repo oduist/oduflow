@@ -1,13 +1,12 @@
+from __future__ import annotations
+
 import asyncio
 import base64
-import hmac
 import json
 import logging
 import os
 import pathlib
-import threading
 
-from starlette.middleware import Middleware
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, Response
 from starlette.routing import Route, WebSocketRoute
@@ -18,7 +17,8 @@ from oduflow.docker_ops import env_ops, service_ops, service_presets, system_ops
 from oduflow.docker_ops.odoo_ops import get_environment_logs
 from oduflow.docker_ops.stats import get_container_stats, get_system_stats
 from oduflow.errors import BusyError, FlowError, NotFoundError
-from oduflow.settings import Settings
+from oduflow.locking import LockManager
+from oduflow.settings import TeamSettings
 from oduflow.licensing import get_license_info, install_license_from_text
 
 logger = logging.getLogger("oduflow")
@@ -28,9 +28,9 @@ _AUTH_USER = "admin"
 
 
 class BasicAuthMiddleware:
-    def __init__(self, app: ASGIApp, password: str) -> None:
+    def __init__(self, app: ASGIApp, get_settings: "callable") -> None:
         self._app = app
-        self._password = password
+        self._get_settings = get_settings
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] not in ("http", "websocket"):
@@ -40,7 +40,9 @@ class BasicAuthMiddleware:
         headers = dict(scope.get("headers", []))
         auth_header = headers.get(b"authorization", b"").decode()
 
-        if self._check_credentials(auth_header):
+        team = self._check_credentials(auth_header)
+        if team:
+            scope.setdefault("state", {})["team"] = team
             await self._app(scope, receive, send)
         else:
             if scope["type"] == "websocket":
@@ -54,15 +56,18 @@ class BasicAuthMiddleware:
                 )
                 await response(scope, receive, send)
 
-    def _check_credentials(self, auth_header: str) -> bool:
+    def _check_credentials(self, auth_header: str) -> "TeamSettings | None":
         if not auth_header.startswith("Basic "):
-            return False
+            return None
         try:
             decoded = base64.b64decode(auth_header[6:]).decode()
             user, password = decoded.split(":", 1)
         except Exception:
-            return False
-        return user == _AUTH_USER and hmac.compare_digest(password, self._password)
+            return None
+        if user != _AUTH_USER:
+            return None
+        return self._get_settings().get_team_by_ui_password(password)
+
 
 _TEMPLATE_DIR = pathlib.Path(__file__).resolve().parent / "templates"
 
@@ -81,9 +86,13 @@ def _normalize_extra_addons(raw_addons) -> dict[str, str]:
     if isinstance(raw_addons, dict):
         return raw_addons
     if isinstance(raw_addons, list):
-        logger.warning("Legacy list format for extra_addons (no branch info), skipping: %s", raw_addons)
+        logger.warning(
+            "Legacy list format for extra_addons (no branch info), skipping: %s",
+            raw_addons,
+        )
         return {}
     return {}
+
 
 def _parse_extra_addons(raw: str) -> dict[str, str]:
     result = {}
@@ -115,7 +124,7 @@ def _guide_title(filepath: str) -> str:
 
 def _build_routes(
     get_settings: "callable",
-    busy_lock: threading.Lock,
+    locks: LockManager,
 ) -> list[Route]:
 
     def dashboard(request: Request) -> HTMLResponse:
@@ -130,9 +139,20 @@ def _build_routes(
         logo_path = _TEMPLATE_DIR / "logo.png"
         return Response(logo_path.read_bytes(), media_type="image/png")
 
+    def _get_ui_team(request: Request) -> TeamSettings:
+        """Get the team from request state (set by auth middleware) or fallback."""
+        if hasattr(request.state, "team"):
+            return request.state.team
+        settings = get_settings()
+        if len(settings.teams) == 1:
+            return next(iter(settings.teams.values()))
+        return settings.get_team("1")
+
     def api_list(request: Request) -> JSONResponse:
         try:
-            envs = env_ops.list_environments(get_settings())
+            settings = get_settings()
+            team = _get_ui_team(request)
+            envs = env_ops.list_environments(settings, team)
             return JSONResponse({"ok": True, "environments": envs})
         except FlowError as e:
             return _error_response(e)
@@ -142,8 +162,6 @@ def _build_routes(
 
     def api_start(request: Request) -> JSONResponse:
         branch = request.path_params["branch"]
-        if not busy_lock.acquire(blocking=False):
-            return _error_response(BusyError("Another operation is in progress."))
         try:
             result = env_ops.start_environment(get_settings(), branch)
             return JSONResponse({"ok": True, "result": result})
@@ -152,28 +170,22 @@ def _build_routes(
         except Exception as e:
             logger.exception("Unexpected error in api_start")
             return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
-        finally:
-            busy_lock.release()
 
     def api_stop(request: Request) -> JSONResponse:
         branch = request.path_params["branch"]
-        if not busy_lock.acquire(blocking=False):
-            return _error_response(BusyError("Another operation is in progress."))
         try:
-            result = env_ops.stop_environment(get_settings(), branch)
+            settings = get_settings()
+            team = _get_ui_team(request)
+            result = env_ops.stop_environment(settings, team, branch)
             return JSONResponse({"ok": True, "result": result})
         except FlowError as e:
             return _error_response(e)
         except Exception as e:
             logger.exception("Unexpected error in api_stop")
             return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
-        finally:
-            busy_lock.release()
 
     def api_restart(request: Request) -> JSONResponse:
         branch = request.path_params["branch"]
-        if not busy_lock.acquire(blocking=False):
-            return _error_response(BusyError("Another operation is in progress."))
         try:
             result = env_ops.restart_environment(get_settings(), branch)
             return JSONResponse({"ok": True, "result": result})
@@ -182,15 +194,17 @@ def _build_routes(
         except Exception as e:
             logger.exception("Unexpected error in api_restart")
             return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
-        finally:
-            busy_lock.release()
 
     def api_sync(request: Request) -> JSONResponse:
         branch = request.path_params["branch"]
-        if not busy_lock.acquire(blocking=False):
-            return _error_response(BusyError("Another operation is in progress."))
         try:
-            result = env_ops.pull_environment(get_settings(), branch)
+            locks.acquire_branch(branch)
+        except BusyError as e:
+            return _error_response(e)
+        try:
+            settings = get_settings()
+            team = _get_ui_team(request)
+            result = env_ops.pull_environment(settings, team, branch)
             return JSONResponse({"ok": True, "result": result})
         except FlowError as e:
             return _error_response(e)
@@ -198,14 +212,18 @@ def _build_routes(
             logger.exception("Unexpected error in api_sync")
             return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
         finally:
-            busy_lock.release()
+            locks.release_branch(branch)
 
     def api_delete(request: Request) -> JSONResponse:
         branch = request.path_params["branch"]
-        if not busy_lock.acquire(blocking=False):
-            return _error_response(BusyError("Another operation is in progress."))
         try:
-            env_ops.delete_environment(get_settings(), branch)
+            locks.acquire_branch(branch)
+        except BusyError as e:
+            return _error_response(e)
+        try:
+            settings = get_settings()
+            team = _get_ui_team(request)
+            env_ops.delete_environment(settings, team, branch)
             return JSONResponse({"ok": True, "result": {"deleted": branch}})
         except FlowError as e:
             return _error_response(e)
@@ -213,36 +231,49 @@ def _build_routes(
             logger.exception("Unexpected error in api_delete")
             return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
         finally:
-            busy_lock.release()
+            locks.release_branch(branch)
 
     def api_recreate(request: Request) -> JSONResponse:
         branch = request.path_params["branch"]
-        if not busy_lock.acquire(blocking=False):
-            return _error_response(BusyError("Another operation is in progress."))
+        try:
+            locks.acquire_branch(branch)
+        except BusyError as e:
+            return _error_response(e)
         try:
             import docker as _docker
             from oduflow.docker_ops.client import get_client as _get_client
 
             settings = get_settings()
+            team = _get_ui_team(request)
             client = _get_client()
-            odoo_container_name = env_ops.get_resource_name(branch, "odoo", settings.prefix)
+            odoo_container_name = env_ops.get_resource_name(
+                branch, "odoo", settings.prefix
+            )
             try:
                 container = client.containers.get(odoo_container_name)
                 labels = container.labels
             except _docker.errors.NotFound:
-                return _error_response(NotFoundError(f"Environment '{branch}' not found."))
+                return _error_response(
+                    NotFoundError(f"Environment '{branch}' not found.")
+                )
 
             repo_url = labels.get(settings.repo_label, "")
             odoo_image = labels.get(settings.image_label, "")
             template_raw = labels.get("oduflow.template", "")
-            template_name = template_raw if template_raw and template_raw != "none" else None
+            template_name = (
+                template_raw if template_raw and template_raw != "none" else None
+            )
             extra_addons_raw = labels.get("oduflow.extra_addons", "{}")
             extra_addons = json.loads(extra_addons_raw) or None
             git_user = labels.get("oduflow.git_user", "")
 
-            env_ops.delete_environment(settings, branch)
+            env_ops.delete_environment(settings, team, branch)
             result = env_ops.create_environment(
-                settings, branch, repo_url, odoo_image,
+                settings,
+                team,
+                branch,
+                repo_url,
+                odoo_image,
                 template_name=template_name,
                 extra_addons=extra_addons,
                 git_user=git_user,
@@ -254,13 +285,12 @@ def _build_routes(
             logger.exception("Unexpected error in api_recreate")
             return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
         finally:
-            busy_lock.release()
+            locks.release_branch(branch)
 
     async def api_create(request: Request) -> JSONResponse:
-        if not busy_lock.acquire(blocking=False):
-            return _error_response(BusyError("Another operation is in progress."))
         try:
             import json as _json
+
             body = await request.json()
             branch_name = (body.get("branch_name") or "").strip()
             repo_url = (body.get("repo_url") or "").strip()
@@ -273,6 +303,10 @@ def _build_routes(
                     {"ok": False, "error": "branch_name is required."},
                     status_code=400,
                 )
+            try:
+                locks.acquire_branch(branch_name)
+            except BusyError as e:
+                return _error_response(e)
             resolved_template: str | None
             if not template_name_raw or template_name_raw.lower() == "none":
                 resolved_template = None
@@ -281,13 +315,14 @@ def _build_routes(
 
             # Load metadata from template
             settings = get_settings()
+            team = _get_ui_team(request)
             extra_dict = None
             if isinstance(extra_addons_raw, dict):
                 extra_dict = extra_addons_raw or None
             elif isinstance(extra_addons_raw, str) and extra_addons_raw.strip():
                 extra_dict = _parse_extra_addons(extra_addons_raw.strip()) or None
             if resolved_template:
-                metadata_path = settings.get_template_metadata_path(resolved_template)
+                metadata_path = team.get_template_metadata_path(resolved_template)
                 if os.path.isfile(metadata_path):
                     with open(metadata_path) as f:
                         metadata = _json.load(f)
@@ -304,11 +339,18 @@ def _build_routes(
 
             if not repo_url or not odoo_image:
                 return JSONResponse(
-                    {"ok": False, "error": "repo_url and odoo_image are required (not found in template metadata either)."},
+                    {
+                        "ok": False,
+                        "error": "repo_url and odoo_image are required (not found in template metadata either).",
+                    },
                     status_code=400,
                 )
             result = env_ops.create_environment(
-                settings, branch_name, repo_url, odoo_image,
+                settings,
+                team,
+                branch_name,
+                repo_url,
+                odoo_image,
                 template_name=resolved_template,
                 extra_addons=extra_dict,
                 git_user=git_user,
@@ -320,7 +362,7 @@ def _build_routes(
             logger.exception("Unexpected error in api_create")
             return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
         finally:
-            busy_lock.release()
+            locks.release_branch(branch_name)
 
     def api_logs(request: Request) -> JSONResponse:
         branch = request.path_params["branch"]
@@ -340,16 +382,18 @@ def _build_routes(
     def api_stats(request: Request) -> JSONResponse:
         try:
             settings = get_settings()
-            containers = get_container_stats(settings)
+            containers = get_container_stats(settings, _get_ui_team(request))
             system = get_system_stats()
-            return JSONResponse({"ok": True, "containers": containers, "system": system})
+            return JSONResponse(
+                {"ok": True, "containers": containers, "system": system}
+            )
         except Exception as e:
             logger.exception("Unexpected error in api_stats")
             return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
 
     def api_templates(request: Request) -> JSONResponse:
         try:
-            templates = system_ops.list_templates(get_settings())
+            templates = system_ops.list_templates(get_settings(), _get_ui_team(request))
             return JSONResponse({"ok": True, "templates": templates})
         except FlowError as e:
             return _error_response(e)
@@ -359,7 +403,7 @@ def _build_routes(
 
     def api_services(request: Request) -> JSONResponse:
         try:
-            services = service_ops.list_services(get_settings())
+            services = service_ops.list_services(get_settings(), _get_ui_team(request))
             return JSONResponse({"ok": True, "services": services})
         except FlowError as e:
             return _error_response(e)
@@ -368,8 +412,11 @@ def _build_routes(
             return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
 
     async def api_service_create(request: Request) -> JSONResponse:
-        if not busy_lock.acquire(blocking=False):
-            return _error_response(BusyError("Another operation is in progress."))
+        team = _get_ui_team(request)
+        try:
+            locks.acquire_team(team.team_id)
+        except BusyError as e:
+            return _error_response(e)
         try:
             body = await request.json()
             name = (body.get("name") or "").strip()
@@ -385,13 +432,20 @@ def _build_routes(
             env_vars = None
             if env_vars_raw:
                 import re
+
                 env_vars = dict(
                     item.split("=", 1)
                     for item in re.split(r"[\n,]+", env_vars_raw)
                     if "=" in item
                 )
             result = service_ops.create_service(
-                get_settings(), name, image, int(port), hostname=hostname, env_vars=env_vars
+                get_settings(),
+                team,
+                name,
+                image,
+                int(port),
+                hostname=hostname,
+                env_vars=env_vars,
             )
             return JSONResponse({"ok": True, "result": result})
         except FlowError as e:
@@ -400,14 +454,17 @@ def _build_routes(
             logger.exception("Unexpected error in api_service_create")
             return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
         finally:
-            busy_lock.release()
+            locks.release_team(team.team_id)
 
     def api_service_update(request: Request) -> JSONResponse:
         name = request.path_params["name"]
-        if not busy_lock.acquire(blocking=False):
-            return _error_response(BusyError("Another operation is in progress."))
+        team = _get_ui_team(request)
         try:
-            result = service_ops.update_service(get_settings(), name)
+            locks.acquire_team(team.team_id)
+        except BusyError as e:
+            return _error_response(e)
+        try:
+            result = service_ops.update_service(get_settings(), team, name)
             return JSONResponse({"ok": True, "result": result})
         except FlowError as e:
             return _error_response(e)
@@ -415,12 +472,15 @@ def _build_routes(
             logger.exception("Unexpected error in api_service_update")
             return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
         finally:
-            busy_lock.release()
+            locks.release_team(team.team_id)
 
     def api_service_delete(request: Request) -> JSONResponse:
         name = request.path_params["name"]
-        if not busy_lock.acquire(blocking=False):
-            return _error_response(BusyError("Another operation is in progress."))
+        team = _get_ui_team(request)
+        try:
+            locks.acquire_team(team.team_id)
+        except BusyError as e:
+            return _error_response(e)
         try:
             result = service_ops.delete_service(get_settings(), name)
             return JSONResponse({"ok": True, "result": result})
@@ -430,7 +490,7 @@ def _build_routes(
             logger.exception("Unexpected error in api_service_delete")
             return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
         finally:
-            busy_lock.release()
+            locks.release_team(team.team_id)
 
     def api_service_logs(request: Request) -> JSONResponse:
         name = request.path_params["name"]
@@ -449,7 +509,7 @@ def _build_routes(
 
     def api_service_presets(request: Request) -> JSONResponse:
         try:
-            presets = service_presets.list_presets(get_settings())
+            presets = service_presets.list_presets(_get_ui_team(request))
             return JSONResponse({"ok": True, "presets": presets})
         except FlowError as e:
             return _error_response(e)
@@ -458,8 +518,11 @@ def _build_routes(
             return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
 
     async def api_service_restore(request: Request) -> JSONResponse:
-        if not busy_lock.acquire(blocking=False):
-            return _error_response(BusyError("Another operation is in progress."))
+        team = _get_ui_team(request)
+        try:
+            locks.acquire_team(team.team_id)
+        except BusyError as e:
+            return _error_response(e)
         try:
             body = await request.json()
             name = (body.get("name") or "").strip()
@@ -475,13 +538,20 @@ def _build_routes(
             env_vars = None
             if env_vars_raw:
                 import re
+
                 env_vars = dict(
                     item.split("=", 1)
                     for item in re.split(r"[\n,]+", env_vars_raw)
                     if "=" in item
                 )
             result = service_ops.create_service(
-                get_settings(), name, image, int(port), hostname=hostname, env_vars=env_vars,
+                get_settings(),
+                team,
+                name,
+                image,
+                int(port),
+                hostname=hostname,
+                env_vars=env_vars,
             )
             return JSONResponse({"ok": True, "result": result})
         except FlowError as e:
@@ -490,12 +560,12 @@ def _build_routes(
             logger.exception("Unexpected error in api_service_restore")
             return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
         finally:
-            busy_lock.release()
+            locks.release_team(team.team_id)
 
     def api_service_preset_delete(request: Request) -> JSONResponse:
         name = request.path_params["name"]
         try:
-            service_presets.delete_preset(get_settings(), name)
+            service_presets.delete_preset(_get_ui_team(request), name)
             return JSONResponse({"ok": True, "result": {"deleted": name}})
         except FlowError as e:
             return _error_response(e)
@@ -506,18 +576,25 @@ def _build_routes(
     def api_agent_guides_list(request: Request) -> JSONResponse:
         try:
             guides = []
-            guides_dir = os.path.join(get_settings().data_dir, "agent_guides")
+            guides_dir = os.path.join(_get_ui_team(request).data_dir, "agent_guides")
             bundled_dir = _TEMPLATE_DIR / "agent_guides"
             seen = set()
             if os.path.isdir(guides_dir):
                 for fname in sorted(os.listdir(guides_dir)):
                     if fname.endswith(".md"):
                         seen.add(fname)
-                        guides.append({"filename": fname, "title": _guide_title(os.path.join(guides_dir, fname))})
+                        guides.append(
+                            {
+                                "filename": fname,
+                                "title": _guide_title(os.path.join(guides_dir, fname)),
+                            }
+                        )
             if bundled_dir.is_dir():
                 for fpath in sorted(bundled_dir.iterdir()):
                     if fpath.suffix == ".md" and fpath.name not in seen:
-                        guides.append({"filename": fpath.name, "title": _guide_title(str(fpath))})
+                        guides.append(
+                            {"filename": fpath.name, "title": _guide_title(str(fpath))}
+                        )
             return JSONResponse({"ok": True, "guides": guides})
         except Exception as e:
             logger.exception("Unexpected error in api_agent_guides_list")
@@ -527,22 +604,27 @@ def _build_routes(
         try:
             filename = request.path_params["filename"]
             if not filename.endswith(".md") or "/" in filename or "\\" in filename:
-                return JSONResponse({"ok": False, "error": "Invalid filename"}, status_code=400)
-            guides_dir = os.path.join(get_settings().data_dir, "agent_guides")
+                return JSONResponse(
+                    {"ok": False, "error": "Invalid filename"}, status_code=400
+                )
+            guides_dir = os.path.join(_get_ui_team(request).data_dir, "agent_guides")
             guide_path = os.path.join(guides_dir, filename)
             content = ""
             if os.path.isfile(guide_path):
                 with open(guide_path, "r", encoding="utf-8") as f:
                     content = f.read()
             elif (_TEMPLATE_DIR / "agent_guides" / filename).is_file():
-                content = (_TEMPLATE_DIR / "agent_guides" / filename).read_text(encoding="utf-8")
+                content = (_TEMPLATE_DIR / "agent_guides" / filename).read_text(
+                    encoding="utf-8"
+                )
             else:
-                return JSONResponse({"ok": False, "error": "Guide not found"}, status_code=404)
+                return JSONResponse(
+                    {"ok": False, "error": "Guide not found"}, status_code=404
+                )
             return JSONResponse({"ok": True, "content": content, "filename": filename})
         except Exception as e:
             logger.exception("Unexpected error in api_agent_guide_get")
             return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
-
 
     def api_license(request: Request) -> JSONResponse:
         info = get_license_info()
@@ -553,7 +635,9 @@ def _build_routes(
             body = await request.json()
             key_text = (body.get("key") or "").strip()
             if not key_text:
-                return JSONResponse({"ok": False, "error": "License key is required."}, status_code=400)
+                return JSONResponse(
+                    {"ok": False, "error": "License key is required."}, status_code=400
+                )
             info = install_license_from_text(key_text)
             return JSONResponse({"ok": True, "license": info.to_dict()})
         except ValueError as e:
@@ -564,8 +648,9 @@ def _build_routes(
 
     def api_extra_repos(request: Request) -> JSONResponse:
         from oduflow.extra_addons import list_extra_repos
+
         try:
-            repos = list_extra_repos(get_settings())
+            repos = list_extra_repos(_get_ui_team(request))
             return JSONResponse({"ok": True, "repos": repos})
         except FlowError as e:
             return _error_response(e)
@@ -574,8 +659,11 @@ def _build_routes(
             return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
 
     async def api_extra_repo_add(request: Request) -> JSONResponse:
-        if not busy_lock.acquire(blocking=False):
-            return _error_response(BusyError("Another operation is in progress."))
+        team = _get_ui_team(request)
+        try:
+            locks.acquire_team(team.team_id)
+        except BusyError as e:
+            return _error_response(e)
         try:
             body = await request.json()
             name = (body.get("name") or "").strip()
@@ -587,7 +675,8 @@ def _build_routes(
                     status_code=400,
                 )
             from oduflow.extra_addons import clone_extra_repo
-            result = clone_extra_repo(get_settings(), name, repo_url, git_user=git_user)
+
+            result = clone_extra_repo(team, name, repo_url, git_user=git_user)
             return JSONResponse({"ok": True, "result": result})
         except FlowError as e:
             return _error_response(e)
@@ -595,15 +684,19 @@ def _build_routes(
             logger.exception("Unexpected error in api_extra_repo_add")
             return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
         finally:
-            busy_lock.release()
+            locks.release_team(team.team_id)
 
     async def api_extra_repo_pull(request: Request) -> JSONResponse:
         name = request.path_params["name"]
-        if not busy_lock.acquire(blocking=False):
-            return _error_response(BusyError("Another operation is in progress."))
+        team = _get_ui_team(request)
+        try:
+            locks.acquire_team(team.team_id)
+        except BusyError as e:
+            return _error_response(e)
         try:
             from oduflow.extra_addons import fetch_extra_repo
-            summary = fetch_extra_repo(get_settings(), name)
+
+            summary = fetch_extra_repo(team, name)
             return JSONResponse({"ok": True, "result": summary})
         except FlowError as e:
             return _error_response(e)
@@ -611,13 +704,15 @@ def _build_routes(
             logger.exception("Unexpected error in api_extra_repo_pull")
             return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
         finally:
-            busy_lock.release()
+            locks.release_team(team.team_id)
 
     def api_extra_repo_protect(request: Request) -> JSONResponse:
         name = request.path_params["name"]
         try:
             from oduflow.extra_addons import protect_extra_repo
-            result = protect_extra_repo(get_settings(), name)
+
+            team = _get_ui_team(request)
+            result = protect_extra_repo(team, name)
             return JSONResponse({"ok": True, "result": result})
         except FlowError as e:
             return _error_response(e)
@@ -629,7 +724,9 @@ def _build_routes(
         name = request.path_params["name"]
         try:
             from oduflow.extra_addons import unprotect_extra_repo
-            result = unprotect_extra_repo(get_settings(), name)
+
+            team = _get_ui_team(request)
+            result = unprotect_extra_repo(team, name)
             return JSONResponse({"ok": True, "result": result})
         except FlowError as e:
             return _error_response(e)
@@ -639,11 +736,15 @@ def _build_routes(
 
     def api_extra_repo_delete(request: Request) -> JSONResponse:
         name = request.path_params["name"]
-        if not busy_lock.acquire(blocking=False):
-            return _error_response(BusyError("Another operation is in progress."))
+        team = _get_ui_team(request)
+        try:
+            locks.acquire_team(team.team_id)
+        except BusyError as e:
+            return _error_response(e)
         try:
             from oduflow.extra_addons import delete_extra_repo
-            delete_extra_repo(get_settings(), name)
+
+            delete_extra_repo(get_settings(), team, name)
             return JSONResponse({"ok": True, "result": {"deleted": name}})
         except FlowError as e:
             return _error_response(e)
@@ -651,12 +752,14 @@ def _build_routes(
             logger.exception("Unexpected error in api_extra_repo_delete")
             return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
         finally:
-            busy_lock.release()
+            locks.release_team(team.team_id)
 
     def api_credentials(request: Request) -> JSONResponse:
         from oduflow.git_ops import list_credentials
+
         try:
-            creds = list_credentials()
+            team = _get_ui_team(request)
+            creds = list_credentials(cred_file=team.git_credentials_file())
             return JSONResponse({"ok": True, "credentials": creds})
         except Exception as e:
             logger.exception("Unexpected error in api_credentials")
@@ -672,7 +775,11 @@ def _build_routes(
                     status_code=400,
                 )
             from oduflow import git_ops
-            result = git_ops.setup_repo_auth(repo_url)
+
+            team = _get_ui_team(request)
+            result = git_ops.setup_repo_auth(
+                repo_url, cred_file=team.git_credentials_file()
+            )
             return JSONResponse({"ok": True, "result": result})
         except FlowError as e:
             return _error_response(e)
@@ -691,13 +798,22 @@ def _build_routes(
                     status_code=400,
                 )
             from oduflow.git_ops import delete_credential
-            removed = delete_credential(host, username)
+
+            team = _get_ui_team(request)
+            removed = delete_credential(
+                host, username, cred_file=team.git_credentials_file()
+            )
             if not removed:
                 return JSONResponse(
-                    {"ok": False, "error": f"Credential not found for {host}/{username}."},
+                    {
+                        "ok": False,
+                        "error": f"Credential not found for {host}/{username}.",
+                    },
                     status_code=404,
                 )
-            return JSONResponse({"ok": True, "result": {"host": host, "username": username}})
+            return JSONResponse(
+                {"ok": True, "result": {"host": host, "username": username}}
+            )
         except Exception as e:
             logger.exception("Unexpected error in api_credential_delete")
             return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
@@ -713,7 +829,11 @@ def _build_routes(
                     status_code=400,
                 )
             from oduflow.git_ops import validate_credential
-            status = validate_credential(host, username)
+
+            team = _get_ui_team(request)
+            status = validate_credential(
+                host, username, cred_file=team.git_credentials_file()
+            )
             return JSONResponse({"ok": True, "status": status})
         except Exception as e:
             logger.exception("Unexpected error in api_credential_validate")
@@ -722,7 +842,8 @@ def _build_routes(
     def api_protect(request: Request) -> JSONResponse:
         branch = request.path_params["branch"]
         try:
-            result = env_ops.protect_environment(get_settings(), branch)
+            team = _get_ui_team(request)
+            result = env_ops.protect_environment(get_settings(), team, branch)
             return JSONResponse({"ok": True, "result": result})
         except FlowError as e:
             return _error_response(e)
@@ -733,7 +854,8 @@ def _build_routes(
     def api_unprotect(request: Request) -> JSONResponse:
         branch = request.path_params["branch"]
         try:
-            result = env_ops.unprotect_environment(get_settings(), branch)
+            team = _get_ui_team(request)
+            result = env_ops.unprotect_environment(get_settings(), team, branch)
             return JSONResponse({"ok": True, "result": result})
         except FlowError as e:
             return _error_response(e)
@@ -750,26 +872,43 @@ def _build_routes(
             from oduflow.naming import get_resource_name, get_db_name
 
             settings = get_settings()
+            team = _get_ui_team(websocket)
             client = _get_client()
             container_name = get_resource_name(branch, "odoo", settings.prefix)
-            db_name = get_db_name(branch, settings.instance_id)
+            db_name = get_db_name(branch, team.team_id)
 
             try:
                 container = client.containers.get(container_name)
             except _docker.errors.NotFound:
-                await websocket.send_text("\x1b[31mError: environment not found\x1b[0m\r\n")
+                await websocket.send_text(
+                    "\x1b[31mError: environment not found\x1b[0m\r\n"
+                )
                 await websocket.close(code=1011)
                 return
 
             if container.status != "running":
-                await websocket.send_text("\x1b[31mError: container is not running\x1b[0m\r\n")
+                await websocket.send_text(
+                    "\x1b[31mError: container is not running\x1b[0m\r\n"
+                )
                 await websocket.close(code=1011)
                 return
 
             exec_id = client.api.exec_create(
                 container.id,
-                ["/entrypoint.sh", "odoo", "shell", "-d", db_name, "--no-http", "-c", "/etc/odoo/odoo.conf"],
-                stdin=True, tty=True, stdout=True, stderr=True,
+                [
+                    "/entrypoint.sh",
+                    "odoo",
+                    "shell",
+                    "-d",
+                    db_name,
+                    "--no-http",
+                    "-c",
+                    "/etc/odoo/odoo.conf",
+                ],
+                stdin=True,
+                tty=True,
+                stdout=True,
+                stderr=True,
             )["Id"]
             sock = client.api.exec_start(exec_id, detach=False, tty=True, socket=True)
             raw_sock = sock._sock
@@ -783,7 +922,9 @@ def _build_routes(
                         data = await loop.run_in_executor(None, raw_sock.recv, 4096)
                         if not data:
                             break
-                        await websocket.send_text(data.decode("utf-8", errors="replace"))
+                        await websocket.send_text(
+                            data.decode("utf-8", errors="replace")
+                        )
                 except Exception:
                     pass
                 finally:
@@ -795,7 +936,9 @@ def _build_routes(
                         text = await websocket.receive_text()
                         msg = json.loads(text)
                         if msg.get("type") == "input":
-                            await loop.run_in_executor(None, raw_sock.sendall, msg["data"].encode("utf-8"))
+                            await loop.run_in_executor(
+                                None, raw_sock.sendall, msg["data"].encode("utf-8")
+                            )
                         elif msg.get("type") == "resize":
                             cols = msg.get("cols", 80)
                             rows = msg.get("rows", 24)
@@ -837,28 +980,39 @@ def _build_routes(
             from oduflow.naming import get_db_name
 
             settings = get_settings()
+            team = _get_ui_team(websocket)
             client = _get_client()
-            db_name = get_db_name(branch, settings.instance_id)
+            db_name = get_db_name(branch, team.team_id)
 
             try:
                 db_container = client.containers.get(settings.shared_db_container)
             except _docker.errors.NotFound:
-                await websocket.send_text("\x1b[31mError: database container not found\x1b[0m\r\n")
+                await websocket.send_text(
+                    "\x1b[31mError: database container not found\x1b[0m\r\n"
+                )
                 await websocket.close(code=1011)
                 return
 
             if db_container.status != "running":
-                await websocket.send_text("\x1b[31mError: database container is not running\x1b[0m\r\n")
+                await websocket.send_text(
+                    "\x1b[31mError: database container is not running\x1b[0m\r\n"
+                )
                 await websocket.close(code=1011)
                 return
 
             from oduflow.env_credentials import load_credentials
-            creds = load_credentials(branch, settings.workspaces_dir, settings.db_user, settings.db_password)
+
+            creds = load_credentials(
+                branch, team.workspaces_dir, settings.db_user, settings.db_password
+            )
 
             exec_id = client.api.exec_create(
                 db_container.id,
                 ["psql", "-U", creds["pg_user"], "-d", db_name],
-                stdin=True, tty=True, stdout=True, stderr=True,
+                stdin=True,
+                tty=True,
+                stdout=True,
+                stderr=True,
             )["Id"]
             sock = client.api.exec_start(exec_id, detach=False, tty=True, socket=True)
             raw_sock = sock._sock
@@ -872,7 +1026,9 @@ def _build_routes(
                         data = await loop.run_in_executor(None, raw_sock.recv, 4096)
                         if not data:
                             break
-                        await websocket.send_text(data.decode("utf-8", errors="replace"))
+                        await websocket.send_text(
+                            data.decode("utf-8", errors="replace")
+                        )
                 except Exception:
                     pass
                 finally:
@@ -884,7 +1040,9 @@ def _build_routes(
                         text = await websocket.receive_text()
                         msg = json.loads(text)
                         if msg.get("type") == "input":
-                            await loop.run_in_executor(None, raw_sock.sendall, msg["data"].encode("utf-8"))
+                            await loop.run_in_executor(
+                                None, raw_sock.sendall, msg["data"].encode("utf-8")
+                            )
                         elif msg.get("type") == "resize":
                             cols = msg.get("cols", 80)
                             rows = msg.get("rows", 24)
@@ -934,8 +1092,12 @@ def _build_routes(
         Route("/api/environments/{branch:path}/restart", api_restart, methods=["POST"]),
         Route("/api/environments/{branch:path}/sync", api_sync, methods=["POST"]),
         Route("/api/environments/{branch:path}/protect", api_protect, methods=["POST"]),
-        Route("/api/environments/{branch:path}/unprotect", api_unprotect, methods=["POST"]),
-        Route("/api/environments/{branch:path}/recreate", api_recreate, methods=["POST"]),
+        Route(
+            "/api/environments/{branch:path}/unprotect", api_unprotect, methods=["POST"]
+        ),
+        Route(
+            "/api/environments/{branch:path}/recreate", api_recreate, methods=["POST"]
+        ),
         Route("/api/environments/{branch:path}/delete", api_delete, methods=["POST"]),
         Route("/api/services", api_services, methods=["GET"]),
         Route("/api/services/create", api_service_create, methods=["POST"]),
@@ -944,13 +1106,25 @@ def _build_routes(
         Route("/api/services/{name}/logs", api_service_logs, methods=["GET"]),
         Route("/api/service-presets", api_service_presets, methods=["GET"]),
         Route("/api/service-presets/restore", api_service_restore, methods=["POST"]),
-        Route("/api/service-presets/{name}/delete", api_service_preset_delete, methods=["POST"]),
+        Route(
+            "/api/service-presets/{name}/delete",
+            api_service_preset_delete,
+            methods=["POST"],
+        ),
         Route("/api/extra-repos", api_extra_repos, methods=["GET"]),
         Route("/api/extra-repos/add", api_extra_repo_add, methods=["POST"]),
         Route("/api/extra-repos/{name}/pull", api_extra_repo_pull, methods=["POST"]),
-        Route("/api/extra-repos/{name}/protect", api_extra_repo_protect, methods=["POST"]),
-        Route("/api/extra-repos/{name}/unprotect", api_extra_repo_unprotect, methods=["POST"]),
-        Route("/api/extra-repos/{name}/delete", api_extra_repo_delete, methods=["POST"]),
+        Route(
+            "/api/extra-repos/{name}/protect", api_extra_repo_protect, methods=["POST"]
+        ),
+        Route(
+            "/api/extra-repos/{name}/unprotect",
+            api_extra_repo_unprotect,
+            methods=["POST"],
+        ),
+        Route(
+            "/api/extra-repos/{name}/delete", api_extra_repo_delete, methods=["POST"]
+        ),
         Route("/api/credentials", api_credentials, methods=["GET"]),
         Route("/api/credentials/add", api_credential_add, methods=["POST"]),
         Route("/api/credentials/delete", api_credential_delete, methods=["POST"]),
@@ -964,19 +1138,21 @@ def _build_routes(
 def mount_web_ui(
     app,
     get_settings: "callable",
-    busy_lock: threading.Lock,
+    locks: LockManager,
 ) -> None:
     from starlette.routing import Router
 
-    routes = _build_routes(get_settings, busy_lock)
+    routes = _build_routes(get_settings, locks)
     sub_app: ASGIApp = Router(routes=routes)
 
-    ui_password = (os.getenv("ODUFLOW_UI_PASSWORD") or "").strip()
-    if ui_password:
-        sub_app = BasicAuthMiddleware(sub_app, ui_password)
+    settings = get_settings()
+    has_ui_passwords = any(t.ui_password for t in settings.teams.values())
+    if has_ui_passwords:
+        sub_app = BasicAuthMiddleware(sub_app, get_settings)
         logger.info("Web UI Basic Auth ENABLED (user: %s)", _AUTH_USER)
     else:
-        logger.warning("Web UI auth DISABLED (ODUFLOW_UI_PASSWORD not set)")
+        logger.warning("Web UI auth DISABLED (no ui_password set in any team)")
 
     from starlette.routing import Mount
+
     app.routes.append(Mount("/", app=sub_app))

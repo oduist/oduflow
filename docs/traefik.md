@@ -16,20 +16,23 @@ For production-like access with HTTPS, Oduflow can deploy a **Traefik** reverse 
 
    Every environment will get a subdomain: `feature-login.dev.example.com`, `fix-invoice.dev.example.com`, etc.
 
-2. **Set the environment variables** in `.env`:
+2. **Set the configuration** in `oduflow.toml`:
 
-   ```bash
-   ODUFLOW_ROUTING_MODE=traefik
-   ODUFLOW_BASE_DOMAIN=dev.example.com
-   ODUFLOW_ACME_EMAIL=admin@example.com
+   ```toml
+   [routing]
+   mode = "traefik"
+   acme_email = "admin@example.com"
+
+   [team.1]
+   hostname = "dev.example.com"
    ```
 
-3. **Run `oduflow init`** (or restart the server). Oduflow will create a Traefik v3.6 container that:
+3. **Run `oduflow init`** (or restart the server). Oduflow will create a Traefik v3 container that:
    - Listens on ports 80 and 443
    - Automatically redirects HTTP to HTTPS
    - Obtains a separate TLS certificate from Let's Encrypt for each environment subdomain via HTTP-01 challenge
    - Routes requests to the correct Odoo container based on the subdomain
-   - Also routes the Oduflow server itself via `ODUFLOW_BASE_DOMAIN`
+   - Also routes the Oduflow server itself via the team `hostname`
 
 ## How certificates work
 

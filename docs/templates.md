@@ -15,27 +15,27 @@ If you don't have a production database dump — for example, you're starting a 
 ### Generate a clean template
 
 ```bash
-oduflow init-template --odoo-image odoo:17.0
+oduflow init-template --odoo-image odoo:17.0 --template-name default
 ```
 
 If a `dump.sql` or filestore already exists, the command will refuse to run. Use `--force` to overwrite:
 
 ```bash
-oduflow init-template --odoo-image odoo:17.0 --force
+oduflow init-template --odoo-image odoo:17.0 --template-name default --force
 ```
 
 This will:
 
 1. Start a PostgreSQL container (if not already running)
 2. Run a temporary Odoo container that initializes a fresh database with the `base` module
-3. Dump the database to `$ODUFLOW_DATA_DIR/instance_{ID}/templates/default/dump.pgdump`
-4. Extract the filestore to `$ODUFLOW_DATA_DIR/instance_{ID}/templates/default/filestore/`
+3. Dump the database to `{data_dir}/team_{ID}/templates/{name}/dump.pgdump`
+4. Extract the filestore to `{data_dir}/team_{ID}/templates/{name}/filestore/`
 5. Load the dump into the template database automatically
 
 ### Install additional modules during generation
 
 ```bash
-oduflow init-template --odoo-image odoo:17.0 --modules base,web,contacts,sale
+oduflow init-template --odoo-image odoo:17.0 --template-name default --modules base,web,contacts,sale
 ```
 
 ### Named templates for different projects
@@ -47,13 +47,13 @@ oduflow init-template --odoo-image odoo:15.0 --template-name legacy-v15
 
 ## From a Production Dump
 
-Place your dump file at `$ODUFLOW_DATA_DIR/instance_{ID}/templates/default/dump.sql` (plain SQL) or `dump.pgdump` (PostgreSQL custom format) and optionally copy the filestore:
+Place your dump file at `{data_dir}/team_{ID}/templates/default/dump.sql` (plain SQL) or `dump.pgdump` (PostgreSQL custom format) and optionally copy the filestore:
 
 ```bash
-mkdir -p /srv/oduflow/instance_1/templates/default/
-cp /path/to/production.sql /srv/oduflow/instance_1/templates/default/dump.sql
-cp -r /path/to/filestore/ /srv/oduflow/instance_1/templates/default/filestore/
-oduflow init
+mkdir -p /srv/oduflow/team_1/templates/default/
+cp /path/to/production.sql /srv/oduflow/team_1/templates/default/dump.sql
+cp -r /path/to/filestore/ /srv/oduflow/team_1/templates/default/filestore/
+oduflow reload-template default
 ```
 
 ## Editing the Template Database
@@ -63,7 +63,7 @@ Once you have a template, you can modify it interactively — install modules, c
 **Start the template editor:**
 
 ```bash
-oduflow template-up --odoo-image odoo:17.0
+oduflow template-up --odoo-image odoo:17.0 --template-name default
 ```
 
 This starts an Odoo container that works **directly** with the template database and filestore (no overlays, no copies). Open the printed URL in your browser, log in, and make any changes you need.
@@ -71,7 +71,7 @@ This starts an Odoo container that works **directly** with the template database
 **Save and stop:**
 
 ```bash
-oduflow template-down
+oduflow template-down --template-name default
 ```
 
 This stops the container, dumps the updated database, and restores the PostgreSQL template flag. The filestore is already updated in place since it was mounted directly.
@@ -83,7 +83,7 @@ All environments created after this will be based on the updated template.
 When you've made significant changes in a branch environment (installed modules, created configurations), you can save it as the new template:
 
 ```bash
-oduflow template-from-env my-branch
+oduflow template-from-env my-branch --template-name default
 oduflow template-from-env my-branch --template-name myproject  # save to a named template
 ```
 
@@ -105,8 +105,8 @@ This operation:
 Update the template from a newer production dump without touching the filestore:
 
 ```bash
-oduflow reload-template --dump-path /path/to/new.dump
-oduflow reload-template --template-name myproject --dump-path /path/to/new.dump
+oduflow reload-template default --dump-path /path/to/new.dump
+oduflow reload-template myproject --dump-path /path/to/new.dump
 ```
 
 ## Listing and Dropping Templates
@@ -115,8 +115,8 @@ oduflow reload-template --template-name myproject --dump-path /path/to/new.dump
 # List all template profiles with their status
 oduflow list-templates
 
-# Drop a named template (removes DB + files from disk)
-oduflow drop-template myproject
+# Delete a template profile (removes DB + files from disk)
+oduflow delete-template myproject
 ```
 
 ## Template Metadata
@@ -138,18 +138,18 @@ Each template profile can contain a `metadata.json` file that stores defaults an
 
 When `create_environment` is called with a template name, `repo_url`, `odoo_image`, and `extra_addons` are automatically loaded from metadata if not explicitly provided. This means after importing or configuring a template, you can create environments with just `branch_name` and `template_name` — all other parameters are inherited.
 
-The `use_overlay` flag determines whether new environments use fuse-overlayfs (for large filestores) or a simple copy (for small ones). It is set automatically based on `ODUFLOW_OVERLAY_THRESHOLD_MB` when the template is created.
+The `use_overlay` flag determines whether new environments use fuse-overlayfs (for large filestores) or a simple copy (for small ones). It is set automatically based on `overlay_threshold_mb` (in `[storage]`) when the template is created.
 
 ## Template Decision Matrix
 
 | Scenario | Command |
 |---|---|
-| New project, no existing database | `oduflow init-template --odoo-image odoo:17.0` |
-| Regenerate template from scratch | `oduflow init-template --odoo-image odoo:17.0 --force` |
+| New project, no existing database | `oduflow init-template --odoo-image odoo:17.0 --template-name default` |
+| Regenerate template from scratch | `oduflow init-template --odoo-image odoo:17.0 --template-name default --force` |
 | Named template for a specific project | `oduflow init-template --odoo-image odoo:17.0 --template-name myproject` |
-| Have a production dump file | Place dump at `$ODUFLOW_DATA_DIR/instance_{ID}/templates/default/dump.sql` and run `oduflow init` |
-| Need to install modules or configure the template | `oduflow template-up --odoo-image odoo:17.0` / `oduflow template-down` |
-| Update the template from a newer production dump | `oduflow reload-template --dump-path /path/to/new.dump` |
-| Save a branch environment as template | `oduflow template-from-env my-branch` |
+| Have a production dump file | Place dump at `{data_dir}/team_{ID}/templates/default/dump.sql` and run `oduflow reload-template default` |
+| Need to install modules or configure the template | `oduflow template-up --odoo-image odoo:17.0 --template-name default` / `oduflow template-down --template-name default` |
+| Update the template from a newer production dump | `oduflow reload-template default --dump-path /path/to/new.dump` |
+| Save a branch environment as template | `oduflow template-from-env my-branch --template-name default` |
 | List all templates | `oduflow list-templates` |
-| Drop a named template | `oduflow drop-template myproject` |
+| Delete a template | `oduflow delete-template myproject` |

@@ -26,6 +26,7 @@ MANIFEST
 .env*
 !.env.example
 .venv
+.venv312
 env/
 venv/
 ENV/

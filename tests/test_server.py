@@ -1,35 +1,48 @@
 import pytest
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 from fastmcp.exceptions import ToolError
-from oduflow.settings import Settings
+from oduflow.settings import Settings, TeamSettings
 
-TEST_SETTINGS = Settings(
-    external_host="localhost",
+TEST_TEAM = TeamSettings(
+    team_id="1",
+    data_dir="/tmp/flow-test",
+    port_registry_path="/tmp/flow-test/ports.json",
     port_range_start=50000,
     port_range_end=50100,
-    data_dir="/tmp/flow-test",
+)
+
+TEST_SETTINGS = Settings(
+    base_data_dir="/tmp/flow-test",
     db_user="odoo",
     db_password="odoo",
-    port_registry_path="/tmp/flow-test/ports.json",
+    teams={"1": TEST_TEAM},
 )
 
 
 @pytest.fixture(autouse=True)
 def inject_settings():
     import oduflow.server
+
     oduflow.server._settings = TEST_SETTINGS
     yield
     oduflow.server._settings = None
 
 
-from tool_helpers import call_tool as _call_tool
+@pytest.fixture(autouse=True)
+def inject_team():
+    with patch("oduflow.server._resolve_team", return_value=TEST_TEAM):
+        yield
+
+
+from tool_helpers import call_tool as _call_tool  # noqa: E402
 
 
 class TestCLIInitDestroy:
     @patch("oduflow.docker_ops.system_ops.init_system")
     def test_cli_init(self, mock_init):
         from oduflow.server import _run_init
+
         mock_init.return_value = {"status": "initialized"}
         _run_init(TEST_SETTINGS)
         mock_init.assert_called_once_with(TEST_SETTINGS)
@@ -37,7 +50,11 @@ class TestCLIInitDestroy:
     @patch("oduflow.docker_ops.system_ops.destroy_system")
     def test_cli_destroy(self, mock_destroy):
         from oduflow.server import _run_destroy
-        mock_destroy.return_value = {"status": "destroyed", "removed": "flow-db, flow-db-data, flow-net"}
+
+        mock_destroy.return_value = {
+            "status": "destroyed",
+            "removed": "flow-db, flow-db-data, flow-net",
+        }
         _run_destroy(TEST_SETTINGS)
         mock_destroy.assert_called_once_with(TEST_SETTINGS)
 
@@ -51,7 +68,13 @@ class TestCreateEnvironmentTool:
             "database": "oduflow_1_main",
             "workspace": "/tmp/ws",
         }
-        result = _call_tool("create_environment", branch_name="main", template_name="none", repo_url="https://repo.url", odoo_image="odoo:17.0")
+        result = _call_tool(
+            "create_environment",
+            branch_name="main",
+            template_name="none",
+            repo_url="https://repo.url",
+            odoo_image="odoo:17.0",
+        )
         assert "Environment provisioned successfully!" in result
         assert "Database: oduflow_1_main" in result
         assert "Template: none (init from scratch)" in result
@@ -63,14 +86,16 @@ class TestDeleteEnvironmentTool:
         mock_delete.return_value = []
         result = _call_tool("delete_environment", branch_name="main")
         assert "torn down" in result
-        mock_delete.assert_called_once_with(TEST_SETTINGS, "main")
+        mock_delete.assert_called_once_with(TEST_SETTINGS, TEST_TEAM, "main")
 
     @patch("oduflow.docker_ops.env_ops.delete_environment")
     def test_delete_with_warnings(self, mock_delete):
-        mock_delete.return_value = ['Failed to drop database "oduflow_main": connection refused']
+        mock_delete.return_value = [
+            'Failed to drop database "oduflow_main": connection refused'
+        ]
         result = _call_tool("delete_environment", branch_name="main")
         assert "torn down" in result
-        assert "⚠️ Warnings:" in result
+        assert "Warnings:" in result
         assert "Failed to drop database" in result
 
 
@@ -82,7 +107,13 @@ class TestListEnvironmentsTool:
                 "branch": "main",
                 "status": "running",
                 "url": "http://localhost:50000",
-                "containers": [{"name": "oduflow-main-odoo", "status": "running", "image": "odoo:15.0"}],
+                "containers": [
+                    {
+                        "name": "oduflow-main-odoo",
+                        "status": "running",
+                        "image": "odoo:15.0",
+                    }
+                ],
             }
         ]
         result = _call_tool("list_environments")
@@ -123,6 +154,7 @@ class TestErrorHandling:
     @patch("oduflow.docker_ops.env_ops.restart_environment")
     def test_flow_error_raises_value_error(self, mock_restart):
         from oduflow.errors import NotFoundError
+
         mock_restart.side_effect = NotFoundError("container not found")
         with pytest.raises(ToolError, match="container not found"):
             _call_tool("restart_environment", branch_name="main")
@@ -131,6 +163,7 @@ class TestErrorHandling:
 def _get_tool_fn(tool_name: str):
     """Get the raw function for a registered MCP tool (avoids name collision with call_tool)."""
     from oduflow.server import mcp
+
     return mcp._tool_manager._tools[tool_name].fn
 
 
@@ -143,7 +176,9 @@ class TestCreateServiceTool:
             "url": "http://localhost:6379",
             "image": "redis:7",
         }
-        result = _get_tool_fn("create_service")(name="redis", image="redis:7", port=6379)
+        result = _get_tool_fn("create_service")(
+            name="redis", image="redis:7", port=6379
+        )
         assert "Service created successfully!" in result
         assert "redis" in result
         assert "oduflow-svc-redis" in result
@@ -175,7 +210,9 @@ class TestCreateServiceTool:
             "url": "http://localhost:6379",
             "image": "redis:7",
         }
-        _get_tool_fn("create_service")(name="redis", image="redis:7", port=6379, env_vars="")
+        _get_tool_fn("create_service")(
+            name="redis", image="redis:7", port=6379, env_vars=""
+        )
         call_kwargs = mock_create.call_args
         assert call_kwargs[1]["env_vars"] is None
 
@@ -193,11 +230,12 @@ class TestUpdateServiceTool:
         assert "Service updated successfully!" in result
         assert "redis" in result
         assert "oduflow-svc-redis" in result
-        mock_update.assert_called_once_with(TEST_SETTINGS, "redis")
+        mock_update.assert_called_once_with(TEST_SETTINGS, TEST_TEAM, "redis")
 
     @patch("oduflow.docker_ops.service_ops.update_service")
     def test_update_not_found(self, mock_update):
         from oduflow.errors import NotFoundError
+
         mock_update.side_effect = NotFoundError("Service 'redis' not found")
         with pytest.raises(ToolError, match="Service 'redis' not found"):
             _get_tool_fn("update_service")(name="redis")
@@ -206,7 +244,10 @@ class TestUpdateServiceTool:
 class TestDeleteServiceTool:
     @patch("oduflow.docker_ops.service_ops.delete_service")
     def test_delete(self, mock_delete):
-        mock_delete.return_value = {"name": "redis", "container_name": "oduflow-svc-redis"}
+        mock_delete.return_value = {
+            "name": "redis",
+            "container_name": "oduflow-svc-redis",
+        }
         result = _get_tool_fn("delete_service")(name="redis")
         assert "deleted" in result
         assert "redis" in result
@@ -253,6 +294,7 @@ class TestGetServiceLogsTool:
     @patch("oduflow.docker_ops.service_ops.get_service_logs")
     def test_logs_error(self, mock_logs):
         from oduflow.errors import NotFoundError
+
         mock_logs.side_effect = NotFoundError("Service 'redis' not found")
         with pytest.raises(ToolError, match="Service 'redis' not found"):
             _get_tool_fn("get_service_logs")(name="redis")
@@ -261,35 +303,53 @@ class TestGetServiceLogsTool:
 class TestResetAdminPasswordTool:
     @patch("oduflow.docker_ops.odoo_ops.reset_admin_password")
     def test_reset_default_password(self, mock_reset):
-        mock_reset.return_value = {"status": "ok", "login": "admin", "psql_output": "UPDATE 1"}
+        mock_reset.return_value = {
+            "status": "ok",
+            "login": "admin",
+            "psql_output": "UPDATE 1",
+        }
         result = _get_tool_fn("reset_admin_password")(branch_name="main")
         assert "Admin password has been reset successfully" in result
         assert "Login: admin" in result
         assert "New password: test" in result
-        mock_reset.assert_called_once_with(TEST_SETTINGS, "main", "test")
+        mock_reset.assert_called_once_with(TEST_SETTINGS, TEST_TEAM, "main", "test")
 
     @patch("oduflow.docker_ops.odoo_ops.reset_admin_password")
     def test_reset_custom_password(self, mock_reset):
-        mock_reset.return_value = {"status": "ok", "login": "admin", "psql_output": "UPDATE 1"}
-        result = _get_tool_fn("reset_admin_password")(branch_name="main", new_password="s3cret")
+        mock_reset.return_value = {
+            "status": "ok",
+            "login": "admin",
+            "psql_output": "UPDATE 1",
+        }
+        result = _get_tool_fn("reset_admin_password")(
+            branch_name="main", new_password="s3cret"
+        )
         assert "New password: s3cret" in result
-        mock_reset.assert_called_once_with(TEST_SETTINGS, "main", "s3cret")
+        mock_reset.assert_called_once_with(TEST_SETTINGS, TEST_TEAM, "main", "s3cret")
 
     @patch("oduflow.docker_ops.odoo_ops.reset_admin_password")
     def test_reset_not_found(self, mock_reset):
         from oduflow.errors import NotFoundError
+
         mock_reset.side_effect = NotFoundError("Environment 'xyz' does not exist.")
         with pytest.raises(ToolError, match="does not exist"):
             _get_tool_fn("reset_admin_password")(branch_name="xyz")
 
 
-class TestMutex:
+class TestBranchLock:
     @patch("oduflow.docker_ops.env_ops.create_environment")
-    def test_busy_raises_value_error(self, mock_create):
+    def test_busy_raises_tool_error(self, mock_create):
         import oduflow.server
-        oduflow.server._busy.acquire()
+
+        _locks = oduflow.server._locks
+        _locks.acquire_branch("main")
         try:
-            with pytest.raises(ToolError, match="Another operation is in progress"):
-                _call_tool("create_environment", branch_name="main", repo_url="https://x.git", odoo_image="odoo:17.0")
+            with pytest.raises(ToolError, match="Another operation"):
+                _call_tool(
+                    "create_environment",
+                    branch_name="main",
+                    repo_url="https://x.git",
+                    odoo_image="odoo:17.0",
+                )
         finally:
-            oduflow.server._busy.release()
+            _locks.release_branch("main")

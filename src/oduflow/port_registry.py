@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import json
 import os
 import logging
@@ -63,7 +65,10 @@ def allocate_port(
 
     if branch_name in registry:
         existing_port = registry[branch_name]
-        if port_range_start <= existing_port < port_range_end and existing_port not in used_ports:
+        if (
+            port_range_start <= existing_port < port_range_end
+            and existing_port not in used_ports
+        ):
             return existing_port
 
     occupied = set(registry.values()) | used_ports

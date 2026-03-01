@@ -31,7 +31,7 @@ nav:
   - MCP Tools Reference: mcp-tools.md
   - CLI Reference: cli.md
   - Traefik Routing: traefik.md
-  - Multi-Instance Support: multi-instance.md
+  - Multi-Team Support: multi-instance.md
   - Authentication & Security: security.md
   - Running in Docker: docker.md
   - Internals: internals.md

@@ -19,19 +19,7 @@ docker run -d \
   --name oduflow \
   -p 8000:8000 \
   -v /var/run/docker.sock:/var/run/docker.sock \
-  -v oduflow_data:/srv/oduflow/instance_1 \
-  oduflow
-```
-
-### With `.env` file
-
-```bash
-docker run -d \
-  --name oduflow \
-  --env-file .env \
-  -p 8000:8000 \
-  -v /var/run/docker.sock:/var/run/docker.sock \
-  -v oduflow_data:/srv/oduflow/instance_1 \
+  -v oduflow_data:/srv/oduflow \
   oduflow
 ```
 
@@ -41,10 +29,9 @@ docker run -d \
 docker run -d \
   --name oduflow \
   --restart unless-stopped \
-  --env-file .env \
   -p 8000:8000 \
   -v /var/run/docker.sock:/var/run/docker.sock \
-  -v oduflow_data:/srv/oduflow/instance_1 \
+  -v oduflow_data:/srv/oduflow \
   -v /etc/oduflow:/etc/oduflow \
   oduflow
 ```
@@ -54,8 +41,8 @@ docker run -d \
 | Mount | Purpose |
 |---|---|
 | `/var/run/docker.sock` | **Required.** Gives Oduflow access to the host Docker daemon to manage Odoo containers, PostgreSQL, Traefik, etc. |
-| `/srv/oduflow/instance_1` | Oduflow data directory (`ODUFLOW_DATA_DIR`). Contains workspaces, templates, port registry. Use a named volume or a host path to persist data across container restarts. |
-| `/etc/oduflow` | System configuration directory. Contains license key, database settings, default `odoo.conf`, and other configuration files. Mount to persist configuration across container restarts. |
+| `/srv/oduflow` | Oduflow data directory. Contains team directories with workspaces, templates, port registry. Use a named volume or a host path to persist data across container restarts. |
+| `/etc/oduflow` | System configuration directory. Contains `oduflow.toml`, license key, `postgresql.conf`, default `odoo.conf`, and other configuration files. Mount to persist configuration across container restarts. |
 
 ## Networking
 
@@ -65,7 +52,8 @@ The Oduflow container must be on the same Docker network as the containers it cr
 # 1. Start Oduflow
 docker run -d --name oduflow -p 8000:8000 \
   -v /var/run/docker.sock:/var/run/docker.sock \
-  -v oduflow_data:/srv/oduflow/instance_1 \
+  -v oduflow_data:/srv/oduflow \
+  -v /etc/oduflow:/etc/oduflow \
   oduflow
 
 # 2. Initialize shared infrastructure (creates oduflow-net, PostgreSQL, etc.)
@@ -73,50 +61,54 @@ docker exec oduflow oduflow init
 
 # 3. Connect Oduflow to the shared network
 docker network connect oduflow-net oduflow
-
-# 4. Initialize instance directories
-docker exec oduflow oduflow init-instance
 ```
 
 Alternatively, start with `--network oduflow-net` if the network already exists.
 
 ## Initialization
 
-On first run, you need to initialize the shared infrastructure and instance:
+On first run, you need to initialize the shared infrastructure:
 
 ```bash
-# Create shared Docker network, PostgreSQL container
+# Create shared Docker network, PostgreSQL container, and team directories
 docker exec oduflow oduflow init
 
 # Connect to the shared network
 docker network connect oduflow-net oduflow
-
-# Create instance directories (workspaces, templates)
-docker exec oduflow oduflow init-instance
 ```
 
 To set up a template database:
 
 ```bash
 # From scratch (clean Odoo with specified modules)
-docker exec oduflow oduflow init-template --odoo-image odoo:17.0 --modules base,web,contacts
+docker exec oduflow oduflow init-template --odoo-image odoo:17.0 --template-name default --modules base,web,contacts
 
 # Or import from a running Odoo instance
-docker exec oduflow oduflow call import_template_from_odoo https://my-odoo.example.com master_password
+docker exec oduflow oduflow import-template https://my-odoo.example.com master_password --template-name default
 ```
 
-## Environment Variables
+## Configuration
 
-All environment variables from `.env.example` are supported. Key ones for Docker:
+Oduflow reads its configuration from `oduflow.toml`. When running in Docker, mount the config directory:
 
-| Variable | Default | Description |
-|---|---|---|
-| `ODUFLOW_TRANSPORT` | `http` | Transport mode: `http` or `stdio` |
-| `ODUFLOW_HOST` | `0.0.0.0` | Bind address |
-| `ODUFLOW_PORT` | `8000` | HTTP port |
-| `ODUFLOW_AUTH_TOKEN` | *(empty)* | Bearer token for MCP auth (empty = disabled) |
-| `ODUFLOW_DATA_DIR` | `/srv/oduflow/instance_1` | Data directory |
-| `EXTERNAL_HOST` | `localhost` | Hostname used in generated URLs |
+```bash
+-v /etc/oduflow:/etc/oduflow
+```
+
+Key configuration settings in `oduflow.toml`:
+
+```toml
+[server]
+host = "0.0.0.0"
+port = 8000
+
+[team.1]
+hostname = "localhost"
+auth_token = "your-secret-token"   # MCP auth (empty = disabled)
+ui_password = "your-ui-password"   # Web UI auth (empty = disabled)
+```
+
+See [Installation — Configuration Reference](installation.md#configuration-reference) for all options.
 
 ## Docker Compose
 
@@ -128,9 +120,8 @@ services:
       - "8000:8000"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      - oduflow_data:/srv/oduflow/instance_1
+      - oduflow_data:/srv/oduflow
       - oduflow_etc:/etc/oduflow
-    env_file: .env
     restart: unless-stopped
     networks:
       - oduflow-net
@@ -148,18 +139,17 @@ After `docker compose up -d`, run initialization:
 
 ```bash
 docker compose exec oduflow oduflow init
-docker compose exec oduflow oduflow init-instance
 ```
 
 ## Security Notes
 
 - Mounting the Docker socket gives the container **full control** over the host Docker daemon. This is equivalent to root access on the host. Only run Oduflow in trusted environments.
-- Set `ODUFLOW_AUTH_TOKEN` to protect the MCP endpoint.
-- Set `ODUFLOW_UI_PASSWORD` to protect the Web UI.
+- Set `auth_token` in `[team.*]` to protect the MCP endpoint.
+- Set `ui_password` in `[team.*]` to protect the Web UI.
 
 ## Privileged Mode and fuse-overlayfs
 
-Oduflow uses `fuse-overlayfs` for efficient filestore sharing when templates exceed `ODUFLOW_OVERLAY_THRESHOLD_MB` (default: 50 MB). This requires the `/dev/fuse` device inside the container.
+Oduflow uses `fuse-overlayfs` for efficient filestore sharing when templates exceed `overlay_threshold_mb` (default: 50 MB). This requires the `/dev/fuse` device inside the container.
 
 If your templates are small (under the threshold), Oduflow falls back to simple file copy and no special privileges are needed.
 
@@ -172,12 +162,13 @@ docker run -d \
   --cap-add SYS_ADMIN \
   -p 8000:8000 \
   -v /var/run/docker.sock:/var/run/docker.sock \
-  -v oduflow_data:/srv/oduflow/instance_1 \
+  -v oduflow_data:/srv/oduflow \
   oduflow
 ```
 
-Alternatively, raise the threshold to avoid overlayfs entirely:
+Alternatively, set a high threshold in `oduflow.toml` to avoid overlayfs entirely:
 
-```bash
-ODUFLOW_OVERLAY_THRESHOLD_MB=999999
+```toml
+[storage]
+overlay_threshold_mb = 999999
 ```

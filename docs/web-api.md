@@ -23,7 +23,7 @@ When running in HTTP mode, a web dashboard is available at the server root (`htt
 
 ## REST API Endpoints
 
-All endpoints return JSON with an `ok` field. Authentication via HTTP Basic auth when `ODUFLOW_UI_PASSWORD` is set (user: `admin`, password: the configured value). This is separate from the MCP Bearer token auth (`ODUFLOW_AUTH_TOKEN`).
+All endpoints return JSON with an `ok` field. Authentication via HTTP Basic auth when `ui_password` is set in `oduflow.toml` (user: `admin`, password: the configured value). This is separate from the MCP Bearer token auth (`auth_token`).
 
 ### Environments
 
