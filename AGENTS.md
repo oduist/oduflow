@@ -9,6 +9,10 @@ Before making any code changes, always:
 
 Do NOT write or modify any code until the user explicitly approves the plan.
 
+## Testing
+If you run into any missing python dependency errors, try running your command with source .venv/bin/activate
+to assume the python venv (or .venv312 if .venv is missing).
+
 ## Publishing Documentation
 
 After committing and pushing changes to `docs/` or `mkdocs.yml`, always publish the documentation to GitHub Pages automatically — do not ask the user:
