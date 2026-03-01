@@ -14,6 +14,8 @@ except ModuleNotFoundError:
 
 logger = logging.getLogger("oduflow")
 
+TRACE: bool = False
+
 
 @dataclass(frozen=True)
 class TeamSettings:
@@ -230,8 +232,9 @@ class Settings:
             )
 
         trace = bool(server.get("trace", False))
-        if trace:
-            os.environ["ODUFLOW_TRACE"] = "1"
+
+        global TRACE  # noqa: PLW0603
+        TRACE = trace
 
         return Settings(
             host=str(server.get("host", "0.0.0.0")),

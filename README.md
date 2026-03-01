@@ -63,9 +63,11 @@ pip install oduflow
 
 ### 2. Configure
 
-```bash
-cp .env.example .env
-# Edit .env — at minimum set paths and optionally ODUFLOW_AUTH_TOKEN
+Create `oduflow.toml` (see [Installation](docs/installation.md) for all options):
+
+```toml
+[team.1]
+hostname = "localhost"
 ```
 
 ### 3. Initialize the system

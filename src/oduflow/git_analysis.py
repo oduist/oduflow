@@ -6,10 +6,12 @@ import os
 import re
 import subprocess
 
+from oduflow import settings
+
 logger = logging.getLogger("oduflow")
 
 def _trace(msg: str, *args: object) -> None:
-    if os.environ.get("ODUFLOW_TRACE") == "1":
+    if settings.TRACE:
         logger.info("[TRACE] " + msg, *args)
 
 

@@ -42,12 +42,13 @@ from oduflow.naming import (
     slugify_branch,
 )
 from oduflow.port_registry import allocate_port, release_port
+from oduflow import settings
 from oduflow.settings import Settings, TeamSettings
 
 logger = logging.getLogger("oduflow")
 
 def _trace(msg: str, *args: object) -> None:
-    if os.environ.get("ODUFLOW_TRACE") == "1":
+    if settings.TRACE:
         logger.info("[TRACE] " + msg, *args)
 
 

@@ -26,7 +26,7 @@ logger = logging.getLogger("oduflow")
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
-mcp = FastMCP("Oduflow")
+mcp = FastMCP("Oduflow", stateless_http=True)
 _locks = LockManager()
 _settings: Settings | None = None
 

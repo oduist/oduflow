@@ -24,7 +24,6 @@ MANIFEST
 
 # Environments
 .env*
-!.env.example
 .venv
 .venv312
 env/
