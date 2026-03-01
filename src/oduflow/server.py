@@ -26,7 +26,7 @@ logger = logging.getLogger("oduflow")
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
-mcp = FastMCP("Oduflow", stateless_http=True)
+mcp = FastMCP("Oduflow")
 _locks = LockManager()
 _settings: Settings | None = None
 
@@ -1939,7 +1939,7 @@ def _start_server() -> None:
     else:
         logger.warning("HTTP auth DISABLED (no auth_token set in any team)")
 
-    app = create_streamable_http_app(mcp, "/mcp", auth=auth)
+    app = create_streamable_http_app(mcp, "/mcp", auth=auth, stateless_http=True)
 
     from oduflow.web_ui import mount_web_ui
 
