@@ -48,18 +48,20 @@ mkdocs gh-deploy --force
 
 ```
 MCP Clients (Cursor, Claude, etc.)
-        │ MCP (HTTP or stdio)
+        │ MCP (Streamable HTTP)
         ▼
    server.py ── FastMCP + CLI entry point (32 tools)
         │         ├── @handle_errors decorator → ToolError
-        │         └── @with_mutex (threading.Lock) → BusyError
+        │         └── LockManager (per-branch / per-team / system) → BusyError
         ├── web_ui.py ── Starlette dashboard + REST API + Basic auth
-        ├── settings.py ── @dataclass Settings, loads from .env
+        ├── settings.py ── @dataclass Settings, loads from oduflow.toml (TOML)
+        ├── locking.py ── LockManager with per-branch, per-team, system locks
         ├── git_ops.py ── Clone, credentials, manifest parsing
         ├── git_analysis.py ── Classify changed files → action (install/upgrade/restart/nothing)
         ├── naming.py ── Pure functions: slugify, DB names, paths
         ├── extra_addons.py ── Extra addon repo management (bare clones + worktrees)
         ├── port_registry.py ── Stable port allocation (ports.json)
+        ├── env_credentials.py ── Per-environment PostgreSQL credentials
         ├── sanitizer.py ── DB sanitization (SQL/Python scripts)
         └── docker_ops/
             ├── client.py ── Docker SDK wrapper, UID/GID detection
@@ -72,11 +74,11 @@ MCP Clients (Cursor, Claude, etc.)
 ```
 
 **Key patterns:**
-- Every MCP tool is a function in `server.py` decorated with `@mcp.tool()`, `@handle_errors`, and optionally `@with_mutex`
-- Heavy operations acquire a global `threading.Lock`; concurrent requests get `BusyError`
+- Every MCP tool is a function in `server.py` decorated with `@mcp.tool()`, `@handle_errors`, and optionally `@with_branch_lock` or `@with_team_lock`
+- Granular locking via `LockManager`: per-branch, per-team, and system locks; operations on different branches run in parallel
 - Error hierarchy: `FlowError` → `BusyError | NotFoundError | ConflictError | PrerequisiteNotMetError | ExternalCommandError | ProtectedError` (in `errors.py`)
-- Settings are a `@dataclass` loaded from `.env` via `Settings.from_env()`; instance-aware (`ODUFLOW_INSTANCE_ID=1-9`)
-- Filestore isolation: small templates use plain copies; large ones use fuse-overlayfs (threshold: `ODUFLOW_OVERLAY_THRESHOLD_MB`)
+- Settings are a `@dataclass` loaded from `oduflow.toml` via `Settings.from_toml()`; multi-team via `[team.*]` sections
+- Filestore isolation: small templates use plain copies; large ones use fuse-overlayfs (threshold: `overlay_threshold_mb`)
 - File ownership: `os.chown()` on Linux, fallback to container-based `chown` on macOS
 
 ## Testing

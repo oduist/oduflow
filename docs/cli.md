@@ -7,40 +7,25 @@
 ```bash
 # Show version
 oduflow --version
-
-# Use a custom .env file
-oduflow --env /path/to/.env <command>
 ```
 
 ## Running the Server
 
 ```bash
-# Start the MCP server (instance 1 by default)
-oduflow run-instance
-
-# Start a specific instance
-oduflow run-instance --instance 2
-
-# Start with a custom .env file
-oduflow --env /path/to/.env run-instance
+# Start the MCP server (reads oduflow.toml automatically)
+oduflow
 ```
 
-By default, `run-instance` loads the environment file from `/etc/oduflow/instance_{ID}.env`. Use the global `--env` flag to override.
+By default, the server starts on `http://0.0.0.0:8000`. Configuration is loaded from `oduflow.toml` (see [Installation](installation.md#configuration-reference)).
 
 ## System Commands
 
 ```bash
-# Initialize shared infrastructure (network, DB, Traefik)
+# Initialize shared infrastructure (network, DB, Traefik) and all team directories
 oduflow init
 
 # Initialize and install a license in one step
 oduflow init --license /path/to/license.key
-
-# Initialize per-instance directories (workspaces, templates)
-oduflow init-instance --instance 1
-
-# Update agent guides to the latest bundled versions (overwrites existing)
-oduflow init-instance --instance 1 --update-guides
 
 # Destroy all shared infrastructure (requires no active environments)
 oduflow destroy
@@ -48,50 +33,52 @@ oduflow destroy
 
 ## Template Commands
 
+All template commands accept `--team` to specify the team ID (default: `1`).
+
 ```bash
 # Generate a clean template from a Docker image
-oduflow init-template --odoo-image odoo:17.0 --template-name myproject [--modules base,web,sale] [--force]
+oduflow init-template --odoo-image odoo:17.0 --template-name myproject [--modules base,web,sale] [--force] [--team 1]
 
 # Start interactive template editor
-oduflow template-up --odoo-image odoo:17.0 --template-name myproject
+oduflow template-up --odoo-image odoo:17.0 --template-name myproject [--team 1]
 
 # Stop template editor and save changes
-oduflow template-down --template-name myproject
-
-# Reload template DB from a dump file
-oduflow reload-template <template_name> [--dump-path /path/to/new.dump]
+oduflow template-down --template-name myproject [--team 1]
 
 # Save a branch environment as the new template
-oduflow template-from-env <branch> --template-name myproject
+oduflow template-from-env <branch> --template-name myproject [--team 1]
+
+# Reload template DB from a dump file
+oduflow reload-template <template_name> [--dump-path /path/to/new.dump] [--team 1]
 
 # List all template profiles
-oduflow list-templates
+oduflow list-templates [--team 1]
 
 # Delete a template profile
-oduflow delete-template <template_name>
+oduflow delete-template <template_name> [--team 1]
 
 # Import a template from a running Odoo instance
-oduflow import-template <odoo_url> <master_pwd> --template-name myproject [--db-name <db>]
+oduflow import-template <odoo_url> <master_pwd> --template-name myproject [--db-name <db>] [--team 1]
 ```
 
 ## Service Commands
 
 ```bash
 # List all managed services
-oduflow list-services
+oduflow list-services [--team 1]
 ```
 
 ## Maintenance Commands
 
 ```bash
 # Show orphaned databases, workspaces, and port entries (dry-run by default)
-oduflow cleanup
+oduflow cleanup [--team 1]
 
 # Same as above — only show what would be removed
-oduflow cleanup --dry-run
+oduflow cleanup --dry-run [--team 1]
 
 # Actually remove orphaned resources
-oduflow cleanup --force
+oduflow cleanup --force [--team 1]
 ```
 
 The `cleanup` command detects and removes resources that no longer have a corresponding running or stopped container:
@@ -105,17 +92,14 @@ By default, `cleanup` runs in **dry-run mode** and only reports what would be re
 ## Systemd Service
 
 ```bash
-# Install and enable systemd service for instance 1
-oduflow systemd-install --instance 1
-
-# For multi-instance setups
-oduflow systemd-install --instance 2
+# Install and enable systemd service
+oduflow systemd-install
 
 # Remove the systemd service
-oduflow systemd-uninstall --instance 1
+oduflow systemd-uninstall
 ```
 
-The `systemd-install` command generates a unit file at `/etc/systemd/system/oduflow.service` (or `oduflow-{ID}.service` for instances 2-9), runs `daemon-reload`, and enables the service. The unit reads configuration from `/etc/oduflow/instance_{ID}.env`.
+The `systemd-install` command generates a unit file at `/etc/systemd/system/oduflow.service`, runs `daemon-reload`, and enables the service.
 
 See [Auto-start with systemd](installation.md#auto-start-with-systemd) for the full setup guide.
 
@@ -135,7 +119,7 @@ You can invoke any registered MCP tool directly from the terminal using `oduflow
 oduflow call
 
 # Call a tool with positional arguments (mapped to parameters in order)
-oduflow call create_environment dev https://github.com/owner/repo.git odoo:17.0
+oduflow call create_environment dev "" https://github.com/owner/repo.git odoo:17.0
 oduflow call delete_environment dev
 oduflow call list_environments
 oduflow call get_environment_logs main 50

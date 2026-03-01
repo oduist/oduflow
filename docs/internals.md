@@ -9,14 +9,15 @@
 │                   MCP Clients                    │
 │         (Cursor, Cline, Amp, Claude, …)          │
 └────────────────────┬─────────────────────────────┘
-                     │  MCP (Streamable HTTP / stdio)
+                     │  MCP (Streamable HTTP)
 ┌────────────────────▼─────────────────────────────┐
 │  server.py — FastMCP transport layer             │
 │  • MCP tool definitions (32 tools)               │
-│  • Global mutex for heavy operations             │
-│  • Unified error handler (FlowError → ValueError)│
+│  • Per-branch / per-team / system locking        │
+│  • Unified error handler (FlowError → ToolError) │
 │  • Web UI mount (Starlette)                      │
 │  • Bearer token auth (MCP) / Basic auth (Web UI) │
+│  • Team resolution (token → Host → default)      │
 └────────────────────┬─────────────────────────────┘
                      │
      ┌───────────────┼───────────────────┐
@@ -50,30 +51,35 @@
 | Decision | Rationale |
 |---|---|
 | Single process, single uvicorn worker | Designed for a single developer or small team; no shared-state problems |
-| `threading.Lock` mutex | Heavy operations (create/delete env, install modules) reject concurrent requests with `BusyError` instead of queuing |
+| Granular `LockManager` (per-branch, per-team, system) | Operations on different branches run in parallel; same-branch operations are serialised with `BusyError` |
 | Docker SDK only (no subprocess for Docker) | Consistent error handling; `put_archive` replaces `docker cp` |
 | fuse-overlayfs for filestore | Copy-on-write sharing of a large template filestore across all environments |
 | Stable port registry (`ports.json`) | Port assignments survive container restarts; eliminates TOCTOU race conditions |
-| Typed error hierarchy | `FlowError` base with `NotFoundError`, `BusyError`, `ConflictError`, `PrerequisiteNotMetError`, `ExternalCommandError` — clients can distinguish error types |
+| Typed error hierarchy | `FlowError` base with `NotFoundError`, `BusyError`, `ConflictError`, `PrerequisiteNotMetError`, `ExternalCommandError`, `ProtectedError` — clients can distinguish error types |
 | Traefik routing mode (optional) | Automatic HTTPS with Let's Encrypt for production-like setups |
 | Dual dump format support | Accepts both plain SQL (`.sql`) and PostgreSQL custom format (`.pgdump`) dumps |
 | Auto-detection of UID/GID | Resolves Odoo container's UID:GID from the image to set correct file permissions |
+| TOML-based multi-team config | Per-team isolation with shared infrastructure; settings loaded from `oduflow.toml` |
 
 ## Project Structure
 
 ```
 src/oduflow/
-  server.py            # MCP transport: tool definitions, error handler, mutex, CLI
-  settings.py          # @dataclass Settings with from_env() and validate()
-  errors.py            # FlowError hierarchy (6 error classes)
+  server.py            # MCP transport: tool definitions, error handler, locking, CLI
+  settings.py          # @dataclass Settings, loads from oduflow.toml (TOML)
+  errors.py            # FlowError hierarchy (7 error classes)
   models.py            # EnvironmentRef dataclass
   naming.py            # Pure functions: slugify, db name, resource name, paths, URL sanitization
+  locking.py           # LockManager with per-branch, per-team, and system locks
   git_ops.py           # Git clone, pull, credential management, manifest parsing
   git_analysis.py      # Classify changed files → install / upgrade / restart / refresh
   port_registry.py     # Stable port allocation with JSON persistence
   web_ui.py            # Starlette-based dashboard, REST API, Basic auth middleware
   extra_addons.py      # Extra addon repo management (clone, worktree, odoo.conf generation)
+  env_credentials.py   # Per-environment PostgreSQL credentials
+  sanitizer.py         # DB sanitization (SQL/Python scripts)
   licensing.py         # License verification and installation (RSA signatures)
+  systemd.py           # Systemd service install/uninstall
 
   docker_ops/
     client.py           # docker.from_env() wrapper + UID/GID auto-detection
@@ -87,11 +93,12 @@ src/oduflow/
     stats.py            # Container and system CPU/RAM stats (parallel collection)
 
   templates/
+    oduflow.toml          # Default TOML configuration (copied on first `oduflow init`)
     odoo.conf             # Odoo configuration template (addons path, limits, security)
     postgresql.conf       # PostgreSQL tuning (shared_buffers, WAL, autovacuum, etc.)
     dashboard.html        # Web dashboard UI (single-page application)
     favicon.ico           # Dashboard favicon
-    agent_guides/         # AI agent guides (copied to $ODUFLOW_DATA_DIR/instance_{ID}/agent_guides on init-instance)
+    agent_guides/         # AI agent guides (copied to team data dirs on init)
       agent_guide.md      # Main agent instructions for Oduflow MCP tools
       odoo_15_guide.md    # Odoo 15 development standards
       odoo_16_guide.md    # Odoo 16 development standards
@@ -107,7 +114,7 @@ tests/                  # Unit and integration tests (pytest)
 Each branch gets an isolated workspace:
 
 ```
-$ODUFLOW_DATA_DIR/instance_{ID}/workspaces/{branch}/
+{data_dir}/team_{ID}/workspaces/{branch}/
   repo/                ← shallow git clone (--depth 1)
   filestore_upper/     ← overlay upper layer (branch-specific changes)
   filestore_work/      ← overlay work directory (required by overlayfs)
@@ -123,10 +130,8 @@ You can verify active overlay mounts with `df -h` — each environment with a te
 $ df -h
 Filesystem                         Size  Used Avail Use% Mounted on
 /dev/mapper/ubuntu--vg-ubuntu--lv   97G   74G   19G  81% /
-fuse-overlayfs                      97G   74G   19G  81% /srv/oduflow/instance_1/workspaces/manuf-plan/filestore
-fuse-overlayfs                      97G   74G   19G  81% /srv/oduflow/instance_1/workspaces/fixing-landing-of-transport-orde-3022/filestore
-fuse-overlayfs                      97G   74G   19G  81% /srv/oduflow/instance_1/workspaces/receiver-company-refactor-64cb/filestore
-fuse-overlayfs                      97G   74G   19G  81% /srv/oduflow/instance_1/workspaces/supply-translation-45e8/filestore
+fuse-overlayfs                      97G   74G   19G  81% /srv/oduflow/team_1/workspaces/manuf-plan/filestore
+fuse-overlayfs                      97G   74G   19G  81% /srv/oduflow/team_1/workspaces/fixing-landing/filestore
 ```
 
 ## File Ownership (macOS vs Linux)
@@ -158,29 +163,42 @@ This means no manual ownership fixups are ever needed on either platform.
 | **Network** | `oduflow-net` | Shared bridge network for all containers |
 | **DB container** | `oduflow-db` | PostgreSQL 15, shared across all environments |
 | **DB volume** | `oduflow-db-data` | Persistent database storage |
-| **Template DB** | `odoo_ref_<name>` | Created from the dump file, used as PostgreSQL template |
+| **Template DB** | `oduflow_template_{team_id}_{name}` | Created from the dump file, used as PostgreSQL template |
+| **Environment DB** | `oduflow_{team_id}_{branch}` | Created from template DB via `CREATE DATABASE ... TEMPLATE` |
 | **Odoo containers** | `oduflow-{branch}-odoo` | One per environment |
 | **Service containers** | `oduflow-svc-{name}` | One per auxiliary service |
 | **Traefik** (optional) | `oduflow-traefik` | Reverse proxy with auto-HTTPS |
 | **Traefik volume** (optional) | `oduflow-traefik-acme` | Let's Encrypt certificate storage |
 
-All containers are labeled with `oduflow.managed=true` for discovery and management.
+All containers are labeled with `oduflow.managed=true` and `oduflow.team={team_id}` for discovery and management.
+
+## Concurrency & Locking
+
+Oduflow uses a granular `LockManager` (`locking.py`) instead of a single global mutex:
+
+| Lock Level | Scope | Example Operations |
+|---|---|---|
+| **Per-branch** | One operation per branch at a time | `create_environment`, `delete_environment`, `install_odoo_modules`, `pull_and_apply` |
+| **Per-team** | One team-level operation at a time | `add_extra_repo`, `setup_repo_auth`, `create_service` |
+| **System** | One system operation at a time | `init`, `destroy` |
+
+Operations on **different branches** run in parallel. If a lock cannot be acquired, the tool immediately returns `BusyError` (no queuing).
 
 ## Error Handling
 
 Oduflow uses a typed error hierarchy for clear error reporting:
 
-| Error | HTTP Status | Description |
-|---|:---:|---|
-| `FlowError` | 400 | Base error for all operations |
-| `BusyError` | 409 | Another mutexed operation is in progress |
-| `NotFoundError` | 404 | Environment, service, or resource not found |
-| `ConflictError` | 400 | Resource already exists (e.g. environment already running) |
-| `PrerequisiteNotMetError` | 400 | System not initialized, Docker not running, or dependency missing |
-| `ExternalCommandError` | 400 | Git, psql, or Docker command failed (includes command, exit code, output) |
-| `ProtectedError` | 400 | Environment is protected and cannot be deleted |
+| Error | Description |
+|---|---|
+| `FlowError` | Base error for all operations |
+| `BusyError` | Another operation is in progress (lock not available) |
+| `NotFoundError` | Environment, service, or resource not found |
+| `ConflictError` | Resource already exists (e.g. environment already running) |
+| `PrerequisiteNotMetError` | System not initialized, Docker not running, or dependency missing |
+| `ExternalCommandError` | Git, psql, or Docker command failed (includes command, exit code, output) |
+| `ProtectedError` | Environment or extra repo is protected and cannot be deleted |
 
-MCP clients receive errors as `ValueError` with a descriptive message. REST API clients receive JSON with `{"ok": false, "error": "..."}`.
+MCP clients receive errors as `ToolError` with a descriptive message. REST API clients receive JSON with `{"ok": false, "error": "..."}`.
 
 ## PostgreSQL Tuning
 

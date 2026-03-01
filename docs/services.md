@@ -53,7 +53,7 @@ The `update_service` operation:
 
 ## Service Presets
 
-Every time a service is created, its configuration (image, port, hostname, environment variables) is automatically saved as a **preset** in `$ODUFLOW_DATA_DIR/instance_{ID}/service_presets.json`. This allows you to restore a service after deletion without re-entering its configuration.
+Every time a service is created, its configuration (image, port, hostname, environment variables) is automatically saved as a **preset** in `{team_data_dir}/service_presets.json`. This allows you to restore a service after deletion without re-entering its configuration.
 
 ```bash
 # List saved presets

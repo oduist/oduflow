@@ -54,4 +54,4 @@ All tools are accessible via MCP clients (Cursor, Cline, Amp, etc.) and the CLI 
 | `get_odoo_development_guide` | | Get Odoo development standards guide for a specific version (15–19) |
 
 !!! info "Mutex"
-    Tools marked with ✓ acquire a global lock. If another mutexed operation is in progress, the call is rejected with `BusyError` ("Another operation is in progress. Try again later.").
+    Tools marked with ✓ acquire a per-branch or per-team lock. Operations on different branches can run in parallel, but if another operation on the **same branch** (or team, for team-level tools) is in progress, the call is rejected with `BusyError` ("Another operation is in progress. Try again later.").

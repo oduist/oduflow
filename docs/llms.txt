@@ -9,21 +9,9 @@
 - Docker (Docker Engine or Docker Desktop)
 - Python 3.10+
 - Git
-- fuse-overlayfs (for filestore overlay mounting)
+- fuse-overlayfs (for filestore overlay mounting; not needed on macOS)
 
-### Step 1: Install fuse-overlayfs
-
-```bash
-sudo apt install fuse-overlayfs
-```
-
-Enable `user_allow_other` in `/etc/fuse.conf`:
-
-```bash
-sudo sed -i 's/^#user_allow_other/user_allow_other/' /etc/fuse.conf
-```
-
-### Step 2: Install Oduflow
+### Install
 
 Recommended — install via [uv](https://docs.astral.sh/uv/):
 
@@ -37,88 +25,68 @@ Alternative — install via pip:
 pip install oduflow
 ```
 
-For local development:
+### Configure
 
-```bash
-git clone https://github.com/oduist/oduflow.git
-cd oduflow
-uv sync          # or: python -m venv .venv && pip install -e .
+All settings are configured via `oduflow.toml` (searched in `/etc/oduflow/` then `~/.oduflow/`, or set `ODUFLOW_TOML`).
+
+Minimal configuration:
+
+```toml
+[team.1]
+hostname = "localhost"
 ```
 
-### Step 3: Configure
+Full configuration reference:
 
-All settings are configured via environment variables. On servers, `oduflow init-instance` seeds the file at `/etc/oduflow/instance_{ID}.env` and `oduflow run-instance` picks it up automatically. For local development, pass the path explicitly:
+```toml
+[server]
+host = "0.0.0.0"                     # HTTP bind address
+port = 8000                           # HTTP port
 
-```bash
-oduflow --env .env run-instance
+[routing]
+mode = "port"                         # "port" | "traefik" (auto-HTTPS)
+# acme_email = "admin@example.com"    # required for traefik mode
+
+[database]
+user = "odoo"
+password = "odoo"
+image = "postgres:15"
+
+[storage]
+# data_dir = "/srv/oduflow"           # default: /srv/oduflow or ~/.oduflow/data
+overlay_threshold_mb = 50             # filestore size threshold for overlay vs copy
+
+[team.1]
+hostname = "localhost"
+auth_token = ""                       # MCP bearer token (empty = auth disabled)
+ui_password = ""                      # Web UI password (empty = UI open)
+port_range = [50000, 50100]           # port range for Odoo containers
 ```
 
-Key environment variables:
-
-- `ODUFLOW_TRANSPORT` — `http` (default) or `stdio`
-- `ODUFLOW_HOST` — bind address (default `0.0.0.0`)
-- `ODUFLOW_PORT` — HTTP port (default `8000`)
-- `ODUFLOW_AUTH_TOKEN` — Bearer token for MCP auth (empty = auth disabled)
-- `ODUFLOW_UI_PASSWORD` — password for Web UI Basic Auth (empty = UI open)
-- `ODUFLOW_DATA_DIR` — base directory for all data (default `/srv/oduflow`)
-- `ODUFLOW_ETC_DIR` — config/credentials directory (default `/etc/oduflow` in Docker, `~/.oduflow/conf` locally)
-- `EXTERNAL_HOST` — hostname for environment URLs (default `localhost`)
-- `ODUFLOW_ROUTING_MODE` — `port` (default) or `traefik` (auto-HTTPS)
-- `ODUFLOW_OVERLAY_THRESHOLD_MB` — filestore size threshold for overlay vs copy (default `50`)
-- `ODUFLOW_STATELESS_HTTP` — stateless MCP HTTP mode (default `true`); set to `false` for session-based communication
-- `ODUFLOW_INSTANCE_ID` — instance identifier for multi-instance setups (default `1`)
-- `ODUFLOW_TRACE` — set to `1` for trace-level logging
-
-### Step 4: Initialize the system
+### Initialize
 
 ```bash
-# Initialize shared infrastructure (network, DB, Traefik)
-oduflow init
-
-# Initialize per-instance directories (workspaces, templates)
-oduflow init-instance --instance 1
+oduflow init              # Create shared Docker network, PostgreSQL, team directories
 ```
 
-This creates the shared Docker network, PostgreSQL container, and (optionally) Traefik reverse proxy. `init-instance` seeds `/etc/oduflow/instance_1.env` from the bundled `.env.example` — edit it before starting the server.
-
-### Step 5: Set up a template
-
-**From scratch (no production dump):**
+### Set up a template
 
 ```bash
-oduflow init-template --odoo-image odoo:17.0
+# From scratch
+oduflow init-template --odoo-image odoo:17.0 --template-name default
+
+# From production dump
+# Place dump.sql and filestore/ into {data_dir}/team_1/templates/default/ then:
+oduflow reload-template default
 ```
 
-**From a production dump:**
-
-Place `dump.sql` (or `dump.pgdump`) and `filestore/` directory into `$ODUFLOW_DATA_DIR/instance_{ID}/templates/default/`, then:
+### Start the MCP server
 
 ```bash
-oduflow reload-template
-```
-
-### Step 6: Start the MCP server
-
-```bash
-oduflow run-instance
+oduflow
 ```
 
 The server starts on `http://0.0.0.0:8000`. MCP endpoint: `http://<host>:8000/mcp`.
-
-### Step 7 (optional): Auto-start with systemd
-
-```bash
-# Install and enable systemd service for instance 1
-oduflow systemd-install --instance 1
-
-# Manage the service
-systemctl start oduflow
-systemctl status oduflow
-journalctl -u oduflow -f
-
-# Remove the service
-oduflow systemd-uninstall --instance 1
-```
 
 ## MCP Client Configuration
 
@@ -140,47 +108,16 @@ oduflow systemd-uninstall --instance 1
 }
 ```
 
-### Amp
+### Claude Desktop / Amp
 
-`.amp/settings.json`:
-
-```json
-{
-  "mcpServers": {
-    "oduflow": {
-      "type": "http",
-      "url": "https://<your-oduflow-host>/mcp",
-      "headers": {
-        "Authorization": "Bearer <your-token>"
-      }
-    }
-  }
-}
-```
-
-### Claude Desktop
-
-`claude_desktop_config.json`:
-
-```json
-{
-  "mcpServers": {
-    "oduflow": {
-      "type": "http",
-      "url": "https://<your-oduflow-host>/mcp",
-      "headers": {
-        "Authorization": "Bearer <your-token>"
-      }
-    }
-  }
-}
-```
+Same JSON format in `claude_desktop_config.json` or `.amp/settings.json`.
 
 ## Core MCP Tools
 
 - `create_environment` — provision a new Odoo environment for a branch
 - `delete_environment` — tear down an environment
 - `start_environment` / `stop_environment` / `restart_environment` — lifecycle control
+- `rebuild_environment` — re-create the container from the same image, preserving DB and filestore
 - `install_odoo_modules` — install Odoo modules
 - `upgrade_odoo_modules` — upgrade Odoo modules
 - `run_odoo_tests` — run Odoo tests for specific modules
@@ -191,20 +128,19 @@ oduflow systemd-uninstall --instance 1
 - `run_db_query` — execute SQL queries against the environment's PostgreSQL database
 - `reset_admin_password` — reset the admin user password (default: "test")
 - `list_environments` / `get_environment_info` — inspect environments
-- `rebuild_environment` — re-create the container from the same image, preserving DB and filestore
-- `create_service` / `delete_service` / `update_service` — manage auxiliary services (Redis, Meilisearch, etc.)
+- `create_service` / `delete_service` / `update_service` / `list_services` / `get_service_logs` — manage auxiliary services
 - `list_service_presets` / `restore_service` / `delete_service_preset` — manage service presets
 - `save_as_template` / `delete_template` / `list_templates` — template management
-- `import_template_from_odoo` — import a template from a running Odoo instance via its database manager API
+- `import_template_from_odoo` — import a template from a running Odoo instance
 - `setup_repo_auth` — cache git credentials for private repositories
 - `add_extra_repo` / `list_extra_repos` / `update_extra_repo` / `delete_extra_repo` — manage extra addons repositories
-- `get_agent_instructions` — get AI agent skill with instructions on how to use Oduflow
+- `get_agent_instructions` — get AI agent instructions for using Oduflow
 - `get_odoo_development_guide` — get Odoo development standards guide for a specific version (15–19)
 
 ## Typical Agent Workflow
 
 1. Call `list_environments` to check if an environment for the branch exists
-2. If not, call `create_environment` with `branch_name`, `repo_url`, and `odoo_image`
+2. If not, call `create_environment` with `branch_name`, `template_name`, `repo_url`, and `odoo_image`
 3. Write code, `git push`, then call `pull_and_apply` (auto-detects what to do)
 4. Use `install_odoo_modules` / `run_odoo_tests` / `get_environment_logs` to verify
 5. Call `delete_environment` when the task is done
@@ -212,5 +148,6 @@ oduflow systemd-uninstall --instance 1
 ## Links
 
 - Repository: <https://github.com/oduist/oduflow>
+- Documentation: <https://docs.oduflow.dev>
 - License: Polyform Noncommercial 1.0.0
 - Website: <https://oduflow.dev>

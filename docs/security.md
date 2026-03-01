@@ -4,42 +4,51 @@
 
 ## MCP HTTP Auth
 
-When `ODUFLOW_AUTH_TOKEN` is set, the MCP endpoint (`/mcp`) requires a Bearer token:
+When `auth_token` is set for a team in `oduflow.toml`, the MCP endpoint (`/mcp`) requires a Bearer token:
 
 ```
 Authorization: Bearer <your-token>
 ```
 
-This is implemented via FastMCP's `StaticTokenVerifier`.
+Each team can have its own auth token:
+
+```toml
+[team.1]
+auth_token = "secret-token-team-1"
+
+[team.2]
+auth_token = "secret-token-team-2"
+```
+
+The token is used to both authenticate and identify the team. This is implemented via FastMCP's `StaticTokenVerifier`.
 
 ## Web Dashboard Auth
 
 The web dashboard and REST API use HTTP Basic authentication with a **separate** password:
 
 - **Username**: `admin`
-- **Password**: value of `ODUFLOW_UI_PASSWORD`
+- **Password**: value of `ui_password` from `oduflow.toml`
 
-This is independent from the MCP Bearer token (`ODUFLOW_AUTH_TOKEN`). Credentials are compared using `hmac.compare_digest` to prevent timing attacks.
+This is independent from the MCP Bearer token (`auth_token`). Credentials are compared using `hmac.compare_digest` to prevent timing attacks.
 
 ## When auth is disabled
 
-MCP auth and Web UI auth are configured independently:
+MCP auth and Web UI auth are configured independently per team:
 
-- If `ODUFLOW_AUTH_TOKEN` is empty, the MCP endpoint runs without authentication
-- If `ODUFLOW_UI_PASSWORD` is empty, the web dashboard runs without authentication
+- If `auth_token` is empty, the MCP endpoint runs without authentication
+- If `ui_password` is empty, the web dashboard runs without authentication
 
-Warnings are logged on startup for each:
+Warnings are logged on startup for each team:
 
 ```
-WARNING  HTTP auth DISABLED (ODUFLOW_AUTH_TOKEN not set)
-WARNING  Web UI auth DISABLED (ODUFLOW_UI_PASSWORD not set)
+INFO  [team.1] http://localhost:8000/ (MCP token OFF, UI auth OFF)
 ```
 
 ## Git Credentials
 
 [![Credentials Management](img/credentials.png)](img/credentials.png)
 
-Private repository credentials are stored in the git credential store (at `$ODUFLOW_ETC_DIR/.git-credentials`) via the `setup_repo_auth` tool. The clean URL (without credentials) is always used in Docker labels and logs — credentials are never exposed.
+Private repository credentials are stored in the git credential store at `{team_data_dir}/.git-credentials` (per-team) via the `setup_repo_auth` tool. The clean URL (without credentials) is always used in Docker labels and logs — credentials are never exposed.
 
 ### Managing credentials via MCP
 

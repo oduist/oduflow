@@ -61,83 +61,124 @@ uv tool upgrade oduflow
 
 ## Configuration Reference
 
-All settings are configured via environment variables. Oduflow uses [python-dotenv](https://pypi.org/project/python-dotenv/) and loads a `.env` file on startup.
+All settings are configured via a TOML file. Oduflow searches for `oduflow.toml` in the following order:
 
-On servers, `oduflow init-instance` seeds the file at `/etc/oduflow/instance_{ID}.env` and `oduflow run-instance` picks it up automatically. For local development, pass the path explicitly:
+1. `ODUFLOW_TOML` environment variable (explicit path)
+2. `/etc/oduflow/oduflow.toml`
+3. `~/.oduflow/oduflow.toml`
 
-```bash
-oduflow --env .env run-instance
+If no config file exists when running `oduflow init`, the bundled default is automatically copied to the appropriate location.
+
+### Minimal configuration
+
+```toml
+[team.1]
+hostname = "localhost"
 ```
 
-### Server
+### Full configuration reference
 
-| Variable | Default | Description |
-|---|---|---|
-| `ODUFLOW_TRANSPORT` | `http` | Transport mode: `http` or `stdio` |
-| `ODUFLOW_HOST` | `0.0.0.0` | HTTP server bind address |
-| `ODUFLOW_PORT` | `8000` | HTTP server port |
-| `ODUFLOW_AUTH_TOKEN` | *(empty)* | Bearer token for MCP HTTP auth. Empty = MCP auth disabled |
-| `ODUFLOW_UI_PASSWORD` | *(empty)* | Password for Web UI Basic auth (user: `admin`). Separate from MCP auth token. Empty = UI auth disabled |
-| `ODUFLOW_STATELESS_HTTP` | `true` | When `true`, the MCP HTTP transport runs in stateless mode (no session tracking). Set to `false` to enable session-based communication |
+```toml
+# ── Server ────────────────────────────────────────────
+[server]
+host = "0.0.0.0"           # HTTP server bind address
+port = 8000                 # HTTP server port
+# trace = false             # verbose tracing for git analysis & env ops
 
-### Paths
+# ── Routing ───────────────────────────────────────────
+[routing]
+mode = "port"               # "port" (direct host port) | "traefik" (reverse proxy with auto-HTTPS)
+# acme_email = "admin@example.com"  # required when mode = "traefik"
 
-| Variable | Default | Description |
-|---|---|---|
-| `ODUFLOW_INSTANCE_ID` | `1` | Instance identifier (1-9). Allows running multiple independent Oduflow instances. See [Multi-Instance Support](multi-instance.md) |
-| `ODUFLOW_DATA_DIR` | `/srv/oduflow` | Base directory for all data (instance dirs are `instance_{ID}` subdirectories inside) |
-| `ODUFLOW_ETC_DIR` | `/etc/oduflow` or `~/.oduflow/conf` | Config and credentials directory. Defaults to `/etc/oduflow` when writable (Docker), otherwise `~/.oduflow/conf` |
-| `ODUFLOW_PORT_REGISTRY` | `$ODUFLOW_DATA_DIR/instance_{ID}/ports.json` | JSON file for stable port assignments |
+# ── Database ──────────────────────────────────────────
+[database]
+user = "odoo"               # PostgreSQL user for the shared database container
+password = "odoo"           # PostgreSQL password
+image = "postgres:15"       # PostgreSQL Docker image
 
-Template folder structure: `$ODUFLOW_DATA_DIR/instance_{ID}/templates/<name>/dump.sql` (or `dump.pgdump`) and `$ODUFLOW_DATA_DIR/instance_{ID}/templates/<name>/filestore/`.
+# ── Storage ───────────────────────────────────────────
+[storage]
+# data_dir = "/srv/oduflow"         # base directory for all data (default: /srv/oduflow or ~/.oduflow/data)
+overlay_threshold_mb = 50            # template filestore size threshold (MB) — larger uses fuse-overlayfs, smaller uses copy
 
-### Network / Host
+# ── Teams ─────────────────────────────────────────────
+# Each team gets isolated workspaces, templates, credentials, and services.
+# At least one [team.*] section is required.
 
-| Variable | Default | Description |
-|---|---|---|
-| `EXTERNAL_HOST` | `localhost` | Hostname or IP used to construct environment URLs |
-| `PORT_RANGE_START` | `50000` | Start of the port range for Odoo containers (inclusive) |
-| `PORT_RANGE_END` | `50100` | End of the port range (exclusive) — supports up to 100 concurrent environments |
-
-### Routing
-
-| Variable | Default | Description |
-|---|---|---|
-| `ODUFLOW_ROUTING_MODE` | `port` | `port` — direct host port mapping; `traefik` — reverse proxy with auto-HTTPS |
-| `ODUFLOW_BASE_DOMAIN` | *(empty)* | Base domain for Traefik routing (e.g. `dev.example.com`). Required when `ODUFLOW_ROUTING_MODE=traefik` |
-| `ODUFLOW_ACME_EMAIL` | *(empty)* | Let's Encrypt email for TLS certificates. Required when `ODUFLOW_ROUTING_MODE=traefik` |
-
-### Filestore
-
-| Variable | Default | Description |
-|---|---|---|
-| `ODUFLOW_OVERLAY_THRESHOLD_MB` | `50` | Template filestore size threshold (MB). Templates smaller than this use a simple copy per environment; larger templates use fuse-overlayfs (saves disk). The decision is stored in `metadata.json` at template creation time. |
-
-### Database
-
-| Variable | Default | Description |
-|---|---|---|
-| `ODOO_DB_USER` | `odoo` | PostgreSQL user for the shared database container |
-| `ODOO_DB_PASSWORD` | `odoo` | PostgreSQL password |
-
-### Debug
-
-| Variable | Default | Description |
-|---|---|---|
-| `ODUFLOW_TRACE` | *(empty)* | Set to `1` to enable detailed trace logging for git analysis and environment operations (file classification, field change detection, pull actions) |
-
-### Configuration File Overrides
-
-When `oduflow init` runs, it copies the bundled `postgresql.conf` and `odoo.conf` to `/etc/oduflow/`. These files take **priority** over the bundled defaults — edit them to customize PostgreSQL tuning or Odoo settings globally:
-
-```
-/etc/oduflow/
-  postgresql.conf      ← custom PostgreSQL tuning (used by oduflow-db)
-  odoo.conf            ← custom Odoo defaults (used by new environments)
-  traefik/             ← Traefik dynamic configuration (auto-generated per instance)
+[team.1]
+hostname = "localhost"               # port mode: http://{hostname}:{port}, traefik mode: https://{slug}.{hostname}
+auth_token = ""                      # MCP bearer token (empty = MCP auth disabled)
+ui_password = ""                     # Web UI password (empty = UI auth disabled)
+port_range = [50000, 50100]          # port range for Odoo containers [start, end)
 ```
 
-If a repository contains an `odoo.conf` at its root, it takes priority over both the bundled and `/etc/oduflow/` versions for that specific environment.
+### Server settings
+
+| Key | Default | Description |
+|---|---|---|
+| `[server].host` | `0.0.0.0` | HTTP server bind address |
+| `[server].port` | `8000` | HTTP server port |
+| `[server].trace` | `false` | Enable detailed trace logging for git analysis and environment operations |
+
+### Routing settings
+
+| Key | Default | Description |
+|---|---|---|
+| `[routing].mode` | `port` | `port` — direct host port mapping; `traefik` — reverse proxy with auto-HTTPS |
+| `[routing].acme_email` | *(empty)* | Let's Encrypt email for TLS certificates. Required when `mode = "traefik"` |
+
+### Database settings
+
+| Key | Default | Description |
+|---|---|---|
+| `[database].user` | `odoo` | PostgreSQL user for the shared database container |
+| `[database].password` | `odoo` | PostgreSQL password |
+| `[database].image` | `postgres:15` | PostgreSQL Docker image |
+
+### Storage settings
+
+| Key | Default | Description |
+|---|---|---|
+| `[storage].data_dir` | `/srv/oduflow` or `~/.oduflow/data` | Base directory for all data. Team data directories are `team_{ID}` subdirectories inside |
+| `[storage].overlay_threshold_mb` | `50` | Template filestore size threshold (MB). Templates smaller than this use a simple copy per environment; larger templates use fuse-overlayfs. The decision is stored in `metadata.json` at template creation time |
+
+### Per-team settings
+
+Each `[team.*]` section defines an isolated team with its own workspaces, templates, credentials, and services. At least one team is required.
+
+| Key | Default | Description |
+|---|---|---|
+| `hostname` | `localhost` | Team hostname. In port mode: `http://{hostname}:{port}`. In traefik mode: `https://{slug}.{hostname}` |
+| `auth_token` | *(empty)* | Bearer token for MCP HTTP auth. Empty = MCP auth disabled for this team |
+| `ui_password` | *(empty)* | Password for Web UI Basic auth (user: `admin`). Separate from MCP auth token. Empty = UI auth disabled |
+| `port_range` | `[50000, 50100]` | Port range for Odoo containers `[start, end)` — supports up to 100 concurrent environments |
+
+Team data is stored at `{data_dir}/team_{ID}/`:
+
+```
+team_{ID}/
+├── workspaces/           # Per-branch environments
+├── templates/            # Reusable database snapshots
+├── shared_repos/         # Extra addon repositories (bare clones)
+├── ports.json            # Port registry
+├── .git-credentials      # Git credentials for this team
+└── agent_guides/         # AI agent guides (markdown)
+```
+
+### Configuration file overrides
+
+When `oduflow init` runs, it copies the bundled `postgresql.conf` and `odoo.conf` to the config directory. These files take **priority** over the bundled defaults — edit them to customize PostgreSQL tuning or Odoo settings globally:
+
+```
+/etc/oduflow/             (or ~/.oduflow/conf/)
+  oduflow.toml            ← main configuration file
+  postgresql.conf         ← custom PostgreSQL tuning (used by oduflow-db)
+  odoo.conf               ← custom Odoo defaults (used by new environments)
+  license.key             ← license file (optional)
+  traefik/                ← Traefik dynamic configuration (auto-generated)
+```
+
+If a repository contains an `odoo.conf` at its root, it takes priority over both the bundled and system-level versions for that specific environment.
 
 ## Auto-start with systemd
 
@@ -152,17 +193,17 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 # Install oduflow as a tool (as root)
 uv tool install oduflow
 
-# Initialize shared infrastructure and instance directories
-oduflow init
-oduflow init-instance --instance 1
-```
+# Create the configuration file
+# (oduflow init will auto-create a default oduflow.toml if none exists)
 
-`init-instance` creates an environment file at `/etc/oduflow/instance_{ID}.env` (seeded from the bundled `.env.example`). Edit it to configure your instance — set `ODUFLOW_AUTH_TOKEN`, `EXTERNAL_HOST`, routing mode, etc.
+# Initialize shared infrastructure and all team directories
+oduflow init
+```
 
 ### Install the service
 
 ```bash
-oduflow systemd-install --instance 1
+oduflow systemd-install
 ```
 
 This will:
@@ -170,13 +211,6 @@ This will:
 1. Generate a systemd unit file at `/etc/systemd/system/oduflow.service`
 2. Run `systemctl daemon-reload`
 3. Enable the service for auto-start on boot
-
-For multi-instance setups, the service is named `oduflow-{ID}.service`:
-
-```bash
-oduflow systemd-install --instance 2
-# → /etc/systemd/system/oduflow-2.service
-```
 
 ### Manage the service
 
@@ -197,7 +231,7 @@ systemctl restart oduflow
 ### Remove the service
 
 ```bash
-oduflow systemd-uninstall --instance 1
+oduflow systemd-uninstall
 ```
 
 This stops, disables, and removes the unit file.
