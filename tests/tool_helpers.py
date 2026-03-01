@@ -12,8 +12,14 @@ from oduflow.server import mcp  # noqa: E402
 
 def call_tool(name: str, **kwargs):
     """Look up a registered MCP tool by name and invoke it with *kwargs*."""
+    import asyncio
+    import inspect
+
     tool = mcp._tool_manager._tools[name]
-    return tool.fn(**kwargs)
+    result = tool.fn(**kwargs)
+    if inspect.isawaitable(result):
+        return asyncio.run(result)
+    return result
 
 
 def list_tools() -> list[str]:

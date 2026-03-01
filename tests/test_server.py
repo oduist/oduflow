@@ -161,10 +161,20 @@ class TestErrorHandling:
 
 
 def _get_tool_fn(tool_name: str):
-    """Get the raw function for a registered MCP tool (avoids name collision with call_tool)."""
+    """Get a sync-callable wrapper for a registered MCP tool."""
+    import asyncio
+    import inspect
     from oduflow.server import mcp
 
-    return mcp._tool_manager._tools[tool_name].fn
+    fn = mcp._tool_manager._tools[tool_name].fn
+
+    def sync_wrapper(*args, **kwargs):
+        result = fn(*args, **kwargs)
+        if inspect.isawaitable(result):
+            return asyncio.run(result)
+        return result
+
+    return sync_wrapper
 
 
 class TestCreateServiceTool:

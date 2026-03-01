@@ -73,19 +73,24 @@ def _resolve_team(ctx: Context | None) -> TeamSettings:
 
 def handle_errors(fn):
     @functools.wraps(fn)
-    def wrapper(*args, **kwargs):
-        try:
-            result = fn(*args, **kwargs)
-            preview = (
-                (result[:200] + "...")
-                if isinstance(result, str) and len(result) > 200
-                else result
-            )
-            logger.info("[%s] -> %s", fn.__name__, preview)
-            return result
-        except FlowError as e:
-            logger.error("[%s] Error: %s", fn.__name__, e)
-            raise ToolError(str(e))
+    async def wrapper(*args, **kwargs):
+        import anyio
+
+        def _run():
+            try:
+                result = fn(*args, **kwargs)
+                preview = (
+                    (result[:200] + "...")
+                    if isinstance(result, str) and len(result) > 200
+                    else result
+                )
+                logger.info("[%s] -> %s", fn.__name__, preview)
+                return result
+            except FlowError as e:
+                logger.error("[%s] Error: %s", fn.__name__, e)
+                raise ToolError(str(e))
+
+        return await anyio.to_thread.run_sync(_run)
 
     return wrapper
 
