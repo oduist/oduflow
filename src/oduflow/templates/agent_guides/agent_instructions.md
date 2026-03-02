@@ -1,5 +1,5 @@
 # Oduflow — Agentic Odoo Development
-Version: 1
+Version: 2
 
 ## What is Oduflow
 
@@ -51,6 +51,16 @@ MCP endpoint: `http://<host>:8000/mcp`
 | `install_odoo_modules(branch_name, modules)` | Install modules for the first time (`odoo -i`). Comma-separated list, e.g. `"sale,crm"`. **Returns full output including any errors directly in the response.** |
 | `upgrade_odoo_modules(branch_name, modules)` | Force-upgrade modules (`odoo -u`). Usually handled by `pull_and_apply`. **Returns full output including any errors directly in the response.** |
 | `run_odoo_tests(branch_name, modules)` | Run Odoo tests (`--test-enable`) for specific modules. **Returns full test output directly in the response.** |
+| `list_installed_modules(branch_name, name_filter?, state_filter?)` | List Odoo modules with name/state filtering. Default: installed modules only. |
+
+### ORM & Scripting
+
+| Tool | When to use |
+|---|---|
+| `run_odoo_shell(branch_name, python_code)` | Execute Python in Odoo shell with full ORM access (`self.env`, models, registry). Use `print()` to produce output. |
+| `write_file_in_odoo(branch_name, path, content, user?)` | Write a text file inside the container (CSV imports, scripts, configs). Uses tar stream — no shell escaping issues. Do NOT use for source code. |
+| `http_request_to_odoo(branch_name, path, method?, body?, headers?, session_id?)` | HTTP request to the running Odoo instance. Test controllers, JSON-RPC, REST endpoints. |
+| `search_in_odoo(branch_name, pattern, path?, glob?, max_results?)` | Grep for a pattern inside container files. Fixed-string search with file/line numbers. |
 
 ### Debugging & Logs
 
@@ -62,7 +72,7 @@ MCP endpoint: `http://<host>:8000/mcp`
 
 | Tool | What it shows |
 |---|---|
-| `get_environment_logs(branch_name, n_lines?)` | Logs from the **running Odoo server** (main container process). Use to check for runtime errors, request errors, or startup issues after a restart. Does **NOT** contain output from install/upgrade/test operations. |
+| `get_environment_logs(branch_name, n_lines?, grep?, level?)` | Logs from the **running Odoo server** (main container process). Use `grep` for substring filtering, `level` for "ERROR"/"WARNING"/"CRITICAL". Does **NOT** contain output from install/upgrade/test operations. |
 | `read_file_in_odoo(branch_name, path, read_range?)` | Read a text file or list a directory inside the container. Use to inspect Odoo source code, addon structure, config files. Supports `read_range="START:END"` for large files. **Prefer this over `run_odoo_command` with `cat`/`ls`.** |
 | `run_odoo_command(branch_name, command, user?)` | Run shell commands inside the container. Use `user="root"` for privileged ops (pip install, apt). Useful for debugging, running Odoo shell commands. For reading files, prefer `read_file_in_odoo` instead |
 
@@ -90,6 +100,36 @@ MCP endpoint: `http://<host>:8000/mcp`
 | `list_templates` | List available database template profiles |
 | `save_as_template(branch_name)` | Make a branch the new template baseline. ⚠️ Destructive only if other environments share this template with overlay mounts. Requires explicit user permission |
 | `delete_template(template_name)` | ⚠️ **Destructive**. Remove a template profile. Requires explicit user permission |
+
+---
+
+## Working with Large Outputs
+
+Tools like `install_odoo_modules`, `upgrade_odoo_modules`, `run_odoo_tests`, `pull_and_apply`, `run_odoo_command`, and `run_db_query` can produce very large output (tens of thousands of lines). When output exceeds ~5K characters, Oduflow automatically:
+
+1. **Caches** the full output on the server
+2. **Returns a smart summary**: first 20 lines + all errors with context + last 30 lines + metadata
+3. **Includes an `output_id`** for drill-down
+
+The summary footer looks like:
+```
+[Cached output: id=a3f7c012, 1897 lines, 68449 chars]
+[Use read_output(output_id="a3f7c012", ...) to search, read ranges, or get full output]
+```
+
+### Drill-down with `read_output`
+
+| Mode | What it does |
+|---|---|
+| `read_output(output_id, mode="errors")` | Show only ERROR/WARNING lines with context |
+| `read_output(output_id, mode="grep", grep="pattern")` | Search for a substring (case-insensitive) |
+| `read_output(output_id, mode="lines", start=100, end=200)` | Read a specific line range |
+| `read_output(output_id, mode="tail")` | Last 100 lines |
+| `read_output(output_id, mode="info")` | Metadata: line count, char count, error count |
+
+**When to use:** If the summary shows an error but you need more context around it, or if you need to find a specific module/field/class in the output.
+
+**Cache lifetime:** 1 hour. After that, the output expires.
 
 ---
 

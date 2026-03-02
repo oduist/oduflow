@@ -50,21 +50,39 @@ def run_environment_tests(
 
 
 def get_environment_logs(
-    settings: Settings, branch_name: str, n_lines: int = 100
+    settings: Settings,
+    branch_name: str,
+    n_lines: int = 100,
+    grep: str = "",
+    level: str = "",
 ) -> str:
     client = get_client()
     odoo_container_name = get_resource_name(branch_name, "odoo", settings.prefix)
 
+    # Fetch more lines when filtering to have meaningful results
+    fetch_lines = min(n_lines * 10, 10_000) if (grep or level) else n_lines
+
     try:
         container = client.containers.get(odoo_container_name)
-        logs = container.logs(tail=n_lines, stdout=True, stderr=True)
-        if isinstance(logs, bytes):
-            return logs.decode("utf-8")
-        return str(logs)
+        logs = container.logs(tail=fetch_lines, stdout=True, stderr=True)
+        logs_str = logs.decode("utf-8") if isinstance(logs, bytes) else str(logs)
     except docker.errors.NotFound:
         raise NotFoundError(
             f"Environment '{branch_name}' does not exist. Use create_environment first."
         )
+
+    if grep or level:
+        lines = logs_str.splitlines()
+        filtered = []
+        for line in lines:
+            if level and f" {level} " not in line.upper():
+                continue
+            if grep and grep.lower() not in line.lower():
+                continue
+            filtered.append(line)
+        return "\n".join(filtered[-n_lines:])
+
+    return logs_str
 
 
 def _run_odoo_module_command(
@@ -165,7 +183,7 @@ def read_file_in_environment(
     ).strip()
     if "charset=binary" in mime_str:
         return {
-            "error": f"Binary file, cannot display: {path}\nUse exec_in_odoo for binary file operations."
+            "error": f"Binary file, cannot display: {path}\nUse run_odoo_command for binary file operations."
         }
 
     # Check file size
@@ -218,7 +236,7 @@ def read_file_in_environment(
     return {"type": "file", "output": output_str, "size": file_size}
 
 
-def exec_in_environment(
+def run_command_in_environment(
     settings: Settings, branch_name: str, command: str, user: str = "odoo"
 ) -> dict[str, Any]:
     client = get_client()
@@ -337,3 +355,211 @@ def run_db_query(
         "exit_code": exit_code,
         "output": output_str,
     }
+
+
+_WRITE_FILE_LIMIT = 1_000_000  # 1 MB
+
+
+def write_file_in_environment(
+    settings: Settings, branch_name: str, path: str, content: str, user: str = "odoo"
+) -> dict[str, Any]:
+    """Write a text file inside the Odoo container via tar stream."""
+    import io
+    import tarfile
+
+    if len(content.encode("utf-8")) > _WRITE_FILE_LIMIT:
+        raise ExternalCommandError(
+            "write_file", 1, f"Content exceeds {_WRITE_FILE_LIMIT} byte limit."
+        )
+
+    client = get_client()
+    odoo_container_name = get_resource_name(branch_name, "odoo", settings.prefix)
+
+    try:
+        container = client.containers.get(odoo_container_name)
+    except docker.errors.NotFound:
+        raise NotFoundError(
+            f"Environment '{branch_name}' does not exist. Use create_environment first."
+        )
+
+    parent = path.rsplit("/", 1)[0] if "/" in path else "/"
+    container.exec_run(["mkdir", "-p", parent], user=user)
+
+    data = content.encode("utf-8")
+    tar_stream = io.BytesIO()
+    filename = path.rsplit("/", 1)[-1] if "/" in path else path
+    with tarfile.open(fileobj=tar_stream, mode="w") as tar:
+        info = tarfile.TarInfo(name=filename)
+        info.size = len(data)
+        tar.addfile(info, io.BytesIO(data))
+    tar_stream.seek(0)
+    container.put_archive(parent, tar_stream)
+
+    if user != "root":
+        container.exec_run(["chown", user, path], user="root")
+
+    logger.info(
+        "File written in environment",
+        extra={"branch": branch_name, "path": path, "size": len(data)},
+    )
+    return {"path": path, "size": len(data)}
+
+
+def run_odoo_shell(
+    settings: Settings, team: TeamSettings, branch_name: str, python_code: str
+) -> dict[str, Any]:
+    """Execute Python code in the Odoo shell context with full ORM access."""
+    import io
+    import tarfile
+
+    client = get_client()
+    odoo_container_name = get_resource_name(branch_name, "odoo", settings.prefix)
+    env_db = get_db_name(branch_name, team.team_id)
+
+    try:
+        container = client.containers.get(odoo_container_name)
+    except docker.errors.NotFound:
+        raise NotFoundError(
+            f"Environment '{branch_name}' does not exist. Use create_environment first."
+        )
+
+    creds = load_credentials(
+        branch_name, team.workspaces_dir, settings.db_user, settings.db_password
+    )
+
+    # Write Python code to temp file via tar stream (avoids shell escaping)
+    script_path = "/tmp/_oduflow_shell_script.py"
+    data = python_code.encode("utf-8")
+    tar_stream = io.BytesIO()
+    with tarfile.open(fileobj=tar_stream, mode="w") as tar:
+        info = tarfile.TarInfo(name="_oduflow_shell_script.py")
+        info.size = len(data)
+        tar.addfile(info, io.BytesIO(data))
+    tar_stream.seek(0)
+    container.put_archive("/tmp", tar_stream)
+
+    cmd = (
+        f"odoo shell --no-http --stop-after-init "
+        f"--db_host={settings.shared_db_container} "
+        f"-r {creds['pg_user']} -w {creds['pg_password']} "
+        f"--database={env_db} "
+        f"< {script_path}"
+    )
+
+    logger.info(
+        "Running Odoo shell",
+        extra={"branch": branch_name, "code_size": len(data)},
+    )
+    exit_code, output = container.exec_run(["sh", "-c", cmd], user="odoo")
+    output_str = output.decode("utf-8") if isinstance(output, bytes) else str(output)
+
+    # Cleanup temp file
+    container.exec_run(["rm", "-f", script_path])
+
+    return {
+        "exit_code": exit_code,
+        "output": output_str,
+    }
+
+
+def search_in_environment(
+    settings: Settings,
+    branch_name: str,
+    pattern: str,
+    path: str = "/mnt/extra-addons",
+    glob: str = "*.py",
+    max_results: int = 50,
+) -> dict[str, Any]:
+    """Search for a pattern in files inside the Odoo container."""
+    client = get_client()
+    odoo_container_name = get_resource_name(branch_name, "odoo", settings.prefix)
+
+    try:
+        container = client.containers.get(odoo_container_name)
+    except docker.errors.NotFound:
+        raise NotFoundError(
+            f"Environment '{branch_name}' does not exist. Use create_environment first."
+        )
+
+    cmd = [
+        "grep",
+        "-rn",
+        "-F",
+        "--include",
+        glob,
+        "-m",
+        str(max_results),
+        pattern,
+        path,
+    ]
+
+    logger.info(
+        "Searching in environment",
+        extra={"branch": branch_name, "pattern": pattern, "path": path},
+    )
+    exit_code, output = container.exec_run(cmd)
+    output_str = output.decode("utf-8") if isinstance(output, bytes) else str(output)
+
+    lines = output_str.strip().splitlines()[:max_results] if output_str.strip() else []
+
+    return {
+        "matches": len(lines),
+        "output": "\n".join(lines),
+        "truncated": len(output_str.strip().splitlines()) > max_results,
+    }
+
+
+def http_request_to_odoo(
+    settings: Settings,
+    team: TeamSettings,
+    branch_name: str,
+    path: str,
+    method: str = "GET",
+    body: str = "",
+    headers: dict[str, str] | None = None,
+    session_id: str = "",
+) -> dict[str, Any]:
+    """Make an HTTP request to the running Odoo instance."""
+    import json  # noqa: F401
+    import urllib.request
+    import urllib.error
+
+    from oduflow.docker_ops.env_ops import get_environment_info
+
+    info = get_environment_info(settings, team, branch_name)
+    base_url = info["url"]
+
+    url = f"{base_url}{path}"
+    req_headers = dict(headers) if headers else {}
+    if session_id:
+        req_headers["Cookie"] = f"session_id={session_id}"
+
+    data = body.encode("utf-8") if body else None
+    req = urllib.request.Request(url, data=data, headers=req_headers, method=method)
+
+    logger.info(
+        "HTTP request to Odoo",
+        extra={"branch": branch_name, "method": method, "path": path},
+    )
+
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            response_body = resp.read().decode("utf-8", errors="replace")
+            return {
+                "status_code": resp.status,
+                "headers": dict(resp.headers),
+                "body": response_body[:100_000],
+            }
+    except urllib.error.HTTPError as e:
+        response_body = e.read().decode("utf-8", errors="replace")
+        return {
+            "status_code": e.code,
+            "headers": dict(e.headers),
+            "body": response_body[:100_000],
+        }
+    except urllib.error.URLError as e:
+        return {
+            "status_code": 0,
+            "headers": {},
+            "body": f"Connection failed: {e.reason}",
+        }

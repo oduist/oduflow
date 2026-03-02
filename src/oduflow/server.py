@@ -20,11 +20,19 @@ from oduflow.docker_ops import (
 from oduflow import git_ops
 from oduflow.errors import FlowError
 from oduflow.locking import LockManager
+from oduflow.output_cache import OutputCache, CachedOutput
 from oduflow.settings import Settings, TeamSettings, find_toml
 
 logger = logging.getLogger("oduflow")
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+_CACHE_THRESHOLD = 5_000  # chars — outputs above this are cached + summarized
+_SUMMARY_HEAD_LINES = 20
+_SUMMARY_TAIL_LINES = 30
+_SUMMARY_ERROR_CONTEXT = 5
+
+_output_cache = OutputCache()
 
 mcp = FastMCP("Oduflow")
 _locks = LockManager()
@@ -66,6 +74,64 @@ def _resolve_team(ctx: Context | None) -> TeamSettings:
     if len(settings.teams) == 1:
         return next(iter(settings.teams.values()))
     return settings.get_team("1")
+
+
+# -- Output cache helpers --
+
+
+def _make_summary(cached: CachedOutput) -> str:
+    """Build a smart summary from cached output: head + errors + tail + metadata."""
+    lines = cached.lines
+    total = cached.total_lines
+    parts: list[str] = []
+
+    # Head
+    parts.extend(lines[:_SUMMARY_HEAD_LINES])
+
+    # Errors with context (deduplicated)
+    if cached.error_line_indices:
+        parts.append(
+            f"\n--- Errors/Warnings ({len(cached.error_line_indices)} occurrences) ---"
+        )
+        seen: set[int] = set()
+        for idx in cached.error_line_indices:
+            context_end = min(idx + _SUMMARY_ERROR_CONTEXT + 1, total)
+            for i in range(idx, context_end):
+                if i not in seen:
+                    parts.append(lines[i])
+                    seen.add(i)
+            parts.append("")
+
+    # Skipped count
+    skip_start = _SUMMARY_HEAD_LINES
+    skip_end = total - _SUMMARY_TAIL_LINES
+    if skip_end > skip_start:
+        parts.append(f"--- Skipped {skip_end - skip_start} lines of output ---")
+
+    # Tail
+    tail_start = max(total - _SUMMARY_TAIL_LINES, _SUMMARY_HEAD_LINES)
+    parts.extend(lines[tail_start:])
+
+    # Metadata footer
+    parts.append("")
+    parts.append(
+        f"[Cached output: id={cached.output_id}, {cached.total_lines} lines, {cached.total_chars} chars]"
+    )
+    parts.append(
+        f'[Use read_output(output_id="{cached.output_id}", ...) to search, read ranges, or get full output]'
+    )
+
+    return "\n".join(parts)
+
+
+def _maybe_cache(output: str, header: str, source_tool: str, source_args: str) -> str:
+    """If output exceeds threshold, cache it and return header + summary. Otherwise return as-is."""
+    if len(output) > _CACHE_THRESHOLD:
+        cached = _output_cache.store(
+            output, source_tool=source_tool, source_args=source_args
+        )
+        return f"{header}\n\n{_make_summary(cached)}"
+    return f"{header}\n\nOutput:\n{output}"
 
 
 # -- Decorators --
@@ -665,13 +731,20 @@ def run_odoo_tests(branch_name: str, modules: str, ctx: Context = None) -> str:
     settings = _get_settings()
     team = _resolve_team(ctx)
     output = odoo_ops.run_environment_tests(settings, team, branch_name, modules)
-    return f"Test Results for {branch_name}:\n\n{output}"
+    header = f"Test Results for {branch_name}:"
+    return _maybe_cache(
+        output, header, "run_odoo_tests", f"branch={branch_name}, modules={modules}"
+    )
 
 
 @mcp.tool()
 @handle_errors
 def get_environment_logs(
-    branch_name: str, n_lines: int = 100, ctx: Context = None
+    branch_name: str,
+    n_lines: int = 100,
+    grep: str = "",
+    level: str = "",
+    ctx: Context = None,
 ) -> str:
     """
     Get the last N lines of logs from the Odoo container for a specific branch.
@@ -679,25 +752,43 @@ def get_environment_logs(
     Args:
         branch_name: The name of the branch/environment.
         n_lines: The number of recent log lines to retrieve (default 100).
+        grep: Filter logs to only show lines matching this pattern (case-insensitive substring search). Useful to find specific errors, modules, or messages.
+        level: Filter by Odoo log level. One of: "ERROR", "WARNING", "CRITICAL". Returns only lines containing the specified level marker. Can be combined with grep.
     """
-    output = odoo_ops.get_environment_logs(_get_settings(), branch_name, n_lines)
+    output = odoo_ops.get_environment_logs(
+        _get_settings(), branch_name, n_lines, grep=grep, level=level
+    )
     return f"Recent logs for {branch_name}:\n\n{_ANSI_RE.sub('', output)}"
 
 
 @mcp.tool()
 @handle_errors
-def restart_environment(branch_name: str, ctx: Context = None) -> str:
+def restart_environment(
+    branch_name: str, wait: bool = True, ctx: Context = None
+) -> str:
     """
     Restart the Odoo container for a specific branch.
 
     Args:
         branch_name: The name of the branch/environment to restart.
+        wait: Wait for Odoo to become ready after restart (default True). Polls /web/health every 2 seconds for up to 120 seconds.
     """
-    result = env_ops.restart_environment(_get_settings(), branch_name)
-    return (
-        f"Environment restarted successfully!\n"
-        f"Odoo Container: {result['odoo_container']}"
-    )
+    settings = _get_settings()
+    result = env_ops.restart_environment(settings, branch_name)
+    lines = [
+        "Environment restarted successfully!",
+        f"Odoo Container: {result['odoo_container']}",
+    ]
+    if wait:
+        team = _resolve_team(ctx)
+        ready = env_ops.wait_for_odoo_ready(settings, team, branch_name)
+        if ready:
+            lines.append("Odoo is ready.")
+        else:
+            lines.append(
+                "Warning: Odoo did not become ready within 120 seconds. Check logs with get_environment_logs."
+            )
+    return "\n".join(lines)
 
 
 @mcp.tool()
@@ -796,18 +887,30 @@ def stop_environment(branch_name: str, ctx: Context = None) -> str:
 
 @mcp.tool()
 @handle_errors
-def start_environment(branch_name: str, ctx: Context = None) -> str:
+def start_environment(branch_name: str, wait: bool = True, ctx: Context = None) -> str:
     """
     Start all containers for a specific branch environment.
 
     Args:
         branch_name: The name of the branch/environment to start.
+        wait: Wait for Odoo to become ready after start (default True). Polls /web/health every 2 seconds for up to 120 seconds.
     """
-    result = env_ops.start_environment(_get_settings(), branch_name)
-    return (
-        f"Environment started successfully!\n"
-        f"Started containers: {', '.join(result['started'])}"
-    )
+    settings = _get_settings()
+    result = env_ops.start_environment(settings, branch_name)
+    lines = [
+        "Environment started successfully!",
+        f"Started containers: {', '.join(result['started'])}",
+    ]
+    if wait:
+        team = _resolve_team(ctx)
+        ready = env_ops.wait_for_odoo_ready(settings, team, branch_name)
+        if ready:
+            lines.append("Odoo is ready.")
+        else:
+            lines.append(
+                "Warning: Odoo did not become ready within 120 seconds. Check logs with get_environment_logs."
+            )
+    return "\n".join(lines)
 
 
 @mcp.tool()
@@ -836,19 +939,127 @@ def pull_and_apply(branch_name: str, ctx: Context = None) -> str:
     if action == "none":
         return result["message"]
 
-    lines = [result["message"]]
+    header_lines = [result["message"]]
     if result.get("modules_installed"):
-        lines.append(f"Installed: {', '.join(result['modules_installed'])}")
+        header_lines.append(f"Installed: {', '.join(result['modules_installed'])}")
     if result.get("modules_upgraded"):
-        lines.append(f"Upgraded: {', '.join(result['modules_upgraded'])}")
-    lines.append(f"Changed files ({len(result.get('changed_files', []))}):")
+        header_lines.append(f"Upgraded: {', '.join(result['modules_upgraded'])}")
+    header_lines.append(f"Changed files ({len(result.get('changed_files', []))}):")
     for f in result.get("changed_files", [])[:20]:
-        lines.append(f"  - {f}")
+        header_lines.append(f"  - {f}")
     if len(result.get("changed_files", [])) > 20:
-        lines.append(f"  ... and {len(result['changed_files']) - 20} more")
-    if result.get("output"):
-        lines.append(f"\nOutput:\n{result['output']}")
-    return "\n".join(lines)
+        header_lines.append(f"  ... and {len(result['changed_files']) - 20} more")
+
+    header = "\n".join(header_lines)
+    output = result.get("output", "")
+    if output:
+        return _maybe_cache(output, header, "pull_and_apply", f"branch={branch_name}")
+    return header
+
+
+# =============================================================================
+# MCP Tools — Output cache drill-down
+# =============================================================================
+
+
+@mcp.tool()
+@handle_errors
+def read_output(
+    output_id: str,
+    mode: str = "lines",
+    start: int = 1,
+    end: int = 0,
+    grep: str = "",
+    ctx: Context = None,
+) -> str:
+    """
+    Read from a cached tool output by its ID.
+
+    After calling tools like install_odoo_modules, upgrade_odoo_modules,
+    run_odoo_tests, etc., large outputs are cached on the server. The tool
+    response includes an output_id and metadata. Use this tool to explore
+    the cached output interactively.
+
+    Modes:
+    - "lines" (default): Return a range of lines. Use start/end for pagination
+      (1-indexed). Default: first 200 lines. Example: start=100, end=200.
+    - "errors": Return only ERROR/WARNING/CRITICAL lines with ±5 lines of context.
+    - "grep": Search for a pattern (case-insensitive substring). Returns matching
+      lines with line numbers. Combine with start/end to paginate results.
+    - "info": Return metadata only — line count, char count, error count, source tool.
+    - "tail": Return last 100 lines.
+
+    Args:
+        output_id: The cached output ID (e.g. "a3f7c012"), returned by the original tool.
+        mode: Read mode — "lines", "errors", "grep", "info", "tail".
+        start: First line number to return (1-indexed, default 1). Used with mode="lines" and "grep".
+        end: Last line number to return (0 = start+200 for "lines", all results for "grep").
+        grep: Search pattern for mode="grep". Case-insensitive substring match.
+    """
+    import time as _time
+
+    cached = _output_cache.get(output_id)
+    if cached is None:
+        return f"Output '{output_id}' not found or expired (TTL: 1 hour)."
+
+    lines = cached.lines
+    total = cached.total_lines
+
+    if mode == "info":
+        return (
+            f"Cached output: {output_id}\n"
+            f"Source: {cached.source_tool}({cached.source_args})\n"
+            f"Lines: {total}\n"
+            f"Characters: {cached.total_chars}\n"
+            f"Errors/Warnings: {len(cached.error_line_indices)} lines\n"
+            f"Age: {int(_time.time() - cached.created_at)}s"
+        )
+
+    if mode == "errors":
+        if not cached.error_line_indices:
+            return "No errors or warnings found in cached output."
+        result_lines: list[str] = []
+        seen: set[int] = set()
+        for idx in cached.error_line_indices:
+            ctx_start = max(0, idx - 2)
+            ctx_end = min(total, idx + 6)
+            for i in range(ctx_start, ctx_end):
+                if i not in seen:
+                    result_lines.append(f"{i + 1:>6}| {lines[i]}")
+                    seen.add(i)
+            result_lines.append("")
+        return "\n".join(result_lines)
+
+    if mode == "grep":
+        if not grep:
+            return "Error: grep parameter is required for mode='grep'."
+        pattern = grep.lower()
+        matches = []
+        for i, line in enumerate(lines):
+            if pattern in line.lower():
+                matches.append(f"{i + 1:>6}| {line}")
+        if not matches:
+            return f"No matches for '{grep}' in {total} lines."
+        s = max(start - 1, 0)
+        e = end if end > 0 else s + 200
+        page = matches[s:e]
+        header = f"Matches for '{grep}': {len(matches)} total (showing {s + 1}-{min(e, len(matches))})"
+        return header + "\n" + "\n".join(page)
+
+    if mode == "tail":
+        tail = lines[-100:]
+        start_num = total - len(tail) + 1
+        numbered = [f"{start_num + i:>6}| {ln}" for i, ln in enumerate(tail)]
+        return f"Last {len(tail)} lines (of {total}):\n" + "\n".join(numbered)
+
+    # mode == "lines" (default)
+    s = max(start - 1, 0)
+    e = end if end > 0 else s + 200
+    e = min(e, total)
+    page = lines[s:e]
+    numbered = [f"{s + i + 1:>6}| {ln}" for i, ln in enumerate(page)]
+    header = f"Lines {s + 1}-{e} of {total}:"
+    return header + "\n" + "\n".join(numbered)
 
 
 # =============================================================================
@@ -879,9 +1090,14 @@ def install_odoo_modules(branch_name: str, modules: str, ctx: Context = None) ->
     output = result.get("output", "")
     if exit_code == 0:
         env_ops.restart_environment(settings, branch_name)
-        return f"Success. Modules installed: {modules_str}. Container restarted. Exit code: 0.\n\nOutput:\n{output}"
-    return (
-        f"Error. Modules: {modules_str}. Exit code: {exit_code}.\n\nOutput:\n{output}"
+        header = f"Success. Modules installed: {modules_str}. Container restarted. Exit code: 0."
+    else:
+        header = f"Error. Modules: {modules_str}. Exit code: {exit_code}."
+    return _maybe_cache(
+        output,
+        header,
+        "install_odoo_modules",
+        f"branch={branch_name}, modules={modules}",
     )
 
 
@@ -906,10 +1122,13 @@ def upgrade_odoo_modules(branch_name: str, modules: str, ctx: Context = None) ->
     exit_code = result["exit_code"]
     modules_str = ", ".join(result["modules"])
     output = result.get("output", "")
-    if exit_code == 0:
-        return f"Success. Modules upgraded: {modules_str}. Exit code: 0.\n\nOutput:\n{output}"
-    return (
-        f"Error. Modules: {modules_str}. Exit code: {exit_code}.\n\nOutput:\n{output}"
+    status = "Success" if exit_code == 0 else "Error"
+    header = f"{status}. Modules: {modules_str}. Exit code: {exit_code}."
+    return _maybe_cache(
+        output,
+        header,
+        "upgrade_odoo_modules",
+        f"branch={branch_name}, modules={modules}",
     )
 
 
@@ -930,9 +1149,9 @@ def read_file_in_odoo(
 
     If the path is a directory, returns a listing (like `ls -la`).
     If the path is a text file, returns its contents (first 100KB by default).
-    Binary files are not supported — use exec_in_odoo for binary operations.
+    Binary files are not supported — use run_odoo_command for binary operations.
 
-    Prefer this tool over exec_in_odoo with `cat` or `ls` commands.
+    Prefer this tool over run_odoo_command with `cat` or `ls` commands.
 
     Args:
         branch_name: The name of the branch/environment.
@@ -951,7 +1170,229 @@ def read_file_in_odoo(
 @mcp.tool()
 @handle_errors
 @with_branch_lock
-def exec_in_odoo(
+def write_file_in_odoo(
+    branch_name: str,
+    path: str,
+    content: str,
+    user: str = "odoo",
+    ctx: Context = None,
+) -> str:
+    """
+    Write a text file inside the Odoo container.
+
+    Creates parent directories if they don't exist. Overwrites the file if it
+    already exists. Content is transferred via container stdin to avoid
+    shell escaping issues.
+
+    Common use cases:
+    - Write CSV files for data import
+    - Create/modify odoo.conf settings
+    - Write one-off Python scripts for odoo shell execution
+    - Place test fixture files (demo data, config)
+
+    Do NOT use this to edit source code in the repository — all code changes
+    must go through git commit → git push → pull_and_apply.
+
+    Args:
+        branch_name: The name of the branch/environment.
+        path: Absolute path inside the container (e.g. "/tmp/import_data.csv").
+        content: Text content to write to the file.
+        user: OS user to own the file (default "odoo"). Use "root" for system paths.
+    """
+    result = odoo_ops.write_file_in_environment(
+        _get_settings(), branch_name, path, content, user
+    )
+    return f"File written: {result['path']} ({result['size']} bytes)"
+
+
+@mcp.tool()
+@handle_errors
+@with_branch_lock
+def run_odoo_shell(
+    branch_name: str,
+    python_code: str,
+    ctx: Context = None,
+) -> str:
+    """
+    Execute Python code in the Odoo shell context with full ORM access.
+
+    The code runs inside `odoo shell` with access to `self.env`, all Odoo
+    models, and the environment's database. Use `print()` to produce output
+    that will be returned to you.
+
+    Common use cases:
+    - Test computed fields: print(self.env['sale.order'].search([]).mapped('amount_total'))
+    - Create test records: self.env['res.partner'].create({'name': 'Test'})
+    - Inspect models: print(self.env['ir.model.fields'].search([('model','=','sale.order')]).mapped('name'))
+    - Debug business logic: check workflow transitions, access rights
+    - Run data-fix scripts
+
+    The code is executed in a single transaction that is committed at the end.
+    If the code raises an exception, the transaction is rolled back and the
+    traceback is returned.
+
+    Args:
+        branch_name: The name of the branch/environment.
+        python_code: Python code to execute. Use print() for output.
+    """
+    settings = _get_settings()
+    team = _resolve_team(ctx)
+    result = odoo_ops.run_odoo_shell(settings, team, branch_name, python_code)
+    exit_code = result["exit_code"]
+    output = result.get("output", "")
+    status = "Success" if exit_code == 0 else "Error"
+    header = f"{status}. Exit code: {exit_code}."
+    return _maybe_cache(output, header, "run_odoo_shell", f"branch={branch_name}")
+
+
+@mcp.tool()
+@handle_errors
+def http_request_to_odoo(
+    branch_name: str,
+    path: str,
+    method: str = "GET",
+    body: str = "",
+    headers: str = "",
+    session_id: str = "",
+    ctx: Context = None,
+) -> str:
+    """
+    Make an HTTP request to the running Odoo instance for a specific branch.
+
+    Useful for testing web controllers, JSON-RPC API, REST endpoints, and
+    verifying that Odoo responds correctly. The request is made from the
+    host to the container's mapped port.
+
+    Common use cases:
+    - Health check: GET /web/health
+    - JSON-RPC call: POST /jsonrpc with JSON body
+    - Test a custom controller: GET /my/custom/endpoint
+    - Verify access rights: check 200 vs 403 responses
+    - Test REST API endpoints
+
+    Args:
+        branch_name: The name of the branch/environment.
+        path: URL path (e.g. "/web/health", "/jsonrpc", "/my/invoices").
+        method: HTTP method (default "GET"). One of GET, POST, PUT, DELETE.
+        body: Request body as a string (typically JSON). Empty for GET requests.
+        headers: Comma-separated KEY:VALUE pairs (e.g. "Content-Type:application/json,Accept:text/html").
+        session_id: Odoo session ID for authenticated requests. Obtain by calling POST /web/session/authenticate first.
+    """
+    import json
+
+    settings = _get_settings()
+    team = _resolve_team(ctx)
+    parsed_headers = None
+    if headers:
+        parsed_headers = dict(
+            item.split(":", 1) for item in headers.split(",") if ":" in item
+        )
+    result = odoo_ops.http_request_to_odoo(
+        settings, team, branch_name, path, method, body, parsed_headers, session_id
+    )
+    status_code = result["status_code"]
+    resp_headers = result.get("headers", {})
+    resp_body = result.get("body", "")
+
+    lines = [f"HTTP {status_code}"]
+    header_items = list(resp_headers.items())[:20]
+    if header_items:
+        lines.append(f"Headers: {json.dumps(dict(header_items), indent=2)}")
+    if resp_body:
+        lines.append(f"\nBody:\n{resp_body[:50000]}")
+    return "\n".join(lines)
+
+
+@mcp.tool()
+@handle_errors
+def search_in_odoo(
+    branch_name: str,
+    pattern: str,
+    path: str = "/mnt/extra-addons",
+    glob: str = "*.py",
+    max_results: int = 50,
+    ctx: Context = None,
+) -> str:
+    """
+    Search for a pattern in files inside the Odoo container.
+
+    Runs a recursive grep inside the container and returns matching lines
+    with file paths and line numbers. Useful for finding field definitions,
+    method implementations, model usage across addons.
+
+    Common use cases:
+    - Find where a field is defined: pattern="x_custom_field", path="/mnt/extra-addons"
+    - Find model usage: pattern="class SaleOrder", path="/usr/lib/python3/dist-packages/odoo/addons"
+    - Find all imports of a module: pattern="from odoo.addons.sale"
+    - Find XML record: pattern='id="action_sale_order"', glob="*.xml"
+
+    Args:
+        branch_name: The name of the branch/environment.
+        pattern: Search pattern (fixed string, case-sensitive). Regex is not supported to avoid escaping issues.
+        path: Directory to search in (default "/mnt/extra-addons"). Use "/usr/lib/python3/dist-packages/odoo/addons" to search Odoo core.
+        glob: File glob pattern (default "*.py"). Use "*.xml" for views/data, "*.js" for frontend, "*" for all files.
+        max_results: Maximum number of matching lines to return (default 50).
+    """
+    result = odoo_ops.search_in_environment(
+        _get_settings(), branch_name, pattern, path, glob, max_results
+    )
+    output = result["output"]
+    if not output:
+        return f"No matches for '{pattern}' in {path} ({glob})."
+    header = f"Matches: {result['matches']}"
+    if result["truncated"]:
+        header += f" (truncated to {max_results})"
+    return f"{header}\n\n{output}"
+
+
+@mcp.tool()
+@handle_errors
+def list_installed_modules(
+    branch_name: str,
+    name_filter: str = "",
+    state_filter: str = "installed",
+    ctx: Context = None,
+) -> str:
+    """
+    List Odoo modules and their states in an environment.
+
+    Returns a table of module name, state, and installed version. By default
+    shows only installed modules. Use state_filter="" to show all modules.
+
+    Args:
+        branch_name: The name of the branch/environment.
+        name_filter: Filter modules by name (substring match, e.g. "sale" matches "sale", "sale_management", "pos_sale").
+        state_filter: Filter by module state (default "installed"). Common values: "installed", "uninstalled", "to upgrade", "to install". Pass empty string to show all states.
+    """
+    import re as _re
+
+    # Sanitize inputs: only allow alphanumeric, underscore, space, dot
+    _safe = _re.compile(r"^[a-zA-Z0-9_ .]*$")
+    if name_filter and not _safe.match(name_filter):
+        return "Error: name_filter contains invalid characters."
+    if state_filter and not _safe.match(state_filter):
+        return "Error: state_filter contains invalid characters."
+
+    query = "SELECT name, state, latest_version FROM ir_module_module"
+    conditions = []
+    if state_filter:
+        conditions.append(f"state = '{state_filter}'")
+    if name_filter:
+        conditions.append(f"name ILIKE '%{name_filter}%'")
+    if conditions:
+        query += " WHERE " + " AND ".join(conditions)
+    query += " ORDER BY name"
+
+    settings = _get_settings()
+    team = _resolve_team(ctx)
+    result = odoo_ops.run_db_query(settings, team, branch_name, query, "csv")
+    return result["output"]
+
+
+@mcp.tool()
+@handle_errors
+@with_branch_lock
+def run_odoo_command(
     branch_name: str, command: str, user: str = "odoo", ctx: Context = None
 ) -> str:
     """
@@ -962,11 +1403,19 @@ def exec_in_odoo(
         command: The shell command to execute (e.g. "ls /mnt/extra-addons", "python3 -c 'print(1)'").
         user: The OS user to run the command as (default "odoo"). Use "root" for privileged operations.
     """
-    result = odoo_ops.exec_in_environment(_get_settings(), branch_name, command, user)
+    result = odoo_ops.run_command_in_environment(
+        _get_settings(), branch_name, command, user
+    )
     exit_code = result["exit_code"]
     output = result.get("output", "")
     status = "Success" if exit_code == 0 else "Error"
-    return f"{status}. Exit code: {exit_code}.\n\nOutput:\n{output}"
+    header = f"{status}. Exit code: {exit_code}."
+    return _maybe_cache(
+        output,
+        header,
+        "run_odoo_command",
+        f"branch={branch_name}, command={command[:80]}",
+    )
 
 
 @mcp.tool()
@@ -995,7 +1444,11 @@ def reset_admin_password(
 @handle_errors
 @with_branch_lock
 def run_db_query(
-    branch_name: str, query: str, output_format: str = "csv", ctx: Context = None
+    branch_name: str,
+    query: str,
+    output_format: str = "csv",
+    max_rows: int = 100,
+    ctx: Context = None,
 ) -> str:
     """
     Execute a SQL query against the environment's PostgreSQL database.
@@ -1004,11 +1457,25 @@ def run_db_query(
         branch_name: The name of the branch/environment.
         query: SQL query to execute (e.g. "SELECT id, name FROM res_partner LIMIT 10").
         output_format: "csv" (default, compact for agent consumption) or "human" (pretty table — use when relaying results to the user).
+        max_rows: Maximum rows to return (default 100). The query itself is not
+                  modified — truncation happens on the output. If more rows are
+                  available, a note is appended suggesting to add LIMIT to the query.
     """
     settings = _get_settings()
     team = _resolve_team(ctx)
     result = odoo_ops.run_db_query(settings, team, branch_name, query, output_format)
-    return result["output"]
+    output = result["output"]
+
+    # Truncate by row count
+    output_lines = output.splitlines()
+    # First line is the header row
+    if len(output_lines) > max_rows + 1:
+        truncated = output_lines[: max_rows + 1]
+        remaining = len(output_lines) - max_rows - 1
+        truncated.append(f"... ({remaining} more rows, add LIMIT to your query)")
+        output = "\n".join(truncated)
+
+    return _maybe_cache(output, "", "run_db_query", f"branch={branch_name}")
 
 
 # =============================================================================
@@ -1274,6 +1741,78 @@ def _run_init(settings: Settings) -> None:
         print(f"    Templates: {os.path.join(team.data_dir, 'templates')}")
         print(f"    Shared repos: {team.shared_repos_dir}")
         print(f"    Service presets: {presets_path}")
+
+
+def _run_upgrade(settings: Settings) -> None:
+    """Overwrite bundled agent guides and sanitize scripts with latest versions."""
+    import pathlib
+    import shutil
+
+    bundled_dir = pathlib.Path(__file__).resolve().parent / "templates"
+    bundled_guides_dir = bundled_dir / "agent_guides"
+    etc_dir = pathlib.Path(settings.etc_dir)
+
+    # --- Collect files that will be written ---
+    files_to_write: list[tuple[str, str, str]] = []  # (label, src, dest)
+
+    # System-level: postgresql.conf
+    pg_conf_src = bundled_dir / "postgresql.conf"
+    pg_conf_dest = etc_dir / "postgresql.conf"
+    if pg_conf_src.is_file():
+        files_to_write.append(("[system]", str(pg_conf_src), str(pg_conf_dest)))
+
+    # Per-team files
+    for team_id, team in settings.teams.items():
+        label = f"[team.{team_id}]"
+
+        # Agent guides
+        agent_guides_dest = os.path.join(team.data_dir, "agent_guides")
+        if bundled_guides_dir.is_dir():
+            for guide_file in sorted(bundled_guides_dir.iterdir()):
+                if guide_file.is_file() and guide_file.suffix == ".md":
+                    dest = os.path.join(agent_guides_dest, guide_file.name)
+                    files_to_write.append((label, str(guide_file), dest))
+
+        # Sanitize scripts
+        bundled_sql = bundled_dir / "01_disable_mail.sql"
+        if bundled_sql.is_file():
+            dest = os.path.join(team.data_dir, "odoo_sanitize", "01_disable_mail.sql")
+            files_to_write.append((label, str(bundled_sql), dest))
+
+    if not files_to_write:
+        print("Nothing to upgrade — no bundled files found.")
+        return
+
+    # --- Warning banner ---
+    print()
+    print("=" * 70)
+    print("  WARNING: The following files will be OVERWRITTEN")
+    print("  with bundled versions from this Oduflow release.")
+    print("=" * 70)
+    print()
+    for label, _src, dest in files_to_write:
+        exists = " (exists)" if os.path.isfile(dest) else " (new)"
+        print(f"  {label} {dest}{exists}")
+    print()
+    print("  If you have made custom changes to any of these files,")
+    print("  press Ctrl+C NOW and back them up before proceeding.")
+    print()
+
+    try:
+        input("  Press Enter to continue or Ctrl+C to abort... ")
+    except KeyboardInterrupt:
+        print("\n\nAborted. No files were changed.")
+        return
+
+    # --- Overwrite ---
+    count = 0
+    for label, src, dest in files_to_write:
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        shutil.copy2(src, dest)
+        count += 1
+        print(f"  Updated: {dest}")
+
+    print(f"\nDone. Updated {count} file(s) across {len(settings.teams)} team(s).")
 
 
 def _copy_bundled_configs() -> None:
@@ -1643,6 +2182,10 @@ def main() -> None:
     )
 
     sub.add_parser("destroy", help="Destroy all shared infrastructure")
+    sub.add_parser(
+        "upgrade",
+        help="Overwrite bundled agent guides and sanitize scripts with the latest version",
+    )
 
     # --- Template commands (need --team) ---
     p_reload = sub.add_parser(
@@ -1821,7 +2364,9 @@ def main() -> None:
 
             dest_dir = _resolve_etc_dir()
             os.makedirs(dest_dir, exist_ok=True)
-            bundled = pathlib.Path(__file__).resolve().parent / "templates" / "oduflow.toml"
+            bundled = (
+                pathlib.Path(__file__).resolve().parent / "templates" / "oduflow.toml"
+            )
             dest = os.path.join(dest_dir, "oduflow.toml")
             shutil.copy2(str(bundled), dest)
             print(f"Config created: {dest}")
@@ -1853,6 +2398,10 @@ def main() -> None:
 
     if args.command == "destroy":
         _run_destroy(_settings)
+        return
+
+    if args.command == "upgrade":
+        _run_upgrade(_settings)
         return
 
     if args.command == "reload-template":

@@ -47,6 +47,7 @@ from oduflow.settings import Settings, TeamSettings
 
 logger = logging.getLogger("oduflow")
 
+
 def _trace(msg: str, *args: object) -> None:
     if settings.TRACE:
         logger.info("[TRACE] " + msg, *args)
@@ -929,6 +930,32 @@ def list_environments(settings: Settings, team: TeamSettings) -> list[dict[str, 
             envs[branch]["status"] = "partial"
 
     return list(envs.values())
+
+
+def wait_for_odoo_ready(
+    settings: Settings, team: TeamSettings, branch_name: str, timeout: int = 120
+) -> bool:
+    """Poll Odoo /web/health until it responds 200 or timeout."""
+    import time
+    import urllib.request
+    import urllib.error
+
+    info = get_environment_info(settings, team, branch_name)
+    base_url = info.get("url", "")
+    if not base_url:
+        return False
+
+    url = f"{base_url}/web/health"
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            with urllib.request.urlopen(url, timeout=5) as resp:
+                if resp.status == 200:
+                    return True
+        except Exception:
+            pass
+        time.sleep(2)
+    return False
 
 
 def restart_environment(settings: Settings, branch_name: str) -> dict[str, str]:
