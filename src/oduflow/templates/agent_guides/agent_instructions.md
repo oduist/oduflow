@@ -175,6 +175,10 @@ The environment container runs **remotely** and has access only to the git repos
 
 **Non-standard operations** (e.g., `apt install`, `pip install`, modifying system configs) are possible but **require explicit user confirmation** before proceeding — explain what you want to do and why.
 
+### Searching Odoo Source Code
+- If Odoo Community or Enterprise source repositories are available **locally** (cloned to your machine), prefer using your native search tools (Grep, Glob, Read) over `search_in_odoo` — local search is faster and doesn't require a running environment.
+- If local copies are not available, `search_in_odoo` works well for searching both Odoo core (`/usr/lib/python3/dist-packages/odoo/addons`) and extra addons inside the container.
+
 ### General
 - **One task = one branch = one environment.**
 - Mutexed tools (create, delete, install, upgrade, pull, test, exec) reject concurrent calls with `BusyError` — retry after a short delay.
