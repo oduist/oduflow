@@ -1,5 +1,75 @@
 # Changelog
 
+## v1.15.1 (since v1.10.1)
+
+### Breaking Changes
+
+- **Team-based multi-tenancy replaces instance-based isolation** — configuration migrated from `.env` / `ODUFLOW_INSTANCE_ID` to TOML-based `oduflow.toml` with per-team settings (workspaces, templates, credentials, port ranges, hostnames). The `.env.example` file has been removed. ([ad3b382](https://github.com/oduist/oduflow/commit/ad3b382), [14503a0](https://github.com/oduist/oduflow/commit/14503a0))
+
+### Features
+
+- **Team-based multi-tenancy** — per-team isolation with dedicated hostnames, git credentials, port ranges, and MCP token auth; auto-generated Traefik dynamic config for per-team routing; team resolution from Host header or bearer token ([ad3b382](https://github.com/oduist/oduflow/commit/ad3b382), [14503a0](https://github.com/oduist/oduflow/commit/14503a0))
+- **CLI: `run-instance` command, `--version` and `--instance` flags** — run a named instance directly from CLI with version info support ([0094369](https://github.com/oduist/oduflow/commit/0094369))
+- **CLI: `systemd-install` / `systemd-uninstall` commands** — install/remove Oduflow as a systemd service ([d266ca9](https://github.com/oduist/oduflow/commit/d266ca9))
+- **Per-environment PostgreSQL credentials** — each environment gets its own isolated database role and password ([e4949b0](https://github.com/oduist/oduflow/commit/e4949b0))
+- **Two-tier database sanitization** — system-wide sanitization scripts plus per-repo `.odoo_sanitize/` folder support ([cd0b9ec](https://github.com/oduist/oduflow/commit/cd0b9ec))
+- **MCP tool: `read_file_in_odoo`** — read files and list directories inside Odoo containers without shell commands ([abcc525](https://github.com/oduist/oduflow/commit/abcc525))
+- **MCP tool: `reset_admin_password`** — reset the admin user password in any environment's database ([608b476](https://github.com/oduist/oduflow/commit/608b476))
+- **Extra repos: fetch summary and propagation** — `update_extra_repo` returns a summary of fetched branches and propagates updates to running environments ([a80ba53](https://github.com/oduist/oduflow/commit/a80ba53))
+- **Per-branch locking module** — new `LockManager` replaces the single global mutex with per-branch and per-team locks ([ad3b382](https://github.com/oduist/oduflow/commit/ad3b382))
+- **Docker publishing support** — added `.dockerignore` and Docker publishing instructions ([24f653a](https://github.com/oduist/oduflow/commit/24f653a))
+
+### Dashboard
+
+- **Interactive SQL console (psql)** — run SQL queries directly from the web dashboard ([15d0e59](https://github.com/oduist/oduflow/commit/15d0e59))
+- **Interactive Odoo shell console** — access Odoo shell via the web dashboard ([894f1ea](https://github.com/oduist/oduflow/commit/894f1ea))
+- **Colored logs rendering** — dashboard shows ANSI-colored logs; MCP tools receive clean stripped output ([2e3989b](https://github.com/oduist/oduflow/commit/2e3989b))
+- **Detailed sync results popup** — sync operations show detailed results in a popup instead of a plain toast ([ade3ee6](https://github.com/oduist/oduflow/commit/ade3ee6))
+- **Editable restore service dialog** — service restore dialog shows editable preset values before confirming ([4eac120](https://github.com/oduist/oduflow/commit/4eac120))
+- **Wider logs modal** — logs modal expanded to 80vw with horizontal scroll ([e9d0273](https://github.com/oduist/oduflow/commit/e9d0273))
+
+### Bug Fixes
+
+- **MCP concurrency** — pass `stateless_http=True` to unblock concurrent MCP requests; run sync MCP tools in thread pool to prevent event loop blocking during long operations ([81457b1](https://github.com/oduist/oduflow/commit/81457b1), [ed4a265](https://github.com/oduist/oduflow/commit/ed4a265))
+- **TLS certresolver name** — match Docker label to Traefik's ACME provider name ("letsencrypt" not "le") ([727448b](https://github.com/oduist/oduflow/commit/727448b))
+- **HOME fallback for systemd** — add `HOME=/root` to `GIT_ENV` so git operations work under systemd ([a982b9d](https://github.com/oduist/oduflow/commit/a982b9d))
+- **Reject SSH repo URLs** — SSH URLs caused hangs due to interactive host-key prompts; now rejected early with a clear error ([ad3b382](https://github.com/oduist/oduflow/commit/ad3b382))
+- **Database ownership on template clone** — fixed ownership reassignment for tables, sequences, views, and materialized views; switched to `GRANT role` approach ([31df320](https://github.com/oduist/oduflow/commit/31df320), [afb66d0](https://github.com/oduist/oduflow/commit/afb66d0), [5c7b737](https://github.com/oduist/oduflow/commit/5c7b737))
+- **Environment deletion** — drop database before role to avoid dependency errors ([4b28e9e](https://github.com/oduist/oduflow/commit/4b28e9e))
+- **Strip `db_password` from odoo.conf** — ensures the Docker entrypoint uses environment variables instead ([f9f89d5](https://github.com/oduist/oduflow/commit/f9f89d5))
+- **Template publish** — prevent self-copy in `reload_template`, scope publish to environments matching the template ([b92631a](https://github.com/oduist/oduflow/commit/b92631a))
+- **Git sync** — replace `git pull --rebase` with `fetch + reset --hard` for reliable sync; use explicit refspec in `pull_repo` ([d57ee7e](https://github.com/oduist/oduflow/commit/d57ee7e), [74ef53d](https://github.com/oduist/oduflow/commit/74ef53d))
+- **Load extra_addons from template metadata** in `create_environment` ([3d629e6](https://github.com/oduist/oduflow/commit/3d629e6))
+- **Dump restoration** — handle gzip files and verify table count ([7ef7a02](https://github.com/oduist/oduflow/commit/7ef7a02))
+- **Fallback data dir** — fallback `ODUFLOW_HOME` to `~/oduflow_data_{id}` when `/srv` is read-only ([d45307c](https://github.com/oduist/oduflow/commit/d45307c))
+
+### Refactoring
+
+- **TOML-based configuration** — replace `.env` with `oduflow.toml`; `oduflow init` auto-bootstraps default config ([ad3b382](https://github.com/oduist/oduflow/commit/ad3b382))
+- **Merge `external_host` and `base_domain` into per-team `hostname`** ([ad3b382](https://github.com/oduist/oduflow/commit/ad3b382))
+- **Rename `ODUFLOW_HOME` → `ODUFLOW_DATA_DIR`** with instance subdirectories ([52224cb](https://github.com/oduist/oduflow/commit/52224cb))
+- **Move odoo.conf and odoo_sanitize** from `etc/` to instance data directory ([dbfc969](https://github.com/oduist/oduflow/commit/dbfc969))
+- **Require explicit branch for extra_addons** — format is now `name:branch` ([9254169](https://github.com/oduist/oduflow/commit/9254169))
+- **`chown_recursive()` helper** — replaces manual `os.chown` loops with macOS fallback support ([872059d](https://github.com/oduist/oduflow/commit/872059d))
+- **Rename `get_environment_status` → `get_environment_info`** with comprehensive details ([20e4abf](https://github.com/oduist/oduflow/commit/20e4abf))
+- **Rename `get_agent_guide` → `get_agent_skill`** ([8625790](https://github.com/oduist/oduflow/commit/8625790))
+- **Rename MCP tools** for clarity ([fbbcf54](https://github.com/oduist/oduflow/commit/fbbcf54))
+- **Async MCP tool wrapper** — `handle_errors` decorator converted to async, offloading all tools to thread pool ([ed4a265](https://github.com/oduist/oduflow/commit/ed4a265))
+
+### Documentation
+
+- Comprehensive docs rewrite for TOML-based multi-team architecture ([ad3b382](https://github.com/oduist/oduflow/commit/ad3b382))
+- Add MCP tools refinement spec (`mcp-ref.md`) ([87edd27](https://github.com/oduist/oduflow/commit/87edd27))
+- Add missing features to documentation, fix inaccuracies ([e0c3bc3](https://github.com/oduist/oduflow/commit/e0c3bc3), [1aaa6a5](https://github.com/oduist/oduflow/commit/1aaa6a5))
+- Add `llms-full.txt` for complete LLM-consumable documentation ([e330ad4](https://github.com/oduist/oduflow/commit/e330ad4))
+- Add screenshots to documentation pages ([8726d01](https://github.com/oduist/oduflow/commit/8726d01))
+- Add macOS vs Linux file ownership section ([ac4a7a8](https://github.com/oduist/oduflow/commit/ac4a7a8))
+- Add `CLAUDE.md` with project architecture and dev commands ([008d43f](https://github.com/oduist/oduflow/commit/008d43f))
+
+---
+
+## v1.10.1 and earlier
+
 ## Features
 
 - Add `reset_admin_password` MCP tool to reset the admin password in Odoo environments ([608b476](https://github.com/oduist/oduflow/commit/608b476))
