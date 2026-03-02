@@ -27,10 +27,10 @@ Reproduce a production bug with real data:
 oduflow call create_environment bug-12345 default https://github.com/company/odoo-addons.git odoo:17.0
 
 # Debug inside the container
-oduflow call exec_in_odoo bug-12345 "python3 -c 'import odoo; ...'"
+oduflow call run_odoo_command bug-12345 "python3 -c 'import odoo; ...'"
 
 # Check the database directly
-oduflow call exec_in_odoo bug-12345 "psql -h oduflow-db -U odoo -d oduflow_bug-12345 -c 'SELECT * FROM sale_order WHERE id=42;'"
+oduflow call run_odoo_command bug-12345 "psql -h oduflow-db -U odoo -d oduflow_bug-12345 -c 'SELECT * FROM sale_order WHERE id=42;'"
 ```
 
 ## 🧪 Module Testing

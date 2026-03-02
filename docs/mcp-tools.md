@@ -23,10 +23,16 @@ All tools are accessible via MCP clients (Cursor, Cline, Amp, etc.) and the CLI 
 | `upgrade_odoo_modules` | ✓ | Upgrade Odoo modules (`-u`) |
 | `run_odoo_tests` | ✓ | Run Odoo tests for specific modules |
 | `get_environment_logs` | | Retrieve recent container logs |
-| `exec_in_odoo` | ✓ | Execute an arbitrary shell command inside the Odoo container |
-| `read_file_in_odoo` | ✓ | Read a text file or list a directory inside the Odoo container. Supports line ranges (e.g. `"1:50"`) |
+| `run_odoo_command` | ✓ | Execute an arbitrary shell command inside the Odoo container |
+| `run_odoo_shell` | ✓ | Execute Python code in the Odoo shell context with full ORM access |
+| `read_file_in_odoo` | | Read a text file or list a directory inside the Odoo container. Supports line ranges (e.g. `"1:50"`) |
+| `write_file_in_odoo` | ✓ | Write a text file inside the container (CSV imports, scripts, configs) |
+| `search_in_odoo` | | Search for a pattern (fixed-string grep) in files inside the Odoo container |
+| `http_request_to_odoo` | | Make an HTTP request to the running Odoo instance (test controllers, JSON-RPC, REST) |
+| `list_installed_modules` | | List Odoo modules and their states with name/state filtering |
 | `run_db_query` | ✓ | Execute a SQL query against the environment's PostgreSQL database |
 | `reset_admin_password` | ✓ | Reset the admin user password in the Odoo database (default: "test") |
+| `read_output` | | Read from a cached tool output by ID (paginate, grep, errors, tail) |
 | **Template Management** | | |
 | `save_as_template` | ✓ | ⚠️ Save a branch DB + filestore as a new template |
 | `list_templates` | | List available template profiles |

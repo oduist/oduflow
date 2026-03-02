@@ -12,7 +12,7 @@
                      │  MCP (Streamable HTTP)
 ┌────────────────────▼─────────────────────────────┐
 │  server.py — FastMCP transport layer             │
-│  • MCP tool definitions (32 tools)               │
+│  • MCP tool definitions (42 tools)               │
 │  • Per-branch / per-team / system locking        │
 │  • Unified error handler (FlowError → ToolError) │
 │  • Web UI mount (Starlette)                      │
@@ -87,7 +87,7 @@ src/oduflow/
                         # template_up / template_down / save_env_as_template / delete_template / list_templates
     env_ops.py          # create / delete / start / stop / restart / rebuild / list / status / pull /
                         # apt/pip auto-install / filestore overlay mount
-    odoo_ops.py         # install / upgrade / test / logs / exec_in_odoo
+    odoo_ops.py         # install / upgrade / test / logs / shell / search / run_command
     service_ops.py      # create / delete / update / list / logs for auxiliary services
     service_presets.py  # Save / restore / list / delete service preset configurations
     stats.py            # Container and system CPU/RAM stats (parallel collection)

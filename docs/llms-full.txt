@@ -123,10 +123,16 @@ Same JSON format in `claude_desktop_config.json` or `.amp/settings.json`.
 - `run_odoo_tests` — run Odoo tests for specific modules
 - `pull_and_apply` — pull latest code and auto-install/upgrade/restart as needed
 - `get_environment_logs` — retrieve container logs
-- `exec_in_odoo` — execute shell commands inside the Odoo container
+- `run_odoo_command` — execute shell commands inside the Odoo container
+- `run_odoo_shell` — execute Python code in the Odoo shell with full ORM access
 - `read_file_in_odoo` — read a text file or list a directory inside the container (supports line ranges)
+- `write_file_in_odoo` — write a text file inside the container (CSV imports, scripts, configs)
+- `search_in_odoo` — search for a pattern (fixed-string grep) in files inside the container
+- `http_request_to_odoo` — make an HTTP request to the running Odoo instance (controllers, JSON-RPC, REST)
+- `list_installed_modules` — list Odoo modules and their states with name/state filtering
 - `run_db_query` — execute SQL queries against the environment's PostgreSQL database
 - `reset_admin_password` — reset the admin user password (default: "test")
+- `read_output` — read from a cached tool output by ID (paginate, grep, errors, tail)
 - `list_environments` / `get_environment_info` — inspect environments
 - `create_service` / `delete_service` / `update_service` / `list_services` / `get_service_logs` — manage auxiliary services
 - `list_service_presets` / `restore_service` / `delete_service_preset` — manage service presets
@@ -540,10 +546,10 @@ Reproduce a production bug with real data:
 oduflow call create_environment bug-12345 default https://github.com/company/odoo-addons.git odoo:17.0
 
 # Debug inside the container
-oduflow call exec_in_odoo bug-12345 "python3 -c 'import odoo; ...'"
+oduflow call run_odoo_command bug-12345 "python3 -c 'import odoo; ...'"
 
 # Check the database directly
-oduflow call exec_in_odoo bug-12345 "psql -h oduflow-db -U odoo -d oduflow_bug-12345 -c 'SELECT * FROM sale_order WHERE id=42;'"
+oduflow call run_odoo_command bug-12345 "psql -h oduflow-db -U odoo -d oduflow_bug-12345 -c 'SELECT * FROM sale_order WHERE id=42;'"
 ```
 
 ## 🧪 Module Testing
@@ -1186,11 +1192,11 @@ oduflow call read_file_in_odoo feature-login /mnt/extra-addons/my_module/__manif
 
 - If the path is a **directory**, returns a listing (like `ls -la`).
 - If the path is a **text file**, returns its contents (up to 100KB by default).
-- **Binary files** are not supported — use `exec_in_odoo` for binary operations.
+- **Binary files** are not supported — use `run_odoo_command` for binary operations.
 - The optional `read_range` parameter accepts a `"START:END"` format (e.g. `"1:50"`, `"100:200"`) to read only specific lines.
 
 !!! tip
-    Prefer `read_file_in_odoo` over `exec_in_odoo` with `cat` or `ls` commands — it handles file type detection, size limits, and binary file rejection automatically.
+    Prefer `read_file_in_odoo` over `run_odoo_command` with `cat` or `ls` commands — it handles file type detection, size limits, and binary file rejection automatically.
 
 ## Executing Commands Inside Environments
 
@@ -1198,19 +1204,19 @@ Run arbitrary shell commands inside the Odoo container:
 
 ```bash
 # List addon files
-oduflow call exec_in_odoo feature-login "ls /mnt/extra-addons"
+oduflow call run_odoo_command feature-login "ls /mnt/extra-addons"
 
 # Check Python version
-oduflow call exec_in_odoo feature-login "python3 --version"
+oduflow call run_odoo_command feature-login "python3 --version"
 
 # Run a Python script
-oduflow call exec_in_odoo feature-login "python3 -c 'import odoo; print(odoo.release.version)'"
+oduflow call run_odoo_command feature-login "python3 -c 'import odoo; print(odoo.release.version)'"
 
 # Install a package as root
-oduflow call exec_in_odoo feature-login "pip3 install phonenumbers" root
+oduflow call run_odoo_command feature-login "pip3 install phonenumbers" root
 
 # Debug database
-oduflow call exec_in_odoo feature-login "psql -h oduflow-db -U odoo -d oduflow_feature-login -c 'SELECT count(*) FROM res_partner;'"
+oduflow call run_odoo_command feature-login "psql -h oduflow-db -U odoo -d oduflow_feature-login -c 'SELECT count(*) FROM res_partner;'"
 ```
 
 The `user` parameter defaults to `odoo`. Use `root` for privileged operations (installing packages, modifying system files).
@@ -1583,10 +1589,16 @@ All tools are accessible via MCP clients (Cursor, Cline, Amp, etc.) and the CLI 
 | `upgrade_odoo_modules` | ✓ | Upgrade Odoo modules (`-u`) |
 | `run_odoo_tests` | ✓ | Run Odoo tests for specific modules |
 | `get_environment_logs` | | Retrieve recent container logs |
-| `exec_in_odoo` | ✓ | Execute an arbitrary shell command inside the Odoo container |
-| `read_file_in_odoo` | ✓ | Read a text file or list a directory inside the Odoo container. Supports line ranges (e.g. `"1:50"`) |
+| `run_odoo_command` | ✓ | Execute an arbitrary shell command inside the Odoo container |
+| `run_odoo_shell` | ✓ | Execute Python code in the Odoo shell context with full ORM access |
+| `read_file_in_odoo` | | Read a text file or list a directory inside the Odoo container. Supports line ranges (e.g. `"1:50"`) |
+| `write_file_in_odoo` | ✓ | Write a text file inside the container (CSV imports, scripts, configs) |
+| `search_in_odoo` | | Search for a pattern (fixed-string grep) in files inside the Odoo container |
+| `http_request_to_odoo` | | Make an HTTP request to the running Odoo instance (test controllers, JSON-RPC, REST) |
+| `list_installed_modules` | | List Odoo modules and their states with name/state filtering |
 | `run_db_query` | ✓ | Execute a SQL query against the environment's PostgreSQL database |
 | `reset_admin_password` | ✓ | Reset the admin user password in the Odoo database (default: "test") |
+| `read_output` | | Read from a cached tool output by ID (paginate, grep, errors, tail) |
 | **Template Management** | | |
 | `save_as_template` | ✓ | ⚠️ Save a branch DB + filestore as a new template |
 | `list_templates` | | List available template profiles |
@@ -1743,7 +1755,7 @@ oduflow call create_environment dev "" https://github.com/owner/repo.git odoo:17
 oduflow call delete_environment dev
 oduflow call list_environments
 oduflow call get_environment_logs main 50
-oduflow call exec_in_odoo dev "ls /mnt/extra-addons"
+oduflow call run_odoo_command dev "ls /mnt/extra-addons"
 oduflow call create_service redis redis:7 6379
 
 # Call a tool with JSON-encoded arguments
@@ -2173,7 +2185,7 @@ overlay_threshold_mb = 999999
                      │  MCP (Streamable HTTP)
 ┌────────────────────▼─────────────────────────────┐
 │  server.py — FastMCP transport layer             │
-│  • MCP tool definitions (32 tools)               │
+│  • MCP tool definitions (42 tools)               │
 │  • Per-branch / per-team / system locking        │
 │  • Unified error handler (FlowError → ToolError) │
 │  • Web UI mount (Starlette)                      │
@@ -2248,7 +2260,7 @@ src/oduflow/
                         # template_up / template_down / save_env_as_template / delete_template / list_templates
     env_ops.py          # create / delete / start / stop / restart / rebuild / list / status / pull /
                         # apt/pip auto-install / filestore overlay mount
-    odoo_ops.py         # install / upgrade / test / logs / exec_in_odoo
+    odoo_ops.py         # install / upgrade / test / logs / shell / search / run_command
     service_ops.py      # create / delete / update / list / logs for auxiliary services
     service_presets.py  # Save / restore / list / delete service preset configurations
     stats.py            # Container and system CPU/RAM stats (parallel collection)

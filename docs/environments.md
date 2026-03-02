@@ -259,11 +259,11 @@ oduflow call read_file_in_odoo feature-login /mnt/extra-addons/my_module/__manif
 
 - If the path is a **directory**, returns a listing (like `ls -la`).
 - If the path is a **text file**, returns its contents (up to 100KB by default).
-- **Binary files** are not supported — use `exec_in_odoo` for binary operations.
+- **Binary files** are not supported — use `run_odoo_command` for binary operations.
 - The optional `read_range` parameter accepts a `"START:END"` format (e.g. `"1:50"`, `"100:200"`) to read only specific lines.
 
 !!! tip
-    Prefer `read_file_in_odoo` over `exec_in_odoo` with `cat` or `ls` commands — it handles file type detection, size limits, and binary file rejection automatically.
+    Prefer `read_file_in_odoo` over `run_odoo_command` with `cat` or `ls` commands — it handles file type detection, size limits, and binary file rejection automatically.
 
 ## Executing Commands Inside Environments
 
@@ -271,19 +271,19 @@ Run arbitrary shell commands inside the Odoo container:
 
 ```bash
 # List addon files
-oduflow call exec_in_odoo feature-login "ls /mnt/extra-addons"
+oduflow call run_odoo_command feature-login "ls /mnt/extra-addons"
 
 # Check Python version
-oduflow call exec_in_odoo feature-login "python3 --version"
+oduflow call run_odoo_command feature-login "python3 --version"
 
 # Run a Python script
-oduflow call exec_in_odoo feature-login "python3 -c 'import odoo; print(odoo.release.version)'"
+oduflow call run_odoo_command feature-login "python3 -c 'import odoo; print(odoo.release.version)'"
 
 # Install a package as root
-oduflow call exec_in_odoo feature-login "pip3 install phonenumbers" root
+oduflow call run_odoo_command feature-login "pip3 install phonenumbers" root
 
 # Debug database
-oduflow call exec_in_odoo feature-login "psql -h oduflow-db -U odoo -d oduflow_feature-login -c 'SELECT count(*) FROM res_partner;'"
+oduflow call run_odoo_command feature-login "psql -h oduflow-db -U odoo -d oduflow_feature-login -c 'SELECT count(*) FROM res_partner;'"
 ```
 
 The `user` parameter defaults to `odoo`. Use `root` for privileged operations (installing packages, modifying system files).

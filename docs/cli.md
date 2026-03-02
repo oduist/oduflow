@@ -123,7 +123,7 @@ oduflow call create_environment dev "" https://github.com/owner/repo.git odoo:17
 oduflow call delete_environment dev
 oduflow call list_environments
 oduflow call get_environment_logs main 50
-oduflow call exec_in_odoo dev "ls /mnt/extra-addons"
+oduflow call run_odoo_command dev "ls /mnt/extra-addons"
 oduflow call create_service redis redis:7 6379
 
 # Call a tool with JSON-encoded arguments
