@@ -495,7 +495,7 @@ def create_environment(
                 f"traefik.http.routers.{traefik_router}.rule": f"Host(`{traefik_host}`)",
                 f"traefik.http.routers.{traefik_router}.entrypoints": "websecure",
                 f"traefik.http.routers.{traefik_router}.tls": "true",
-                f"traefik.http.routers.{traefik_router}.tls.certresolver": "le",
+                f"traefik.http.routers.{traefik_router}.tls.certresolver": "letsencrypt",
                 f"traefik.http.services.{traefik_router}.loadbalancer.server.port": "8069",
             }
         )

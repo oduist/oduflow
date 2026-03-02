@@ -99,7 +99,7 @@ def create_service(
         labels["traefik.enable"] = "true"
         labels[f"traefik.http.routers.{container_name}.rule"] = f"Host(`{hostname}`)"
         labels[f"traefik.http.routers.{container_name}.entrypoints"] = "websecure"
-        labels[f"traefik.http.routers.{container_name}.tls.certresolver"] = "le"
+        labels[f"traefik.http.routers.{container_name}.tls.certresolver"] = "letsencrypt"
         labels[f"traefik.http.services.{container_name}.loadbalancer.server.port"] = (
             str(port)
         )
