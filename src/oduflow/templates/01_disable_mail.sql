@@ -1,5 +1,5 @@
--- Disable incoming mail servers (fetchmail)
-UPDATE fetchmail_server SET active = false WHERE active = true;
+-- Delete incoming mail servers (fetchmail)
+DELETE FROM fetchmail_server;
 
--- Disable outgoing mail servers
-UPDATE ir_mail_server SET active = false WHERE active = true;
+-- Delete outgoing mail servers
+DELETE FROM ir_mail_server;
