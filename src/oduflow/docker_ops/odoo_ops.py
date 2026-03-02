@@ -483,12 +483,10 @@ def search_in_environment(
 
     cmd = [
         "grep",
-        "-rn",
+        "-rnH",
         "-F",
         "--include",
         glob,
-        "-m",
-        str(max_results),
         pattern,
         path,
     ]
