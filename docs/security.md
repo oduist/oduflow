@@ -46,7 +46,7 @@ INFO  [team.1] http://localhost:8000/ (MCP token OFF, UI auth OFF)
 
 ## Git Credentials
 
-[![Credentials Management](img/credentials.png)](img/credentials.png)
+![Credentials Management](img/credentials.png)
 
 Private repository credentials are stored in the git credential store at `{team_data_dir}/.git-credentials` (per-team) via the `setup_repo_auth` tool. The clean URL (without credentials) is always used in Docker labels and logs — credentials are never exposed.
 

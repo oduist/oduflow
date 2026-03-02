@@ -1,3 +1,4 @@
 mkdocs
 mkdocs-gitbook
+mkdocs-glightbox
 pymdown-extensions

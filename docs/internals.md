@@ -174,7 +174,7 @@ All containers are labeled with `oduflow.managed=true` and `oduflow.team={team_i
 
 ## Concurrency & Locking
 
-Oduflow uses a granular `LockManager` (`locking.py`) instead of a single global mutex:
+Oduflow uses a granular `LockManager` (`locking.py`) with per-branch and per-team locks:
 
 | Lock Level | Scope | Example Operations |
 |---|---|---|

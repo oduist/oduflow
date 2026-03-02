@@ -7,6 +7,9 @@ repo_name: oduist/oduflow
 theme:
   name: gitbook
 
+plugins:
+  - glightbox
+
 markdown_extensions:
   - admonition
   - pymdownx.highlight

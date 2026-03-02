@@ -1572,7 +1572,7 @@ All endpoints return JSON with an `ok` field. Authentication via HTTP Basic auth
 
 All tools are accessible via MCP clients (Cursor, Cline, Amp, etc.) and the CLI (`oduflow call`). A subset is also available via the [REST API](web-api.md).
 
-| Tool | Mutex | Description |
+| Tool | Lock | Description |
 |---|:---:|---|
 | **Environment Management** | | |
 | `create_environment` | ✓ | Provision an Odoo environment for a branch (clone, DB, container, filestore) |
@@ -1613,7 +1613,7 @@ All tools are accessible via MCP clients (Cursor, Cline, Amp, etc.) and the CLI 
 | **Service Presets** | | |
 | `list_service_presets` | | List saved service presets (configurations that can be restored) |
 | `restore_service` | ✓ | Restore a service from a saved preset |
-| `delete_service_preset` | | Remove a saved service preset |
+| `delete_service_preset` | ✓ | Remove a saved service preset |
 | **Repository Auth** | | |
 | `setup_repo_auth` | ✓ | Cache git credentials for a private repository |
 | **Extra Addons** | | |
@@ -1625,8 +1625,8 @@ All tools are accessible via MCP clients (Cursor, Cline, Amp, etc.) and the CLI 
 | `get_agent_instructions` | | Get AI agent instructions for using Oduflow MCP tools |
 | `get_odoo_development_guide` | | Get Odoo development standards guide for a specific version (15–19) |
 
-!!! info "Mutex"
-    Tools marked with ✓ acquire a per-branch or per-team lock. Operations on different branches can run in parallel, but if another operation on the **same branch** (or team, for team-level tools) is in progress, the call is rejected with `BusyError` ("Another operation is in progress. Try again later.").
+!!! info "Locking"
+    Tools marked with ✓ acquire a per-branch or per-team lock. Operations on different branches run in parallel. If another operation on the **same branch** (or team, for team-level tools) is already in progress, the call is rejected with `BusyError`.
 
 ---
 
@@ -2347,7 +2347,7 @@ All containers are labeled with `oduflow.managed=true` and `oduflow.team={team_i
 
 ## Concurrency & Locking
 
-Oduflow uses a granular `LockManager` (`locking.py`) instead of a single global mutex:
+Oduflow uses a granular `LockManager` (`locking.py`) with per-branch and per-team locks:
 
 | Lock Level | Scope | Example Operations |
 |---|---|---|
