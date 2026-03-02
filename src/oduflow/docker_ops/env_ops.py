@@ -1199,7 +1199,7 @@ def pull_environment(
             _trace(
                 "pull_environment(%s): installing modules %s", branch_name, to_install
             )
-            res = install_odoo_modules(settings, branch_name, *to_install)
+            res = install_odoo_modules(settings, team, branch_name, *to_install)
             last_exit_code = res["exit_code"]
             _trace(
                 "pull_environment(%s): install exit_code=%d",
@@ -1214,7 +1214,7 @@ def pull_environment(
             _trace(
                 "pull_environment(%s): upgrading modules %s", branch_name, to_upgrade
             )
-            res = upgrade_odoo_modules(settings, branch_name, *to_upgrade)
+            res = upgrade_odoo_modules(settings, team, branch_name, *to_upgrade)
             last_exit_code = res["exit_code"]
             _trace(
                 "pull_environment(%s): upgrade exit_code=%d",
