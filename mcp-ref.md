@@ -2,7 +2,7 @@
 
 Дополнения к набору MCP-инструментов Oduflow, нацеленные на повышение продуктивности AI-агента при разработке модулей Odoo.
 
-Текущий набор: 32 инструмента. Предлагается: +8 новых инструментов, +3 доработки существующих.
+Текущий набор: 32 инструмента. Предлагается: +6 новых инструментов, +3 доработки существующих.
 
 ---
 
@@ -26,7 +26,7 @@ oduflow_velesagro - upgrade_odoo_modules (branch_name: "manuf-plan", modules: "s
 | `upgrade_odoo_modules` | `odoo -u` лог: перезагрузка views, assets, data |
 | `run_odoo_tests` | Полный лог тестов + загрузка модулей |
 | `pull_and_apply` | Делегирует в install/upgrade, передаёт их output |
-| `exec_in_odoo` | Произвольная команда может вернуть что угодно |
+| `run_odoo_command` | Произвольная команда может вернуть что угодно |
 | `run_db_query` | SELECT без LIMIT на большой таблице |
 
 ---
@@ -73,7 +73,7 @@ class CachedOutput:
     lines: list[str]
     total_chars: int
     created_at: float
-    source_tool: str        # "upgrade_odoo_modules", "exec_in_odoo", etc.
+    source_tool: str        # "upgrade_odoo_modules", "run_odoo_command", etc.
     source_args: str        # краткое описание: "branch=manuf-plan, modules=supply"
     error_line_indices: list[int] = field(default_factory=list)  # индексы ERROR/WARNING строк
 
@@ -364,7 +364,7 @@ def read_output(
 
 ```python
 # Новый порог — если output превышает, кешируем и возвращаем summary
-_CACHE_THRESHOLD = 15_000  # символов (~3.5K tokens)
+_CACHE_THRESHOLD = 5_000  # символов (~1.2K tokens)
 
 
 @mcp.tool()
@@ -409,7 +409,7 @@ def upgrade_odoo_modules(branch_name: str, modules: str, ctx: Context = None) ->
 - `upgrade_odoo_modules` — аналогично
 - `run_odoo_tests` — аналогично
 - `pull_and_apply` — кешировать `result["output"]`
-- `exec_in_odoo` — кешировать при превышении порога
+- `run_odoo_command` — кешировать при превышении порога
 - `run_db_query` — кешировать + добавить `max_rows` параметр для защиты на уровне запроса
 
 **Для `run_db_query` — дополнительная защита:**
@@ -479,7 +479,7 @@ def run_db_query(
 
 | Аспект | Решение |
 |---|---|
-| **Дефолтное поведение** | output < 15K → как раньше. output ≥ 15K → кеш + summary |
+| **Дефолтное поведение** | output < 5K → как раньше. output ≥ 5K → кеш + summary |
 | **Обратная совместимость** | Полная: мелкие output не затронуты. Новый параметр tools не добавляется (кеширование прозрачно) |
 | **Агент без поддержки кеша** | Работает: summary содержит ошибки + head + tail, достаточно для 90% случаев |
 | **Агент с поддержкой кеша** | Может drill-down: grep, line ranges, errors-only |
@@ -494,7 +494,7 @@ def run_db_query(
 - Unit: OutputCache TTL — expired entry возвращает None
 - Unit: OutputCache eviction — при 51-й записи удаляется старейшая
 - Unit: _make_summary — head + errors + tail + metadata footer
-- Unit: output < 15K → возвращается без кеширования
+- Unit: output < 5K → возвращается без кеширования
 - Unit: output 68K с ERROR → кеш + summary с ошибками
 - Unit: read_output mode="lines" с пагинацией
 - Unit: read_output mode="grep" — поиск, пагинация результатов
@@ -511,7 +511,7 @@ def run_db_query(
 
 ### 1.1 `write_file_in_odoo`
 
-**Проблема:** Единственный способ записать файл в контейнер — `exec_in_odoo` с `echo`/`cat heredoc`. Ломается на многострочном контенте, спецсимволах, бинарных данных.
+**Проблема:** Единственный способ записать файл в контейнер — `run_odoo_command` с `echo`/`cat heredoc`. Ломается на многострочном контенте, спецсимволах, бинарных данных.
 
 **Сигнатура:**
 
@@ -593,13 +593,13 @@ def write_file_in_environment(
 - Unit: запись в несуществующую директорию (auto-mkdir)
 - Unit: файл с Unicode, спецсимволами, пустой файл
 - Unit: превышение лимита размера → ToolError
-- Integration: запись CSV → импорт через exec_in_odoo
+- Integration: запись CSV → импорт через run_odoo_command
 
 ---
 
 ### 1.2 `run_odoo_shell`
 
-**Проблема:** Нет способа корректно выполнить Python-код в контексте Odoo ORM (с доступом к `self.env`, моделям, registry). Через `exec_in_odoo` multi-line Python передаётся ненадёжно.
+**Проблема:** Нет способа корректно выполнить Python-код в контексте Odoo ORM (с доступом к `self.env`, моделям, registry). Через `run_odoo_command` multi-line Python передаётся ненадёжно.
 
 **Сигнатура:**
 
@@ -694,7 +694,7 @@ def run_odoo_shell(
 
 ### 1.3 `http_request_to_odoo`
 
-**Проблема:** Агент не может протестировать web controllers, JSON-RPC API, REST endpoints с точки зрения клиента. Единственный workaround — `exec_in_odoo` + `curl`.
+**Проблема:** Агент не может протестировать web controllers, JSON-RPC API, REST endpoints с точки зрения клиента. Единственный workaround — `run_odoo_command` + `curl`.
 
 **Сигнатура:**
 
@@ -1002,7 +1002,7 @@ def _wait_for_odoo_ready(settings: Settings, team: TeamSettings, branch_name: st
 
 ### 2.3 `search_in_odoo`
 
-**Проблема:** Чтобы найти определение поля, метода, или использование модели в Odoo source, агент вынужден делать `exec_in_odoo("grep -rn 'pattern' /path")`.
+**Проблема:** Чтобы найти определение поля, метода, или использование модели в Odoo source, агент вынужден делать `run_odoo_command("grep -rn 'pattern' /path")`.
 
 **Сигнатура:**
 
@@ -1087,138 +1087,15 @@ def search_in_environment(
 
 ---
 
-### 2.4 `snapshot_environment` / `restore_snapshot`
-
-**Проблема:** Для рискованных операций (тестирование миграций, удаление данных, эксперименты с бизнес-логикой) нет быстрого способа "сохраниться" и откатить состояние.
-
-**Сигнатуры:**
-
-```python
-@mcp.tool()
-@handle_errors
-@with_branch_lock
-def snapshot_environment(
-    branch_name: str,
-    snapshot_name: str = "",
-    ctx: Context = None,
-) -> str:
-    """
-    Create a quick snapshot of the environment's current database state.
-
-    Saves a pg_dump of the environment's database that can be restored later.
-    Each environment can have up to 3 snapshots (oldest auto-deleted when limit exceeded).
-    Does NOT snapshot the filestore — only the database.
-
-    Use before risky operations: migrations, mass data changes, experimental upgrades.
-
-    Args:
-        branch_name: The name of the branch/environment.
-        snapshot_name: Optional name for the snapshot (default: auto-generated timestamp, e.g. "20250301_143022").
-    """
-
-
-@mcp.tool()
-@handle_errors
-@with_branch_lock
-def restore_snapshot(
-    branch_name: str,
-    snapshot_name: str = "",
-    ctx: Context = None,
-) -> str:
-    """
-    Restore the environment's database from a previously saved snapshot.
-
-    Drops the current database and restores from the snapshot dump.
-    If snapshot_name is empty, restores the most recent snapshot.
-    Restarts the Odoo container after restore.
-
-    WARNING: This overwrites the current database state. All changes since the
-    snapshot will be lost.
-
-    Args:
-        branch_name: The name of the branch/environment.
-        snapshot_name: Name of the snapshot to restore (default: most recent).
-    """
-```
-
-**Реализация (odoo_ops.py):**
-
-```python
-def snapshot_environment(
-    settings: Settings, team: TeamSettings, branch_name: str,
-    snapshot_name: str = "",
-) -> dict[str, Any]:
-    import time
-
-    client = get_client()
-    env_db = get_db_name(branch_name, team.team_id)
-    db_container = client.containers.get(settings.shared_db_container)
-
-    if not snapshot_name:
-        snapshot_name = time.strftime("%Y%m%d_%H%M%S")
-
-    # Snapshot directory: {workspace}/snapshots/{name}.sql
-    workspace = get_workspace_path(branch_name, team.workspaces_dir)
-    snap_dir = os.path.join(workspace, "snapshots")
-    os.makedirs(snap_dir, exist_ok=True)
-
-    creds = load_credentials(branch_name, team.workspaces_dir, settings.db_user, settings.db_password)
-    dump_path = f"/tmp/oduflow_snap_{snapshot_name}.sql"
-
-    # pg_dump inside DB container
-    cmd = ["pg_dump", "-U", creds["pg_user"], "-d", env_db, "-f", dump_path, "--no-owner"]
-    exit_code, output = db_container.exec_run(cmd)
-    if exit_code != 0:
-        raise ExternalCommandError(f"pg_dump failed: {output}")
-
-    # Copy dump out of container to workspace
-    # (via docker cp or get_archive)
-    # ...
-
-    # Enforce max 3 snapshots — delete oldest
-    # ...
-
-    return {"snapshot_name": snapshot_name, "database": env_db, "path": snap_path}
-
-
-def restore_snapshot(
-    settings: Settings, team: TeamSettings, branch_name: str,
-    snapshot_name: str = "",
-) -> dict[str, Any]:
-    # Find snapshot file (latest if name empty)
-    # Stop Odoo container
-    # DROP DATABASE + CREATE DATABASE
-    # pg_restore / psql < dump
-    # Start Odoo container
-    # Wait for ready
-    ...
-```
-
-**Ключевые решения:**
-- Только БД (без filestore) — это быстро (секунды для типичной dev-базы) и покрывает 95% use cases
-- Лимит: 3 snapshot-а на окружение, автоудаление старых
-- Snapshot хранится в `{workspace}/snapshots/{name}.sql`
-- `restore_snapshot` останавливает контейнер, пересоздаёт БД, запускает, ждёт ready
-- `@with_branch_lock` — обе операции
-
-**Тесты:**
-- Unit: создание snapshot → файл существует
-- Unit: restore → БД содержит данные из snapshot-а
-- Unit: лимит 3 — четвёртый snapshot удаляет первый
-- Unit: restore с пустым именем → восстановление последнего
-- Integration: create record → snapshot → delete record → restore → record exists
-
----
-
 ## Обзор изменений по файлам
 
 | Файл | Изменения |
 |---|---|
 | `src/oduflow/output_cache.py` | **Новый модуль**: `OutputCache` class (store, get, evict), `CachedOutput` dataclass |
-| `src/oduflow/server.py` | +`_output_cache` singleton, +`_make_summary()` helper, +`read_output` MCP tool, кеширование в 6 existing tools, +`max_rows` к run_db_query, +6 новых tool-функций, +2 изменения существующих (get_environment_logs, restart_environment) |
-| `src/oduflow/docker_ops/odoo_ops.py` | +4 новых функции (write_file, run_odoo_shell, search_in, http_request), изменение get_environment_logs |
-| `src/oduflow/docker_ops/env_ops.py` | +3 функции (_wait_for_odoo_ready, snapshot_environment, restore_snapshot), изменение restart/start |
-| `docs/mcp-tools.md` | Обновить таблицу инструментов (+8 строк), добавить примечание об output truncation |
+| `src/oduflow/server.py` | +`_output_cache` singleton, +`_make_summary()` helper, +`read_output` MCP tool, кеширование в 6 existing tools, +`max_rows` к run_db_query, +5 новых tool-функций (write_file_in_odoo, run_odoo_shell, http_request_to_odoo, list_installed_modules, search_in_odoo), +2 изменения существующих (get_environment_logs, restart_environment), переименование exec_in_odoo → run_odoo_command |
+| `src/oduflow/docker_ops/odoo_ops.py` | +4 новых функции (write_file, run_odoo_shell, search_in, http_request), изменение get_environment_logs, переименование exec_in_environment → run_command_in_environment |
+| `src/oduflow/docker_ops/env_ops.py` | +1 функция (_wait_for_odoo_ready), изменение restart/start |
+| `docs/mcp-tools.md` | Обновить таблицу инструментов (+6 строк), добавить примечание об output truncation, переименование exec_in_odoo → run_odoo_command |
 | `src/oduflow/templates/agent_guides/agent_instructions.md` | Обновить разделы Debugging & Logs, добавить секции про новые инструменты, описать output_mode |
 | `tests/test_odoo_ops.py` | Новые тесты для всех добавленных функций |
 | `tests/test_server.py` | Новые тесты для MCP tool-обёрток + тесты smart truncation |
@@ -1244,5 +1121,4 @@ def restore_snapshot(
 
 Фаза 3 (зависит от фазы 2):
   7. Доработка restart/start (wait_for_ready) — использует http util из (6)
-  8. snapshot_environment / restore_snapshot — наиболее сложное, делать последним
 ```

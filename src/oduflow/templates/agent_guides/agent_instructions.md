@@ -63,8 +63,8 @@ MCP endpoint: `http://<host>:8000/mcp`
 | Tool | What it shows |
 |---|---|
 | `get_environment_logs(branch_name, n_lines?)` | Logs from the **running Odoo server** (main container process). Use to check for runtime errors, request errors, or startup issues after a restart. Does **NOT** contain output from install/upgrade/test operations. |
-| `read_file_in_odoo(branch_name, path, read_range?)` | Read a text file or list a directory inside the container. Use to inspect Odoo source code, addon structure, config files. Supports `read_range="START:END"` for large files. **Prefer this over `exec_in_odoo` with `cat`/`ls`.** |
-| `exec_in_odoo(branch_name, command, user?)` | Run shell commands inside the container. Use `user="root"` for privileged ops (pip install, apt). Useful for debugging, running Odoo shell commands. For reading files, prefer `read_file_in_odoo` instead |
+| `read_file_in_odoo(branch_name, path, read_range?)` | Read a text file or list a directory inside the container. Use to inspect Odoo source code, addon structure, config files. Supports `read_range="START:END"` for large files. **Prefer this over `run_odoo_command` with `cat`/`ls`.** |
+| `run_odoo_command(branch_name, command, user?)` | Run shell commands inside the container. Use `user="root"` for privileged ops (pip install, apt). Useful for debugging, running Odoo shell commands. For reading files, prefer `read_file_in_odoo` instead |
 
 **When to use which:**
 - After `pull_and_apply` / `install_odoo_modules` / `upgrade_odoo_modules` / `run_odoo_tests` → **read the tool response** for errors
@@ -121,10 +121,10 @@ Do NOT call `get_environment_logs` after `pull_and_apply` — the errors are alr
 The environment container runs **remotely** and has access only to the git repository it was created for. The container is **not your workspace** — it is a runtime for testing.
 
 **What you CAN do inside the container:**
-- Read files and inspect paths — use `read_file_in_odoo` (preferred) or `exec_in_odoo`
-- Run Odoo shell commands (`odoo shell`, `odoo scaffold`, etc.) — use `exec_in_odoo`
+- Read files and inspect paths — use `read_file_in_odoo` (preferred) or `run_odoo_command`
+- Run Odoo shell commands (`odoo shell`, `odoo scaffold`, etc.) — use `run_odoo_command`
 
-> **Note:** For logs use `get_environment_logs` — container logs are not accessible via shell commands inside Docker. For database queries use `run_db_query` — it connects to PostgreSQL directly without needing `exec_in_odoo`.
+> **Note:** For logs use `get_environment_logs` — container logs are not accessible via shell commands inside Docker. For database queries use `run_db_query` — it connects to PostgreSQL directly without needing `run_odoo_command`.
 
 **What you MUST NOT do inside the container:**
 - Edit source code files (no `sed`, `vim`, `echo >`, `patch`, etc.)
@@ -138,7 +138,7 @@ The environment container runs **remotely** and has access only to the git repos
 ### General
 - **One task = one branch = one environment.**
 - Mutexed tools (create, delete, install, upgrade, pull, test, exec) reject concurrent calls with `BusyError` — retry after a short delay.
-- `exec_in_odoo` runs as `odoo` by default. Use `user="root"` for package installation or system operations.
+- `run_odoo_command` runs as `odoo` by default. Use `user="root"` for package installation or system operations.
 - Database is accessible from inside the container: `psql -h oduflow-db -U odoo -d oduflow_{branch_name}`.
 
 ---
@@ -179,13 +179,13 @@ Priority: install > upgrade > restart > refresh (no action).
 ```
 Step 1: git commit & push   — Commit the migration script + version bump in __manifest__.py
 Step 2: pull_and_apply    — Or call upgrade_odoo_modules directly; this triggers the migration
-Step 3: exec_in_odoo — Run a SELECT query to verify the expected schema/data changes
+Step 3: run_odoo_command — Run a SELECT query to verify the expected schema/data changes
 Step 4: get_environment_logs — If something went wrong, check for migration INFO/ERROR messages
 ```
 
 ### How to Verify a Migration
 
-1. **Query the database** via `exec_in_odoo`:
+1. **Query the database** via `run_odoo_command`:
    ```
    psql -h oduflow-db -U odoo -d oduflow_{branch_name} -c "SELECT column_name FROM information_schema.columns WHERE table_name = 'your_table';"
    ```
