@@ -1983,7 +1983,7 @@ def _run_list_templates(settings: Settings, team: TeamSettings) -> None:
             dump_str = f"{dump_size:.0f} MB" if dump_size is not None else "?"
             size_info = f", Filestore size={fs_str}, Dump size={dump_str}"
         print(
-            f"  {r['template_name']}: DB={db_status}, SQL={'yes' if r['has_sql'] else 'no'}, Filestore={'yes' if r['has_filestore'] else 'no'}, Mode={overlay_status}{size_info}"
+            f"  {r['template_name']}: DB={db_status} ({r['template_db']}), SQL={'yes' if r['has_sql'] else 'no'}, Filestore={'yes' if r['has_filestore'] else 'no'}, Mode={overlay_status}{size_info}"
         )
 
 
