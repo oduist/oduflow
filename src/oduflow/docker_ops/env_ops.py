@@ -684,6 +684,12 @@ def create_environment(
     if settings.routing_mode == "port":
         run_kwargs["ports"] = {"8069/tcp": host_port}
 
+    try:
+        logger.info("Pulling image %s", odoo_image)
+        client.images.pull(odoo_image)
+    except Exception as exc:
+        logger.warning("Could not pull image %s, using local copy: %s", odoo_image, exc)
+
     container = client.containers.run(**run_kwargs)
 
     if odoo_conf_to_copy:
@@ -1416,6 +1422,12 @@ def rebuild_environment(
         run_kwargs["command"] = command
     if settings.routing_mode == "port" and host_port is not None:
         run_kwargs["ports"] = {"8069/tcp": host_port}
+
+    try:
+        logger.info("Pulling image %s", odoo_image)
+        client.images.pull(odoo_image)
+    except Exception as exc:
+        logger.warning("Could not pull image %s, using local copy: %s", odoo_image, exc)
 
     new_container = client.containers.run(**run_kwargs)
 

@@ -902,6 +902,8 @@ function renderEnvironments(envs) {
           '<button class="btn btn-protect' + (env.protected ? ' active' : '') + '" ' +
             'onclick="doProtect(\'' + escAttr(env.branch) + '\',' + (env.protected ? 'true' : 'false') + ')">' +
             (env.protected ? '🔒 Protected' : '🔓 Protect') + '</button>' +
+          '<button class="btn btn-restart" onclick="doRebuild(\'' + escAttr(env.branch) + '\')" ' +
+            (env.protected ? 'disabled title="Environment is protected"' : '') + '>Rebuild</button>' +
           '<button class="btn btn-restart" onclick="doRecreate(\'' + escAttr(env.branch) + '\')" ' +
             (env.protected ? 'disabled title="Environment is protected"' : '') + '>Recreate</button>' +
           '<button class="btn btn-delete" onclick="doDelete(\'' + escAttr(env.branch) + '\')" ' +
@@ -961,6 +963,24 @@ async function loadStats() {
   } catch (e) {
     // stats are optional, don't show errors
   }
+}
+
+async function doRebuild(branch) {
+  if (!confirm('Rebuild environment "' + branch + '"? This will recreate the container but keep the database and filestore.')) return;
+  const card = document.querySelector('[data-branch="' + branch + '"]');
+  if (card) card.querySelectorAll('.btn').forEach(b => b.disabled = true);
+  try {
+    const r = await fetch(API + '/' + encodeURIComponent(branch) + '/rebuild', { method: 'POST' });
+    const data = await r.json();
+    if (data.ok) {
+      showToast(branch + ': rebuilt');
+    } else {
+      showToast(data.error || 'Rebuild failed', true);
+    }
+  } catch (e) {
+    showToast('Connection error: ' + e.message, true);
+  }
+  await loadEnvironments();
 }
 
 async function doRecreate(branch) {

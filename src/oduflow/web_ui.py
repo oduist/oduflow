@@ -233,6 +233,25 @@ def _build_routes(
         finally:
             locks.release_branch(branch)
 
+    def api_rebuild(request: Request) -> JSONResponse:
+        branch = request.path_params["branch"]
+        try:
+            locks.acquire_branch(branch)
+        except BusyError as e:
+            return _error_response(e)
+        try:
+            settings = get_settings()
+            team = _get_ui_team(request)
+            result = env_ops.rebuild_environment(settings, team, branch)
+            return JSONResponse({"ok": True, "result": result})
+        except FlowError as e:
+            return _error_response(e)
+        except Exception as e:
+            logger.exception("Unexpected error in api_rebuild")
+            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+        finally:
+            locks.release_branch(branch)
+
     def api_recreate(request: Request) -> JSONResponse:
         branch = request.path_params["branch"]
         try:
@@ -1094,6 +1113,9 @@ def _build_routes(
         Route("/api/environments/{branch:path}/protect", api_protect, methods=["POST"]),
         Route(
             "/api/environments/{branch:path}/unprotect", api_unprotect, methods=["POST"]
+        ),
+        Route(
+            "/api/environments/{branch:path}/rebuild", api_rebuild, methods=["POST"]
         ),
         Route(
             "/api/environments/{branch:path}/recreate", api_recreate, methods=["POST"]
