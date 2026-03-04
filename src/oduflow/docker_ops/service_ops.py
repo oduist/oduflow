@@ -65,7 +65,7 @@ def create_service(
     except docker.errors.NotFound:
         raise PrerequisiteNotMetError(
             f"Shared network '{settings.shared_network}' not found. "
-            "Run init_system first."
+            "System not initialized. Restart oduflow."
         )
 
     # Check for existing container
@@ -99,7 +99,9 @@ def create_service(
         labels["traefik.enable"] = "true"
         labels[f"traefik.http.routers.{container_name}.rule"] = f"Host(`{hostname}`)"
         labels[f"traefik.http.routers.{container_name}.entrypoints"] = "websecure"
-        labels[f"traefik.http.routers.{container_name}.tls.certresolver"] = "letsencrypt"
+        labels[f"traefik.http.routers.{container_name}.tls.certresolver"] = (
+            "letsencrypt"
+        )
         labels[f"traefik.http.services.{container_name}.loadbalancer.server.port"] = (
             str(port)
         )

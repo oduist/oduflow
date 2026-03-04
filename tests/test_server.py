@@ -39,14 +39,6 @@ from tool_helpers import call_tool as _call_tool  # noqa: E402
 
 
 class TestCLIInitDestroy:
-    @patch("oduflow.docker_ops.system_ops.init_system")
-    def test_cli_init(self, mock_init):
-        from oduflow.server import _run_init
-
-        mock_init.return_value = {"status": "initialized"}
-        _run_init(TEST_SETTINGS)
-        mock_init.assert_called_once_with(TEST_SETTINGS)
-
     @patch("oduflow.docker_ops.system_ops.destroy_system")
     def test_cli_destroy(self, mock_destroy):
         from oduflow.server import _run_destroy

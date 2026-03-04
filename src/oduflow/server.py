@@ -1685,12 +1685,12 @@ def get_service_logs(name: str, n_lines: int = 100, ctx: Context = None) -> str:
 # =============================================================================
 
 
-def _run_init(settings: Settings) -> None:
+def _ensure_initialized(settings: Settings) -> None:
+    """Ensure shared infrastructure and per-team directories exist (idempotent)."""
     _copy_bundled_configs()
     result = system_ops.init_system(settings)
-    print(f"System {result['status']}.")
+    logger.info("System %s.", result["status"])
 
-    # Initialize per-team directories
     import pathlib
     import shutil
 
@@ -1713,7 +1713,7 @@ def _run_init(settings: Settings) -> None:
             bundled_odoo_conf = bundled_dir / "odoo.conf"
             if bundled_odoo_conf.is_file():
                 shutil.copy2(str(bundled_odoo_conf), odoo_conf_dest)
-                print(f"  [team.{team_id}] Config: {odoo_conf_dest}")
+                logger.info("[team.%s] Config: %s", team_id, odoo_conf_dest)
 
         # Seed team-level sanitization scripts
         sanitize_dest = os.path.join(team.data_dir, "odoo_sanitize")
@@ -1722,7 +1722,7 @@ def _run_init(settings: Settings) -> None:
         dest_sql = os.path.join(sanitize_dest, "01_disable_mail.sql")
         if not os.path.isfile(dest_sql) and bundled_sql.is_file():
             shutil.copy2(str(bundled_sql), dest_sql)
-            print(f"  [team.{team_id}] Sanitize script: {dest_sql}")
+            logger.info("[team.%s] Sanitize script: %s", team_id, dest_sql)
 
         # Copy bundled agent guides
         agent_guides_dest = os.path.join(team.data_dir, "agent_guides")
@@ -1734,13 +1734,14 @@ def _run_init(settings: Settings) -> None:
                     dest_file = os.path.join(agent_guides_dest, guide_file.name)
                     if not os.path.isfile(dest_file):
                         shutil.copy2(str(guide_file), dest_file)
-                        print(f"  [team.{team_id}] Agent guide: {dest_file}")
+                        logger.info("[team.%s] Agent guide: %s", team_id, dest_file)
 
-        print(f"  Team {team_id} initialized.")
-        print(f"    Workspaces: {team.workspaces_dir}")
-        print(f"    Templates: {os.path.join(team.data_dir, 'templates')}")
-        print(f"    Shared repos: {team.shared_repos_dir}")
-        print(f"    Service presets: {presets_path}")
+        logger.info(
+            "Team %s initialized (workspaces=%s, templates=%s)",
+            team_id,
+            team.workspaces_dir,
+            os.path.join(team.data_dir, "templates"),
+        )
 
 
 def _run_upgrade(settings: Settings) -> None:
@@ -1837,7 +1838,7 @@ def _copy_bundled_configs() -> None:
             if bundled.is_file():
                 try:
                     shutil.copy2(str(bundled), str(dest))
-                    print(f"  Config: {dest}")
+                    logger.info("Config: %s", dest)
                 except PermissionError:
                     logger.warning("Cannot write %s (permission denied)", dest)
 
@@ -2167,20 +2168,15 @@ def main() -> None:
     parser.add_argument(
         "--version", action="version", version=f"oduflow {_get_version()}"
     )
+    parser.add_argument(
+        "--transport",
+        choices=["stdio", "http"],
+        default="stdio",
+        help="MCP transport (default: stdio)",
+    )
     sub = parser.add_subparsers(dest="command", title="commands", metavar="")
 
     # --- System commands ---
-    p_init = sub.add_parser(
-        "init", help="Initialize shared infrastructure and all team directories"
-    )
-    p_init.add_argument(
-        "--license",
-        default="",
-        metavar="FILE",
-        dest="license_file",
-        help="Path to license.key file to install to /etc/oduflow/license.key",
-    )
-
     sub.add_parser("destroy", help="Destroy all shared infrastructure")
     sub.add_parser(
         "upgrade",
@@ -2352,24 +2348,21 @@ def main() -> None:
     )
     logging.getLogger("docker").setLevel(logging.WARNING)
 
-    # Bootstrap: if `init` and no config exists, copy the bundled default
-    if args.command == "init":
-        try:
-            find_toml()
-        except FileNotFoundError:
-            import pathlib
-            import shutil
+    # Bootstrap: if no config exists, copy the bundled default
+    try:
+        find_toml()
+    except FileNotFoundError:
+        import pathlib
+        import shutil
 
-            from oduflow.settings import _resolve_etc_dir
+        from oduflow.settings import _resolve_etc_dir
 
-            dest_dir = _resolve_etc_dir()
-            os.makedirs(dest_dir, exist_ok=True)
-            bundled = (
-                pathlib.Path(__file__).resolve().parent / "templates" / "oduflow.toml"
-            )
-            dest = os.path.join(dest_dir, "oduflow.toml")
-            shutil.copy2(str(bundled), dest)
-            print(f"Config created: {dest}")
+        dest_dir = _resolve_etc_dir()
+        os.makedirs(dest_dir, exist_ok=True)
+        bundled = pathlib.Path(__file__).resolve().parent / "templates" / "oduflow.toml"
+        dest = os.path.join(dest_dir, "oduflow.toml")
+        shutil.copy2(str(bundled), dest)
+        logger.info("Config created: %s", dest)
 
     global _settings
     _settings = _get_settings()
@@ -2384,16 +2377,11 @@ def main() -> None:
 
     if args.command is None:
         # No subcommand → start the MCP server
-        _start_server()
-        return
-
-    if args.command == "init":
-        _run_init(_settings)
-        if getattr(args, "license_file", ""):
-            from oduflow.licensing import install_license
-
-            info = install_license(args.license_file)
-            print(f"License installed: {info.label}")
+        _ensure_initialized(_settings)
+        if args.transport == "stdio":
+            _start_stdio()
+        else:
+            _start_http()
         return
 
     if args.command == "destroy":
@@ -2471,7 +2459,14 @@ def main() -> None:
         return
 
 
-def _start_server() -> None:
+def _start_stdio() -> None:
+    """Start the MCP server (stdio transport)."""
+    import asyncio
+
+    asyncio.run(mcp.run_stdio_async())
+
+
+def _start_http() -> None:
     """Start the MCP server (HTTP transport)."""
     from fastmcp.server.http import create_streamable_http_app
 

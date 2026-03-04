@@ -173,7 +173,7 @@ class TestCreateService:
     def test_create_network_missing(self, mock_docker_client):
         mock_docker_client.networks.get.side_effect = docker.errors.NotFound("nf")
 
-        with pytest.raises(PrerequisiteNotMetError, match="init_system"):
+        with pytest.raises(PrerequisiteNotMetError, match="not initialized"):
             service_ops.create_service(
                 TEST_SETTINGS, TEST_TEAM, "redis", "redis:7", 6379
             )

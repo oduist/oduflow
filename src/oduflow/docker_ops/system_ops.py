@@ -906,11 +906,11 @@ def template_up(
         db_container = client.containers.get(settings.shared_db_container)
         if db_container.status != "running":
             raise PrerequisiteNotMetError(
-                f"{settings.shared_db_container} is not running. Run init first."
+                f"{settings.shared_db_container} is not running. System not initialized. Restart oduflow."
             )
     except docker.errors.NotFound:
         raise PrerequisiteNotMetError(
-            f"{settings.shared_db_container} not found. Run init first."
+            f"{settings.shared_db_container} not found. System not initialized. Restart oduflow."
         )
 
     _wait_pg_ready(client, settings)

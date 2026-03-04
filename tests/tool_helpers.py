@@ -28,15 +28,11 @@ def list_tools() -> list[str]:
 
 
 def call_cli(command: str, settings=None, **kwargs) -> str:
-    """Run a CLI command (init / destroy) and return formatted output."""
+    """Run a CLI command and return formatted output."""
     from oduflow.docker_ops import system_ops
 
     if settings is None:
         raise ValueError("settings must be provided")
-
-    if command == "init":
-        result = system_ops.init_system(settings)
-        return f"System {result['status']}."
 
     if command == "destroy":
         result = system_ops.destroy_system(settings)

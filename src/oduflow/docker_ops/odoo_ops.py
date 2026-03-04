@@ -296,7 +296,7 @@ def reset_admin_password(
     except docker.errors.NotFound:
         raise NotFoundError(
             f"Database container '{settings.shared_db_container}' is not running. "
-            "Run 'oduflow init' first."
+            "System not initialized. Restart oduflow."
         )
 
     sql = f"UPDATE res_users SET password = '{hashed}' WHERE login = 'admin'"
@@ -330,7 +330,7 @@ def run_db_query(
     except docker.errors.NotFound:
         raise NotFoundError(
             f"Database container '{settings.shared_db_container}' is not running. "
-            "Run 'oduflow init' first."
+            "System not initialized. Restart oduflow."
         )
 
     creds = load_credentials(

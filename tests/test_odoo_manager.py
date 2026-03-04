@@ -207,10 +207,10 @@ class TestCreateEnvironment:
         self, mock_ready, mock_db_exists, mock_docker_client
     ):
         mock_ready.side_effect = PrerequisiteNotMetError(
-            "flow-db not found. Run init_system first."
+            "flow-db not found. System not initialized. Restart oduflow."
         )
 
-        with pytest.raises(PrerequisiteNotMetError, match="init_system"):
+        with pytest.raises(PrerequisiteNotMetError, match="not initialized"):
             env_ops.create_environment(
                 TEST_SETTINGS,
                 TEST_TEAM,

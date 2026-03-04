@@ -108,11 +108,11 @@ def _ensure_system_ready(
         db_container = client.containers.get(settings.shared_db_container)
         if db_container.status != "running":
             raise PrerequisiteNotMetError(
-                f"{settings.shared_db_container} is not running. Run init_system first."
+                f"{settings.shared_db_container} is not running. System not initialized. Restart oduflow."
             )
     except docker.errors.NotFound:
         raise PrerequisiteNotMetError(
-            f"{settings.shared_db_container} not found. Run init_system first."
+            f"{settings.shared_db_container} not found. System not initialized. Restart oduflow."
         )
 
     if template_name is not None:
@@ -127,11 +127,11 @@ def _ensure_system_ready(
             t = client.containers.get(settings.traefik_container)
             if t.status != "running":
                 raise PrerequisiteNotMetError(
-                    f"{settings.traefik_container} is not running. Run init_system first."
+                    f"{settings.traefik_container} is not running. System not initialized. Restart oduflow."
                 )
         except docker.errors.NotFound:
             raise PrerequisiteNotMetError(
-                f"{settings.traefik_container} not found. Run init_system first."
+                f"{settings.traefik_container} not found. System not initialized. Restart oduflow."
             )
 
 
@@ -1012,7 +1012,7 @@ def start_environment(settings: Settings, branch_name: str) -> dict[str, str]:
             db_container.start()
     except docker.errors.NotFound:
         raise PrerequisiteNotMetError(
-            f"{settings.shared_db_container} not found. Run init_system first."
+            f"{settings.shared_db_container} not found. System not initialized. Restart oduflow."
         )
 
     started = [settings.shared_db_container]
