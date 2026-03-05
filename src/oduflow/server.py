@@ -1765,6 +1765,12 @@ def _run_upgrade(settings: Settings) -> None:
     for team_id, team in settings.teams.items():
         label = f"[team.{team_id}]"
 
+        # odoo.conf
+        bundled_odoo_conf = bundled_dir / "odoo.conf"
+        if bundled_odoo_conf.is_file():
+            dest = os.path.join(team.data_dir, "odoo.conf")
+            files_to_write.append((label, str(bundled_odoo_conf), dest))
+
         # Agent guides
         agent_guides_dest = os.path.join(team.data_dir, "agent_guides")
         if bundled_guides_dir.is_dir():
@@ -1783,6 +1789,18 @@ def _run_upgrade(settings: Settings) -> None:
         print("Nothing to upgrade — no bundled files found.")
         return
 
+    # --- Filter to only new or changed files (compare by size) ---
+    files_to_update: list[tuple[str, str, str, str]] = []  # (label, src, dest, tag)
+    for label, src, dest in files_to_write:
+        if not os.path.isfile(dest):
+            files_to_update.append((label, src, dest, "new"))
+        elif os.path.getsize(src) != os.path.getsize(dest):
+            files_to_update.append((label, src, dest, "changed"))
+
+    if not files_to_update:
+        print("\nAll bundled files are already up to date. Nothing to do.")
+        return
+
     # --- Warning banner ---
     print()
     print("=" * 70)
@@ -1790,9 +1808,8 @@ def _run_upgrade(settings: Settings) -> None:
     print("  with bundled versions from this Oduflow release.")
     print("=" * 70)
     print()
-    for label, _src, dest in files_to_write:
-        exists = " (exists)" if os.path.isfile(dest) else " (new)"
-        print(f"  {label} {dest}{exists}")
+    for label, _src, dest, tag in files_to_update:
+        print(f"  {label} {dest} ({tag})")
     print()
     print("  If you have made custom changes to any of these files,")
     print("  press Ctrl+C NOW and back them up before proceeding.")
@@ -1806,7 +1823,7 @@ def _run_upgrade(settings: Settings) -> None:
 
     # --- Overwrite ---
     count = 0
-    for label, src, dest in files_to_write:
+    for label, src, dest, tag in files_to_update:
         os.makedirs(os.path.dirname(dest), exist_ok=True)
         shutil.copy2(src, dest)
         count += 1
