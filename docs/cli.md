@@ -12,21 +12,23 @@ oduflow --version
 ## Running the Server
 
 ```bash
-# Start the MCP server (reads oduflow.toml automatically)
+# Start the MCP server in stdio mode (default — for local MCP clients)
 oduflow
+
+# Start in HTTP mode (for remote/multi-user deployments)
+oduflow --transport http
 ```
 
-By default, the server starts on `http://0.0.0.0:8000`. Configuration is loaded from `oduflow.toml` (see [Installation](installation.md#configuration-reference)).
+Shared infrastructure (Docker network, PostgreSQL, team directories) is initialized automatically on startup.
+
+In stdio mode, the server communicates over stdin/stdout (ideal for local MCP clients like Claude Desktop, Cursor, etc.).
+In HTTP mode, the server starts on `http://0.0.0.0:8000` by default.
+
+Configuration is loaded from `oduflow.toml` (see [Installation](installation.md#configuration-reference)).
 
 ## System Commands
 
 ```bash
-# Initialize shared infrastructure (network, DB, Traefik) and all team directories
-oduflow init
-
-# Initialize and install a license in one step
-oduflow init --license /path/to/license.key
-
 # Destroy all shared infrastructure (requires no active environments)
 oduflow destroy
 ```

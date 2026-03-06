@@ -70,23 +70,35 @@ Create `oduflow.toml` (see [Installation](docs/installation.md) for all options)
 hostname = "localhost"
 ```
 
-### 3. Initialize the system
-
-```bash
-oduflow init
-```
-
-### 4. Start the MCP server
+### 3. Start the MCP server
 
 ```bash
 oduflow
 ```
 
-The server starts on `http://0.0.0.0:8000` by default.
+By default, Oduflow starts in **stdio** mode (for local MCP clients). Shared infrastructure (Docker network, PostgreSQL, team directories) is initialized automatically on first launch.
 
-### 5. Connect an MCP client
+For remote/multi-user deployments, use HTTP mode:
 
-Point your MCP client (Cursor, Cline, Amp, etc.) to `http://<host>:8000/mcp`.
+```bash
+oduflow --transport http
+```
+
+### 4. Connect an MCP client
+
+**stdio (local)** — add to your MCP client config (e.g. `claude_desktop_config.json`):
+
+```json
+{
+  "mcpServers": {
+    "oduflow": {
+      "command": "oduflow"
+    }
+  }
+}
+```
+
+**HTTP (remote)** — point your MCP client to `http://<host>:8000/mcp`.
 
 ---
 

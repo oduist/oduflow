@@ -27,7 +27,7 @@ For production-like access with HTTPS, Oduflow can deploy a **Traefik** reverse 
    hostname = "dev.example.com"
    ```
 
-3. **Run `oduflow init`** (or restart the server). Oduflow will create a Traefik v3 container that:
+3. **Start (or restart) Oduflow.** On startup, Oduflow will create a Traefik v3 container that:
    - Listens on ports 80 and 443
    - Automatically redirects HTTP to HTTPS
    - Obtains a separate TLS certificate from Let's Encrypt for each environment subdomain via HTTP-01 challenge

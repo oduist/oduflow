@@ -15,15 +15,9 @@ Oduflow is source-available under the [Polyform Noncommercial License 1.0.0](htt
 
 ## Installing a License
 
-**Via CLI (during init):**
+**Via CLI:**
 
-```bash
-oduflow init --license /path/to/license.key
-```
-
-**Via CLI (standalone):**
-
-The license file is stored at `/etc/oduflow/license.key`.
+Copy the license file to `/etc/oduflow/license.key`. Oduflow reads it automatically on startup.
 
 **Via Web Dashboard:**
 

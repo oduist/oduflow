@@ -72,7 +72,7 @@ Both folders support `.sql` and `.py` files, executed in alphabetical order (fir
 
 ### Team-level sanitization
 
-During `oduflow init`, the folder `{team_data_dir}/odoo_sanitize/` is created and seeded with a default script:
+On startup, the folder `{team_data_dir}/odoo_sanitize/` is created and seeded with a default script:
 
 **`01_disable_mail.sql`** — disables incoming and outgoing mail servers:
 

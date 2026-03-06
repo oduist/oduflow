@@ -9,7 +9,7 @@
 │                   MCP Clients                    │
 │         (Cursor, Cline, Amp, Claude, …)          │
 └────────────────────┬─────────────────────────────┘
-                     │  MCP (Streamable HTTP)
+                     │  MCP (stdio or Streamable HTTP)
 ┌────────────────────▼─────────────────────────────┐
 │  server.py — FastMCP transport layer             │
 │  • MCP tool definitions (42 tools)               │

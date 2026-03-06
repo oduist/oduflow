@@ -67,7 +67,7 @@ All settings are configured via a TOML file. Oduflow searches for `oduflow.toml`
 2. `/etc/oduflow/oduflow.toml`
 3. `~/.oduflow/oduflow.toml`
 
-If no config file exists when running `oduflow init`, the bundled default is automatically copied to the appropriate location.
+If no config file exists when Oduflow starts, the bundled default is automatically copied to the appropriate location.
 
 ### Minimal configuration
 
@@ -167,7 +167,7 @@ team_{ID}/
 
 ### Configuration file overrides
 
-When `oduflow init` runs, it copies the bundled `postgresql.conf` and `odoo.conf` to the config directory. These files take **priority** over the bundled defaults — edit them to customize PostgreSQL tuning or Odoo settings globally:
+On startup, Oduflow copies the bundled `postgresql.conf` and `odoo.conf` to the config directory (if they don't already exist). These files take **priority** over the bundled defaults — edit them to customize PostgreSQL tuning or Odoo settings globally:
 
 ```
 /etc/oduflow/             (or ~/.oduflow/conf/)
@@ -193,11 +193,7 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 # Install oduflow as a tool (as root)
 uv tool install oduflow
 
-# Create the configuration file
-# (oduflow init will auto-create a default oduflow.toml if none exists)
-
-# Initialize shared infrastructure and all team directories
-oduflow init
+# Create the configuration file (optional — Oduflow auto-creates a default oduflow.toml on first start)
 ```
 
 ### Install the service
