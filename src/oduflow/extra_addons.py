@@ -417,11 +417,12 @@ def remove_worktree(team: TeamSettings, repo_name: str, target_path: str) -> Non
 
 def pull_extra_worktree(
     team: TeamSettings, repo_name: str, branch: str, worktree_path: str
-) -> list[str]:
+) -> tuple[str, list[str]]:
     """Fetch the bare repo and reset the worktree to the branch tip.
 
-    Returns a list of changed file paths (relative to worktree root),
-    or an empty list if already up to date.
+    Returns ``(old_head, changed_files)`` where *old_head* is the
+    commit hash before the pull and *changed_files* are paths relative
+    to the worktree root.  Returns ``("", [])`` if already up to date.
     """
     fetch_extra_repo(team, repo_name)
 
@@ -453,7 +454,7 @@ def pull_extra_worktree(
     ).stdout.strip()
 
     if old_head == new_head:
-        return []
+        return "", []
 
     result = subprocess.run(
         ["git", "-C", worktree_path, "diff", "--name-only", f"{old_head}..{new_head}"],
@@ -469,7 +470,7 @@ def pull_extra_worktree(
         branch,
         len(changed),
     )
-    return changed
+    return old_head, changed
 
 
 def generate_odoo_conf(

@@ -10,6 +10,7 @@ from oduflow import settings
 
 logger = logging.getLogger("oduflow")
 
+
 def _trace(msg: str, *args: object) -> None:
     if settings.TRACE:
         logger.info("[TRACE] " + msg, *args)
@@ -61,7 +62,9 @@ def _extract_field_lines(source: str) -> set[str]:
     return lines
 
 
-def _check_field_changes(py_rel_path: str, repo_path: str) -> bool:
+def _check_field_changes(
+    py_rel_path: str, repo_path: str, base_ref: str = "HEAD~1"
+) -> bool:
     """Return True if any ``fields.`` definition was added, removed or modified."""
     abs_path = os.path.join(repo_path, py_rel_path)
 
@@ -72,7 +75,7 @@ def _check_field_changes(py_rel_path: str, repo_path: str) -> bool:
 
     try:
         old_source = subprocess.run(
-            ["git", "-C", repo_path, "show", f"HEAD~1:{py_rel_path}"],
+            ["git", "-C", repo_path, "show", f"{base_ref}:{py_rel_path}"],
             check=True,
             capture_output=True,
             text=True,
@@ -100,7 +103,9 @@ def _is_data_path(file_path: str) -> bool:
     return "/data/" in f"/{file_path}/" or file_path.startswith("data/")
 
 
-def classify_changes(changed_files: list[str], repo_path: str) -> dict:
+def classify_changes(
+    changed_files: list[str], repo_path: str, base_ref: str = "HEAD~1"
+) -> dict:
     """
     Classify changed files and determine required Odoo actions.
 
@@ -141,7 +146,7 @@ def classify_changes(changed_files: list[str], repo_path: str) -> dict:
         module = _get_module_name(f, repo_path)
 
         if os.path.basename(f) == "__manifest__.py" and module:
-            manifest_action = _check_manifest_changes(f, module, repo_path)
+            manifest_action = _check_manifest_changes(f, module, repo_path, base_ref)
             _trace(
                 "  file=%s ext=manifest module=%s -> manifest_action=%s",
                 f,
@@ -158,7 +163,7 @@ def classify_changes(changed_files: list[str], repo_path: str) -> dict:
             py_changed = True
             field_changed = False
             if module and module not in modules_to_install:
-                field_changed = _check_field_changes(f, repo_path)
+                field_changed = _check_field_changes(f, repo_path, base_ref)
                 if field_changed:
                     modules_to_upgrade.add(module)
             _trace(
@@ -235,11 +240,11 @@ def classify_changes(changed_files: list[str], repo_path: str) -> dict:
 
 
 def _check_manifest_changes(
-    manifest_rel_path: str, module: str, repo_path: str
+    manifest_rel_path: str, module: str, repo_path: str, base_ref: str = "HEAD~1"
 ) -> str | None:
     """
     Check if __manifest__.py changes require a module install or upgrade.
-    Uses git to compare old vs new manifest content.
+    Uses git to compare *base_ref* vs current manifest content.
     Returns ``"install"`` for a new module, ``"upgrade"`` for significant
     changes to an existing module, or ``None`` if no action is needed.
     """
@@ -257,7 +262,7 @@ def _check_manifest_changes(
 
     try:
         old_content = subprocess.run(
-            ["git", "-C", repo_path, "show", f"HEAD~1:{manifest_rel_path}"],
+            ["git", "-C", repo_path, "show", f"{base_ref}:{manifest_rel_path}"],
             check=True,
             capture_output=True,
             text=True,

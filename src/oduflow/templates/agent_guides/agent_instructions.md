@@ -198,7 +198,7 @@ When you call `pull_and_apply`, Oduflow analyzes every changed file:
 | `*.py` with `fields.*` changes | **Upgrade** the module |
 | `security/*.xml` | **Upgrade** the module |
 | `*.py` without field changes | **Restart** the container |
-| `*.xml` (views, data) / `*.js` | **Nothing** — hot-reloaded via `--dev=xml` |
+| `*.xml` (views) / `*.js` / `*.css` / `*.scss` | **Nothing** — hot-reloaded via `--dev=xml` (refresh browser) |
 
 Priority: install > upgrade > restart > refresh (no action).
 
