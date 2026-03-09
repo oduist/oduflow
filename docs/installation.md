@@ -65,7 +65,8 @@ All settings are configured via a TOML file. Oduflow searches for `oduflow.toml`
 
 1. `ODUFLOW_TOML` environment variable (explicit path)
 2. `/etc/oduflow/oduflow.toml`
-3. `~/.oduflow/oduflow.toml`
+3. `~/.oduflow/conf/oduflow.toml`
+4. `~/.oduflow/oduflow.toml`
 
 If no config file exists when Oduflow starts, the bundled default is automatically copied to the appropriate location.
 

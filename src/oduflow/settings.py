@@ -263,6 +263,7 @@ def find_toml() -> str:
 
     candidates = [
         "/etc/oduflow/oduflow.toml",
+        os.path.join(os.path.expanduser("~"), ".oduflow", "conf", "oduflow.toml"),
         os.path.join(os.path.expanduser("~"), ".oduflow", "oduflow.toml"),
     ]
     for path in candidates:
