@@ -2463,7 +2463,10 @@ def _start_stdio() -> None:
     """Start the MCP server (stdio transport)."""
     import asyncio
 
-    asyncio.run(mcp.run_stdio_async())
+    try:
+        asyncio.run(mcp.run_stdio_async())
+    except KeyboardInterrupt:
+        logger.info("Shutting down.")
 
 
 def _start_http() -> None:
