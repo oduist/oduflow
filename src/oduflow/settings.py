@@ -290,7 +290,7 @@ def _resolve_etc_dir() -> str:
         _cached_etc_dir = default
     else:
         _cached_etc_dir = os.path.join(os.path.expanduser("~"), ".oduflow", "conf")
-        logger.info("Default %s is not writable, falling back to %s", default, _cached_etc_dir)
+        logger.debug("Default %s is not writable, falling back to %s", default, _cached_etc_dir)
     return _cached_etc_dir
 
 
@@ -312,5 +312,5 @@ def _resolve_data_dir(explicit: str) -> str:
         _cached_data_dir = default
     else:
         _cached_data_dir = os.path.join(os.path.expanduser("~"), ".oduflow", "data")
-        logger.info("Default %s is not writable, falling back to %s", default, _cached_data_dir)
+        logger.debug("Default %s is not writable, falling back to %s", default, _cached_data_dir)
     return _cached_data_dir

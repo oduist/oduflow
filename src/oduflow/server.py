@@ -2366,6 +2366,7 @@ def main() -> None:
 
     global _settings
     _settings = _get_settings()
+    logger.info("conf=%s  data=%s", _settings.etc_dir, _settings.base_data_dir)
 
     # --- Resolve team for CLI commands that need it ----------------
 
