@@ -1688,8 +1688,7 @@ def get_service_logs(name: str, n_lines: int = 100, ctx: Context = None) -> str:
 def _ensure_initialized(settings: Settings) -> None:
     """Ensure shared infrastructure and per-team directories exist (idempotent)."""
     _copy_bundled_configs()
-    result = system_ops.init_system(settings)
-    logger.info("System %s.", result["status"])
+    system_ops.init_system(settings)
 
     import pathlib
     import shutil
@@ -2364,6 +2363,7 @@ def main() -> None:
         format="%(asctime)s %(name)s %(levelname)s %(message)s",
     )
     logging.getLogger("docker").setLevel(logging.WARNING)
+    logging.getLogger("docket").setLevel(logging.WARNING)
 
     # Bootstrap: if no config exists, copy the bundled default
     try:
@@ -2383,6 +2383,7 @@ def main() -> None:
 
     global _settings
     _settings = _get_settings()
+    logger.info("conf=%s  data=%s", _settings.etc_dir, _settings.base_data_dir)
 
     # --- Resolve team for CLI commands that need it ----------------
 
@@ -2480,7 +2481,10 @@ def _start_stdio() -> None:
     """Start the MCP server (stdio transport)."""
     import asyncio
 
-    asyncio.run(mcp.run_stdio_async())
+    try:
+        asyncio.run(mcp.run_stdio_async())
+    except KeyboardInterrupt:
+        logger.info("Shutting down.")
 
 
 def _start_http() -> None:

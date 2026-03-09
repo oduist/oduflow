@@ -61,32 +61,35 @@ The agent writes code, installs the module, reads the traceback, fixes the error
 pip install oduflow
 ```
 
-### 2. Configure
-
-Create `oduflow.toml` (see [Installation](docs/installation.md) for all options):
-
-```toml
-[team.1]
-hostname = "localhost"
-```
-
-### 3. Initialize the system
-
-```bash
-oduflow init
-```
-
-### 4. Start the MCP server
+### 2. Start the MCP server
 
 ```bash
 oduflow
 ```
 
-The server starts on `http://0.0.0.0:8000` by default.
+That's it. On first launch, Oduflow automatically creates a default config and initializes shared infrastructure (Docker network, PostgreSQL, team directories).
 
-### 5. Connect an MCP client
+By default, the server starts in **stdio** mode (for local MCP clients). For remote/multi-user deployments:
 
-Point your MCP client (Cursor, Cline, Amp, etc.) to `http://<host>:8000/mcp`.
+```bash
+oduflow --transport http
+```
+
+### 3. Connect an MCP client
+
+**stdio (local)** — add to your MCP client config (e.g. `claude_desktop_config.json`):
+
+```json
+{
+  "mcpServers": {
+    "oduflow": {
+      "command": "oduflow"
+    }
+  }
+}
+```
+
+**HTTP (remote)** — point your MCP client to `http://<host>:8000/mcp`.
 
 ---
 

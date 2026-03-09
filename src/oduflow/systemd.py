@@ -21,7 +21,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart={oduflow_bin}
+ExecStart={oduflow_bin} --transport http
 WorkingDirectory=/
 Restart=on-failure
 RestartSec=5

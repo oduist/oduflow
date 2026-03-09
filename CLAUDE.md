@@ -12,8 +12,11 @@ AI-first Odoo development and CI tool. Provisions isolated, ephemeral Odoo envir
 # Install from source (editable)
 pip install -e .
 
-# Run the server (HTTP transport by default)
+# Run the server (stdio transport by default)
 oduflow
+
+# Run in HTTP mode (for remote/multi-user)
+oduflow --transport http
 
 # Lint
 ruff check src/oduflow tests

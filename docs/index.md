@@ -74,4 +74,4 @@ The agent writes code, installs the module, reads the traceback, fixes the error
 - **Web dashboard** — a built-in HTML dashboard for managing environments from a browser
 - **REST API** — full JSON API for programmatic control from any HTTP client
 - **CLI tools** — every MCP tool can be called directly from the command line via `oduflow call`
-- **Dual transport** — supports both HTTP (Streamable HTTP) and stdio MCP transports
+- **Dual transport** — stdio (default, for local MCP clients) and HTTP (Streamable HTTP, for remote/multi-user)

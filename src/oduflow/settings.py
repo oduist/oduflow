@@ -263,6 +263,7 @@ def find_toml() -> str:
 
     candidates = [
         "/etc/oduflow/oduflow.toml",
+        os.path.join(os.path.expanduser("~"), ".oduflow", "conf", "oduflow.toml"),
         os.path.join(os.path.expanduser("~"), ".oduflow", "oduflow.toml"),
     ]
     for path in candidates:
@@ -276,26 +277,40 @@ def find_toml() -> str:
     )
 
 
+_cached_etc_dir: str | None = None
+
+
 def _resolve_etc_dir() -> str:
-    """Resolve etc directory: /etc/oduflow or ~/.oduflow/conf."""
+    """Resolve etc directory: /etc/oduflow or ~/.oduflow/conf (cached)."""
+    global _cached_etc_dir
+    if _cached_etc_dir is not None:
+        return _cached_etc_dir
     default = "/etc/oduflow"
     if os.access(default, os.W_OK) or os.access(os.path.dirname(default), os.W_OK):
-        return default
-    fallback = os.path.join(os.path.expanduser("~"), ".oduflow", "conf")
-    logger.info("Default %s is not writable, falling back to %s", default, fallback)
-    return fallback
+        _cached_etc_dir = default
+    else:
+        _cached_etc_dir = os.path.join(os.path.expanduser("~"), ".oduflow", "conf")
+        logger.debug("Default %s is not writable, falling back to %s", default, _cached_etc_dir)
+    return _cached_etc_dir
+
+
+_cached_data_dir: str | None = None
 
 
 def _resolve_data_dir(explicit: str) -> str:
-    """Resolve base data directory: explicit > /srv/oduflow > ~/.oduflow/data."""
+    """Resolve base data directory: explicit > /srv/oduflow > ~/.oduflow/data (cached)."""
+    global _cached_data_dir
     if explicit:
         return explicit
+    if _cached_data_dir is not None:
+        return _cached_data_dir
     default = "/srv/oduflow"
     parent = os.path.dirname(default)
     if os.access(parent, os.W_OK) or (
         os.path.isdir(default) and os.access(default, os.W_OK)
     ):
-        return default
-    fallback = os.path.join(os.path.expanduser("~"), ".oduflow", "data")
-    logger.info("Default %s is not writable, falling back to %s", default, fallback)
-    return fallback
+        _cached_data_dir = default
+    else:
+        _cached_data_dir = os.path.join(os.path.expanduser("~"), ".oduflow", "data")
+        logger.debug("Default %s is not writable, falling back to %s", default, _cached_data_dir)
+    return _cached_data_dir

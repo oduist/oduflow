@@ -32,9 +32,9 @@ _BUNDLED_SANITIZE_DIR = _PACKAGE_ROOT / "templates"
 
 
 def _get_etc_dir() -> pathlib.Path:
-    from oduflow.settings import Settings
+    from oduflow.settings import _resolve_etc_dir
 
-    return pathlib.Path(Settings._default_etc_dir())
+    return pathlib.Path(_resolve_etc_dir())
 
 
 def _file_size_mb(path: str) -> float:

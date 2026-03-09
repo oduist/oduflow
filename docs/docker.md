@@ -49,33 +49,20 @@ docker run -d \
 The Oduflow container must be on the same Docker network as the containers it creates. The simplest approach is to connect it to `oduflow-net` after initialization:
 
 ```bash
-# 1. Start Oduflow
+# 1. Start Oduflow (Docker image defaults to HTTP mode)
 docker run -d --name oduflow -p 8000:8000 \
   -v /var/run/docker.sock:/var/run/docker.sock \
   -v oduflow_data:/srv/oduflow \
   -v /etc/oduflow:/etc/oduflow \
-  oduflow
+  oduist/oduflow
 
-# 2. Initialize shared infrastructure (creates oduflow-net, PostgreSQL, etc.)
-docker exec oduflow oduflow init
-
-# 3. Connect Oduflow to the shared network
+# 2. Connect Oduflow to the shared network (created automatically on startup)
 docker network connect oduflow-net oduflow
 ```
 
 Alternatively, start with `--network oduflow-net` if the network already exists.
 
-## Initialization
-
-On first run, you need to initialize the shared infrastructure:
-
-```bash
-# Create shared Docker network, PostgreSQL container, and team directories
-docker exec oduflow oduflow init
-
-# Connect to the shared network
-docker network connect oduflow-net oduflow
-```
+Shared infrastructure (Docker network, PostgreSQL, team directories) is initialized automatically on startup — no separate init step needed.
 
 To set up a template database:
 
@@ -135,11 +122,7 @@ networks:
     name: oduflow-net
 ```
 
-After `docker compose up -d`, run initialization:
-
-```bash
-docker compose exec oduflow oduflow init
-```
+After `docker compose up -d`, Oduflow initializes shared infrastructure automatically.
 
 ## Security Notes
 

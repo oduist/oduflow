@@ -2,33 +2,50 @@
 
 [TOC]
 
-## 1. Configure
+## 1. Start the MCP server
 
-Create `oduflow.toml` (searched in `/etc/oduflow/` then `~/.oduflow/`, or set `ODUFLOW_TOML`):
+```bash
+oduflow
+```
+
+That's it. On first launch, Oduflow automatically:
+
+- Creates a default `oduflow.toml` config (in `/etc/oduflow/` or `~/.oduflow/conf/`)
+- Initializes shared infrastructure (Docker network, PostgreSQL, team directories)
+
+By default, the server starts in **stdio** mode (for local MCP clients). For remote/multi-user deployments:
+
+```bash
+oduflow --transport http
+```
+
+The HTTP server starts on `http://0.0.0.0:8000` by default (configurable via `[server]` section in `oduflow.toml`).
+
+To set up a template database, use `oduflow init-template` (see [Template Management](templates.md)).
+
+## 2. Connect an MCP client
+
+**stdio (local)** — add to your MCP client config (e.g. `claude_desktop_config.json`):
+
+```json
+{
+  "mcpServers": {
+    "oduflow": {
+      "command": "oduflow"
+    }
+  }
+}
+```
+
+**HTTP (remote)** — point your MCP client (Cursor, Cline, Amp, etc.) to `http://<host>:8000/mcp`.
+
+## 3. (Optional) Customize configuration
+
+Edit `oduflow.toml` to change settings:
 
 ```toml
 [team.1]
 hostname = "localhost"
 ```
 
-## 2. Initialize the system
-
-Create the shared Docker network, PostgreSQL container, and all team directories:
-
-```bash
-oduflow init
-```
-
-To set up a template database, use `oduflow init-template` (see [Template Management](templates.md)).
-
-## 3. Start the MCP server
-
-```bash
-oduflow
-```
-
-The server starts on `http://0.0.0.0:8000` by default (configurable via `[server]` section in `oduflow.toml`).
-
-## 4. Connect an MCP client
-
-Point your MCP client (Cursor, Cline, Amp, etc.) to `http://<host>:8000/mcp`.
+See [Installation — Configuration Reference](installation.md#configuration-reference) for all options.

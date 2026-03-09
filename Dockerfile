@@ -19,3 +19,4 @@ RUN pip install --no-cache-dir .
 EXPOSE 8000
 
 ENTRYPOINT ["oduflow"]
+CMD ["--transport", "http"]
