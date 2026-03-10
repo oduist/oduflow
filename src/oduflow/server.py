@@ -926,7 +926,7 @@ def pull_and_apply(branch_name: str, ctx: Context = None) -> str:
     Analyzes changed files and automatically:
     - Upgrades modules if __manifest__.py version/data/assets changed, or security XML changed
     - Restarts the container if Python files changed
-    - Does nothing if only XML/JS changed (--dev=xml handles hot reload)
+    - Does nothing if only XML/JS changed (--dev=xml hot-reloads XML; JS assets are reloaded on browser refresh)
 
     Args:
         branch_name: The name of the branch/environment to pull updates for.

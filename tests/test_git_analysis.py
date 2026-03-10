@@ -320,6 +320,42 @@ class TestClassifyChanges:
             assert result["action"] == "upgrade"
             assert "sale" in result["modules_to_upgrade"]
 
+    def test_manifest_assets_change_with_base_ref(self, tmp_path):
+        """Manifest change is detected when base_ref points to a commit
+        several steps back (multi-commit pull scenario)."""
+        module_dir = tmp_path / "web_ext"
+        module_dir.mkdir()
+
+        old_manifest = "{'name': 'Web Ext', 'version': '17.0.1.0.0', 'assets': {}}"
+        new_manifest = (
+            "{'name': 'Web Ext', 'version': '17.0.1.0.0', "
+            "'assets': {'web.assets_backend': ['web_ext/static/src/js/app.js']}}"
+        )
+        (module_dir / "__manifest__.py").write_text(new_manifest)
+
+        from unittest.mock import patch
+
+        fake_base_ref = "abc123"
+
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = type("Result", (), {"stdout": old_manifest})()
+
+            files = [
+                "web_ext/__manifest__.py",
+                "web_ext/static/src/js/app.js",
+            ]
+            result = classify_changes(files, str(tmp_path), base_ref=fake_base_ref)
+            assert result["action"] == "upgrade"
+            assert "web_ext" in result["modules_to_upgrade"]
+
+            # Verify git show used base_ref, not HEAD~1
+            git_show_calls = [
+                c
+                for c in mock_run.call_args_list
+                if any(f"{fake_base_ref}:" in str(a) for a in c[0][0])
+            ]
+            assert len(git_show_calls) == 1
+
     def test_py_no_field_change_stays_restart(self, tmp_path):
         module_dir = tmp_path / "sale" / "models"
         module_dir.mkdir(parents=True)

@@ -1131,7 +1131,7 @@ def pull_environment(
         )
 
     _trace("pull_environment(%s): git pull started", branch_name)
-    changed_files = pull_repo(
+    old_head, changed_files = pull_repo(
         repo_path, branch_name, cred_file=team.git_credentials_file()
     )
 
@@ -1163,7 +1163,9 @@ def pull_environment(
                 repo_name,
                 branch,
             )
-            extra_files = pull_extra_worktree(team, repo_name, branch, wt_path)
+            _extra_old, extra_files = pull_extra_worktree(
+                team, repo_name, branch, wt_path
+            )
             extra_changed_files.extend(extra_files)
             if extra_files:
                 _trace(
@@ -1185,7 +1187,7 @@ def pull_environment(
         all_changed,
     )
 
-    analysis = classify_changes(all_changed, repo_path)
+    analysis = classify_changes(all_changed, repo_path, base_ref=old_head)
     action = analysis["action"]
     _trace("pull_environment(%s): classify result action=%s", branch_name, action)
 

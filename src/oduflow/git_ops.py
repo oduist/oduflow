@@ -247,8 +247,15 @@ def delete_credential(host: str, username: str, cred_file: str) -> bool:
     return removed
 
 
-def pull_repo(repo_path: str, branch: str, cred_file: str = "") -> list[str]:
-    """Pull latest changes and return list of changed file paths."""
+def pull_repo(
+    repo_path: str, branch: str, cred_file: str = ""
+) -> tuple[str, list[str]]:
+    """Pull latest changes and return ``(old_head, changed_files)``.
+
+    *old_head* is the commit hash before the pull — callers can pass it
+    as ``base_ref`` to :func:`git_analysis.classify_changes` so that
+    manifest / field comparisons cover the full range of pulled commits.
+    """
     env = git_env_for_team(cred_file) if cred_file else _GIT_BASE_ENV
 
     old_head = subprocess.run(
@@ -297,7 +304,7 @@ def pull_repo(repo_path: str, branch: str, cred_file: str = "") -> list[str]:
     ).stdout.strip()
 
     if old_head == new_head:
-        return []
+        return old_head, []
 
     result = subprocess.run(
         [
@@ -313,7 +320,7 @@ def pull_repo(repo_path: str, branch: str, cred_file: str = "") -> list[str]:
         text=True,
         env=env,
     )
-    return [f for f in result.stdout.strip().splitlines() if f]
+    return old_head, [f for f in result.stdout.strip().splitlines() if f]
 
 
 def parse_manifest(manifest_path: str) -> dict:
