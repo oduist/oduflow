@@ -2,30 +2,50 @@
 
 [TOC]
 
-## 1. Start the MCP server
+## Install
+
+The fastest way — run directly without installing (requires [uv](https://docs.astral.sh/uv/)):
 
 ```bash
-oduflow
+uvx oduflow
 ```
 
-That's it. On first launch, Oduflow automatically:
+Or install permanently:
+
+```bash
+uv tool install oduflow
+```
+
+On first launch, Oduflow automatically:
 
 - Creates a default `oduflow.toml` config (in `/etc/oduflow/` or `~/.oduflow/conf/`)
 - Initializes shared infrastructure (Docker network, PostgreSQL, team directories)
 
-By default, the server starts in **stdio** mode (for local MCP clients). For remote/multi-user deployments:
+## Single-user mode (stdio)
+
+Stdio is the default transport — Oduflow communicates with the MCP client over stdin/stdout. The client starts and manages the Oduflow process directly. No network port is needed.
 
 ```bash
-oduflow --transport http
+# These are all equivalent:
+uvx oduflow
+oduflow
+oduflow --transport stdio
 ```
 
-The HTTP server starts on `http://0.0.0.0:8000` by default (configurable via `[server]` section in `oduflow.toml`).
+Add to your MCP client config (Claude Desktop, Windsurf, etc.):
 
-To set up a template database, use `oduflow init-template` (see [Template Management](templates.md)).
+```json
+{
+  "mcpServers": {
+    "oduflow": {
+      "command": "uvx",
+      "args": ["oduflow"]
+    }
+  }
+}
+```
 
-## 2. Connect an MCP client
-
-**stdio (local)** — add to your MCP client config (e.g. `claude_desktop_config.json`):
+If Oduflow is installed globally (`uv tool install oduflow`), you can use the shorter form:
 
 ```json
 {
@@ -37,15 +57,73 @@ To set up a template database, use `oduflow init-template` (see [Template Manage
 }
 ```
 
-**HTTP (remote)** — point your MCP client (Cursor, Cline, Amp, etc.) to `http://<host>:8000/mcp`.
+## Server mode (HTTP)
 
-## 3. (Optional) Customize configuration
+HTTP transport starts a persistent server with Streamable HTTP, a Web Dashboard, and a REST API. Suitable for remote and multi-user deployments.
 
-Edit `oduflow.toml` to change settings:
+```bash
+# Start the HTTP server:
+uvx oduflow --transport http
+# or, if installed:
+oduflow --transport http
+```
+
+The server starts on `http://0.0.0.0:8000` by default (configurable via `[server]` section in `oduflow.toml`). The MCP endpoint is at `/mcp`.
+
+### Authentication
+
+In HTTP mode it is recommended to set a Bearer token for MCP and a password for the Web Dashboard. Add to your `oduflow.toml`:
 
 ```toml
 [team.1]
 hostname = "localhost"
+auth_token = "my-secret-mcp-token"      # Bearer token for MCP clients
+ui_password = "my-dashboard-password"    # Basic auth for Web Dashboard (user: admin)
 ```
 
-See [Installation — Configuration Reference](installation.md#configuration-reference) for all options.
+MCP auth and Web Dashboard auth are independent — they use different tokens and different mechanisms (Bearer vs Basic).
+
+### MCP client configuration
+
+Point your MCP client (Cursor, Cline, Amp, etc.) to the server with the Authorization header:
+
+```json
+{
+  "mcpServers": {
+    "oduflow": {
+      "type": "http",
+      "url": "http://your-server:8000/mcp",
+      "headers": {
+        "Authorization": "Bearer my-secret-mcp-token"
+      }
+    }
+  }
+}
+```
+
+If the server is behind a reverse proxy with HTTPS (see [Traefik Routing](traefik.md)):
+
+```json
+{
+  "mcpServers": {
+    "oduflow": {
+      "type": "http",
+      "url": "https://oduflow.example.com/mcp",
+      "headers": {
+        "Authorization": "Bearer my-secret-mcp-token"
+      }
+    }
+  }
+}
+```
+
+### Web Dashboard
+
+When running in HTTP mode, a web dashboard is available at the root URL (`http://your-server:8000/`). It provides environment management, service controls, a WebSocket terminal, and more. See [Web Dashboard & REST API](web-api.md) for details.
+
+## Next steps
+
+- **Set up a template** — `oduflow init-template` (see [Template Management](templates.md))
+- **Customize configuration** — edit `oduflow.toml` (see [Configuration Reference](installation.md#configuration-reference))
+- **Auto-start on boot** — `oduflow systemd-install` (see [systemd setup](installation.md#auto-start-with-systemd))
+- **Multi-team isolation** — add multiple `[team.*]` sections (see [Multi-Team Support](multi-instance.md))

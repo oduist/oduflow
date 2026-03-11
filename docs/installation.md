@@ -33,7 +33,20 @@ sudo sed -i 's/^#user_allow_other/user_allow_other/' /etc/fuse.conf
 
 ## Install Oduflow
 
-Recommended — install via [uv](https://docs.astral.sh/uv/) (manages an isolated environment automatically):
+### Run without installing
+
+With [uv](https://docs.astral.sh/uv/) you can run Oduflow directly — no installation step needed. `uvx` downloads the package into a temporary environment and runs it:
+
+```bash
+uvx oduflow                      # stdio mode (default)
+uvx oduflow --transport http     # HTTP server mode
+```
+
+This is the quickest way to try Oduflow or use it in CI pipelines.
+
+### Permanent installation
+
+Install via [uv](https://docs.astral.sh/uv/) (recommended — manages an isolated environment automatically):
 
 ```bash
 uv tool install oduflow
@@ -45,7 +58,9 @@ Alternative — install via pip:
 pip install oduflow
 ```
 
-For local development:
+After installation, the `oduflow` command is available globally.
+
+### From source
 
 ```bash
 git clone https://github.com/oduist/oduflow.git
