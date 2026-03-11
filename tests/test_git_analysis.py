@@ -7,6 +7,7 @@ from oduflow.git_analysis import (
     _is_security_path,
     _is_data_path,
     _extract_field_lines,
+    _extract_view_tag_attrs,
 )
 
 
@@ -391,6 +392,106 @@ class TestClassifyChanges:
             files = ["sale/models/sale.py"]
             result = classify_changes(files, str(tmp_path))
             assert result["action"] == "restart"
+            assert result["modules_to_upgrade"] == []
+
+
+class TestExtractViewTagAttrs:
+    def test_tree_with_attrs(self):
+        source = '<tree editable="bottom" string="Items">'
+        assert _extract_view_tag_attrs(source) == {
+            '<tree editable="bottom" string="Items">'
+        }
+
+    def test_form(self):
+        source = '<form string="Sale Order">'
+        assert _extract_view_tag_attrs(source) == {'<form string="Sale Order">'}
+
+    def test_list_tag(self):
+        source = '<list editable="top">'
+        assert _extract_view_tag_attrs(source) == {'<list editable="top">'}
+
+    def test_no_view_tags(self):
+        source = '<field name="partner_id"/>'
+        assert _extract_view_tag_attrs(source) == set()
+
+    def test_self_closing(self):
+        source = '<tree string="Items"/>'
+        assert _extract_view_tag_attrs(source) == {'<tree string="Items"/>'}
+
+    def test_multiple_tags(self):
+        source = '<tree editable="bottom">\n</tree>\n<form string="Order">\n</form>'
+        result = _extract_view_tag_attrs(source)
+        assert result == {'<tree editable="bottom">', '<form string="Order">'}
+
+
+class TestXmlViewAttrUpgrade:
+    def test_tree_attr_change_triggers_upgrade(self, tmp_path):
+        module_dir = tmp_path / "sale" / "views"
+        module_dir.mkdir(parents=True)
+        (tmp_path / "sale" / "__manifest__.py").write_text(
+            "{'name': 'Sale', 'version': '17.0.1.0.0'}"
+        )
+        (module_dir / "sale_order.xml").write_text(
+            '<odoo><record id="view" model="ir.ui.view"><field name="arch" type="xml">'
+            '<tree editable="top"><field name="name"/></tree>'
+            "</field></record></odoo>"
+        )
+
+        from unittest.mock import patch
+
+        old_xml = (
+            '<odoo><record id="view" model="ir.ui.view"><field name="arch" type="xml">'
+            '<tree editable="bottom"><field name="name"/></tree>'
+            "</field></record></odoo>"
+        )
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = type("Result", (), {"stdout": old_xml})()
+
+            files = ["sale/views/sale_order.xml"]
+            result = classify_changes(files, str(tmp_path))
+            assert result["action"] == "upgrade"
+            assert "sale" in result["modules_to_upgrade"]
+
+    def test_form_attr_change_triggers_upgrade(self, tmp_path):
+        module_dir = tmp_path / "crm" / "views"
+        module_dir.mkdir(parents=True)
+        (tmp_path / "crm" / "__manifest__.py").write_text(
+            "{'name': 'CRM', 'version': '17.0.1.0.0'}"
+        )
+        (module_dir / "crm_lead.xml").write_text(
+            '<form string="Lead" create="false">'
+        )
+
+        from unittest.mock import patch
+
+        old_xml = '<form string="Lead">'
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = type("Result", (), {"stdout": old_xml})()
+
+            files = ["crm/views/crm_lead.xml"]
+            result = classify_changes(files, str(tmp_path))
+            assert result["action"] == "upgrade"
+            assert "crm" in result["modules_to_upgrade"]
+
+    def test_xml_no_view_attr_change_stays_refresh(self, tmp_path):
+        module_dir = tmp_path / "sale" / "views"
+        module_dir.mkdir(parents=True)
+        (tmp_path / "sale" / "__manifest__.py").write_text(
+            "{'name': 'Sale', 'version': '17.0.1.0.0'}"
+        )
+        (module_dir / "sale_order.xml").write_text(
+            '<tree editable="bottom"><field name="name"/><field name="date"/></tree>'
+        )
+
+        from unittest.mock import patch
+
+        old_xml = '<tree editable="bottom"><field name="name"/></tree>'
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = type("Result", (), {"stdout": old_xml})()
+
+            files = ["sale/views/sale_order.xml"]
+            result = classify_changes(files, str(tmp_path))
+            assert result["action"] == "refresh"
             assert result["modules_to_upgrade"] == []
 
 

@@ -19,6 +19,7 @@ def _trace(msg: str, *args: object) -> None:
 MANIFEST_KEYS_WITH_FILES = ("data", "demo", "assets", "qweb")
 
 _FIELD_RE = re.compile(r"^\s*\w+\s*=\s*fields\..*", re.MULTILINE)
+_VIEW_TAG_RE = re.compile(r"<(tree|list|form)\b([^>]*)/?>")
 
 
 def _parse_manifest(path: str) -> dict:
@@ -92,6 +93,48 @@ def _check_field_changes(
         _trace("_check_field_changes(%s) -> CHANGED: %s", py_rel_path, diff)
         return True
     _trace("_check_field_changes(%s) -> no change", py_rel_path)
+    return False
+
+
+def _extract_view_tag_attrs(source: str) -> set[str]:
+    """Return normalised ``<tree …>``, ``<list …>``, ``<form …>`` opening tags."""
+    tags = set()
+    for m in _VIEW_TAG_RE.finditer(source):
+        tag = re.sub(r"\s+", " ", m.group(0)).strip()
+        tags.add(tag)
+    return tags
+
+
+def _check_xml_view_attr_changes(
+    xml_rel_path: str, repo_path: str, base_ref: str = "HEAD~1"
+) -> bool:
+    """Return True if attributes on ``<tree>``, ``<list>``, or ``<form>`` tags changed."""
+    abs_path = os.path.join(repo_path, xml_rel_path)
+
+    try:
+        new_source = open(abs_path).read() if os.path.isfile(abs_path) else ""
+    except Exception:
+        new_source = ""
+
+    try:
+        old_source = subprocess.run(
+            ["git", "-C", repo_path, "show", f"{base_ref}:{xml_rel_path}"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+    except Exception:
+        old_source = ""
+
+    old_tags = _extract_view_tag_attrs(old_source)
+    new_tags = _extract_view_tag_attrs(new_source)
+
+    if old_tags != new_tags:
+        diff = (new_tags - old_tags) | (old_tags - new_tags)
+        logger.info("View tag attributes changed in %s: %s", xml_rel_path, diff)
+        _trace("_check_xml_view_attr_changes(%s) -> CHANGED: %s", xml_rel_path, diff)
+        return True
+    _trace("_check_xml_view_attr_changes(%s) -> no change", xml_rel_path)
     return False
 
 
@@ -182,8 +225,16 @@ def classify_changes(
                     module,
                 )
             else:
-                xml_hot.append(f)
-                _trace("  file=%s ext=.xml module=%s -> hot-reload XML", f, module)
+                if module and module not in modules_to_install and _check_xml_view_attr_changes(f, repo_path, base_ref):
+                    modules_to_upgrade.add(module)
+                    _trace(
+                        "  file=%s ext=.xml module=%s -> view attr changed, UPGRADE",
+                        f,
+                        module,
+                    )
+                else:
+                    xml_hot.append(f)
+                    _trace("  file=%s ext=.xml module=%s -> hot-reload XML", f, module)
             continue
 
         if ext == ".js":
