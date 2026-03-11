@@ -37,6 +37,7 @@ _output_cache = OutputCache()
 mcp = FastMCP("Oduflow")
 _locks = LockManager()
 _settings: Settings | None = None
+_instance_id: str = ""
 
 
 def _get_settings() -> Settings:
@@ -161,19 +162,19 @@ def handle_errors(fn):
     return wrapper
 
 
-def with_branch_lock(fn):
-    """Acquire a per-branch lock before executing the tool function."""
+def with_env_lock(fn):
+    """Acquire a per-environment lock before executing the tool function."""
 
     @functools.wraps(fn)
     def wrapper(*args, **kwargs):
-        branch_name = kwargs.get("branch_name") or (args[0] if args else None)
-        if not branch_name:
-            raise ToolError("branch_name is required")
-        _locks.acquire_branch(branch_name)
+        env_name = kwargs.get("env_name") or (args[0] if args else None)
+        if not env_name:
+            raise ToolError("env_name is required")
+        _locks.acquire_env(env_name)
         try:
             return fn(*args, **kwargs)
         finally:
-            _locks.release_branch(branch_name)
+            _locks.release_env(env_name)
 
     return wrapper
 
@@ -343,9 +344,9 @@ def _parse_extra_addons(raw: str) -> dict[str, str]:
 
 @mcp.tool()
 @handle_errors
-@with_branch_lock
 def create_environment(
-    branch_name: str,
+    branch: str,
+    env_name: str = "",
     template_name: str = "",
     repo_url: str = "",
     odoo_image: str = "",
@@ -354,10 +355,11 @@ def create_environment(
     ctx: Context = None,
 ) -> str:
     """
-    Provision a new ephemeral Odoo environment for a specific branch.
+    Provision a new ephemeral Odoo environment.
 
     Args:
-        branch_name: The name of the git branch (will be used for resource naming).
+        branch: The git branch to clone (e.g. "18.0", "feature/my-feature").
+        env_name: Optional environment name. If empty, defaults to the branch name. Use this to create multiple environments from the same branch (e.g. env_name="client-a" with branch="18.0").
         template_name: Name of the template profile to use as database template. Pass "none" to skip template and initialise Odoo from scratch with -i base. When a template is specified, repo_url and odoo_image are loaded from template metadata (but can be overridden).
         repo_url: URL of the git repository to clone. Optional when template_name is specified (loaded from template metadata).
         odoo_image: Full Docker image name with tag (e.g. "odoo:17.0"). Optional when template_name is specified (loaded from template metadata).
@@ -366,126 +368,140 @@ def create_environment(
     """
     import json
 
-    settings = _get_settings()
-    team = _resolve_team(ctx)
-    resolved_template: str | None
-    if not template_name or template_name.lower() == "none":
-        resolved_template = None
-    else:
-        resolved_template = template_name
+    resolved_env_name = env_name or branch
+    _locks.acquire_env(resolved_env_name)
+    try:
+        settings = _get_settings()
+        team = _resolve_team(ctx)
+        resolved_template: str | None
+        if not template_name or template_name.lower() == "none":
+            resolved_template = None
+        else:
+            resolved_template = template_name
 
-    # Load metadata from template if available
-    effective_repo_url = repo_url
-    effective_odoo_image = odoo_image
-    effective_git_user = ""
-    if resolved_template:
-        metadata_path = team.get_template_metadata_path(resolved_template)
-        if os.path.isfile(metadata_path):
-            with open(metadata_path) as f:
-                metadata = json.load(f)
-            if not effective_repo_url:
-                effective_repo_url = metadata.get("repo_url", "")
-            if not effective_odoo_image:
-                effective_odoo_image = metadata.get("odoo_image", "")
-            if not effective_git_user:
-                effective_git_user = metadata.get("git_user", "")
-            if not extra_addons:
-                raw_extra = metadata.get("extra_addons")
-                if raw_extra:
-                    from oduflow.docker_ops.env_ops import _normalize_extra_addons
+        # Load metadata from template if available
+        effective_repo_url = repo_url
+        effective_odoo_image = odoo_image
+        effective_git_user = ""
+        if resolved_template:
+            metadata_path = team.get_template_metadata_path(resolved_template)
+            if os.path.isfile(metadata_path):
+                with open(metadata_path) as f:
+                    metadata = json.load(f)
+                if not effective_repo_url:
+                    effective_repo_url = metadata.get("repo_url", "")
+                if not effective_odoo_image:
+                    effective_odoo_image = metadata.get("odoo_image", "")
+                if not effective_git_user:
+                    effective_git_user = metadata.get("git_user", "")
+                if not extra_addons:
+                    raw_extra = metadata.get("extra_addons")
+                    if raw_extra:
+                        from oduflow.docker_ops.env_ops import _normalize_extra_addons
 
-                    _metadata_extra = _normalize_extra_addons(raw_extra)
-                    if _metadata_extra:
-                        extra_addons = ",".join(
-                            f"{name}:{branch}"
-                            for name, branch in _metadata_extra.items()
-                        )
+                        _metadata_extra = _normalize_extra_addons(raw_extra)
+                        if _metadata_extra:
+                            extra_addons = ",".join(
+                                f"{name}:{b}"
+                                for name, b in _metadata_extra.items()
+                            )
 
-    if not effective_repo_url:
-        raise ValueError(
-            "repo_url is required (not found in template metadata either)."
+        if not effective_repo_url:
+            raise ValueError(
+                "repo_url is required (not found in template metadata either)."
+            )
+        git_ops.validate_repo_url(effective_repo_url)
+        if not effective_odoo_image:
+            raise ValueError(
+                "odoo_image is required (not found in template metadata either)."
+            )
+
+        extra_dict = _parse_extra_addons(extra_addons) if extra_addons else {}
+        result = env_ops.create_environment(
+            settings,
+            team,
+            branch,
+            effective_repo_url,
+            effective_odoo_image,
+            env_name=resolved_env_name,
+            template_name=resolved_template,
+            extra_addons=extra_dict or None,
+            git_user=effective_git_user,
+            sanitize=sanitize,
         )
-    git_ops.validate_repo_url(effective_repo_url)
-    if not effective_odoo_image:
-        raise ValueError(
-            "odoo_image is required (not found in template metadata either)."
-        )
 
-    extra_dict = _parse_extra_addons(extra_addons) if extra_addons else {}
-    result = env_ops.create_environment(
-        settings,
-        team,
-        branch_name,
-        effective_repo_url,
-        effective_odoo_image,
-        template_name=resolved_template,
-        extra_addons=extra_dict or None,
-        git_user=effective_git_user,
-        sanitize=sanitize,
-    )
-    display_template = (
-        resolved_template
-        if resolved_template is not None
-        else "none (init from scratch)"
-    )
-    lines = [
-        "Environment provisioned successfully!",
-        f"URL: {result['url']}",
-        f"Odoo Container: {result['odoo_container']}",
-        f"Database: {result['database']}",
-        f"Workspace: {result['workspace']}",
-        f"Template: {display_template}",
-        f"Creation time: {result.get('elapsed_seconds', '?')}s",
-    ]
-    if extra_dict:
-        extras_display = ", ".join(
-            f"{name} ({branch})" for name, branch in extra_dict.items()
-        )
-        lines.append(f"Extra Addons: {extras_display}")
-    setup_logs = result.get("setup_logs", [])
-    if setup_logs:
-        lines.append("\n--- Setup Log ---")
-        lines.extend(setup_logs)
-    import re
+        from oduflow.telemetry import record_env_created
 
-    _ver_match = re.search(r"odoo[:/](\d+)(?:\.0)?", effective_odoo_image)
-    if _ver_match:
-        _odoo_ver = _ver_match.group(1)
-        lines.append(
-            f'\n⚠️ After creating an environment, immediately call get_odoo_development_guide(version="{_odoo_ver}") to load Odoo {_odoo_ver} development standards and constraints. Do not wait for the user to ask — these guidelines must be loaded before writing any code.'
+        record_env_created(_instance_id, _get_version(), settings.disable_telemetry)
+
+        display_template = (
+            resolved_template
+            if resolved_template is not None
+            else "none (init from scratch)"
         )
-    return "\n".join(lines)
+        lines = [
+            "Environment provisioned successfully!",
+            f"Environment: {resolved_env_name}",
+            f"URL: {result['url']}",
+            f"Odoo Container: {result['odoo_container']}",
+            f"Database: {result['database']}",
+            f"Workspace: {result['workspace']}",
+            f"Template: {display_template}",
+            f"Creation time: {result.get('elapsed_seconds', '?')}s",
+        ]
+        if resolved_env_name != branch:
+            lines.insert(2, f"Git Branch: {branch}")
+        if extra_dict:
+            extras_display = ", ".join(
+                f"{name} ({b})" for name, b in extra_dict.items()
+            )
+            lines.append(f"Extra Addons: {extras_display}")
+        setup_logs = result.get("setup_logs", [])
+        if setup_logs:
+            lines.append("\n--- Setup Log ---")
+            lines.extend(setup_logs)
+        import re
+
+        _ver_match = re.search(r"odoo[:/](\d+)(?:\.0)?", effective_odoo_image)
+        if _ver_match:
+            _odoo_ver = _ver_match.group(1)
+            lines.append(
+                f'\n⚠️ After creating an environment, immediately call get_odoo_development_guide(version="{_odoo_ver}") to load Odoo {_odoo_ver} development standards and constraints. Do not wait for the user to ask — these guidelines must be loaded before writing any code.'
+            )
+        return "\n".join(lines)
+    finally:
+        _locks.release_env(resolved_env_name)
 
 
 @mcp.tool()
 @handle_errors
-@with_branch_lock
-def save_as_template(branch_name: str, template_name: str, ctx: Context = None) -> str:
+@with_env_lock
+def save_as_template(env_name: str, template_name: str, ctx: Context = None) -> str:
     """
-    Save a branch environment as the new template (DB + filestore).
+    Save an environment as the new template (DB + filestore).
 
     Replaces the template database and filestore with the data from the specified
-    branch. If other environments use this template with overlay-mounted filestores,
+    environment. If other environments use this template with overlay-mounted filestores,
     their filestore deltas will be reset to the new baseline — this is destructive
     for those environments. If no other environments share this template, the
     operation is safe.
 
     Requires EXPLICIT user permission and confirmation before execution.
     If the user has not clearly and unambiguously asked you to save
-    a specific branch as template, DO NOT call this tool.
+    a specific environment as template, DO NOT call this tool.
 
     Args:
-        branch_name: The name of the branch whose DB and filestore will become the new template.
+        env_name: The name of the environment whose DB and filestore will become the new template.
         template_name: Name of the template profile to publish into.
     """
     settings = _get_settings()
     team = _resolve_team(ctx)
     result = system_ops.publish_env_as_template(
-        settings, team, branch_name, template_name=template_name
+        settings, team, env_name, template_name=template_name
     )
-    affected = result.get("affected_branches", [])
+    affected = result.get("affected_envs", [])
     lines = [
-        f"Branch '{result['branch']}' saved as template '{template_name}'.",
+        f"Environment '{result['env_name']}' saved as template '{template_name}'.",
         f"Template DB: {result['template_db']}",
         f"Dump: {result['dump']}",
         f"Filestore: {result['filestore']}",
@@ -669,18 +685,18 @@ def delete_template(template_name: str, ctx: Context = None) -> str:
 
 @mcp.tool()
 @handle_errors
-@with_branch_lock
-def delete_environment(branch_name: str, ctx: Context = None) -> str:
+@with_env_lock
+def delete_environment(env_name: str, ctx: Context = None) -> str:
     """
     Stop and remove all resources associated with an Odoo environment.
 
     Args:
-        branch_name: The name of the branch to tear down.
+        env_name: The name of the environment to tear down.
     """
     settings = _get_settings()
     team = _resolve_team(ctx)
-    warnings = env_ops.delete_environment(settings, team, branch_name)
-    result = f"Environment for branch '{branch_name}' has been torn down."
+    warnings = env_ops.delete_environment(settings, team, env_name)
+    result = f"Environment '{env_name}' has been torn down."
     if warnings:
         result += "\n\n⚠️ Warnings:\n" + "\n".join(f"- {w}" for w in warnings)
     return result
@@ -700,10 +716,13 @@ def list_environments(ctx: Context = None) -> str:
 
     output = "Active Environments:\n"
     for env in envs:
-        status_line = f"- Branch: {env['branch']} (Status: {env['status']})"
+        status_line = f"- {env['env_name']} (Status: {env['status']})"
         if env.get("url"):
             status_line += f" - {env['url']}"
         output += status_line + "\n"
+        git_branch = env.get("git_branch", "")
+        if git_branch and git_branch != env["env_name"]:
+            output += f"  Git Branch: {git_branch}\n"
         if env.get("db_name"):
             output += f"  Database: {env['db_name']}\n"
         if env.get("odoo_image"):
@@ -719,69 +738,69 @@ def list_environments(ctx: Context = None) -> str:
 
 @mcp.tool()
 @handle_errors
-@with_branch_lock
-def run_odoo_tests(branch_name: str, modules: str, ctx: Context = None) -> str:
+@with_env_lock
+def run_odoo_tests(env_name: str, modules: str, ctx: Context = None) -> str:
     """
     Run Odoo tests for specific modules in an environment.
 
     Args:
-        branch_name: The name of the branch/environment.
+        env_name: The name of the environment.
         modules: Comma-separated list of modules to test.
     """
     settings = _get_settings()
     team = _resolve_team(ctx)
-    output = odoo_ops.run_environment_tests(settings, team, branch_name, modules)
-    header = f"Test Results for {branch_name}:"
+    output = odoo_ops.run_environment_tests(settings, team, env_name, modules)
+    header = f"Test Results for {env_name}:"
     return _maybe_cache(
-        output, header, "run_odoo_tests", f"branch={branch_name}, modules={modules}"
+        output, header, "run_odoo_tests", f"env={env_name}, modules={modules}"
     )
 
 
 @mcp.tool()
 @handle_errors
 def get_environment_logs(
-    branch_name: str,
+    env_name: str,
     n_lines: int = 100,
     grep: str = "",
     level: str = "",
     ctx: Context = None,
 ) -> str:
     """
-    Get the last N lines of logs from the Odoo container for a specific branch.
+    Get the last N lines of logs from the Odoo container for a specific environment.
 
     Args:
-        branch_name: The name of the branch/environment.
+        env_name: The name of the environment.
         n_lines: The number of recent log lines to retrieve (default 100).
         grep: Filter logs to only show lines matching this pattern (case-insensitive substring search). Useful to find specific errors, modules, or messages.
         level: Filter by Odoo log level. One of: "ERROR", "WARNING", "CRITICAL". Returns only lines containing the specified level marker. Can be combined with grep.
     """
     output = odoo_ops.get_environment_logs(
-        _get_settings(), branch_name, n_lines, grep=grep, level=level
+        _get_settings(), env_name, n_lines, grep=grep, level=level
     )
-    return f"Recent logs for {branch_name}:\n\n{_ANSI_RE.sub('', output)}"
+    return f"Recent logs for {env_name}:\n\n{_ANSI_RE.sub('', output)}"
 
 
 @mcp.tool()
 @handle_errors
 def restart_environment(
-    branch_name: str, wait: bool = True, ctx: Context = None
+    env_name: str, wait: bool = True, ctx: Context = None
 ) -> str:
     """
-    Restart the Odoo container for a specific branch.
+    Restart the Odoo container for a specific environment.
 
     Args:
-        branch_name: The name of the branch/environment to restart.
+        env_name: The name of the environment to restart.
         wait: Wait for Odoo to become ready after restart (default True). Polls /web/health every 2 seconds for up to 120 seconds.
     """
     settings = _get_settings()
-    result = env_ops.restart_environment(settings, branch_name)
+    result = env_ops.restart_environment(settings, env_name)
     lines = [
         "Environment restarted successfully!",
         f"Odoo Container: {result['odoo_container']}",
     ]
     if wait:
         team = _resolve_team(ctx)
-        ready = env_ops.wait_for_odoo_ready(settings, team, branch_name)
+        ready = env_ops.wait_for_odoo_ready(settings, team, env_name)
         if ready:
             lines.append("Odoo is ready.")
         else:
@@ -793,8 +812,8 @@ def restart_environment(
 
 @mcp.tool()
 @handle_errors
-@with_branch_lock
-def rebuild_environment(branch_name: str, ctx: Context = None) -> str:
+@with_env_lock
+def rebuild_environment(env_name: str, ctx: Context = None) -> str:
     """
     Rebuild the Odoo container for an environment without losing the database or filestore.
 
@@ -803,11 +822,11 @@ def rebuild_environment(branch_name: str, ctx: Context = None) -> str:
     reconnected to the existing database and filestore.
 
     Args:
-        branch_name: The name of the branch/environment to rebuild.
+        env_name: The name of the environment to rebuild.
     """
     settings = _get_settings()
     team = _resolve_team(ctx)
-    result = env_ops.rebuild_environment(settings, team, branch_name)
+    result = env_ops.rebuild_environment(settings, team, env_name)
     lines = [
         "Environment rebuilt successfully!",
         f"URL: {result['url']}",
@@ -824,25 +843,28 @@ def rebuild_environment(branch_name: str, ctx: Context = None) -> str:
 
 @mcp.tool()
 @handle_errors
-def get_environment_info(branch_name: str, ctx: Context = None) -> str:
+def get_environment_info(env_name: str, ctx: Context = None) -> str:
     """
-    Get comprehensive information about an environment for a specific branch.
+    Get comprehensive information about an environment.
 
     Returns database name, URL, repository, image, template, extra addons,
     workspace path, container status, and CPU/RAM stats.
 
     Args:
-        branch_name: The name of the branch/environment to check.
+        env_name: The name of the environment to check.
     """
     settings = _get_settings()
     team = _resolve_team(ctx)
-    info = env_ops.get_environment_info(settings, team, branch_name)
+    info = env_ops.get_environment_info(settings, team, env_name)
     overall = (
         "All containers running"
         if info["all_running"]
         else "Some containers not running"
     )
-    lines = [f"Environment Info for '{branch_name}': {overall}"]
+    lines = [f"Environment Info for '{env_name}': {overall}"]
+    git_branch = info.get("git_branch", "")
+    if git_branch and git_branch != env_name:
+        lines.append(f"Git Branch: {git_branch}")
     lines.append(f"Database: {info['db_name']}")
     if info.get("url"):
         lines.append(f"URL: {info['url']}")
@@ -869,16 +891,16 @@ def get_environment_info(branch_name: str, ctx: Context = None) -> str:
 
 @mcp.tool()
 @handle_errors
-def stop_environment(branch_name: str, ctx: Context = None) -> str:
+def stop_environment(env_name: str, ctx: Context = None) -> str:
     """
-    Stop the Odoo container for a specific branch environment.
+    Stop the Odoo container for a specific environment.
 
     Args:
-        branch_name: The name of the branch/environment to stop.
+        env_name: The name of the environment to stop.
     """
     settings = _get_settings()
     team = _resolve_team(ctx)
-    result = env_ops.stop_environment(settings, team, branch_name)
+    result = env_ops.stop_environment(settings, team, env_name)
     return (
         f"Environment stopped successfully!\n"
         f"Stopped containers: {', '.join(result['stopped'])}"
@@ -887,23 +909,23 @@ def stop_environment(branch_name: str, ctx: Context = None) -> str:
 
 @mcp.tool()
 @handle_errors
-def start_environment(branch_name: str, wait: bool = True, ctx: Context = None) -> str:
+def start_environment(env_name: str, wait: bool = True, ctx: Context = None) -> str:
     """
-    Start all containers for a specific branch environment.
+    Start all containers for a specific environment.
 
     Args:
-        branch_name: The name of the branch/environment to start.
+        env_name: The name of the environment to start.
         wait: Wait for Odoo to become ready after start (default True). Polls /web/health every 2 seconds for up to 120 seconds.
     """
     settings = _get_settings()
-    result = env_ops.start_environment(settings, branch_name)
+    result = env_ops.start_environment(settings, env_name)
     lines = [
         "Environment started successfully!",
         f"Started containers: {', '.join(result['started'])}",
     ]
     if wait:
         team = _resolve_team(ctx)
-        ready = env_ops.wait_for_odoo_ready(settings, team, branch_name)
+        ready = env_ops.wait_for_odoo_ready(settings, team, env_name)
         if ready:
             lines.append("Odoo is ready.")
         else:
@@ -915,8 +937,8 @@ def start_environment(branch_name: str, wait: bool = True, ctx: Context = None) 
 
 @mcp.tool()
 @handle_errors
-@with_branch_lock
-def pull_and_apply(branch_name: str, ctx: Context = None) -> str:
+@with_env_lock
+def pull_and_apply(env_name: str, ctx: Context = None) -> str:
     """
     Pull latest changes from the remote repository for an environment
     and take appropriate action based on what changed.
@@ -929,11 +951,11 @@ def pull_and_apply(branch_name: str, ctx: Context = None) -> str:
     - Does nothing if only XML/JS changed (--dev=xml hot-reloads XML; JS assets are reloaded on browser refresh)
 
     Args:
-        branch_name: The name of the branch/environment to pull updates for.
+        env_name: The name of the environment to pull updates for.
     """
     settings = _get_settings()
     team = _resolve_team(ctx)
-    result = env_ops.pull_environment(settings, team, branch_name)
+    result = env_ops.pull_environment(settings, team, env_name)
     action = result["action"]
 
     if action == "none":
@@ -953,7 +975,7 @@ def pull_and_apply(branch_name: str, ctx: Context = None) -> str:
     header = "\n".join(header_lines)
     output = result.get("output", "")
     if output:
-        return _maybe_cache(output, header, "pull_and_apply", f"branch={branch_name}")
+        return _maybe_cache(output, header, "pull_and_apply", f"env={env_name}")
     return header
 
 
@@ -1069,13 +1091,13 @@ def read_output(
 
 @mcp.tool()
 @handle_errors
-@with_branch_lock
-def install_odoo_modules(branch_name: str, modules: str, ctx: Context = None) -> str:
+@with_env_lock
+def install_odoo_modules(env_name: str, modules: str, ctx: Context = None) -> str:
     """
     Install Odoo modules in an environment.
 
     Args:
-        branch_name: The name of the branch/environment.
+        env_name: The name of the environment.
         modules: Comma-separated list of modules to install (e.g., "sale,crm,web").
     """
     modules_list = [m.strip() for m in modules.split(",") if m.strip()]
@@ -1084,12 +1106,12 @@ def install_odoo_modules(branch_name: str, modules: str, ctx: Context = None) ->
 
     settings = _get_settings()
     team = _resolve_team(ctx)
-    result = odoo_ops.install_odoo_modules(settings, team, branch_name, *modules_list)
+    result = odoo_ops.install_odoo_modules(settings, team, env_name, *modules_list)
     exit_code = result["exit_code"]
     modules_str = ", ".join(result["modules"])
     output = result.get("output", "")
     if exit_code == 0:
-        env_ops.restart_environment(settings, branch_name)
+        env_ops.restart_environment(settings, env_name)
         header = f"Success. Modules installed: {modules_str}. Container restarted. Exit code: 0."
     else:
         header = f"Error. Modules: {modules_str}. Exit code: {exit_code}."
@@ -1097,19 +1119,19 @@ def install_odoo_modules(branch_name: str, modules: str, ctx: Context = None) ->
         output,
         header,
         "install_odoo_modules",
-        f"branch={branch_name}, modules={modules}",
+        f"env={env_name}, modules={modules}",
     )
 
 
 @mcp.tool()
 @handle_errors
-@with_branch_lock
-def upgrade_odoo_modules(branch_name: str, modules: str, ctx: Context = None) -> str:
+@with_env_lock
+def upgrade_odoo_modules(env_name: str, modules: str, ctx: Context = None) -> str:
     """
     Upgrade Odoo modules in an environment.
 
     Args:
-        branch_name: The name of the branch/environment.
+        env_name: The name of the environment.
         modules: Comma-separated list of modules to upgrade (e.g., "sale,crm,web").
     """
     modules_list = [m.strip() for m in modules.split(",") if m.strip()]
@@ -1118,7 +1140,7 @@ def upgrade_odoo_modules(branch_name: str, modules: str, ctx: Context = None) ->
 
     settings = _get_settings()
     team = _resolve_team(ctx)
-    result = odoo_ops.upgrade_odoo_modules(settings, team, branch_name, *modules_list)
+    result = odoo_ops.upgrade_odoo_modules(settings, team, env_name, *modules_list)
     exit_code = result["exit_code"]
     modules_str = ", ".join(result["modules"])
     output = result.get("output", "")
@@ -1128,17 +1150,17 @@ def upgrade_odoo_modules(branch_name: str, modules: str, ctx: Context = None) ->
         output,
         header,
         "upgrade_odoo_modules",
-        f"branch={branch_name}, modules={modules}",
+        f"env={env_name}, modules={modules}",
     )
 
 
 @mcp.tool()
 @handle_errors
 def read_file_in_odoo(
-    branch_name: str, path: str, read_range: str = "", ctx: Context = None
+    env_name: str, path: str, read_range: str = "", ctx: Context = None
 ) -> str:
     """
-    Read a text file or list a directory inside the Odoo container for a specific branch.
+    Read a text file or list a directory inside the Odoo container for a specific environment.
 
     Use this tool to inspect files in the container without constructing shell commands.
     Common use cases:
@@ -1154,13 +1176,13 @@ def read_file_in_odoo(
     Prefer this tool over run_odoo_command with `cat` or `ls` commands.
 
     Args:
-        branch_name: The name of the branch/environment.
+        env_name: The name of the environment.
         path: Absolute path inside the container (e.g. "/mnt/extra-addons/my_module/__manifest__.py").
         read_range: Optional line range in format "START:END" (e.g. "1:50", "100:200").
                     If omitted, returns the entire file (up to 100KB).
     """
     result = odoo_ops.read_file_in_environment(
-        _get_settings(), branch_name, path, read_range
+        _get_settings(), env_name, path, read_range
     )
     if "error" in result:
         return f"Error: {result['error']}"
@@ -1169,9 +1191,9 @@ def read_file_in_odoo(
 
 @mcp.tool()
 @handle_errors
-@with_branch_lock
+@with_env_lock
 def write_file_in_odoo(
-    branch_name: str,
+    env_name: str,
     path: str,
     content: str,
     user: str = "odoo",
@@ -1194,22 +1216,22 @@ def write_file_in_odoo(
     must go through git commit → git push → pull_and_apply.
 
     Args:
-        branch_name: The name of the branch/environment.
+        env_name: The name of the environment.
         path: Absolute path inside the container (e.g. "/tmp/import_data.csv").
         content: Text content to write to the file.
         user: OS user to own the file (default "odoo"). Use "root" for system paths.
     """
     result = odoo_ops.write_file_in_environment(
-        _get_settings(), branch_name, path, content, user
+        _get_settings(), env_name, path, content, user
     )
     return f"File written: {result['path']} ({result['size']} bytes)"
 
 
 @mcp.tool()
 @handle_errors
-@with_branch_lock
+@with_env_lock
 def run_odoo_shell(
-    branch_name: str,
+    env_name: str,
     python_code: str,
     ctx: Context = None,
 ) -> str:
@@ -1232,23 +1254,23 @@ def run_odoo_shell(
     traceback is returned.
 
     Args:
-        branch_name: The name of the branch/environment.
+        env_name: The name of the environment.
         python_code: Python code to execute. Use print() for output.
     """
     settings = _get_settings()
     team = _resolve_team(ctx)
-    result = odoo_ops.run_odoo_shell(settings, team, branch_name, python_code)
+    result = odoo_ops.run_odoo_shell(settings, team, env_name, python_code)
     exit_code = result["exit_code"]
     output = result.get("output", "")
     status = "Success" if exit_code == 0 else "Error"
     header = f"{status}. Exit code: {exit_code}."
-    return _maybe_cache(output, header, "run_odoo_shell", f"branch={branch_name}")
+    return _maybe_cache(output, header, "run_odoo_shell", f"env={env_name}")
 
 
 @mcp.tool()
 @handle_errors
 def http_request_to_odoo(
-    branch_name: str,
+    env_name: str,
     path: str,
     method: str = "GET",
     body: str = "",
@@ -1257,7 +1279,7 @@ def http_request_to_odoo(
     ctx: Context = None,
 ) -> str:
     """
-    Make an HTTP request to the running Odoo instance for a specific branch.
+    Make an HTTP request to the running Odoo instance for a specific environment.
 
     Useful for testing web controllers, JSON-RPC API, REST endpoints, and
     verifying that Odoo responds correctly. The request is made from the
@@ -1271,7 +1293,7 @@ def http_request_to_odoo(
     - Test REST API endpoints
 
     Args:
-        branch_name: The name of the branch/environment.
+        env_name: The name of the environment.
         path: URL path (e.g. "/web/health", "/jsonrpc", "/my/invoices").
         method: HTTP method (default "GET"). One of GET, POST, PUT, DELETE.
         body: Request body as a string (typically JSON). Empty for GET requests.
@@ -1288,7 +1310,7 @@ def http_request_to_odoo(
             item.split(":", 1) for item in headers.split(",") if ":" in item
         )
     result = odoo_ops.http_request_to_odoo(
-        settings, team, branch_name, path, method, body, parsed_headers, session_id
+        settings, team, env_name, path, method, body, parsed_headers, session_id
     )
     status_code = result["status_code"]
     resp_headers = result.get("headers", {})
@@ -1306,7 +1328,7 @@ def http_request_to_odoo(
 @mcp.tool()
 @handle_errors
 def search_in_odoo(
-    branch_name: str,
+    env_name: str,
     pattern: str,
     path: str = "/mnt/extra-addons",
     glob: str = "*.py",
@@ -1327,14 +1349,14 @@ def search_in_odoo(
     - Find XML record: pattern='id="action_sale_order"', glob="*.xml"
 
     Args:
-        branch_name: The name of the branch/environment.
+        env_name: The name of the environment.
         pattern: Search pattern (fixed string, case-sensitive). Regex is not supported to avoid escaping issues.
         path: Directory to search in (default "/mnt/extra-addons"). Use "/usr/lib/python3/dist-packages/odoo/addons" to search Odoo core.
         glob: File glob pattern (default "*.py"). Use "*.xml" for views/data, "*.js" for frontend, "*" for all files.
         max_results: Maximum number of matching lines to return (default 50).
     """
     result = odoo_ops.search_in_environment(
-        _get_settings(), branch_name, pattern, path, glob, max_results
+        _get_settings(), env_name, pattern, path, glob, max_results
     )
     output = result["output"]
     if not output:
@@ -1348,7 +1370,7 @@ def search_in_odoo(
 @mcp.tool()
 @handle_errors
 def list_installed_modules(
-    branch_name: str,
+    env_name: str,
     name_filter: str = "",
     state_filter: str = "installed",
     ctx: Context = None,
@@ -1360,7 +1382,7 @@ def list_installed_modules(
     shows only installed modules. Use state_filter="" to show all modules.
 
     Args:
-        branch_name: The name of the branch/environment.
+        env_name: The name of the environment.
         name_filter: Filter modules by name (substring match, e.g. "sale" matches "sale", "sale_management", "pos_sale").
         state_filter: Filter by module state (default "installed"). Common values: "installed", "uninstalled", "to upgrade", "to install". Pass empty string to show all states.
     """
@@ -1385,26 +1407,26 @@ def list_installed_modules(
 
     settings = _get_settings()
     team = _resolve_team(ctx)
-    result = odoo_ops.run_db_query(settings, team, branch_name, query, "csv")
+    result = odoo_ops.run_db_query(settings, team, env_name, query, "csv")
     return result["output"]
 
 
 @mcp.tool()
 @handle_errors
-@with_branch_lock
+@with_env_lock
 def run_odoo_command(
-    branch_name: str, command: str, user: str = "odoo", ctx: Context = None
+    env_name: str, command: str, user: str = "odoo", ctx: Context = None
 ) -> str:
     """
-    Execute an arbitrary shell command inside the Odoo container for a specific branch.
+    Execute an arbitrary shell command inside the Odoo container for a specific environment.
 
     Args:
-        branch_name: The name of the branch/environment.
+        env_name: The name of the environment.
         command: The shell command to execute (e.g. "ls /mnt/extra-addons", "python3 -c 'print(1)'").
         user: The OS user to run the command as (default "odoo"). Use "root" for privileged operations.
     """
     result = odoo_ops.run_command_in_environment(
-        _get_settings(), branch_name, command, user
+        _get_settings(), env_name, command, user
     )
     exit_code = result["exit_code"]
     output = result.get("output", "")
@@ -1414,15 +1436,15 @@ def run_odoo_command(
         output,
         header,
         "run_odoo_command",
-        f"branch={branch_name}, command={command[:80]}",
+        f"env={env_name}, command={command[:80]}",
     )
 
 
 @mcp.tool()
 @handle_errors
-@with_branch_lock
+@with_env_lock
 def reset_admin_password(
-    branch_name: str, new_password: str = "test", ctx: Context = None
+    env_name: str, new_password: str = "test", ctx: Context = None
 ) -> str:
     """
     Reset the admin user password in the environment's Odoo database.
@@ -1431,20 +1453,20 @@ def reset_admin_password(
     and updates the res_users record where login = 'admin'.
 
     Args:
-        branch_name: The name of the branch/environment.
+        env_name: The name of the environment.
         new_password: The new password for the admin user (default: "test").
     """
     settings = _get_settings()
     team = _resolve_team(ctx)
-    result = odoo_ops.reset_admin_password(settings, team, branch_name, new_password)
+    result = odoo_ops.reset_admin_password(settings, team, env_name, new_password)
     return f"Admin password has been reset successfully.\nLogin: {result['login']}\nNew password: {new_password}"
 
 
 @mcp.tool()
 @handle_errors
-@with_branch_lock
+@with_env_lock
 def run_db_query(
-    branch_name: str,
+    env_name: str,
     query: str,
     output_format: str = "csv",
     max_rows: int = 100,
@@ -1454,7 +1476,7 @@ def run_db_query(
     Execute a SQL query against the environment's PostgreSQL database.
 
     Args:
-        branch_name: The name of the branch/environment.
+        env_name: The name of the environment.
         query: SQL query to execute (e.g. "SELECT id, name FROM res_partner LIMIT 10").
         output_format: "csv" (default, compact for agent consumption) or "human" (pretty table — use when relaying results to the user).
         max_rows: Maximum rows to return (default 100). The query itself is not
@@ -1463,7 +1485,7 @@ def run_db_query(
     """
     settings = _get_settings()
     team = _resolve_team(ctx)
-    result = odoo_ops.run_db_query(settings, team, branch_name, query, output_format)
+    result = odoo_ops.run_db_query(settings, team, env_name, query, output_format)
     output = result["output"]
 
     # Truncate by row count
@@ -1475,7 +1497,7 @@ def run_db_query(
         truncated.append(f"... ({remaining} more rows, add LIMIT to your query)")
         output = "\n".join(truncated)
 
-    return _maybe_cache(output, "", "run_db_query", f"branch={branch_name}")
+    return _maybe_cache(output, "", "run_db_query", f"env={env_name}")
 
 
 # =============================================================================
@@ -1742,6 +1764,13 @@ def _ensure_initialized(settings: Settings) -> None:
             os.path.join(team.data_dir, "templates"),
         )
 
+    global _instance_id  # noqa: PLW0603
+    from oduflow.telemetry import record_startup
+
+    _instance_id = record_startup(
+        settings.etc_dir, _get_version(), settings.disable_telemetry
+    )
+
 
 def _run_upgrade(settings: Settings) -> None:
     """Overwrite bundled agent guides and sanitize scripts with latest versions."""
@@ -1937,10 +1966,10 @@ def _run_template_from_env(
     settings: Settings, team: TeamSettings, branch: str, template_name: str = ""
 ) -> None:
     result = system_ops.publish_env_as_template(
-        settings, team, branch_name=branch, template_name=template_name
+        settings, team, env_name=branch, template_name=template_name
     )
     print(
-        f"Branch '{result['branch']}' saved as template '{template_name}'.\n"
+        f"Environment '{result['env_name']}' saved as template '{template_name}'.\n"
         f"Template DB: {result['template_db']}\n"
         f"Dump: {result['dump']}\n"
         f"Filestore: {result['filestore']}"

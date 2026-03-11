@@ -73,9 +73,9 @@ def _get_used_ports(
     client: DockerClient,
     settings: Settings,
     team: TeamSettings,
-    exclude_branch: str = "",
+    exclude_env: str = "",
 ) -> set[int]:
-    """Collect host ports currently bound by managed containers (excluding a specific branch)."""
+    """Collect host ports currently bound by managed containers (excluding a specific env)."""
     used: set[int] = set()
     filters = {
         "label": [
@@ -84,8 +84,8 @@ def _get_used_ports(
         ]
     }
     for c in client.containers.list(all=True, filters=filters):
-        branch = c.labels.get(settings.branch_label, "")
-        if branch == exclude_branch:
+        env = c.labels.get(settings.branch_label, "")
+        if env == exclude_env:
             continue
         ports = c.attrs.get("NetworkSettings", {}).get("Ports", {}) or {}
         for mappings in ports.values():
@@ -151,7 +151,7 @@ def _mount_filestore(
     client: DockerClient,
     settings: Settings,
     team: TeamSettings,
-    branch_name: str,
+    env_name: str,
     env_db: str,
     odoo_image: str,
     odoo_volumes: dict,
@@ -165,7 +165,7 @@ def _mount_filestore(
         )
         return
 
-    paths = get_filestore_paths(branch_name, team.workspaces_dir)
+    paths = get_filestore_paths(env_name, team.workspaces_dir)
 
     # Read use_overlay flag from template metadata (avoids slow filestore scan)
     use_overlay = None
@@ -255,11 +255,11 @@ def _mount_filestore(
         "bind": f"/var/lib/odoo/.local/share/Odoo/filestore/{env_db}",
         "mode": "rw",
     }
-    logger.info("Filestore overlay mounted", extra={"branch": branch_name})
+    logger.info("Filestore overlay mounted", extra={"env_name": env_name})
 
 
-def _unmount_filestore(branch_name: str, team: TeamSettings) -> None:
-    paths = get_filestore_paths(branch_name, team.workspaces_dir)
+def _unmount_filestore(env_name: str, team: TeamSettings) -> None:
+    paths = get_filestore_paths(env_name, team.workspaces_dir)
     merged = paths["merged"]
     if not os.path.isdir(merged) or not os.path.ismount(merged):
         return
@@ -273,7 +273,7 @@ def _unmount_filestore(branch_name: str, team: TeamSettings) -> None:
             logger.info(
                 "Filestore overlay unmounted (%s)",
                 cmd[-2],
-                extra={"branch": branch_name},
+                extra={"env_name": env_name},
             )
             return
         except (FileNotFoundError, subprocess.CalledProcessError):
@@ -376,9 +376,9 @@ def _cleanup_old_environment(
     client: "DockerClient",
     settings: Settings,
     team: TeamSettings,
-    branch_name: str,
+    env_name: str,
 ) -> None:
-    odoo_container_name = get_resource_name(branch_name, "odoo", settings.prefix)
+    odoo_container_name = get_resource_name(env_name, "odoo", settings.prefix)
     try:
         old = client.containers.get(odoo_container_name)
         old.stop()
@@ -392,11 +392,11 @@ def _cleanup_old_environment(
         except Exception:
             pass
 
-    env_db = get_db_name(branch_name, team.team_id)
+    env_db = get_db_name(env_name, team.team_id)
 
     try:
         creds = load_credentials(
-            branch_name, team.workspaces_dir, settings.db_user, settings.db_password
+            env_name, team.workspaces_dir, settings.db_user, settings.db_password
         )
         _drop_pg_role(client, settings, creds["pg_user"])
     except Exception:
@@ -411,23 +411,25 @@ def _cleanup_old_environment(
         except Exception:
             pass
 
-    workspace_path = get_workspace_path(branch_name, team.workspaces_dir)
+    workspace_path = get_workspace_path(env_name, team.workspaces_dir)
     if os.path.exists(workspace_path):
-        _unmount_filestore(branch_name, team)
+        _unmount_filestore(env_name, team)
         shutil.rmtree(workspace_path)
 
 
 def create_environment(
     settings: Settings,
     team: TeamSettings,
-    branch_name: str,
+    branch: str,
     repo_url: str,
     odoo_image: str,
+    env_name: str = "",
     template_name: str | None = None,
     extra_addons: dict[str, str] | None = None,
     git_user: str = "",
     sanitize: bool = True,
 ) -> dict[str, str]:
+    env_name = env_name or branch
     start_time = time.time()
     try:
         client = get_client()
@@ -447,38 +449,39 @@ def create_environment(
 
     _ensure_system_ready(client, settings, team, template_name)
 
-    odoo_container_name = get_resource_name(branch_name, "odoo", settings.prefix)
+    odoo_container_name = get_resource_name(env_name, "odoo", settings.prefix)
     try:
         existing = client.containers.get(odoo_container_name)
         if existing.status == "running":
             existing.reload()
             if settings.routing_mode == "traefik":
-                url = f"https://{get_env_hostname(branch_name, team.hostname)}"
+                url = f"https://{get_env_hostname(env_name, team.hostname)}"
             else:
                 ports = existing.ports.get("8069/tcp")
                 host_port = ports[0]["HostPort"] if ports else "?"
                 url = f"http://{team.hostname}:{host_port}"
             raise ConflictError(
-                f"Environment for branch '{branch_name}' already exists and is running at {url}."
+                f"Environment '{env_name}' already exists and is running at {url}."
             )
         raise ConflictError(
-            f"Environment for branch '{branch_name}' already exists (status: {existing.status})."
+            f"Environment '{env_name}' already exists (status: {existing.status})."
         )
     except docker.errors.NotFound:
         pass
 
-    _cleanup_old_environment(client, settings, team, branch_name)
-    workspace_path = get_workspace_path(branch_name, team.workspaces_dir)
-    repo_path = get_repo_path(branch_name, team.workspaces_dir)
-    env_db = get_db_name(branch_name, team.team_id)
+    _cleanup_old_environment(client, settings, team, env_name)
+    workspace_path = get_workspace_path(env_name, team.workspaces_dir)
+    repo_path = get_repo_path(env_name, team.workspaces_dir)
+    env_db = get_db_name(env_name, team.team_id)
 
     labels = {
         settings.managed_label: "true",
         settings.team_label: team.team_id,
-        settings.branch_label: branch_name,
+        settings.branch_label: env_name,
         settings.repo_label: repo_url,
         settings.image_label: odoo_image,
         "oduflow.template": template_name if template_name is not None else "none",
+        "oduflow.git_branch": branch,
     }
 
     if extra_addons:
@@ -487,9 +490,9 @@ def create_environment(
         labels["oduflow.git_user"] = git_user
 
     if settings.routing_mode == "traefik":
-        slug = slugify_branch(branch_name)
+        slug = slugify_branch(env_name)
         traefik_router = f"oduflow-{slug}"
-        traefik_host = get_env_hostname(branch_name, team.hostname)
+        traefik_host = get_env_hostname(env_name, team.hostname)
         labels.update(
             {
                 "traefik.enable": "true",
@@ -504,7 +507,8 @@ def create_environment(
     logger.info(
         "Creating environment",
         extra={
-            "branch": branch_name,
+            "env_name": env_name,
+            "branch": branch,
             "repo": sanitize_repo_url(repo_url),
             "image": odoo_image,
             "prefix": settings.prefix,
@@ -537,7 +541,7 @@ def create_environment(
                 "git",
                 "clone",
                 "--branch",
-                branch_name,
+                branch,
                 "--depth",
                 "1",
                 clone_url,
@@ -570,9 +574,9 @@ def create_environment(
 
         extra_dir = os.path.join(workspace_path, "extra")
         os.makedirs(extra_dir, exist_ok=True)
-        for repo_name, branch in extra_addons.items():
+        for repo_name, addon_branch in extra_addons.items():
             wt_path = os.path.join(extra_dir, repo_name)
-            create_worktree(team, repo_name, branch, wt_path)
+            create_worktree(team, repo_name, addon_branch, wt_path)
             container_path = f"/mnt/extra-addons-{repo_name}"
             extra_mount_paths.append((wt_path, container_path))
 
@@ -590,7 +594,7 @@ def create_environment(
             f'CREATE DATABASE "{env_db}";',
         )
 
-    env_creds = create_credentials(branch_name, team.team_id, team.workspaces_dir)
+    env_creds = create_credentials(env_name, team.team_id, team.workspaces_dir)
     _create_pg_role(
         client, settings, env_creds["pg_user"], env_creds["pg_password"], env_db
     )
@@ -630,7 +634,7 @@ def create_environment(
             client,
             settings,
             team,
-            branch_name,
+            env_name,
             env_db,
             odoo_image,
             odoo_volumes,
@@ -651,10 +655,10 @@ def create_environment(
 
     host_port: int | None = None
     if settings.routing_mode == "port":
-        used_ports = _get_used_ports(client, settings, team, exclude_branch=branch_name)
+        used_ports = _get_used_ports(client, settings, team, exclude_env=env_name)
         host_port = allocate_port(
             team.port_registry_path,
-            branch_name,
+            env_name,
             team.port_range_start,
             team.port_range_end,
             used_ports=used_ports,
@@ -700,7 +704,7 @@ def create_environment(
     if template_name is None:
         logger.info(
             "No template — initialising Odoo with -i base",
-            extra={"branch": branch_name},
+            extra={"env_name": env_name},
         )
         apt_log = _install_apt_packages(container, repo_path)
         if apt_log:
@@ -720,7 +724,7 @@ def create_environment(
                 "Odoo base init failed (exit %d): %s",
                 exit_code,
                 output_str,
-                extra={"branch": branch_name},
+                extra={"env_name": env_name},
             )
             setup_logs.append(
                 f"[INIT] odoo -i base FAILED (exit {exit_code}):\n{output_str}"
@@ -729,7 +733,7 @@ def create_environment(
             setup_logs.append("[INIT] odoo -i base completed successfully")
         container.restart()
         logger.info(
-            "Container restarted after base init", extra={"branch": branch_name}
+            "Container restarted after base init", extra={"env_name": env_name}
         )
     else:
         apt_log = _install_apt_packages(container, repo_path)
@@ -743,16 +747,16 @@ def create_environment(
     if sanitize and template_name is not None:
         from oduflow.sanitizer import sanitize_environment
 
-        sanitize_logs = sanitize_environment(client, settings, team, branch_name)
+        sanitize_logs = sanitize_environment(client, settings, team, env_name)
         setup_logs.extend(sanitize_logs)
 
     if settings.routing_mode == "traefik":
-        url = f"https://{get_env_hostname(branch_name, team.hostname)}"
+        url = f"https://{get_env_hostname(env_name, team.hostname)}"
     else:
         url = f"http://{team.hostname}:{host_port}"
     logger.info(
         "Environment created",
-        extra={"branch": branch_name, "url": url, "container": odoo_container_name},
+        extra={"env_name": env_name, "url": url, "container": odoo_container_name},
     )
 
     result = {
@@ -767,62 +771,62 @@ def create_environment(
     return result
 
 
-def is_protected(settings: Settings, team: TeamSettings, branch_name: str) -> bool:
-    workspace_path = get_workspace_path(branch_name, team.workspaces_dir)
+def is_protected(settings: Settings, team: TeamSettings, env_name: str) -> bool:
+    workspace_path = get_workspace_path(env_name, team.workspaces_dir)
     return os.path.exists(os.path.join(workspace_path, ".protected"))
 
 
 def protect_environment(
-    settings: Settings, team: TeamSettings, branch_name: str
+    settings: Settings, team: TeamSettings, env_name: str
 ) -> dict[str, Any]:
     """Mark environment as protected by creating .protected marker file."""
     client = get_client()
-    container_name = get_resource_name(branch_name, "odoo", settings.prefix)
+    container_name = get_resource_name(env_name, "odoo", settings.prefix)
     try:
         client.containers.get(container_name)
     except docker.errors.NotFound:
-        raise NotFoundError(f"Environment '{branch_name}' does not exist.")
-    workspace_path = get_workspace_path(branch_name, team.workspaces_dir)
+        raise NotFoundError(f"Environment '{env_name}' does not exist.")
+    workspace_path = get_workspace_path(env_name, team.workspaces_dir)
     marker = os.path.join(workspace_path, ".protected")
     open(marker, "w").close()
-    logger.info("Environment protected", extra={"branch": branch_name})
-    return {"branch": branch_name, "protected": True}
+    logger.info("Environment protected", extra={"env_name": env_name})
+    return {"env_name": env_name, "protected": True}
 
 
 def unprotect_environment(
-    settings: Settings, team: TeamSettings, branch_name: str
+    settings: Settings, team: TeamSettings, env_name: str
 ) -> dict[str, Any]:
     """Remove protection from environment by deleting .protected marker file."""
     client = get_client()
-    container_name = get_resource_name(branch_name, "odoo", settings.prefix)
+    container_name = get_resource_name(env_name, "odoo", settings.prefix)
     try:
         client.containers.get(container_name)
     except docker.errors.NotFound:
-        raise NotFoundError(f"Environment '{branch_name}' does not exist.")
-    workspace_path = get_workspace_path(branch_name, team.workspaces_dir)
+        raise NotFoundError(f"Environment '{env_name}' does not exist.")
+    workspace_path = get_workspace_path(env_name, team.workspaces_dir)
     marker = os.path.join(workspace_path, ".protected")
     if os.path.exists(marker):
         os.remove(marker)
-    logger.info("Environment unprotected", extra={"branch": branch_name})
-    return {"branch": branch_name, "protected": False}
+    logger.info("Environment unprotected", extra={"env_name": env_name})
+    return {"env_name": env_name, "protected": False}
 
 
 def delete_environment(
-    settings: Settings, team: TeamSettings, branch_name: str
+    settings: Settings, team: TeamSettings, env_name: str
 ) -> list[str]:
-    if is_protected(settings, team, branch_name):
+    if is_protected(settings, team, env_name):
         raise ProtectedError(
-            f"Environment '{branch_name}' is protected. Unprotect it before deleting."
+            f"Environment '{env_name}' is protected. Unprotect it before deleting."
         )
     client = get_client()
-    odoo_container_name = get_resource_name(branch_name, "odoo", settings.prefix)
-    env_db = get_db_name(branch_name, team.team_id)
+    odoo_container_name = get_resource_name(env_name, "odoo", settings.prefix)
+    env_db = get_db_name(env_name, team.team_id)
     warnings: list[str] = []
 
-    logger.info("Deleting environment", extra={"branch": branch_name})
+    logger.info("Deleting environment", extra={"env_name": env_name})
 
     if settings.routing_mode == "port":
-        release_port(team.port_registry_path, branch_name)
+        release_port(team.port_registry_path, env_name)
 
     try:
         container = client.containers.get(odoo_container_name)
@@ -839,22 +843,22 @@ def delete_environment(
         )
     except Exception as exc:
         msg = f'Failed to drop database "{env_db}": {exc}'
-        logger.warning(msg, extra={"branch": branch_name})
+        logger.warning(msg, extra={"env_name": env_name})
         warnings.append(msg)
 
     creds = load_credentials(
-        branch_name, team.workspaces_dir, settings.db_user, settings.db_password
+        env_name, team.workspaces_dir, settings.db_user, settings.db_password
     )
     try:
         _drop_pg_role(client, settings, creds["pg_user"])
     except Exception as exc:
         msg = f'Failed to drop PG role "{creds["pg_user"]}": {exc}'
-        logger.warning(msg, extra={"branch": branch_name})
+        logger.warning(msg, extra={"env_name": env_name})
         warnings.append(msg)
 
-    workspace_path = get_workspace_path(branch_name, team.workspaces_dir)
+    workspace_path = get_workspace_path(env_name, team.workspaces_dir)
     if os.path.exists(workspace_path):
-        _unmount_filestore(branch_name, team)
+        _unmount_filestore(env_name, team)
         extra_dir = os.path.join(workspace_path, "extra")
         if os.path.isdir(extra_dir):
             from oduflow.extra_addons import remove_worktree
@@ -865,7 +869,7 @@ def delete_environment(
                     remove_worktree(team, repo_name, wt_path)
         shutil.rmtree(workspace_path)
 
-    logger.info("Environment deleted", extra={"branch": branch_name})
+    logger.info("Environment deleted", extra={"env_name": env_name})
     return warnings
 
 
@@ -881,13 +885,16 @@ def list_environments(settings: Settings, team: TeamSettings) -> list[dict[str, 
 
     envs: dict[str, dict[str, Any]] = {}
     for container in containers:
-        branch = container.labels.get(settings.branch_label)
-        if not branch:
+        env_name = container.labels.get(settings.branch_label)
+        if not env_name:
             continue
 
-        if branch not in envs:
-            envs[branch] = {
-                "branch": branch,
+        if env_name not in envs:
+            git_branch = container.labels.get("oduflow.git_branch", env_name)
+            envs[env_name] = {
+                "env_name": env_name,
+                "branch": env_name,  # backward compat alias
+                "git_branch": git_branch,
                 "containers": [],
                 "status": "running",
                 "url": None,
@@ -899,8 +906,8 @@ def list_environments(settings: Settings, team: TeamSettings) -> list[dict[str, 
                 "extra_addons": _normalize_extra_addons(
                     json.loads(container.labels.get("oduflow.extra_addons", "{}")),
                 ),
-                "db_name": get_db_name(branch, team.team_id),
-                "protected": is_protected(settings, team, branch),
+                "db_name": get_db_name(env_name, team.team_id),
+                "protected": is_protected(settings, team, env_name),
             }
 
         try:
@@ -916,8 +923,8 @@ def list_environments(settings: Settings, team: TeamSettings) -> list[dict[str, 
 
         if "-odoo" in container.name:
             if settings.routing_mode == "traefik":
-                envs[branch]["url"] = (
-                    f"https://{get_env_hostname(branch, team.hostname)}/web?debug=1"
+                envs[env_name]["url"] = (
+                    f"https://{get_env_hostname(env_name, team.hostname)}/web?debug=1"
                 )
             else:
                 ports = container.attrs.get("NetworkSettings", {}).get("Ports", {})
@@ -926,27 +933,27 @@ def list_environments(settings: Settings, team: TeamSettings) -> list[dict[str, 
                     if mappings:
                         host_port = mappings[0].get("HostPort")
                         if host_port:
-                            envs[branch]["url"] = (
+                            envs[env_name]["url"] = (
                                 f"http://{team.hostname}:{host_port}/web?debug=1"
                             )
 
-        envs[branch]["containers"].append(container_info)
+        envs[env_name]["containers"].append(container_info)
 
         if container.status != "running":
-            envs[branch]["status"] = "partial"
+            envs[env_name]["status"] = "partial"
 
     return list(envs.values())
 
 
 def wait_for_odoo_ready(
-    settings: Settings, team: TeamSettings, branch_name: str, timeout: int = 120
+    settings: Settings, team: TeamSettings, env_name: str, timeout: int = 120
 ) -> bool:
     """Poll Odoo /web/health until it responds 200 or timeout."""
     import time
     import urllib.request
     import urllib.error
 
-    info = get_environment_info(settings, team, branch_name)
+    info = get_environment_info(settings, team, env_name)
     base_url = info.get("url", "")
     if not base_url:
         return False
@@ -964,47 +971,47 @@ def wait_for_odoo_ready(
     return False
 
 
-def restart_environment(settings: Settings, branch_name: str) -> dict[str, str]:
+def restart_environment(settings: Settings, env_name: str) -> dict[str, str]:
     client = get_client()
-    odoo_container_name = get_resource_name(branch_name, "odoo", settings.prefix)
+    odoo_container_name = get_resource_name(env_name, "odoo", settings.prefix)
 
     try:
         odoo_container = client.containers.get(odoo_container_name)
         odoo_container.restart()
     except docker.errors.NotFound:
         raise NotFoundError(
-            f"Environment '{branch_name}' does not exist. Use create_environment first."
+            f"Environment '{env_name}' does not exist. Use create_environment first."
         )
 
-    logger.info("Environment restarted", extra={"branch": branch_name})
+    logger.info("Environment restarted", extra={"env_name": env_name})
     return {"odoo_container": odoo_container_name}
 
 
 def stop_environment(
-    settings: Settings, team: TeamSettings, branch_name: str
+    settings: Settings, team: TeamSettings, env_name: str
 ) -> dict[str, str]:
-    if is_protected(settings, team, branch_name):
+    if is_protected(settings, team, env_name):
         raise ProtectedError(
-            f"Environment '{branch_name}' is protected. Unprotect it before stopping."
+            f"Environment '{env_name}' is protected. Unprotect it before stopping."
         )
     client = get_client()
-    odoo_container_name = get_resource_name(branch_name, "odoo", settings.prefix)
+    odoo_container_name = get_resource_name(env_name, "odoo", settings.prefix)
 
     try:
         odoo_container = client.containers.get(odoo_container_name)
         odoo_container.stop()
     except docker.errors.NotFound:
         raise NotFoundError(
-            f"Environment '{branch_name}' does not exist. Use create_environment first."
+            f"Environment '{env_name}' does not exist. Use create_environment first."
         )
 
-    logger.info("Environment stopped", extra={"branch": branch_name})
+    logger.info("Environment stopped", extra={"env_name": env_name})
     return {"odoo_container": odoo_container_name, "stopped": [odoo_container_name]}
 
 
-def start_environment(settings: Settings, branch_name: str) -> dict[str, str]:
+def start_environment(settings: Settings, env_name: str) -> dict[str, str]:
     client = get_client()
-    odoo_container_name = get_resource_name(branch_name, "odoo", settings.prefix)
+    odoo_container_name = get_resource_name(env_name, "odoo", settings.prefix)
 
     try:
         db_container = client.containers.get(settings.shared_db_container)
@@ -1023,25 +1030,26 @@ def start_environment(settings: Settings, branch_name: str) -> dict[str, str]:
         started.append(odoo_container_name)
     except docker.errors.NotFound:
         raise NotFoundError(
-            f"Environment '{branch_name}' does not exist. Use create_environment first."
+            f"Environment '{env_name}' does not exist. Use create_environment first."
         )
 
-    logger.info("Environment started", extra={"branch": branch_name})
+    logger.info("Environment started", extra={"env_name": env_name})
     return {"odoo_container": odoo_container_name, "started": started}
 
 
 def get_environment_info(
-    settings: Settings, team: TeamSettings, branch_name: str
+    settings: Settings, team: TeamSettings, env_name: str
 ) -> dict[str, Any]:
     from oduflow.docker_ops.stats import _get_one_container_stats
 
     client = get_client()
-    odoo_container_name = get_resource_name(branch_name, "odoo", settings.prefix)
+    odoo_container_name = get_resource_name(env_name, "odoo", settings.prefix)
 
     result: dict[str, Any] = {
-        "branch": branch_name,
-        "db_name": get_db_name(branch_name, team.team_id),
-        "workspace": get_workspace_path(branch_name, team.workspaces_dir),
+        "env_name": env_name,
+        "branch": env_name,  # backward compat alias
+        "db_name": get_db_name(env_name, team.team_id),
+        "workspace": get_workspace_path(env_name, team.workspaces_dir),
         "odoo": {"name": odoo_container_name, "running": False, "status": "not found"},
         "db": {
             "name": settings.shared_db_container,
@@ -1059,6 +1067,7 @@ def get_environment_info(
         result["template_name"] = labels.get("oduflow.template", "none")
         result["repo_url"] = sanitize_repo_url(labels.get(settings.repo_label, ""))
         result["odoo_image"] = labels.get(settings.image_label, "")
+        result["git_branch"] = labels.get("oduflow.git_branch", env_name)
         result["git_user"] = labels.get("oduflow.git_user", "")
         result["extra_addons"] = _normalize_extra_addons(
             json.loads(labels.get("oduflow.extra_addons", "{}")),
@@ -1066,7 +1075,7 @@ def get_environment_info(
 
         if settings.routing_mode == "traefik":
             result["url"] = (
-                f"https://{get_env_hostname(branch_name, team.hostname)}/web?debug=1"
+                f"https://{get_env_hostname(env_name, team.hostname)}/web?debug=1"
             )
         else:
             ports = odoo_container.attrs.get("NetworkSettings", {}).get("Ports", {})
@@ -1100,7 +1109,7 @@ def get_environment_info(
         pass
 
     creds = load_credentials(
-        branch_name, team.workspaces_dir, settings.db_user, settings.db_password
+        env_name, team.workspaces_dir, settings.db_user, settings.db_password
     )
     result["db_user"] = creds["pg_user"]
 
@@ -1109,30 +1118,31 @@ def get_environment_info(
 
 
 def pull_environment(
-    settings: Settings, team: TeamSettings, branch_name: str
+    settings: Settings, team: TeamSettings, env_name: str
 ) -> dict[str, Any]:
     from oduflow.git_analysis import classify_changes
     from oduflow.git_ops import pull_repo
 
     client = get_client()
-    odoo_container_name = get_resource_name(branch_name, "odoo", settings.prefix)
-    repo_path = get_repo_path(branch_name, team.workspaces_dir)
+    odoo_container_name = get_resource_name(env_name, "odoo", settings.prefix)
+    repo_path = get_repo_path(env_name, team.workspaces_dir)
 
     if not os.path.isdir(repo_path):
         raise NotFoundError(
-            f"Repository for branch '{branch_name}' not found at {repo_path}"
+            f"Repository for branch '{env_name}' not found at {repo_path}"
         )
 
     try:
         container_obj = client.containers.get(odoo_container_name)
     except docker.errors.NotFound:
         raise NotFoundError(
-            f"Environment '{branch_name}' does not exist. Use create_environment first."
+            f"Environment '{env_name}' does not exist. Use create_environment first."
         )
 
-    _trace("pull_environment(%s): git pull started", branch_name)
+    _trace("pull_environment(%s): git pull started", env_name)
+    git_branch = container_obj.labels.get("oduflow.git_branch", env_name)
     old_head, changed_files = pull_repo(
-        repo_path, branch_name, cred_file=team.git_credentials_file()
+        repo_path, git_branch, cred_file=team.git_credentials_file()
     )
 
     # --- Pull extra addon worktrees ---
@@ -1146,20 +1156,20 @@ def pull_environment(
     if extra_addons:
         from oduflow.extra_addons import pull_extra_worktree
 
-        workspace_path = get_workspace_path(branch_name, team.workspaces_dir)
+        workspace_path = get_workspace_path(env_name, team.workspaces_dir)
         extra_dir = os.path.join(workspace_path, "extra")
         for repo_name, branch in extra_addons.items():
             wt_path = os.path.join(extra_dir, repo_name)
             if not os.path.isdir(wt_path):
                 _trace(
                     "pull_environment(%s): extra worktree %s not found, skipping",
-                    branch_name,
+                    env_name,
                     wt_path,
                 )
                 continue
             _trace(
                 "pull_environment(%s): pulling extra addon %s@%s",
-                branch_name,
+                env_name,
                 repo_name,
                 branch,
             )
@@ -1170,26 +1180,26 @@ def pull_environment(
             if extra_files:
                 _trace(
                     "pull_environment(%s): extra addon %s: %d files changed",
-                    branch_name,
+                    env_name,
                     repo_name,
                     len(extra_files),
                 )
 
     all_changed = changed_files + extra_changed_files
     if not all_changed:
-        _trace("pull_environment(%s): no changes, already up to date", branch_name)
+        _trace("pull_environment(%s): no changes, already up to date", env_name)
         return {"action": "none", "message": "Already up to date."}
 
     _trace(
         "pull_environment(%s): %d files changed: %s",
-        branch_name,
+        env_name,
         len(all_changed),
         all_changed,
     )
 
     analysis = classify_changes(all_changed, repo_path, base_ref=old_head)
     action = analysis["action"]
-    _trace("pull_environment(%s): classify result action=%s", branch_name, action)
+    _trace("pull_environment(%s): classify result action=%s", env_name, action)
 
     if action in ("install", "upgrade"):
         from oduflow.docker_ops.odoo_ops import (
@@ -1205,13 +1215,13 @@ def pull_environment(
 
         if to_install:
             _trace(
-                "pull_environment(%s): installing modules %s", branch_name, to_install
+                "pull_environment(%s): installing modules %s", env_name, to_install
             )
-            res = install_odoo_modules(settings, team, branch_name, *to_install)
+            res = install_odoo_modules(settings, team, env_name, *to_install)
             last_exit_code = res["exit_code"]
             _trace(
                 "pull_environment(%s): install exit_code=%d",
-                branch_name,
+                env_name,
                 last_exit_code,
             )
             messages.append(f"Installed modules: {','.join(to_install)}")
@@ -1220,13 +1230,13 @@ def pull_environment(
 
         if to_upgrade:
             _trace(
-                "pull_environment(%s): upgrading modules %s", branch_name, to_upgrade
+                "pull_environment(%s): upgrading modules %s", env_name, to_upgrade
             )
-            res = upgrade_odoo_modules(settings, team, branch_name, *to_upgrade)
+            res = upgrade_odoo_modules(settings, team, env_name, *to_upgrade)
             last_exit_code = res["exit_code"]
             _trace(
                 "pull_environment(%s): upgrade exit_code=%d",
-                branch_name,
+                env_name,
                 last_exit_code,
             )
             messages.append(f"Upgraded modules: {','.join(to_upgrade)}")
@@ -1237,10 +1247,10 @@ def pull_environment(
         container.restart()
         _trace(
             "pull_environment(%s): container RESTARTED after install/upgrade",
-            branch_name,
+            env_name,
         )
         logger.info(
-            "Container restarted after module update", extra={"branch": branch_name}
+            "Container restarted after module update", extra={"env_name": env_name}
         )
         messages.append("Container restarted.")
         return {
@@ -1258,9 +1268,9 @@ def pull_environment(
         container.restart()
         _trace(
             "pull_environment(%s): container RESTARTED (Python files changed)",
-            branch_name,
+            env_name,
         )
-        logger.info("Container restarted after pull", extra={"branch": branch_name})
+        logger.info("Container restarted after pull", extra={"env_name": env_name})
         return {
             "action": "restart",
             "changed_files": all_changed,
@@ -1269,7 +1279,7 @@ def pull_environment(
 
     _trace(
         "pull_environment(%s): NO restart, action=refresh (hot-reload only)",
-        branch_name,
+        env_name,
     )
     return {
         "action": "refresh",
@@ -1279,11 +1289,11 @@ def pull_environment(
 
 
 def rebuild_environment(
-    settings: Settings, team: TeamSettings, branch_name: str
+    settings: Settings, team: TeamSettings, env_name: str
 ) -> dict[str, str]:
     """Rebuild an environment by re-creating its container while preserving DB, repo and filestore."""
     client = get_client()
-    odoo_container_name = get_resource_name(branch_name, "odoo", settings.prefix)
+    odoo_container_name = get_resource_name(env_name, "odoo", settings.prefix)
 
     # ------------------------------------------------------------------
     # 1. Look up existing container and extract its configuration
@@ -1292,7 +1302,7 @@ def rebuild_environment(
         container = client.containers.get(odoo_container_name)
     except docker.errors.NotFound:
         raise NotFoundError(
-            f"Environment '{branch_name}' does not exist. Use create_environment first."
+            f"Environment '{env_name}' does not exist. Use create_environment first."
         )
 
     # Image
@@ -1338,7 +1348,7 @@ def rebuild_environment(
 
     logger.info(
         "Rebuilding environment – stopping old container",
-        extra={"branch": branch_name, "container": odoo_container_name},
+        extra={"env_name": env_name, "container": odoo_container_name},
     )
 
     # ------------------------------------------------------------------
@@ -1359,11 +1369,11 @@ def rebuild_environment(
     # ------------------------------------------------------------------
     # 3. Re-mount filestore overlay if needed (only for overlay-mode envs)
     # ------------------------------------------------------------------
-    fs_paths = get_filestore_paths(branch_name, team.workspaces_dir)
+    fs_paths = get_filestore_paths(env_name, team.workspaces_dir)
     merged = fs_paths["merged"]
     has_overlay_dirs = os.path.isdir(fs_paths["upper"])
     if has_overlay_dirs and os.path.isdir(merged) and not os.path.ismount(merged):
-        env_db = get_db_name(branch_name)
+        env_db = get_db_name(env_name)
         template_name = labels.get("oduflow.template", "none")
         if template_name and template_name != "none":
             try:
@@ -1372,7 +1382,7 @@ def rebuild_environment(
                     client,
                     settings,
                     team,
-                    branch_name,
+                    env_name,
                     env_db,
                     odoo_image,
                     _tmp_vols,
@@ -1383,10 +1393,10 @@ def rebuild_environment(
 
     # Re-create PG role in case PG container was recreated
     creds = load_credentials(
-        branch_name, team.workspaces_dir, settings.db_user, settings.db_password
+        env_name, team.workspaces_dir, settings.db_user, settings.db_password
     )
     if creds["pg_user"] != settings.db_user:
-        env_db = get_db_name(branch_name, team.team_id)
+        env_db = get_db_name(env_name, team.team_id)
         try:
             _create_pg_role(
                 client, settings, creds["pg_user"], creds["pg_password"], env_db
@@ -1400,7 +1410,7 @@ def rebuild_environment(
         parsed = json.loads(extra_addons_json)
         extra_dict = _normalize_extra_addons(parsed)
         extra_dir = os.path.join(
-            get_workspace_path(branch_name, team.workspaces_dir), "extra"
+            get_workspace_path(env_name, team.workspaces_dir), "extra"
         )
         for rn in extra_dict:
             wt = os.path.join(extra_dir, rn)
@@ -1434,8 +1444,8 @@ def rebuild_environment(
     new_container = client.containers.run(**run_kwargs)
 
     # Copy odoo.conf into the container (same resolution logic as create)
-    repo_path = get_repo_path(branch_name, team.workspaces_dir)
-    workspace_path = get_workspace_path(branch_name, team.workspaces_dir)
+    repo_path = get_repo_path(env_name, team.workspaces_dir)
+    workspace_path = get_workspace_path(env_name, team.workspaces_dir)
     repo_odoo_conf = os.path.join(repo_path, "odoo.conf")
     if os.path.isfile(repo_odoo_conf):
         base_conf_path: str | None = repo_odoo_conf
@@ -1472,15 +1482,15 @@ def rebuild_environment(
     # 6. Build URL and return result
     # ------------------------------------------------------------------
     if settings.routing_mode == "traefik":
-        url = f"https://{get_env_hostname(branch_name, team.hostname)}"
+        url = f"https://{get_env_hostname(env_name, team.hostname)}"
     else:
         url = f"http://{team.hostname}:{host_port}"
 
-    env_db = get_db_name(branch_name)
-    workspace = get_workspace_path(branch_name, team.workspaces_dir)
+    env_db = get_db_name(env_name)
+    workspace = get_workspace_path(env_name, team.workspaces_dir)
     logger.info(
         "Environment rebuilt",
-        extra={"branch": branch_name, "url": url, "container": odoo_container_name},
+        extra={"env_name": env_name, "url": url, "container": odoo_container_name},
     )
 
     return {

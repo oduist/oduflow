@@ -62,7 +62,7 @@ class TestCreateEnvironmentTool:
         }
         result = _call_tool(
             "create_environment",
-            branch_name="main",
+            branch="main",
             template_name="none",
             repo_url="https://repo.url",
             odoo_image="odoo:17.0",
@@ -76,7 +76,7 @@ class TestDeleteEnvironmentTool:
     @patch("oduflow.docker_ops.env_ops.delete_environment")
     def test_delete(self, mock_delete):
         mock_delete.return_value = []
-        result = _call_tool("delete_environment", branch_name="main")
+        result = _call_tool("delete_environment", env_name="main")
         assert "torn down" in result
         mock_delete.assert_called_once_with(TEST_SETTINGS, TEST_TEAM, "main")
 
@@ -85,7 +85,7 @@ class TestDeleteEnvironmentTool:
         mock_delete.return_value = [
             'Failed to drop database "oduflow_main": connection refused'
         ]
-        result = _call_tool("delete_environment", branch_name="main")
+        result = _call_tool("delete_environment", env_name="main")
         assert "torn down" in result
         assert "Warnings:" in result
         assert "Failed to drop database" in result
@@ -96,7 +96,7 @@ class TestListEnvironmentsTool:
     def test_list(self, mock_list):
         mock_list.return_value = [
             {
-                "branch": "main",
+                "env_name": "main",
                 "status": "running",
                 "url": "http://localhost:50000",
                 "containers": [
@@ -123,7 +123,7 @@ class TestInfoTool:
     @patch("oduflow.docker_ops.env_ops.get_environment_info")
     def test_info(self, mock_info):
         mock_info.return_value = {
-            "branch": "main",
+            "env_name": "main",
             "db_name": "oduflow_1_main",
             "workspace": "/srv/oduflow/instance_1/workspaces/main",
             "all_running": True,
@@ -136,7 +136,7 @@ class TestInfoTool:
             "odoo": {"status": "running", "running": True},
             "db": {"status": "running", "running": True},
         }
-        result = _call_tool("get_environment_info", branch_name="main")
+        result = _call_tool("get_environment_info", env_name="main")
         assert "All containers running" in result
         assert "Database: oduflow_1_main" in result
         assert "DB (shared)" in result
@@ -149,7 +149,7 @@ class TestErrorHandling:
 
         mock_restart.side_effect = NotFoundError("container not found")
         with pytest.raises(ToolError, match="container not found"):
-            _call_tool("restart_environment", branch_name="main")
+            _call_tool("restart_environment", env_name="main")
 
 
 def _get_tool_fn(tool_name: str):
@@ -310,7 +310,7 @@ class TestResetAdminPasswordTool:
             "login": "admin",
             "psql_output": "UPDATE 1",
         }
-        result = _get_tool_fn("reset_admin_password")(branch_name="main")
+        result = _get_tool_fn("reset_admin_password")(env_name="main")
         assert "Admin password has been reset successfully" in result
         assert "Login: admin" in result
         assert "New password: test" in result
@@ -324,7 +324,7 @@ class TestResetAdminPasswordTool:
             "psql_output": "UPDATE 1",
         }
         result = _get_tool_fn("reset_admin_password")(
-            branch_name="main", new_password="s3cret"
+            env_name="main", new_password="s3cret"
         )
         assert "New password: s3cret" in result
         mock_reset.assert_called_once_with(TEST_SETTINGS, TEST_TEAM, "main", "s3cret")
@@ -335,23 +335,23 @@ class TestResetAdminPasswordTool:
 
         mock_reset.side_effect = NotFoundError("Environment 'xyz' does not exist.")
         with pytest.raises(ToolError, match="does not exist"):
-            _get_tool_fn("reset_admin_password")(branch_name="xyz")
+            _get_tool_fn("reset_admin_password")(env_name="xyz")
 
 
-class TestBranchLock:
+class TestEnvLock:
     @patch("oduflow.docker_ops.env_ops.create_environment")
     def test_busy_raises_tool_error(self, mock_create):
         import oduflow.server
 
         _locks = oduflow.server._locks
-        _locks.acquire_branch("main")
+        _locks.acquire_env("main")
         try:
             with pytest.raises(ToolError, match="Another operation"):
                 _call_tool(
                     "create_environment",
-                    branch_name="main",
+                    branch="main",
                     repo_url="https://x.git",
                     odoo_image="odoo:17.0",
                 )
         finally:
-            _locks.release_branch("main")
+            _locks.release_env("main")

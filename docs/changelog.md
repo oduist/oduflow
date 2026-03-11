@@ -1,5 +1,39 @@
 # Changelog
 
+## v1.20.1 (since v1.15.1)
+
+### Breaking Changes
+
+- **Stdio transport is now the default** — `oduflow` starts in stdio mode by default (previously HTTP). Use `oduflow --transport http` for HTTP mode. ([34e42fa](https://github.com/oduist/oduflow/commit/34e42fa), [f33dfe6](https://github.com/oduist/oduflow/commit/f33dfe6))
+
+### Features
+
+- **Auto-initialize on startup** — `oduflow` automatically runs initialization (system setup, Docker check) on first start, removing the need for a separate `oduflow init` step ([34e42fa](https://github.com/oduist/oduflow/commit/34e42fa), [f33dfe6](https://github.com/oduist/oduflow/commit/f33dfe6))
+- **MCP tools refinement** — output cache for long-running tool results, 7 new MCP tools, 3 enhanced tools; renamed `exec_in_odoo` to `run_odoo_command` ([44810aa](https://github.com/oduist/oduflow/commit/44810aa))
+- **Include odoo.conf in upgrade** — module upgrades now apply odoo.conf changes, skipping files that haven't changed ([f69bc2f](https://github.com/oduist/oduflow/commit/f69bc2f))
+- **Show template database name** in `list-templates` output ([c816229](https://github.com/oduist/oduflow/commit/c816229))
+- **Default odoo.conf values** — added `workers=0` and `db_maxconn=4` to the odoo.conf template for single-process development ([f16ab37](https://github.com/oduist/oduflow/commit/f16ab37))
+
+### Dashboard
+
+- **Rebuild button** — added rebuild button to web UI; pull Docker image before create/rebuild operations ([0004ac7](https://github.com/oduist/oduflow/commit/0004ac7))
+
+### Bug Fixes
+
+- **Sanitization: delete mail servers** — delete mail servers entirely instead of just disabling them during database sanitization ([4f729b1](https://github.com/oduist/oduflow/commit/4f729b1))
+- **`search_in_odoo` filenames and limit** — always show filenames in search results and fix `max_results` limit not being applied correctly ([fc3c53c](https://github.com/oduist/oduflow/commit/fc3c53c))
+- **Missing team parameter in `pull_environment`** — pass team parameter when running module operations during pull ([dc43104](https://github.com/oduist/oduflow/commit/dc43104))
+- **`delete_service_preset` lock** — fix locking for delete_service_preset operation ([18b18b1](https://github.com/oduist/oduflow/commit/18b18b1))
+
+### Documentation
+
+- Add MCP tools refinement spec (`mcp-ref.md`) ([87edd27](https://github.com/oduist/oduflow/commit/87edd27), [417eba7](https://github.com/oduist/oduflow/commit/417eba7))
+- Rename Mutex → Lock in documentation, add glightbox for image zoom ([18b18b1](https://github.com/oduist/oduflow/commit/18b18b1))
+- Rename `exec_in_odoo` → `run_odoo_command`, add 7 missing tools to docs ([518e2c8](https://github.com/oduist/oduflow/commit/518e2c8))
+- Advise agents to prefer local search over container search for Odoo sources ([961b9dc](https://github.com/oduist/oduflow/commit/961b9dc))
+
+---
+
 ## v1.15.1 (since v1.10.1)
 
 ### Breaking Changes

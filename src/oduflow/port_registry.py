@@ -32,22 +32,22 @@ def _save_registry(registry_path: str, registry: dict[str, int]) -> None:
 
 def allocate_port(
     registry_path: str,
-    branch_name: str,
+    env_name: str,
     port_range_start: int,
     port_range_end: int,
     used_ports: set[int] | None = None,
 ) -> int:
-    """Allocate a stable port for a branch.
+    """Allocate a stable port for an environment.
 
-    If the branch already has a port in the registry AND it's not used by another
+    If the environment already has a port in the registry AND it's not used by another
     container (checked via used_ports), reuse it. Otherwise allocate the next free port.
 
     Args:
         registry_path: Path to ports.json
-        branch_name: Branch to allocate port for
+        env_name: Environment to allocate port for
         port_range_start: Start of port range (inclusive)
         port_range_end: End of port range (exclusive)
-        used_ports: Set of ports currently in use by OTHER branches' Docker containers.
+        used_ports: Set of ports currently in use by OTHER environments' Docker containers.
                     If None, no conflict checking against Docker is done.
 
     Returns:
@@ -63,8 +63,8 @@ def allocate_port(
 
     registry = _load_registry(registry_path)
 
-    if branch_name in registry:
-        existing_port = registry[branch_name]
+    if env_name in registry:
+        existing_port = registry[env_name]
         if (
             port_range_start <= existing_port < port_range_end
             and existing_port not in used_ports
@@ -75,9 +75,9 @@ def allocate_port(
 
     for port in range(port_range_start, port_range_end):
         if port not in occupied:
-            registry[branch_name] = port
+            registry[env_name] = port
             _save_registry(registry_path, registry)
-            logger.info("Allocated port %d for branch '%s'", port, branch_name)
+            logger.info("Allocated port %d for environment '%s'", port, env_name)
             return port
 
     raise FlowError(
@@ -86,16 +86,16 @@ def allocate_port(
     )
 
 
-def release_port(registry_path: str, branch_name: str) -> None:
-    """Remove port assignment for a branch."""
+def release_port(registry_path: str, env_name: str) -> None:
+    """Remove port assignment for an environment."""
     registry = _load_registry(registry_path)
-    if branch_name in registry:
-        port = registry.pop(branch_name)
+    if env_name in registry:
+        port = registry.pop(env_name)
         _save_registry(registry_path, registry)
-        logger.info("Released port %d for branch '%s'", port, branch_name)
+        logger.info("Released port %d for environment '%s'", port, env_name)
 
 
-def get_port(registry_path: str, branch_name: str) -> int | None:
-    """Get the assigned port for a branch, or None if not assigned."""
+def get_port(registry_path: str, env_name: str) -> int | None:
+    """Get the assigned port for an environment, or None if not assigned."""
     registry = _load_registry(registry_path)
-    return registry.get(branch_name)
+    return registry.get(env_name)

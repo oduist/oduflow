@@ -10,8 +10,8 @@ logger = logging.getLogger("oduflow")
 _CREDENTIALS_FILE = "env_credentials.json"
 
 
-def generate_pg_username(branch_name: str, team_id: str) -> str:
-    slug = slugify_branch(branch_name)
+def generate_pg_username(env_name: str, team_id: str) -> str:
+    slug = slugify_branch(env_name)
     username = f"u_{team_id}_{slug}"
     return username[:63]
 
@@ -21,31 +21,31 @@ def generate_pg_password() -> str:
 
 
 def create_credentials(
-    branch_name: str, team_id: str, workspaces_dir: str
+    env_name: str, team_id: str, workspaces_dir: str
 ) -> dict[str, str]:
-    username = generate_pg_username(branch_name, team_id)
+    username = generate_pg_username(env_name, team_id)
     password = generate_pg_password()
     creds = {"pg_user": username, "pg_password": password}
 
-    workspace_path = get_workspace_path(branch_name, workspaces_dir)
+    workspace_path = get_workspace_path(env_name, workspaces_dir)
     os.makedirs(workspace_path, exist_ok=True)
     creds_path = os.path.join(workspace_path, _CREDENTIALS_FILE)
     with open(creds_path, "w") as f:
         json.dump(creds, f)
 
     logger.info(
-        "Created PG credentials for branch '%s' (user=%s)", branch_name, username
+        "Created PG credentials for environment '%s' (user=%s)", env_name, username
     )
     return creds
 
 
 def load_credentials(
-    branch_name: str,
+    env_name: str,
     workspaces_dir: str,
     fallback_user: str,
     fallback_password: str,
 ) -> dict[str, str]:
-    workspace_path = get_workspace_path(branch_name, workspaces_dir)
+    workspace_path = get_workspace_path(env_name, workspaces_dir)
     creds_path = os.path.join(workspace_path, _CREDENTIALS_FILE)
     if os.path.isfile(creds_path):
         with open(creds_path) as f:
@@ -53,9 +53,9 @@ def load_credentials(
     return {"pg_user": fallback_user, "pg_password": fallback_password}
 
 
-def delete_credentials(branch_name: str, workspaces_dir: str) -> None:
-    workspace_path = get_workspace_path(branch_name, workspaces_dir)
+def delete_credentials(env_name: str, workspaces_dir: str) -> None:
+    workspace_path = get_workspace_path(env_name, workspaces_dir)
     creds_path = os.path.join(workspace_path, _CREDENTIALS_FILE)
     if os.path.isfile(creds_path):
         os.remove(creds_path)
-        logger.info("Deleted PG credentials for branch '%s'", branch_name)
+        logger.info("Deleted PG credentials for environment '%s'", env_name)

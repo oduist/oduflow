@@ -1362,7 +1362,7 @@ async function submitCreate() {
       extraAddonsObj[repoName] = br;
     });
     var payload = {
-      branch_name: branch,
+      env_name: branch,
       repo_url: repo,
       odoo_image: image,
       template_name: template,

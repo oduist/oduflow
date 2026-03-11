@@ -79,6 +79,7 @@ class Settings:
     host: str = "0.0.0.0"
     port: int = 8000
     trace: bool = False
+    disable_telemetry: bool = False
 
     # Routing
     routing_mode: str = "port"
@@ -240,6 +241,7 @@ class Settings:
             host=str(server.get("host", "0.0.0.0")),
             port=int(server.get("port", 8000)),
             trace=trace,
+            disable_telemetry=bool(server.get("disable_telemetry", False)),
             routing_mode=str(routing.get("mode", "port")).strip().lower(),
             acme_email=str(routing.get("acme_email", "")).strip(),
             db_user=str(database.get("user", "odoo")),

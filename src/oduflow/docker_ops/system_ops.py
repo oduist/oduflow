@@ -1073,18 +1073,18 @@ def template_down(
 
 
 def publish_env_as_template(
-    settings: Settings, team: TeamSettings, branch_name: str, template_name: str
+    settings: Settings, team: TeamSettings, env_name: str, template_name: str
 ) -> dict[str, str]:
     from oduflow.docker_ops import env_ops
     from oduflow.naming import get_db_name, get_filestore_paths
 
     client = get_client()
     tpl_db = get_template_db_name(template_name, team.team_id)
-    env_db = get_db_name(branch_name, team.team_id)
+    env_db = get_db_name(env_name, team.team_id)
 
     if not _db_exists(client, settings, env_db):
         raise NotFoundError(
-            f"Database '{env_db}' for branch '{branch_name}' not found."
+            f"Database '{env_db}' for environment '{env_name}' not found."
         )
 
     _wait_pg_ready(client, settings)
@@ -1109,20 +1109,20 @@ def publish_env_as_template(
     # 2. Reload template DB from new dump
     reload_template(settings, team, template_name=template_name, dump_path=dump_path)
 
-    # 3. Collect active branches that use THIS template AND overlay mount
+    # 3. Collect active envs that use THIS template AND overlay mount
     active_envs = env_ops.list_environments(settings, team)
-    active_branches = [
-        e["branch"]
+    affected_envs = [
+        e["env_name"]
         for e in active_envs
         if e.get("template_name") == template_name
         and os.path.ismount(
-            get_filestore_paths(e["branch"], team.workspaces_dir)["merged"]
+            get_filestore_paths(e["env_name"], team.workspaces_dir)["merged"]
         )
     ]
 
-    # 4. Snapshot the source branch's merged filestore (while overlay is still mounted)
-    branch_paths = get_filestore_paths(branch_name, team.workspaces_dir)
-    branch_merged = branch_paths["merged"]
+    # 4. Snapshot the source env's merged filestore (while overlay is still mounted)
+    env_paths = get_filestore_paths(env_name, team.workspaces_dir)
+    branch_merged = env_paths["merged"]
     template_filestore_path = team.get_template_filestore_path(template_name)
 
     if os.path.isdir(branch_merged) and os.path.ismount(branch_merged):
@@ -1131,14 +1131,14 @@ def publish_env_as_template(
         if os.path.exists(snapshot_dir):
             shutil.rmtree(snapshot_dir)
         shutil.copytree(branch_merged, snapshot_dir)
-        logger.info("Snapshot of merged filestore created for branch %s", branch_name)
+        logger.info("Snapshot of merged filestore created for env %s", env_name)
     elif os.path.isdir(branch_merged) and not os.path.ismount(branch_merged):
         # Plain (non-overlay) filestore — e.g. env created with template=none
         snapshot_dir = branch_merged + "_snapshot"
         if os.path.exists(snapshot_dir):
             shutil.rmtree(snapshot_dir)
         shutil.copytree(branch_merged, snapshot_dir)
-        logger.info("Snapshot of plain filestore created for branch %s", branch_name)
+        logger.info("Snapshot of plain filestore created for env %s", env_name)
     else:
         snapshot_dir = None
         logger.warning(
@@ -1146,12 +1146,12 @@ def publish_env_as_template(
         )
 
     # 5. Unmount all overlays
-    for branch in active_branches:
+    for affected_env in affected_envs:
         try:
-            env_ops._unmount_filestore(branch, settings)
-            logger.info("Unmounted overlay for branch %s", branch)
+            env_ops._unmount_filestore(affected_env, team)
+            logger.info("Unmounted overlay for env %s", affected_env)
         except Exception as e:
-            logger.warning("Could not unmount overlay for %s: %s", branch, e)
+            logger.warning("Could not unmount overlay for %s: %s", affected_env, e)
 
     # 6. Replace template filestore with snapshot
     if snapshot_dir and os.path.isdir(snapshot_dir):
@@ -1164,10 +1164,10 @@ def publish_env_as_template(
         except OSError:
             shutil.copytree(snapshot_dir, template_filestore_path)
             shutil.rmtree(snapshot_dir)
-        logger.info("Template filestore replaced from branch %s", branch_name)
+        logger.info("Template filestore replaced from env %s", env_name)
 
         promoted_container_name = (
-            f"{settings.prefix}{branch_name.replace('/', '-')}-odoo"
+            f"{settings.prefix}{env_name.replace('/', '-')}-odoo"
         )
         try:
             pc = client.containers.get(promoted_container_name)
@@ -1182,19 +1182,19 @@ def publish_env_as_template(
         logger.info("Template filestore chowned to %s", odoo_uid_gid)
 
     # 7. Reset filestores to new template baseline
-    for branch in active_branches:
+    for affected_env in affected_envs:
         try:
-            bp = get_filestore_paths(branch, team.workspaces_dir)
+            bp = get_filestore_paths(affected_env, team.workspaces_dir)
 
             if os.path.ismount(bp["merged"]):
-                env_ops._unmount_filestore(branch, settings)
+                env_ops._unmount_filestore(affected_env, team)
                 deadline = time.time() + 3.0
                 while time.time() < deadline and os.path.ismount(bp["merged"]):
                     time.sleep(0.1)
                 if os.path.ismount(bp["merged"]):
                     logger.warning(
                         "Overlay for %s still mounted after retry, skipping remount",
-                        branch,
+                        affected_env,
                     )
                     continue
 
@@ -1204,18 +1204,18 @@ def publish_env_as_template(
                     shutil.rmtree(d)
                     os.makedirs(d, mode=0o777, exist_ok=True)
 
-            odoo_container_name = f"{settings.prefix}{branch.replace('/', '-')}-odoo"
+            odoo_container_name = f"{settings.prefix}{affected_env.replace('/', '-')}-odoo"
             try:
                 container = client.containers.get(odoo_container_name)
                 image = container.image.tags[0] if container.image.tags else "odoo:17.0"
             except (docker.errors.NotFound, IndexError):
                 image = "odoo:17.0"
 
-            env_db = get_db_name(branch, team.team_id)
+            env_db = get_db_name(affected_env, team.team_id)
             env_ops._mount_filestore(
-                client, settings, branch, env_db, image, {}, template_name=template_name
+                client, settings, team, affected_env, env_db, image, {}, template_name=template_name
             )
-            logger.info("Filestore reset for branch %s", branch)
+            logger.info("Filestore reset for env %s", affected_env)
 
             try:
                 container = client.containers.get(odoo_container_name)
@@ -1224,10 +1224,10 @@ def publish_env_as_template(
             except docker.errors.NotFound:
                 pass
         except Exception as e:
-            logger.warning("Could not reset filestore for %s: %s", branch, e)
+            logger.warning("Could not reset filestore for %s: %s", affected_env, e)
 
     # Save template metadata from source environment
-    promoted_container_name = f"{settings.prefix}{branch_name.replace('/', '-')}-odoo"
+    promoted_container_name = f"{settings.prefix}{env_name.replace('/', '-')}-odoo"
     metadata = {}
     try:
         pc = client.containers.get(promoted_container_name)
@@ -1258,11 +1258,11 @@ def publish_env_as_template(
 
     return {
         "status": "promoted",
-        "branch": branch_name,
+        "env_name": env_name,
         "dump": dump_path,
         "filestore": template_filestore_path,
         "template_db": tpl_db,
-        "affected_branches": active_branches,
+        "affected_envs": affected_envs,
     }
 
 

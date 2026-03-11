@@ -47,7 +47,7 @@ def live_environment(tmp_path_factory):
     env_ops.create_environment(
         settings,
         team,
-        branch_name="18.0",
+        branch="18.0",
         repo_url="https://github.com/oduist/oduflow_test.git",
         odoo_image="odoo:18.0",
     )
@@ -58,7 +58,7 @@ def live_environment(tmp_path_factory):
     try:
         for env in env_ops.list_environments(settings, team):
             try:
-                env_ops.delete_environment(settings, team, env["branch"])
+                env_ops.delete_environment(settings, team, env["env_name"])
             except Exception:
                 pass
     except Exception:

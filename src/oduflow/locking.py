@@ -1,7 +1,7 @@
 """Granular lock manager for concurrent MCP tool execution.
 
-Provides per-branch, per-team, and system-level locks so that operations on
-different branches / teams can run in parallel while operations on the same
+Provides per-environment, per-team, and system-level locks so that operations on
+different environments / teams can run in parallel while operations on the same
 resource are serialised.
 """
 
@@ -13,32 +13,32 @@ from oduflow.errors import BusyError
 
 
 class LockManager:
-    """Thread-safe lock manager with per-branch and per-team granularity."""
+    """Thread-safe lock manager with per-environment and per-team granularity."""
 
     def __init__(self) -> None:
-        self._branch_locks: dict[str, threading.Lock] = {}
+        self._env_locks: dict[str, threading.Lock] = {}
         self._team_locks: dict[str, threading.Lock] = {}
         self._system_lock = threading.Lock()
         self._map_lock = threading.Lock()  # protects dict access
 
-    # -- branch locks --
+    # -- environment locks --
 
-    def _get_branch_lock(self, branch_name: str) -> threading.Lock:
+    def _get_env_lock(self, env_name: str) -> threading.Lock:
         with self._map_lock:
-            if branch_name not in self._branch_locks:
-                self._branch_locks[branch_name] = threading.Lock()
-            return self._branch_locks[branch_name]
+            if env_name not in self._env_locks:
+                self._env_locks[env_name] = threading.Lock()
+            return self._env_locks[env_name]
 
-    def acquire_branch(self, branch_name: str) -> None:
-        lock = self._get_branch_lock(branch_name)
+    def acquire_env(self, env_name: str) -> None:
+        lock = self._get_env_lock(env_name)
         if not lock.acquire(blocking=False):
             raise BusyError(
-                f"Another operation on branch '{branch_name}' is in progress. "
+                f"Another operation on environment '{env_name}' is in progress. "
                 "Try again later."
             )
 
-    def release_branch(self, branch_name: str) -> None:
-        lock = self._get_branch_lock(branch_name)
+    def release_env(self, env_name: str) -> None:
+        lock = self._get_env_lock(env_name)
         try:
             lock.release()
         except RuntimeError:

@@ -15,21 +15,21 @@ logger = logging.getLogger("oduflow")
 
 
 def run_environment_tests(
-    settings: Settings, team: TeamSettings, branch_name: str, modules: str
+    settings: Settings, team: TeamSettings, env_name: str, modules: str
 ) -> str:
     client = get_client()
-    odoo_container_name = get_resource_name(branch_name, "odoo", settings.prefix)
-    env_db = get_db_name(branch_name, team.team_id)
+    odoo_container_name = get_resource_name(env_name, "odoo", settings.prefix)
+    env_db = get_db_name(env_name, team.team_id)
 
     try:
         container = client.containers.get(odoo_container_name)
     except docker.errors.NotFound:
         raise NotFoundError(
-            f"Environment '{branch_name}' does not exist. Use create_environment first."
+            f"Environment '{env_name}' does not exist. Use create_environment first."
         )
 
     creds = load_credentials(
-        branch_name, team.workspaces_dir, settings.db_user, settings.db_password
+        env_name, team.workspaces_dir, settings.db_user, settings.db_password
     )
     cmd = (
         f"odoo --test-enable --stop-after-init -i {modules} "
@@ -40,7 +40,7 @@ def run_environment_tests(
 
     logger.info(
         "Running tests",
-        extra={"branch": branch_name, "modules": modules},
+        extra={"env_name": env_name, "modules": modules},
     )
     exit_code, output = container.exec_run(cmd)
 
@@ -51,13 +51,13 @@ def run_environment_tests(
 
 def get_environment_logs(
     settings: Settings,
-    branch_name: str,
+    env_name: str,
     n_lines: int = 100,
     grep: str = "",
     level: str = "",
 ) -> str:
     client = get_client()
-    odoo_container_name = get_resource_name(branch_name, "odoo", settings.prefix)
+    odoo_container_name = get_resource_name(env_name, "odoo", settings.prefix)
 
     # Fetch more lines when filtering to have meaningful results
     fetch_lines = min(n_lines * 10, 10_000) if (grep or level) else n_lines
@@ -68,7 +68,7 @@ def get_environment_logs(
         logs_str = logs.decode("utf-8") if isinstance(logs, bytes) else str(logs)
     except docker.errors.NotFound:
         raise NotFoundError(
-            f"Environment '{branch_name}' does not exist. Use create_environment first."
+            f"Environment '{env_name}' does not exist. Use create_environment first."
         )
 
     if grep or level:
@@ -86,20 +86,20 @@ def get_environment_logs(
 
 
 def _run_odoo_module_command(
-    settings: Settings, team: TeamSettings, branch_name: str, flag: str, *modules: str
+    settings: Settings, team: TeamSettings, env_name: str, flag: str, *modules: str
 ) -> dict[str, Any]:
     if not modules:
         raise ValueError("At least one module name is required.")
 
     client = get_client()
-    odoo_container_name = get_resource_name(branch_name, "odoo", settings.prefix)
-    env_db = get_db_name(branch_name, team.team_id)
+    odoo_container_name = get_resource_name(env_name, "odoo", settings.prefix)
+    env_db = get_db_name(env_name, team.team_id)
 
     try:
         container = client.containers.get(odoo_container_name)
     except docker.errors.NotFound:
         raise NotFoundError(
-            f"Environment '{branch_name}' does not exist. Use create_environment first."
+            f"Environment '{env_name}' does not exist. Use create_environment first."
         )
 
     modules_str = ",".join(modules)
@@ -109,7 +109,7 @@ def _run_odoo_module_command(
     logger.info(
         "%s modules",
         action,
-        extra={"branch": branch_name, "modules": modules_str},
+        extra={"env_name": env_name, "modules": modules_str},
     )
     exit_code, output = container.exec_run(cmd)
     output_str = output.decode("utf-8") if isinstance(output, bytes) else str(output)
@@ -122,36 +122,36 @@ def _run_odoo_module_command(
 
 
 def upgrade_odoo_modules(
-    settings: Settings, team: TeamSettings, branch_name: str, *modules: str
+    settings: Settings, team: TeamSettings, env_name: str, *modules: str
 ) -> dict[str, Any]:
-    return _run_odoo_module_command(settings, team, branch_name, "-u", *modules)
+    return _run_odoo_module_command(settings, team, env_name, "-u", *modules)
 
 
 def install_odoo_modules(
-    settings: Settings, team: TeamSettings, branch_name: str, *modules: str
+    settings: Settings, team: TeamSettings, env_name: str, *modules: str
 ) -> dict[str, Any]:
-    return _run_odoo_module_command(settings, team, branch_name, "-i", *modules)
+    return _run_odoo_module_command(settings, team, env_name, "-i", *modules)
 
 
 _FILE_SIZE_LIMIT = 100 * 1024  # 100KB
 
 
 def read_file_in_environment(
-    settings: Settings, branch_name: str, path: str, read_range: str = ""
+    settings: Settings, env_name: str, path: str, read_range: str = ""
 ) -> dict[str, Any]:
     client = get_client()
-    odoo_container_name = get_resource_name(branch_name, "odoo", settings.prefix)
+    odoo_container_name = get_resource_name(env_name, "odoo", settings.prefix)
 
     try:
         container = client.containers.get(odoo_container_name)
     except docker.errors.NotFound:
         raise NotFoundError(
-            f"Environment '{branch_name}' does not exist. Use create_environment first."
+            f"Environment '{env_name}' does not exist. Use create_environment first."
         )
 
     logger.info(
         "Reading file in environment",
-        extra={"branch": branch_name, "path": path},
+        extra={"env_name": env_name, "path": path},
     )
 
     # Check if path exists and determine its type
@@ -237,21 +237,21 @@ def read_file_in_environment(
 
 
 def run_command_in_environment(
-    settings: Settings, branch_name: str, command: str, user: str = "odoo"
+    settings: Settings, env_name: str, command: str, user: str = "odoo"
 ) -> dict[str, Any]:
     client = get_client()
-    odoo_container_name = get_resource_name(branch_name, "odoo", settings.prefix)
+    odoo_container_name = get_resource_name(env_name, "odoo", settings.prefix)
 
     try:
         container = client.containers.get(odoo_container_name)
     except docker.errors.NotFound:
         raise NotFoundError(
-            f"Environment '{branch_name}' does not exist. Use create_environment first."
+            f"Environment '{env_name}' does not exist. Use create_environment first."
         )
 
     logger.info(
         "Executing command in environment",
-        extra={"branch": branch_name, "command": command, "user": user},
+        extra={"env_name": env_name, "command": command, "user": user},
     )
     exit_code, output = container.exec_run(command, user=user)
     output_str = output.decode("utf-8") if isinstance(output, bytes) else str(output)
@@ -263,17 +263,17 @@ def run_command_in_environment(
 
 
 def reset_admin_password(
-    settings: Settings, team: TeamSettings, branch_name: str, new_password: str = "test"
+    settings: Settings, team: TeamSettings, env_name: str, new_password: str = "test"
 ) -> dict[str, str]:
     client = get_client()
-    odoo_container_name = get_resource_name(branch_name, "odoo", settings.prefix)
-    env_db = get_db_name(branch_name, team.team_id)
+    odoo_container_name = get_resource_name(env_name, "odoo", settings.prefix)
+    env_db = get_db_name(env_name, team.team_id)
 
     try:
         container = client.containers.get(odoo_container_name)
     except docker.errors.NotFound:
         raise NotFoundError(
-            f"Environment '{branch_name}' does not exist. Use create_environment first."
+            f"Environment '{env_name}' does not exist. Use create_environment first."
         )
 
     # Hash the password using passlib inside the Odoo container
@@ -310,7 +310,7 @@ def reset_admin_password(
 
     logger.info(
         "Admin password reset",
-        extra={"branch": branch_name},
+        extra={"env_name": env_name},
     )
     return {"status": "ok", "login": "admin", "psql_output": output_str}
 
@@ -318,12 +318,12 @@ def reset_admin_password(
 def run_db_query(
     settings: Settings,
     team: TeamSettings,
-    branch_name: str,
+    env_name: str,
     query: str,
     output_format: str = "csv",
 ) -> dict[str, Any]:
     client = get_client()
-    env_db = get_db_name(branch_name, team.team_id)
+    env_db = get_db_name(env_name, team.team_id)
 
     try:
         db_container = client.containers.get(settings.shared_db_container)
@@ -334,7 +334,7 @@ def run_db_query(
         )
 
     creds = load_credentials(
-        branch_name, team.workspaces_dir, settings.db_user, settings.db_password
+        env_name, team.workspaces_dir, settings.db_user, settings.db_password
     )
     if output_format == "human":
         cmd = ["psql", "-U", creds["pg_user"], "-d", env_db, "-c", query]
@@ -343,7 +343,7 @@ def run_db_query(
 
     logger.info(
         "Running DB query",
-        extra={"branch": branch_name, "format": output_format},
+        extra={"env_name": env_name, "format": output_format},
     )
     exit_code, output = db_container.exec_run(cmd)
     output_str = output.decode("utf-8") if isinstance(output, bytes) else str(output)
@@ -361,7 +361,7 @@ _WRITE_FILE_LIMIT = 1_000_000  # 1 MB
 
 
 def write_file_in_environment(
-    settings: Settings, branch_name: str, path: str, content: str, user: str = "odoo"
+    settings: Settings, env_name: str, path: str, content: str, user: str = "odoo"
 ) -> dict[str, Any]:
     """Write a text file inside the Odoo container via tar stream."""
     import io
@@ -373,13 +373,13 @@ def write_file_in_environment(
         )
 
     client = get_client()
-    odoo_container_name = get_resource_name(branch_name, "odoo", settings.prefix)
+    odoo_container_name = get_resource_name(env_name, "odoo", settings.prefix)
 
     try:
         container = client.containers.get(odoo_container_name)
     except docker.errors.NotFound:
         raise NotFoundError(
-            f"Environment '{branch_name}' does not exist. Use create_environment first."
+            f"Environment '{env_name}' does not exist. Use create_environment first."
         )
 
     parent = path.rsplit("/", 1)[0] if "/" in path else "/"
@@ -400,31 +400,31 @@ def write_file_in_environment(
 
     logger.info(
         "File written in environment",
-        extra={"branch": branch_name, "path": path, "size": len(data)},
+        extra={"env_name": env_name, "path": path, "size": len(data)},
     )
     return {"path": path, "size": len(data)}
 
 
 def run_odoo_shell(
-    settings: Settings, team: TeamSettings, branch_name: str, python_code: str
+    settings: Settings, team: TeamSettings, env_name: str, python_code: str
 ) -> dict[str, Any]:
     """Execute Python code in the Odoo shell context with full ORM access."""
     import io
     import tarfile
 
     client = get_client()
-    odoo_container_name = get_resource_name(branch_name, "odoo", settings.prefix)
-    env_db = get_db_name(branch_name, team.team_id)
+    odoo_container_name = get_resource_name(env_name, "odoo", settings.prefix)
+    env_db = get_db_name(env_name, team.team_id)
 
     try:
         container = client.containers.get(odoo_container_name)
     except docker.errors.NotFound:
         raise NotFoundError(
-            f"Environment '{branch_name}' does not exist. Use create_environment first."
+            f"Environment '{env_name}' does not exist. Use create_environment first."
         )
 
     creds = load_credentials(
-        branch_name, team.workspaces_dir, settings.db_user, settings.db_password
+        env_name, team.workspaces_dir, settings.db_user, settings.db_password
     )
 
     # Write Python code to temp file via tar stream (avoids shell escaping)
@@ -448,7 +448,7 @@ def run_odoo_shell(
 
     logger.info(
         "Running Odoo shell",
-        extra={"branch": branch_name, "code_size": len(data)},
+        extra={"env_name": env_name, "code_size": len(data)},
     )
     exit_code, output = container.exec_run(["sh", "-c", cmd], user="odoo")
     output_str = output.decode("utf-8") if isinstance(output, bytes) else str(output)
@@ -464,7 +464,7 @@ def run_odoo_shell(
 
 def search_in_environment(
     settings: Settings,
-    branch_name: str,
+    env_name: str,
     pattern: str,
     path: str = "/mnt/extra-addons",
     glob: str = "*.py",
@@ -472,13 +472,13 @@ def search_in_environment(
 ) -> dict[str, Any]:
     """Search for a pattern in files inside the Odoo container."""
     client = get_client()
-    odoo_container_name = get_resource_name(branch_name, "odoo", settings.prefix)
+    odoo_container_name = get_resource_name(env_name, "odoo", settings.prefix)
 
     try:
         container = client.containers.get(odoo_container_name)
     except docker.errors.NotFound:
         raise NotFoundError(
-            f"Environment '{branch_name}' does not exist. Use create_environment first."
+            f"Environment '{env_name}' does not exist. Use create_environment first."
         )
 
     cmd = [
@@ -493,7 +493,7 @@ def search_in_environment(
 
     logger.info(
         "Searching in environment",
-        extra={"branch": branch_name, "pattern": pattern, "path": path},
+        extra={"env_name": env_name, "pattern": pattern, "path": path},
     )
     exit_code, output = container.exec_run(cmd)
     output_str = output.decode("utf-8") if isinstance(output, bytes) else str(output)
@@ -510,7 +510,7 @@ def search_in_environment(
 def http_request_to_odoo(
     settings: Settings,
     team: TeamSettings,
-    branch_name: str,
+    env_name: str,
     path: str,
     method: str = "GET",
     body: str = "",
@@ -524,7 +524,7 @@ def http_request_to_odoo(
 
     from oduflow.docker_ops.env_ops import get_environment_info
 
-    info = get_environment_info(settings, team, branch_name)
+    info = get_environment_info(settings, team, env_name)
     base_url = info["url"]
 
     url = f"{base_url}{path}"
@@ -537,7 +537,7 @@ def http_request_to_odoo(
 
     logger.info(
         "HTTP request to Odoo",
-        extra={"branch": branch_name, "method": method, "path": path},
+        extra={"env_name": env_name, "method": method, "path": path},
     )
 
     try:

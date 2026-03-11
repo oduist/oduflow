@@ -198,7 +198,7 @@ def _build_routes(
     def api_sync(request: Request) -> JSONResponse:
         branch = request.path_params["branch"]
         try:
-            locks.acquire_branch(branch)
+            locks.acquire_env(branch)
         except BusyError as e:
             return _error_response(e)
         try:
@@ -212,12 +212,12 @@ def _build_routes(
             logger.exception("Unexpected error in api_sync")
             return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
         finally:
-            locks.release_branch(branch)
+            locks.release_env(branch)
 
     def api_delete(request: Request) -> JSONResponse:
         branch = request.path_params["branch"]
         try:
-            locks.acquire_branch(branch)
+            locks.acquire_env(branch)
         except BusyError as e:
             return _error_response(e)
         try:
@@ -231,12 +231,12 @@ def _build_routes(
             logger.exception("Unexpected error in api_delete")
             return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
         finally:
-            locks.release_branch(branch)
+            locks.release_env(branch)
 
     def api_rebuild(request: Request) -> JSONResponse:
         branch = request.path_params["branch"]
         try:
-            locks.acquire_branch(branch)
+            locks.acquire_env(branch)
         except BusyError as e:
             return _error_response(e)
         try:
@@ -250,12 +250,12 @@ def _build_routes(
             logger.exception("Unexpected error in api_rebuild")
             return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
         finally:
-            locks.release_branch(branch)
+            locks.release_env(branch)
 
     def api_recreate(request: Request) -> JSONResponse:
         branch = request.path_params["branch"]
         try:
-            locks.acquire_branch(branch)
+            locks.acquire_env(branch)
         except BusyError as e:
             return _error_response(e)
         try:
@@ -304,26 +304,26 @@ def _build_routes(
             logger.exception("Unexpected error in api_recreate")
             return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
         finally:
-            locks.release_branch(branch)
+            locks.release_env(branch)
 
     async def api_create(request: Request) -> JSONResponse:
         try:
             import json as _json
 
             body = await request.json()
-            branch_name = (body.get("branch_name") or "").strip()
+            env_name = (body.get("env_name") or "").strip()
             repo_url = (body.get("repo_url") or "").strip()
             odoo_image = (body.get("odoo_image") or "").strip()
             git_user = (body.get("git_user") or "").strip()
             template_name_raw = (body.get("template_name") or "").strip()
             extra_addons_raw = body.get("extra_addons")
-            if not branch_name:
+            if not env_name:
                 return JSONResponse(
-                    {"ok": False, "error": "branch_name is required."},
+                    {"ok": False, "error": "env_name is required."},
                     status_code=400,
                 )
             try:
-                locks.acquire_branch(branch_name)
+                locks.acquire_env(env_name)
             except BusyError as e:
                 return _error_response(e)
             resolved_template: str | None
@@ -367,7 +367,7 @@ def _build_routes(
             result = env_ops.create_environment(
                 settings,
                 team,
-                branch_name,
+                env_name,
                 repo_url,
                 odoo_image,
                 template_name=resolved_template,
@@ -381,7 +381,7 @@ def _build_routes(
             logger.exception("Unexpected error in api_create")
             return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
         finally:
-            locks.release_branch(branch_name)
+            locks.release_env(env_name)
 
     def api_logs(request: Request) -> JSONResponse:
         branch = request.path_params["branch"]

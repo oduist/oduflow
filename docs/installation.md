@@ -120,6 +120,7 @@ port_range = [50000, 50100]          # port range for Odoo containers [start, en
 | `[server].host` | `0.0.0.0` | HTTP server bind address |
 | `[server].port` | `8000` | HTTP server port |
 | `[server].trace` | `false` | Enable detailed trace logging for git analysis and environment operations |
+| `[server].disable_telemetry` | `false` | Disable anonymous usage telemetry (see [Telemetry](#telemetry)) |
 
 ### Routing settings
 
@@ -180,6 +181,30 @@ On startup, Oduflow copies the bundled `postgresql.conf` and `odoo.conf` to the 
 ```
 
 If a repository contains an `odoo.conf` at its root, it takes priority over both the bundled and system-level versions for that specific environment.
+
+## Telemetry
+
+Oduflow collects **anonymous** usage telemetry to help us understand adoption and prioritize development. Two events are sent:
+
+- **`first_run`** — sent once on the very first startup (when the instance ID is created).
+- **`env_created`** — sent each time a new environment is provisioned.
+
+Each event contains only:
+
+- The event name
+- The oduflow version
+- A random instance ID (UUID)
+
+**No** personal data, hostnames, IP addresses, branch names, repository URLs, or environment details are collected.
+
+### Opt out
+
+Add to your `oduflow.toml`:
+
+```toml
+[server]
+disable_telemetry = true
+```
 
 ## Auto-start with systemd
 

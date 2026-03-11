@@ -35,7 +35,7 @@ scenarios:
     tool: create_environment
     marks: [heavyweight]
     args:
-      branch_name: "18.0"
+      branch: "18.0"
       repo_url: "https://github.com/oduist/oduflow_test.git"
       odoo_image: "odoo:18.0"
     expect_contains:
@@ -46,7 +46,7 @@ scenarios:
     tool: create_environment
     marks: [heavyweight]
     args:
-      branch_name: "feature-login-fix"
+      branch: "feature-login-fix"
       repo_url: "https://github.com/oduist/oduflow_test.git"
       odoo_image: "odoo:18.0"
     expect_contains:
@@ -56,7 +56,7 @@ scenarios:
     tool: delete_environment
     marks: [heavyweight]
     args:
-      branch_name: "18.0"
+      env_name: "18.0"
     expect_contains:
       - "torn down"
 
@@ -69,7 +69,7 @@ scenarios:
     tool: get_environment_info
     needs_env: true
     args:
-      branch_name: "18.0"
+      env_name: "18.0"
     expect_contains:
       - "Environment Info"
 
@@ -77,7 +77,7 @@ scenarios:
     tool: restart_environment
     needs_env: true
     args:
-      branch_name: "18.0"
+      env_name: "18.0"
     expect_contains:
       - "restarted"
 
@@ -85,7 +85,7 @@ scenarios:
     tool: stop_environment
     needs_env: true
     args:
-      branch_name: "18.0"
+      env_name: "18.0"
     expect_contains:
       - "stopped"
 
@@ -93,7 +93,7 @@ scenarios:
     tool: start_environment
     needs_env: true
     args:
-      branch_name: "18.0"
+      env_name: "18.0"
     expect_contains:
       - "started"
 
@@ -102,7 +102,7 @@ scenarios:
     tool: get_environment_logs
     needs_env: true
     args:
-      branch_name: "18.0"
+      env_name: "18.0"
       n_lines: 50
     expect_contains: []
 
@@ -110,7 +110,7 @@ scenarios:
     tool: run_odoo_tests
     needs_env: true
     args:
-      branch_name: "18.0"
+      env_name: "18.0"
       modules: "sale"
     expect_contains:
       - "Test Results"
@@ -120,7 +120,7 @@ scenarios:
     marks: [heavyweight]
     needs_env: true
     args:
-      branch_name: "18.0"
+      env_name: "18.0"
       modules: "sale,crm"
     expect_contains:
       - "Modules installed"
@@ -130,7 +130,7 @@ scenarios:
     marks: [heavyweight]
     needs_env: true
     args:
-      branch_name: "18.0"
+      env_name: "18.0"
       modules: "sale"
     expect_contains:
       - "Modules upgraded"

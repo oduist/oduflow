@@ -19,7 +19,7 @@ def _run_scripts_from_dir(
     settings: Settings,
     team: TeamSettings,
     env_db: str,
-    branch_name: str,
+    env_name: str,
 ) -> list[str]:
     """Run .sql and .py sanitization scripts from a directory.
 
@@ -52,7 +52,7 @@ def _run_scripts_from_dir(
 
     import docker as _docker
 
-    odoo_container_name = get_resource_name(branch_name, "odoo", settings.prefix)
+    odoo_container_name = get_resource_name(env_name, "odoo", settings.prefix)
     try:
         container = client.containers.get(odoo_container_name)
     except _docker.errors.NotFound:
@@ -62,7 +62,7 @@ def _run_scripts_from_dir(
         return logs
 
     creds = load_credentials(
-        branch_name, team.workspaces_dir, settings.db_user, settings.db_password
+        env_name, team.workspaces_dir, settings.db_user, settings.db_password
     )
 
     for py_file in py_files:
@@ -107,7 +107,7 @@ def sanitize_environment(
     client: DockerClient,
     settings: Settings,
     team: TeamSettings,
-    branch_name: str,
+    env_name: str,
 ) -> list[str]:
     """Sanitize environment database after provisioning.
 
@@ -122,23 +122,23 @@ def sanitize_environment(
 
     Returns a list of human-readable log lines describing what was done.
     """
-    env_db = get_db_name(branch_name, team.team_id)
+    env_db = get_db_name(env_name, team.team_id)
     logs: list[str] = []
 
     # --- Team-level sanitization ---
     system_dir = os.path.join(team.data_dir, "odoo_sanitize")
     logs.extend(
         _run_scripts_from_dir(
-            system_dir, "system", client, settings, team, env_db, branch_name
+            system_dir, "system", client, settings, team, env_db, env_name
         )
     )
 
     # --- Per-project sanitization from repo ---
-    repo_path = get_repo_path(branch_name, team.workspaces_dir)
+    repo_path = get_repo_path(env_name, team.workspaces_dir)
     repo_dir = os.path.join(repo_path, ".odoo_sanitize")
     logs.extend(
         _run_scripts_from_dir(
-            repo_dir, "repo", client, settings, team, env_db, branch_name
+            repo_dir, "repo", client, settings, team, env_db, env_name
         )
     )
 

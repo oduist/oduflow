@@ -115,6 +115,10 @@ For full documentation, visit **[oduflow.dev](https://oduflow.dev)** or see the 
 
 ---
 
+## Telemetry
+
+Oduflow collects anonymous usage telemetry (first startup and environment creation events) to understand adoption. Only the event name, version, and a random instance ID are sent — no personal data or environment details. To opt out, add `disable_telemetry = true` to the `[server]` section of your `oduflow.toml`. See the [documentation](https://oduflow.dev/installation/#telemetry) for details.
+
 ## Licensing
 
 Oduflow is source-available under the [Polyform Noncommercial License 1.0.0](LICENSE). Commercial use requires a license — visit [oduflow.dev](https://oduflow.dev).

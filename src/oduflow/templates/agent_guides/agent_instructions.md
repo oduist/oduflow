@@ -31,36 +31,36 @@ MCP endpoint: `http://<host>:8000/mcp`
 | Tool | When to use |
 |---|---|
 | `list_environments` | Check existing environments before creating a new one |
-| `create_environment(branch_name, repo_url, odoo_image, template_name?)` | Provision an environment. Use the correct Odoo Docker image. Pass `template_name="none"` for greenfield projects |
-| `get_environment_info(branch_name)` | Get full environment details: database name, URL, repo, image, template, extra addons, workspace, container status, CPU/RAM stats |
-| `delete_environment(branch_name)` | Tear down when the task is complete or cancelled |
+| `create_environment(branch, env_name?, repo_url, odoo_image, template_name?)` | Provision an environment. `branch` is the git branch; `env_name` defaults to the branch name. Use the correct Odoo Docker image. Pass `template_name="none"` for greenfield projects |
+| `get_environment_info(env_name)` | Get full environment details: database name, URL, repo, image, template, extra addons, workspace, container status, CPU/RAM stats |
+| `delete_environment(env_name)` | Tear down when the task is complete or cancelled |
 | `start_environment` / `stop_environment` | Resume or pause a stopped environment |
-| `restart_environment(branch_name)` | Restart the Odoo container (rarely needed — `pull_and_apply` handles this) |
-| `rebuild_environment(branch_name)` | Recreate the container from scratch if it's broken, without losing DB or filestore |
+| `restart_environment(env_name)` | Restart the Odoo container (rarely needed — `pull_and_apply` handles this) |
+| `rebuild_environment(env_name)` | Recreate the container from scratch if it's broken, without losing DB or filestore |
 
 ### Code → Environment Sync
 
 | Tool | When to use |
 |---|---|
-| `pull_and_apply(branch_name)` | **Always call after every `git push`**. Oduflow analyzes changed files and automatically decides: install new modules, upgrade changed modules, restart for Python changes, or do nothing for XML/JS (hot-reloaded). You do NOT need to call `restart` or `upgrade` manually. **Errors and tracebacks are returned directly in the tool response** — do NOT call `get_environment_logs` to check for errors after this tool. |
+| `pull_and_apply(env_name)` | **Always call after every `git push`**. Oduflow analyzes changed files and automatically decides: install new modules, upgrade changed modules, restart for Python changes, or do nothing for XML/JS (hot-reloaded). You do NOT need to call `restart` or `upgrade` manually. **Errors and tracebacks are returned directly in the tool response** — do NOT call `get_environment_logs` to check for errors after this tool. |
 
 ### Odoo Module Operations
 
 | Tool | When to use |
 |---|---|
-| `install_odoo_modules(branch_name, modules)` | Install modules for the first time (`odoo -i`). Comma-separated list, e.g. `"sale,crm"`. **Returns full output including any errors directly in the response.** |
-| `upgrade_odoo_modules(branch_name, modules)` | Force-upgrade modules (`odoo -u`). Usually handled by `pull_and_apply`. **Returns full output including any errors directly in the response.** |
-| `run_odoo_tests(branch_name, modules)` | Run Odoo tests (`--test-enable`) for specific modules. **Returns full test output directly in the response.** |
-| `list_installed_modules(branch_name, name_filter?, state_filter?)` | List Odoo modules with name/state filtering. Default: installed modules only. |
+| `install_odoo_modules(env_name, modules)` | Install modules for the first time (`odoo -i`). Comma-separated list, e.g. `"sale,crm"`. **Returns full output including any errors directly in the response.** |
+| `upgrade_odoo_modules(env_name, modules)` | Force-upgrade modules (`odoo -u`). Usually handled by `pull_and_apply`. **Returns full output including any errors directly in the response.** |
+| `run_odoo_tests(env_name, modules)` | Run Odoo tests (`--test-enable`) for specific modules. **Returns full test output directly in the response.** |
+| `list_installed_modules(env_name, name_filter?, state_filter?)` | List Odoo modules with name/state filtering. Default: installed modules only. |
 
 ### ORM & Scripting
 
 | Tool | When to use |
 |---|---|
-| `run_odoo_shell(branch_name, python_code)` | Execute Python in Odoo shell with full ORM access (`self.env`, models, registry). Use `print()` to produce output. |
-| `write_file_in_odoo(branch_name, path, content, user?)` | Write a text file inside the container (CSV imports, scripts, configs). Uses tar stream — no shell escaping issues. Do NOT use for source code. |
-| `http_request_to_odoo(branch_name, path, method?, body?, headers?, session_id?)` | HTTP request to the running Odoo instance. Test controllers, JSON-RPC, REST endpoints. |
-| `search_in_odoo(branch_name, pattern, path?, glob?, max_results?)` | Grep for a pattern inside container files. Fixed-string search with file/line numbers. |
+| `run_odoo_shell(env_name, python_code)` | Execute Python in Odoo shell with full ORM access (`self.env`, models, registry). Use `print()` to produce output. |
+| `write_file_in_odoo(env_name, path, content, user?)` | Write a text file inside the container (CSV imports, scripts, configs). Uses tar stream — no shell escaping issues. Do NOT use for source code. |
+| `http_request_to_odoo(env_name, path, method?, body?, headers?, session_id?)` | HTTP request to the running Odoo instance. Test controllers, JSON-RPC, REST endpoints. |
+| `search_in_odoo(env_name, pattern, path?, glob?, max_results?)` | Grep for a pattern inside container files. Fixed-string search with file/line numbers. |
 
 ### Debugging & Logs
 
@@ -72,9 +72,9 @@ MCP endpoint: `http://<host>:8000/mcp`
 
 | Tool | What it shows |
 |---|---|
-| `get_environment_logs(branch_name, n_lines?, grep?, level?)` | Logs from the **running Odoo server** (main container process). Use `grep` for substring filtering, `level` for "ERROR"/"WARNING"/"CRITICAL". Does **NOT** contain output from install/upgrade/test operations. |
-| `read_file_in_odoo(branch_name, path, read_range?)` | Read a text file or list a directory inside the container. Use to inspect Odoo source code, addon structure, config files. Supports `read_range="START:END"` for large files. **Prefer this over `run_odoo_command` with `cat`/`ls`.** |
-| `run_odoo_command(branch_name, command, user?)` | Run shell commands inside the container. Use `user="root"` for privileged ops (pip install, apt). Useful for debugging, running Odoo shell commands. For reading files, prefer `read_file_in_odoo` instead |
+| `get_environment_logs(env_name, n_lines?, grep?, level?)` | Logs from the **running Odoo server** (main container process). Use `grep` for substring filtering, `level` for "ERROR"/"WARNING"/"CRITICAL". Does **NOT** contain output from install/upgrade/test operations. |
+| `read_file_in_odoo(env_name, path, read_range?)` | Read a text file or list a directory inside the container. Use to inspect Odoo source code, addon structure, config files. Supports `read_range="START:END"` for large files. **Prefer this over `run_odoo_command` with `cat`/`ls`.** |
+| `run_odoo_command(env_name, command, user?)` | Run shell commands inside the container. Use `user="root"` for privileged ops (pip install, apt). Useful for debugging, running Odoo shell commands. For reading files, prefer `read_file_in_odoo` instead |
 
 **When to use which:**
 - After `pull_and_apply` / `install_odoo_modules` / `upgrade_odoo_modules` / `run_odoo_tests` → **read the tool response** for errors
@@ -98,7 +98,7 @@ MCP endpoint: `http://<host>:8000/mcp`
 | Tool | When to use |
 |---|---|
 | `list_templates` | List available database template profiles |
-| `save_as_template(branch_name)` | Make a branch the new template baseline. ⚠️ Destructive only if other environments share this template with overlay mounts. Requires explicit user permission |
+| `save_as_template(env_name)` | Make a branch the new template baseline. ⚠️ Destructive only if other environments share this template with overlay mounts. Requires explicit user permission |
 | `delete_template(template_name)` | ⚠️ **Destructive**. Remove a template profile. Requires explicit user permission |
 
 ---
@@ -183,7 +183,7 @@ The environment container runs **remotely** and has access only to the git repos
 - **One task = one branch = one environment.**
 - Mutexed tools (create, delete, install, upgrade, pull, test, exec) reject concurrent calls with `BusyError` — retry after a short delay.
 - `run_odoo_command` runs as `odoo` by default. Use `user="root"` for package installation or system operations.
-- Database is accessible from inside the container: `psql -h oduflow-db -U odoo -d oduflow_{branch_name}`.
+- Database is accessible from inside the container: `psql -h oduflow-db -U odoo -d oduflow_{env_name}`.
 
 ---
 
@@ -231,7 +231,7 @@ Step 4: get_environment_logs — If something went wrong, check for migration IN
 
 1. **Query the database** via `run_odoo_command`:
    ```
-   psql -h oduflow-db -U odoo -d oduflow_{branch_name} -c "SELECT column_name FROM information_schema.columns WHERE table_name = 'your_table';"
+   psql -h oduflow-db -U odoo -d oduflow_{env_name} -c "SELECT column_name FROM information_schema.columns WHERE table_name = 'your_table';"
    ```
    Confirm that new columns, constraints, or data changes are present.
 
