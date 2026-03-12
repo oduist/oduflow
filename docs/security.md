@@ -22,6 +22,63 @@ auth_token = "secret-token-team-2"
 
 The token is used to both authenticate and identify the team. This is implemented via FastMCP's `StaticTokenVerifier`.
 
+## GitHub OAuth (for Claude.ai and other MCP clients)
+
+Oduflow supports GitHub OAuth 2.1 for MCP clients that use OAuth authorization (e.g. Claude.ai Remote MCP, MCP Inspector). This allows users to authenticate via their GitHub account instead of static tokens.
+
+### Setup
+
+1. Create a [GitHub OAuth App](https://github.com/settings/developers):
+    - **Authorization callback URL**: `https://your-server.com/auth/callback`
+    - Note the **Client ID** and **Client Secret**
+
+2. Configure `oduflow.toml`:
+
+```toml
+[server]
+oauth_client_id = "Ov23li..."
+oauth_client_secret = "your-github-client-secret"
+oauth_base_url = "https://your-server.com"
+```
+
+3. (Optional) Restrict access to specific GitHub users per team:
+
+```toml
+[team.1]
+github_users = ["octocat", "dev1"]
+
+[team.2]
+github_users = ["admin2"]
+```
+
+If `github_users` is not set in any team and there is only one team, all authenticated GitHub users get access. If `github_users` is set, only listed users can access the MCP server — others get **403 Access Denied**.
+
+### Connecting from Claude.ai
+
+1. Go to Claude.ai Settings → Integrations → Add Remote MCP Server
+2. Enter your oduflow URL: `https://your-server.com/mcp`
+3. In **Advanced Settings**, enter the GitHub OAuth App **Client ID** and **Client Secret**
+4. Claude will redirect you to GitHub for login, then connect to oduflow
+
+### Combined mode (static tokens + OAuth)
+
+Both auth methods can work simultaneously. Static Bearer tokens are checked first; if no match, the OAuth flow is used:
+
+```toml
+[server]
+oauth_client_id = "Ov23li..."
+oauth_client_secret = "abc..."
+oauth_base_url = "https://your-server.com"
+
+[team.1]
+auth_token = "secret-token"         # for CLI / automation
+github_users = ["octocat", "dev1"]  # for Claude.ai / browser-based clients
+```
+
+### GitHub username in MCP context
+
+When a user authenticates via GitHub OAuth, their GitHub login is available in the MCP tool context. This can be used for audit trails and environment metadata (e.g. "created by octocat").
+
 ## Web Dashboard Auth
 
 The web dashboard and REST API use HTTP Basic authentication with a **separate** password:
@@ -41,7 +98,7 @@ MCP auth and Web UI auth are configured independently per team:
 Warnings are logged on startup for each team:
 
 ```
-INFO  [team.1] http://localhost:8000/ (MCP token OFF, UI auth OFF)
+INFO  [team.1] http://localhost:8000/ (MCP token OFF, OAuth OFF, UI auth OFF)
 ```
 
 ## Git Credentials

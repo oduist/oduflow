@@ -57,6 +57,90 @@ class TestSettings:
             s.validate()
 
 
+class TestOAuthSettings:
+    def _team(self, **kw):
+        defaults = {"team_id": "1", "port_range_start": 50000, "port_range_end": 50100}
+        defaults.update(kw)
+        return TeamSettings(**defaults)
+
+    def test_oauth_defaults(self):
+        s = Settings()
+        assert s.oauth_client_id == ""
+        assert s.oauth_client_secret == ""
+        assert s.oauth_base_url == ""
+        assert not s.oauth_enabled
+
+    def test_oauth_enabled(self):
+        s = Settings(
+            oauth_client_id="id",
+            oauth_client_secret="secret",
+            oauth_base_url="https://example.com",
+            teams={"1": self._team()},
+        )
+        s.validate()
+        assert s.oauth_enabled
+
+    def test_oauth_incomplete_raises(self):
+        s = Settings(
+            oauth_client_id="id",
+            oauth_client_secret="",
+            oauth_base_url="",
+            teams={"1": self._team()},
+        )
+        with pytest.raises(ValueError, match="Incomplete OAuth"):
+            s.validate()
+
+    def test_github_users_in_team(self):
+        t = TeamSettings(
+            team_id="1",
+            github_users=("octocat", "dev1"),
+            port_range_start=50000,
+            port_range_end=50100,
+        )
+        assert t.github_users == ("octocat", "dev1")
+
+    def test_github_users_default_empty(self):
+        t = TeamSettings(team_id="1")
+        assert t.github_users == ()
+
+    def test_get_team_by_github_user(self):
+        t1 = self._team(team_id="1", github_users=("octocat",))
+        t2 = self._team(team_id="2", github_users=("dev1",))
+        s = Settings(
+            oauth_client_id="id",
+            oauth_client_secret="secret",
+            oauth_base_url="https://example.com",
+            teams={"1": t1, "2": t2},
+        )
+        assert s.get_team_by_github_user("octocat") is t1
+        assert s.get_team_by_github_user("dev1") is t2
+        assert s.get_team_by_github_user("unknown") is None
+        assert s.get_team_by_github_user("") is None
+
+    def test_duplicate_github_users_raises(self):
+        t1 = self._team(team_id="1", github_users=("octocat",))
+        t2 = self._team(team_id="2", github_users=("octocat",))
+        s = Settings(
+            oauth_client_id="id",
+            oauth_client_secret="secret",
+            oauth_base_url="https://example.com",
+            teams={"1": t1, "2": t2},
+        )
+        with pytest.raises(ValueError, match="Duplicate github_users.*octocat"):
+            s.validate()
+
+    def test_any_team_has_github_users(self):
+        t1 = self._team(team_id="1", github_users=("octocat",))
+        t2 = self._team(team_id="2")
+        s = Settings(teams={"1": t1, "2": t2})
+        assert s.any_team_has_github_users
+
+    def test_no_team_has_github_users(self):
+        t1 = self._team(team_id="1")
+        s = Settings(teams={"1": t1})
+        assert not s.any_team_has_github_users
+
+
 class TestTeamSettings:
     def test_defaults(self):
         t = TeamSettings(team_id="1")
