@@ -1166,9 +1166,7 @@ def publish_env_as_template(
             shutil.rmtree(snapshot_dir)
         logger.info("Template filestore replaced from env %s", env_name)
 
-        promoted_container_name = (
-            f"{settings.prefix}{env_name.replace('/', '-')}-odoo"
-        )
+        promoted_container_name = f"{settings.prefix}{env_name.replace('/', '-')}-odoo"
         try:
             pc = client.containers.get(promoted_container_name)
             promoted_image = pc.image.tags[0] if pc.image.tags else "odoo:17.0"
@@ -1204,7 +1202,9 @@ def publish_env_as_template(
                     shutil.rmtree(d)
                     os.makedirs(d, mode=0o777, exist_ok=True)
 
-            odoo_container_name = f"{settings.prefix}{affected_env.replace('/', '-')}-odoo"
+            odoo_container_name = (
+                f"{settings.prefix}{affected_env.replace('/', '-')}-odoo"
+            )
             try:
                 container = client.containers.get(odoo_container_name)
                 image = container.image.tags[0] if container.image.tags else "odoo:17.0"
@@ -1213,7 +1213,14 @@ def publish_env_as_template(
 
             env_db = get_db_name(affected_env, team.team_id)
             env_ops._mount_filestore(
-                client, settings, team, affected_env, env_db, image, {}, template_name=template_name
+                client,
+                settings,
+                team,
+                affected_env,
+                env_db,
+                image,
+                {},
+                template_name=template_name,
             )
             logger.info("Filestore reset for env %s", affected_env)
 
@@ -1241,6 +1248,9 @@ def publish_env_as_template(
                 metadata["extra_addons"] = _normalize_extra_addons(parsed)
             except (json.JSONDecodeError, TypeError):
                 pass
+        raw_auto = pc.labels.get("oduflow.auto_install_modules", "")
+        if raw_auto:
+            metadata["auto_install_modules"] = raw_auto
     except docker.errors.NotFound:
         pass
     fs_size = (
@@ -1721,6 +1731,7 @@ def list_templates(settings: Settings, team: TeamSettings) -> list[dict]:
                 "use_overlay": metadata.get("use_overlay"),
                 "filestore_size_mb": metadata.get("filestore_size_mb"),
                 "dump_size_mb": metadata.get("dump_size_mb"),
+                "auto_install_modules": metadata.get("auto_install_modules", ""),
             }
         )
     return result

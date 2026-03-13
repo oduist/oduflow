@@ -317,6 +317,7 @@ def _build_routes(
             git_user = (body.get("git_user") or "").strip()
             template_name_raw = (body.get("template_name") or "").strip()
             extra_addons_raw = body.get("extra_addons")
+            auto_install_raw = (body.get("auto_install_modules") or "").strip()
             if not env_name:
                 return JSONResponse(
                     {"ok": False, "error": "env_name is required."},
@@ -355,6 +356,8 @@ def _build_routes(
                         raw = metadata.get("extra_addons")
                         if raw:
                             extra_dict = _normalize_extra_addons(raw) or None
+                    if not auto_install_raw:
+                        auto_install_raw = metadata.get("auto_install_modules", "")
 
             if not repo_url or not odoo_image:
                 return JSONResponse(
@@ -364,6 +367,11 @@ def _build_routes(
                     },
                     status_code=400,
                 )
+            auto_install_list = (
+                [m.strip() for m in auto_install_raw.split(",") if m.strip()]
+                if auto_install_raw
+                else []
+            )
             result = env_ops.create_environment(
                 settings,
                 team,
@@ -373,6 +381,7 @@ def _build_routes(
                 template_name=resolved_template,
                 extra_addons=extra_dict,
                 git_user=git_user,
+                auto_install_modules=auto_install_list or None,
             )
             return JSONResponse({"ok": True, "result": result})
         except FlowError as e:
@@ -1114,9 +1123,7 @@ def _build_routes(
         Route(
             "/api/environments/{branch:path}/unprotect", api_unprotect, methods=["POST"]
         ),
-        Route(
-            "/api/environments/{branch:path}/rebuild", api_rebuild, methods=["POST"]
-        ),
+        Route("/api/environments/{branch:path}/rebuild", api_rebuild, methods=["POST"]),
         Route(
             "/api/environments/{branch:path}/recreate", api_recreate, methods=["POST"]
         ),

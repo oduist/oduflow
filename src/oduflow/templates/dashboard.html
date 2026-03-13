@@ -550,7 +550,12 @@
         <div id="cr-extra-addons-checkboxes" style="max-height:120px;overflow-y:auto;padding:4px 0;"></div>
         <div style="font-size:11px;color:var(--text-dim);margin-top:4px;">Select repos to mount in this environment</div>
       </div>
-      
+      <div class="form-group">
+        <label for="cr-auto-install">Auto-install modules</label>
+        <input type="text" id="cr-auto-install" placeholder="e.g. sale,purchase,stock">
+        <div style="font-size:11px;color:var(--text-dim);margin-top:4px;">Comma-separated list of modules to install after provisioning</div>
+      </div>
+
       <div class="form-actions">
         <button class="btn" onclick="closeCreateModal()">Cancel</button>
         <button class="btn-create" id="cr-submit" onclick="submitCreate()">Create</button>
@@ -1203,6 +1208,7 @@ function renderTemplates(templates) {
       if (t.odoo_image) parts.push('<span>Image: <strong>' + esc(t.odoo_image) + '</strong></span>');
       if (t.repo_url) parts.push('<span>Repo: <strong>' + esc(t.repo_url) + '</strong></span>');
       if (t.git_user) parts.push('<span>Git User: <strong>' + esc(t.git_user) + '</strong></span>');
+      if (t.auto_install_modules) parts.push('<span>Auto-install: <strong>' + esc(t.auto_install_modules) + '</strong></span>');
       metaHtml = '<div class="tpl-meta" style="margin-top:8px;">' + parts.join('') + '</div>';
     }
     return '<div class="tpl-card" style="flex-direction:column;align-items:stretch;">' +
@@ -1237,6 +1243,9 @@ function populateTemplateSelect() {
       if (tpl.git_user && !document.getElementById('cr-git-user').value) {
         document.getElementById('cr-git-user').value = tpl.git_user;
       }
+      if (tpl.auto_install_modules && !document.getElementById('cr-auto-install').value.trim()) {
+        document.getElementById('cr-auto-install').value = tpl.auto_install_modules;
+      }
       var tplExtras = tpl.extra_addons || {};
       document.querySelectorAll('.cr-extra-cb').forEach(function(cb) {
         cb.checked = cb.value in tplExtras;
@@ -1252,6 +1261,7 @@ function openCreateFromTemplate(templateName) {
   document.getElementById('cr-branch').value = '';
   document.getElementById('cr-repo').value = tpl && tpl.repo_url ? tpl.repo_url : '';
   document.getElementById('cr-image').value = tpl && tpl.odoo_image ? tpl.odoo_image : '';
+  document.getElementById('cr-auto-install').value = tpl && tpl.auto_install_modules ? tpl.auto_install_modules : '';
   var errEl = document.getElementById('create-error');
   errEl.style.display = 'none';
   errEl.textContent = '';
@@ -1296,7 +1306,8 @@ function openCreateModal() {
   document.getElementById('cr-branch').value = '';
   document.getElementById('cr-repo').value = '';
   document.getElementById('cr-image').value = '';
-  
+  document.getElementById('cr-auto-install').value = '';
+
   var errEl = document.getElementById('create-error');
   errEl.style.display = 'none';
   errEl.textContent = '';
@@ -1340,6 +1351,7 @@ async function submitCreate() {
   var image = document.getElementById('cr-image').value.trim();
   var template = document.getElementById('cr-template').value;
   var gitUser = document.getElementById('cr-git-user').value;
+  var autoInstall = document.getElementById('cr-auto-install').value.trim();
   var errEl = document.getElementById('create-error');
 
   if (!branch) {
@@ -1368,6 +1380,7 @@ async function submitCreate() {
       template_name: template,
       git_user: gitUser,
       extra_addons: extraAddonsObj,
+      auto_install_modules: autoInstall,
     };
     var r = await fetch(API + '/create', {
       method: 'POST',

@@ -352,6 +352,7 @@ def create_environment(
     odoo_image: str = "",
     extra_addons: str = "",
     sanitize: bool = True,
+    auto_install_modules: str = "",
     ctx: Context = None,
 ) -> str:
     """
@@ -365,6 +366,7 @@ def create_environment(
         odoo_image: Full Docker image name with tag (e.g. "odoo:17.0"). Optional when template_name is specified (loaded from template metadata).
         extra_addons: Comma-separated list of extra addon repo names with branches (e.g. "enterprise:18.0,custom-themes:main"). Each entry must include a branch after a colon.
         sanitize: Sanitize the database after provisioning (default: True). Disables incoming/outgoing mail servers and runs custom scripts from the .odoo_sanitize/ folder in the repository.
+        auto_install_modules: Comma-separated list of Odoo modules to install automatically after the environment is provisioned (e.g. "sale,purchase,stock"). When a template is specified and this is empty, the value is loaded from template metadata.
     """
     import json
 
@@ -402,9 +404,10 @@ def create_environment(
                         _metadata_extra = _normalize_extra_addons(raw_extra)
                         if _metadata_extra:
                             extra_addons = ",".join(
-                                f"{name}:{b}"
-                                for name, b in _metadata_extra.items()
+                                f"{name}:{b}" for name, b in _metadata_extra.items()
                             )
+                if not auto_install_modules:
+                    auto_install_modules = metadata.get("auto_install_modules", "")
 
         if not effective_repo_url:
             raise ValueError(
@@ -417,6 +420,11 @@ def create_environment(
             )
 
         extra_dict = _parse_extra_addons(extra_addons) if extra_addons else {}
+        auto_install_list = (
+            [m.strip() for m in auto_install_modules.split(",") if m.strip()]
+            if auto_install_modules
+            else []
+        )
         result = env_ops.create_environment(
             settings,
             team,
@@ -428,6 +436,7 @@ def create_environment(
             extra_addons=extra_dict or None,
             git_user=effective_git_user,
             sanitize=sanitize,
+            auto_install_modules=auto_install_list or None,
         )
 
         from oduflow.telemetry import record_env_created
@@ -456,6 +465,8 @@ def create_environment(
                 f"{name} ({b})" for name, b in extra_dict.items()
             )
             lines.append(f"Extra Addons: {extras_display}")
+        if auto_install_list:
+            lines.append(f"Auto-install modules: {', '.join(auto_install_list)}")
         setup_logs = result.get("setup_logs", [])
         if setup_logs:
             lines.append("\n--- Setup Log ---")
@@ -533,7 +544,9 @@ def list_templates(ctx: Context = None) -> str:
             fs_str = f"{fs_size:.0f} MB" if fs_size is not None else "?"
             dump_str = f"{dump_size:.0f} MB" if dump_size is not None else "?"
             size_info = f", Filestore size={fs_str}, Dump size={dump_str}"
-        output += f"- {r['template_name']}: DB={db_status}, SQL={r['has_sql']}, Filestore={r['has_filestore']}, Mode={overlay_status}{size_info}\n"
+        auto_install = r.get("auto_install_modules", "")
+        auto_info = f", Auto-install={auto_install}" if auto_install else ""
+        output += f"- {r['template_name']}: DB={db_status}, SQL={r['has_sql']}, Filestore={r['has_filestore']}, Mode={overlay_status}{size_info}{auto_info}\n"
     return output
 
 
@@ -782,9 +795,7 @@ def get_environment_logs(
 
 @mcp.tool()
 @handle_errors
-def restart_environment(
-    env_name: str, wait: bool = True, ctx: Context = None
-) -> str:
+def restart_environment(env_name: str, wait: bool = True, ctx: Context = None) -> str:
     """
     Restart the Odoo container for a specific environment.
 

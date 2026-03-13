@@ -428,6 +428,7 @@ def create_environment(
     extra_addons: dict[str, str] | None = None,
     git_user: str = "",
     sanitize: bool = True,
+    auto_install_modules: list[str] | None = None,
 ) -> dict[str, str]:
     env_name = env_name or branch
     start_time = time.time()
@@ -488,6 +489,8 @@ def create_environment(
         labels["oduflow.extra_addons"] = json.dumps(extra_addons)
     if git_user:
         labels["oduflow.git_user"] = git_user
+    if auto_install_modules:
+        labels["oduflow.auto_install_modules"] = ",".join(auto_install_modules)
 
     if settings.routing_mode == "traefik":
         slug = slugify_branch(env_name)
@@ -732,9 +735,7 @@ def create_environment(
         else:
             setup_logs.append("[INIT] odoo -i base completed successfully")
         container.restart()
-        logger.info(
-            "Container restarted after base init", extra={"env_name": env_name}
-        )
+        logger.info("Container restarted after base init", extra={"env_name": env_name})
     else:
         apt_log = _install_apt_packages(container, repo_path)
         if apt_log:
@@ -749,6 +750,38 @@ def create_environment(
 
         sanitize_logs = sanitize_environment(client, settings, team, env_name)
         setup_logs.extend(sanitize_logs)
+
+    # --- Auto-install modules ---
+    if auto_install_modules:
+        modules_str = ",".join(auto_install_modules)
+        logger.info(
+            "Auto-installing modules: %s",
+            modules_str,
+            extra={"env_name": env_name},
+        )
+        install_cmd = (
+            f"/entrypoint.sh odoo -d {env_db} -i {modules_str}"
+            f" --stop-after-init --no-http"
+        )
+        exit_code, output = container.exec_run(install_cmd)
+        output_str = (
+            output.decode("utf-8") if isinstance(output, bytes) else str(output)
+        )
+        if exit_code != 0:
+            logger.error(
+                "Auto-install modules failed (exit %d): %s",
+                exit_code,
+                output_str,
+                extra={"env_name": env_name},
+            )
+            setup_logs.append(
+                f"[AUTO-INSTALL] odoo -i {modules_str} FAILED (exit {exit_code}):\n{output_str}"
+            )
+        else:
+            setup_logs.append(
+                f"[AUTO-INSTALL] odoo -i {modules_str} completed successfully"
+            )
+        container.restart()
 
     if settings.routing_mode == "traefik":
         url = f"https://{get_env_hostname(env_name, team.hostname)}"
@@ -908,6 +941,9 @@ def list_environments(settings: Settings, team: TeamSettings) -> list[dict[str, 
                 ),
                 "db_name": get_db_name(env_name, team.team_id),
                 "protected": is_protected(settings, team, env_name),
+                "auto_install_modules": container.labels.get(
+                    "oduflow.auto_install_modules", ""
+                ),
             }
 
         try:
@@ -1072,6 +1108,7 @@ def get_environment_info(
         result["extra_addons"] = _normalize_extra_addons(
             json.loads(labels.get("oduflow.extra_addons", "{}")),
         )
+        result["auto_install_modules"] = labels.get("oduflow.auto_install_modules", "")
 
         if settings.routing_mode == "traefik":
             result["url"] = (
@@ -1214,9 +1251,7 @@ def pull_environment(
         odoo_output_parts: list[str] = []
 
         if to_install:
-            _trace(
-                "pull_environment(%s): installing modules %s", env_name, to_install
-            )
+            _trace("pull_environment(%s): installing modules %s", env_name, to_install)
             res = install_odoo_modules(settings, team, env_name, *to_install)
             last_exit_code = res["exit_code"]
             _trace(
@@ -1229,9 +1264,7 @@ def pull_environment(
                 odoo_output_parts.append(res["output"])
 
         if to_upgrade:
-            _trace(
-                "pull_environment(%s): upgrading modules %s", env_name, to_upgrade
-            )
+            _trace("pull_environment(%s): upgrading modules %s", env_name, to_upgrade)
             res = upgrade_odoo_modules(settings, team, env_name, *to_upgrade)
             last_exit_code = res["exit_code"]
             _trace(
