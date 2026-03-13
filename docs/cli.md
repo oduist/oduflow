@@ -12,19 +12,23 @@ oduflow --version
 ## Running the Server
 
 ```bash
-# Start the MCP server in stdio mode (default — for local MCP clients)
+# Single-user / stdio mode (default — for local MCP clients)
 oduflow
+uvx oduflow
 
-# Start in HTTP mode (for remote/multi-user deployments)
+# Server / HTTP mode (for remote and multi-user deployments)
 oduflow --transport http
+uvx oduflow --transport http
 ```
 
 Shared infrastructure (Docker network, PostgreSQL, team directories) is initialized automatically on startup.
 
-In stdio mode, the server communicates over stdin/stdout (ideal for local MCP clients like Claude Desktop, Cursor, etc.).
-In HTTP mode, the server starts on `http://0.0.0.0:8000` by default.
+**stdio mode** — the server communicates over stdin/stdout. The MCP client starts the process directly; no network port is needed. Ideal for local clients like Claude Desktop, Windsurf, etc.
+
+**HTTP mode** — starts a persistent HTTP server on `http://0.0.0.0:8000` by default. Exposes the MCP endpoint at `/mcp`, a Web Dashboard at `/`, and a REST API at `/api/`. Supports Bearer token authentication for MCP and Basic auth for the dashboard.
 
 Configuration is loaded from `oduflow.toml` (see [Installation](installation.md#configuration-reference)).
+See [Quick Start](quick-start.md) for MCP client configuration examples for both modes.
 
 ## System Commands
 
