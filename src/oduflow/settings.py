@@ -25,6 +25,7 @@ class TeamSettings:
     hostname: str = "localhost"
     auth_token: str = ""
     ui_password: str = ""
+    github_users: tuple[str, ...] = ()
     port_range_start: int = 50000
     port_range_end: int = 50100
     data_dir: str = ""
@@ -110,6 +111,11 @@ class Settings:
     repo_label: str = "oduflow.repo"
     image_label: str = "oduflow.image"
 
+    # OAuth (GitHub)
+    oauth_client_id: str = ""
+    oauth_client_secret: str = ""
+    oauth_base_url: str = ""
+
     # Config location
     etc_dir: str = ""
     toml_path: str = ""
@@ -138,6 +144,22 @@ class Settings:
             if team.hostname == hostname:
                 return team
         return None
+
+    def get_team_by_github_user(self, login: str) -> TeamSettings | None:
+        if not login:
+            return None
+        for team in self.teams.values():
+            if login in team.github_users:
+                return team
+        return None
+
+    @property
+    def oauth_enabled(self) -> bool:
+        return bool(self.oauth_client_id)
+
+    @property
+    def any_team_has_github_users(self) -> bool:
+        return any(t.github_users for t in self.teams.values())
 
     def get_team_by_ui_password(self, password: str) -> TeamSettings | None:
         if not password:
@@ -184,6 +206,39 @@ class Settings:
         if len(passwords) != len(set(passwords)):
             raise ValueError("Duplicate ui_password values across teams.")
 
+        # Validate OAuth settings: all-or-nothing
+        oauth_fields = [
+            self.oauth_client_id,
+            self.oauth_client_secret,
+            self.oauth_base_url,
+        ]
+        has_any = any(oauth_fields)
+        has_all = all(oauth_fields)
+        if has_any and not has_all:
+            missing = []
+            if not self.oauth_client_id:
+                missing.append("oauth_client_id")
+            if not self.oauth_client_secret:
+                missing.append("oauth_client_secret")
+            if not self.oauth_base_url:
+                missing.append("oauth_base_url")
+            raise ValueError(
+                f"Incomplete OAuth configuration: missing {', '.join(missing)}. "
+                "Set all three (oauth_client_id, oauth_client_secret, oauth_base_url) "
+                "or remove them entirely."
+            )
+
+        # Validate github_users: no duplicates across teams
+        if self.oauth_client_id:
+            all_gh_users: list[str] = []
+            for team in self.teams.values():
+                for user in team.github_users:
+                    if user in all_gh_users:
+                        raise ValueError(
+                            f"Duplicate github_users entry '{user}' across teams."
+                        )
+                    all_gh_users.append(user)
+
     @staticmethod
     def from_toml(path: str) -> Settings:
         with open(path, "rb") as f:
@@ -193,6 +248,7 @@ class Settings:
         routing = raw.get("routing", {})
         database = raw.get("database", {})
         storage = raw.get("storage", {})
+        oauth = raw.get("oauth", server)  # [oauth] section or fall back to [server]
 
         etc_dir = _resolve_etc_dir()
         base_data_dir = _resolve_data_dir(storage.get("data_dir", ""))
@@ -221,11 +277,15 @@ class Settings:
             )
             hostname = re.sub(r"^https?://", "", raw_hostname).strip()
 
+            raw_gh_users = team_cfg.get("github_users", [])
+            github_users = tuple(str(u) for u in raw_gh_users)
+
             teams[team_id] = TeamSettings(
                 team_id=team_id,
                 hostname=hostname,
                 auth_token=str(team_cfg.get("auth_token", "")),
                 ui_password=str(team_cfg.get("ui_password", "")),
+                github_users=github_users,
                 port_range_start=port_start,
                 port_range_end=port_end,
                 data_dir=team_data_dir,
@@ -249,6 +309,9 @@ class Settings:
             postgres_image=str(database.get("image", "postgres:15")),
             base_data_dir=base_data_dir,
             overlay_threshold_mb=int(storage.get("overlay_threshold_mb", 50)),
+            oauth_client_id=str(oauth.get("oauth_client_id", "")).strip(),
+            oauth_client_secret=str(oauth.get("oauth_client_secret", "")).strip(),
+            oauth_base_url=str(oauth.get("oauth_base_url", "")).strip(),
             etc_dir=etc_dir,
             toml_path=path,
             teams=teams,
