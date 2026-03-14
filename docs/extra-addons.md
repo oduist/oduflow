@@ -40,10 +40,10 @@ When creating an environment, specify which extra repos to mount:
 
 ```bash
 # Mount enterprise addons on branch 17.0
-oduflow call create_environment feature-x https://github.com/company/addons.git odoo:17.0 default enterprise 17.0
+oduflow call create_environment feature-x "" default https://github.com/company/addons.git odoo:17.0 "enterprise:17.0"
 
 # Mount multiple extra repos
-oduflow call create_environment feature-x https://github.com/company/addons.git odoo:17.0 default "enterprise,custom-themes" 17.0
+oduflow call create_environment feature-x "" default https://github.com/company/addons.git odoo:17.0 "enterprise:17.0,custom-themes:main"
 ```
 
 Oduflow automatically:
@@ -111,7 +111,7 @@ Delete and recreate the environment. The new environment will get a fresh worktr
 
 ```bash
 oduflow call delete_environment feature-x
-oduflow call create_environment feature-x ... "enterprise:17.0"
+oduflow call create_environment feature-x "" default https://github.com/company/addons.git odoo:17.0 "enterprise:17.0"
 ```
 
 !!! tip

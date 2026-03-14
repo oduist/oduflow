@@ -7,14 +7,14 @@
 ## Creating Environments
 
 ```bash
-# Create with a named template (template_name, repo_url, odoo_image)
-oduflow call create_environment feature-login myproject https://github.com/owner/repo.git odoo:17.0
+# Create with a named template (env_name, template_name, repo_url, odoo_image)
+oduflow call create_environment feature-login "" myproject https://github.com/owner/repo.git odoo:17.0
 
 # Create without a template (fresh Odoo with -i base)
-oduflow call create_environment feature-login none https://github.com/owner/repo.git odoo:17.0
+oduflow call create_environment feature-login "" none https://github.com/owner/repo.git odoo:17.0
 
 # Create with JSON arguments (more explicit)
-oduflow call create_environment '{"branch_name":"feature-login","template_name":"myproject","repo_url":"https://github.com/owner/repo.git","odoo_image":"odoo:17.0"}'
+oduflow call create_environment '{"branch":"feature-login","template_name":"myproject","repo_url":"https://github.com/owner/repo.git","odoo_image":"odoo:17.0"}'
 ```
 
 When creating an environment, Oduflow:
@@ -130,7 +130,7 @@ Python scripts receive the following environment variables: `ODOO_DB`, `DB_HOST`
 Pass `sanitize=false` when creating an environment to skip all sanitization (both team-level and per-project):
 
 ```bash
-oduflow call create_environment '{"branch_name":"my-branch","template_name":"mytemplate","repo_url":"https://...","odoo_image":"odoo:17.0","sanitize":false}'
+oduflow call create_environment '{"branch":"my-branch","template_name":"mytemplate","repo_url":"https://...","odoo_image":"odoo:17.0","sanitize":false}'
 ```
 
 !!! note

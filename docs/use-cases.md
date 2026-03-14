@@ -8,7 +8,7 @@ The most common workflow — test your changes against real production data:
 
 ```bash
 # Create an environment for your feature branch
-oduflow call create_environment feature-login default https://github.com/company/odoo-addons.git odoo:17.0
+oduflow call create_environment feature-login "" default https://github.com/company/odoo-addons.git odoo:17.0
 
 # Make changes, push to remote, then pull into the environment
 oduflow call pull_and_apply feature-login
@@ -24,7 +24,7 @@ Reproduce a production bug with real data:
 
 ```bash
 # Spin up an environment with production data
-oduflow call create_environment bug-12345 default https://github.com/company/odoo-addons.git odoo:17.0
+oduflow call create_environment bug-12345 "" default https://github.com/company/odoo-addons.git odoo:17.0
 
 # Debug inside the container
 oduflow call run_odoo_command bug-12345 "python3 -c 'import odoo; ...'"
@@ -38,7 +38,7 @@ oduflow call run_odoo_command bug-12345 "psql -h oduflow-db -U odoo -d oduflow_b
 Run Odoo tests in an isolated environment:
 
 ```bash
-oduflow call create_environment test-suite default https://github.com/company/odoo-addons.git odoo:17.0
+oduflow call create_environment test-suite "" default https://github.com/company/odoo-addons.git odoo:17.0
 oduflow call run_odoo_tests test-suite sale_custom,invoice_custom
 oduflow call delete_environment test-suite
 ```
@@ -57,7 +57,7 @@ oduflow template-up --odoo-image odoo:17.0 --template-name default
 oduflow template-down --template-name default
 
 # Now create environments that start with your customized setup
-oduflow call create_environment dev default https://github.com/company/new-project.git odoo:17.0
+oduflow call create_environment dev "" default https://github.com/company/new-project.git odoo:17.0
 ```
 
 ## 🔄 Multiple Odoo Versions
@@ -70,8 +70,8 @@ oduflow init-template --odoo-image odoo:15.0 --template-name v15
 oduflow init-template --odoo-image odoo:17.0 --template-name v17
 
 # Create environments targeting specific versions
-oduflow call create_environment legacy-fix v15 https://github.com/company/v15-addons.git odoo:15.0
-oduflow call create_environment new-feature v17 https://github.com/company/v17-addons.git odoo:17.0
+oduflow call create_environment legacy-fix "" v15 https://github.com/company/v15-addons.git odoo:15.0
+oduflow call create_environment new-feature "" v17 https://github.com/company/v17-addons.git odoo:17.0
 ```
 
 ## 🤖 AI-Assisted Development
@@ -122,7 +122,7 @@ alwaysApply: true
 
 1. **Check**: Call `list_environments`. If an environment matching the current branch already exists, use it.
 2. **Create**: If not, use `create_environment`:
-   - `branch_name`: `<current branch>`
+   - `branch`: `<current branch>`
    - `repo_url`: `<repository URL>` (HTTPS)
    - `odoo_image`: `odoo19_prod` (IMPORTANT: always use this image)
 3. **Auth**: On a 401/403 error, suggest `setup_repo_auth`.
@@ -150,7 +150,7 @@ Set up a full-stack development environment:
 
 ```bash
 # Create the Odoo environment
-oduflow call create_environment dev default https://github.com/company/odoo-addons.git odoo:17.0
+oduflow call create_environment dev "" default https://github.com/company/odoo-addons.git odoo:17.0
 
 # Add Redis for caching
 oduflow call create_service redis redis:7 6379
@@ -169,7 +169,7 @@ Use `oduflow call` in your CI pipeline:
 # .github/workflows/test.yml
 steps:
   - name: Create test environment
-    run: oduflow call create_environment ci-${{ github.sha }} default ${{ github.repository }} odoo:17.0
+    run: oduflow call create_environment ci-${{ github.sha }} "" default ${{ github.repository }} odoo:17.0
 
   - name: Install and test
     run: |
@@ -238,7 +238,7 @@ Evolve your template as the project grows:
 
 ```bash
 # 1. Create an environment for template changes
-oduflow call create_environment template-update default https://github.com/company/odoo-addons.git odoo:17.0
+oduflow call create_environment template-update "" default https://github.com/company/odoo-addons.git odoo:17.0
 
 # 2. Install new modules
 oduflow call install_odoo_modules template-update accounting,hr,project

@@ -30,7 +30,7 @@ All endpoints return JSON with an `ok` field. Authentication via HTTP Basic auth
 | Method | Endpoint | Description |
 |---|---|---|
 | `GET` | `/api/environments` | List all environments |
-| `POST` | `/api/environments/create` | Create a new environment (JSON body: `branch_name`, `repo_url`, `odoo_image`, `template_name`) |
+| `POST` | `/api/environments/create` | Create a new environment (JSON body: `env_name`, `repo_url`, `odoo_image`, `template_name`) |
 | `POST` | `/api/environments/{branch}/start` | Start an environment |
 | `POST` | `/api/environments/{branch}/stop` | Stop an environment |
 | `POST` | `/api/environments/{branch}/restart` | Restart an environment |

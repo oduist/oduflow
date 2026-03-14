@@ -146,7 +146,7 @@ Same JSON format in `claude_desktop_config.json` or `.amp/settings.json`.
 ## Typical Agent Workflow
 
 1. Call `list_environments` to check if an environment for the branch exists
-2. If not, call `create_environment` with `branch_name`, `template_name`, `repo_url`, and `odoo_image`
+2. If not, call `create_environment` with `branch`, `template_name`, `repo_url`, and `odoo_image`
 3. Write code, `git push`, then call `pull_and_apply` (auto-detects what to do)
 4. Use `install_odoo_modules` / `run_odoo_tests` / `get_environment_logs` to verify
 5. Call `delete_environment` when the task is done
@@ -527,7 +527,7 @@ The most common workflow — test your changes against real production data:
 
 ```bash
 # Create an environment for your feature branch
-oduflow call create_environment feature-login default https://github.com/company/odoo-addons.git odoo:17.0
+oduflow call create_environment feature-login "" default https://github.com/company/odoo-addons.git odoo:17.0
 
 # Make changes, push to remote, then pull into the environment
 oduflow call pull_and_apply feature-login
@@ -543,7 +543,7 @@ Reproduce a production bug with real data:
 
 ```bash
 # Spin up an environment with production data
-oduflow call create_environment bug-12345 default https://github.com/company/odoo-addons.git odoo:17.0
+oduflow call create_environment bug-12345 "" default https://github.com/company/odoo-addons.git odoo:17.0
 
 # Debug inside the container
 oduflow call run_odoo_command bug-12345 "python3 -c 'import odoo; ...'"
@@ -557,7 +557,7 @@ oduflow call run_odoo_command bug-12345 "psql -h oduflow-db -U odoo -d oduflow_b
 Run Odoo tests in an isolated environment:
 
 ```bash
-oduflow call create_environment test-suite default https://github.com/company/odoo-addons.git odoo:17.0
+oduflow call create_environment test-suite "" default https://github.com/company/odoo-addons.git odoo:17.0
 oduflow call run_odoo_tests test-suite sale_custom,invoice_custom
 oduflow call delete_environment test-suite
 ```
@@ -576,7 +576,7 @@ oduflow template-up --odoo-image odoo:17.0 --template-name default
 oduflow template-down --template-name default
 
 # Now create environments that start with your customized setup
-oduflow call create_environment dev default https://github.com/company/new-project.git odoo:17.0
+oduflow call create_environment dev "" default https://github.com/company/new-project.git odoo:17.0
 ```
 
 ## 🔄 Multiple Odoo Versions
@@ -589,8 +589,8 @@ oduflow init-template --odoo-image odoo:15.0 --template-name v15
 oduflow init-template --odoo-image odoo:17.0 --template-name v17
 
 # Create environments targeting specific versions
-oduflow call create_environment legacy-fix v15 https://github.com/company/v15-addons.git odoo:15.0
-oduflow call create_environment new-feature v17 https://github.com/company/v17-addons.git odoo:17.0
+oduflow call create_environment legacy-fix "" v15 https://github.com/company/v15-addons.git odoo:15.0
+oduflow call create_environment new-feature "" v17 https://github.com/company/v17-addons.git odoo:17.0
 ```
 
 ## 🤖 AI-Assisted Development
@@ -641,7 +641,7 @@ alwaysApply: true
 
 1. **Check**: Call `list_environments`. If an environment matching the current branch already exists, use it.
 2. **Create**: If not, use `create_environment`:
-   - `branch_name`: `<current branch>`
+   - `branch`: `<current branch>`
    - `repo_url`: `<repository URL>` (HTTPS)
    - `odoo_image`: `odoo19_prod` (IMPORTANT: always use this image)
 3. **Auth**: On a 401/403 error, suggest `setup_repo_auth`.
@@ -669,7 +669,7 @@ Set up a full-stack development environment:
 
 ```bash
 # Create the Odoo environment
-oduflow call create_environment dev default https://github.com/company/odoo-addons.git odoo:17.0
+oduflow call create_environment dev "" default https://github.com/company/odoo-addons.git odoo:17.0
 
 # Add Redis for caching
 oduflow call create_service redis redis:7 6379
@@ -688,7 +688,7 @@ Use `oduflow call` in your CI pipeline:
 # .github/workflows/test.yml
 steps:
   - name: Create test environment
-    run: oduflow call create_environment ci-${{ github.sha }} default ${{ github.repository }} odoo:17.0
+    run: oduflow call create_environment ci-${{ github.sha }} "" default ${{ github.repository }} odoo:17.0
 
   - name: Install and test
     run: |
@@ -757,7 +757,7 @@ Evolve your template as the project grows:
 
 ```bash
 # 1. Create an environment for template changes
-oduflow call create_environment template-update default https://github.com/company/odoo-addons.git odoo:17.0
+oduflow call create_environment template-update "" default https://github.com/company/odoo-addons.git odoo:17.0
 
 # 2. Install new modules
 oduflow call install_odoo_modules template-update accounting,hr,project
@@ -911,7 +911,7 @@ Each template profile can contain a `metadata.json` file that stores defaults an
 }
 ```
 
-When `create_environment` is called with a template name, `repo_url`, `odoo_image`, and `extra_addons` are automatically loaded from metadata if not explicitly provided. This means after importing or configuring a template, you can create environments with just `branch_name` and `template_name` — all other parameters are inherited.
+When `create_environment` is called with a template name, `repo_url`, `odoo_image`, and `extra_addons` are automatically loaded from metadata if not explicitly provided. This means after importing or configuring a template, you can create environments with just `branch` and `template_name` — all other parameters are inherited.
 
 The `use_overlay` flag determines whether new environments use fuse-overlayfs (for large filestores) or a simple copy (for small ones). It is set automatically based on `overlay_threshold_mb` (in `[storage]`) when the template is created.
 
@@ -940,14 +940,14 @@ The `use_overlay` flag determines whether new environments use fuse-overlayfs (f
 ## Creating Environments
 
 ```bash
-# Create with a named template (template_name, repo_url, odoo_image)
-oduflow call create_environment feature-login myproject https://github.com/owner/repo.git odoo:17.0
+# Create with a named template (env_name, template_name, repo_url, odoo_image)
+oduflow call create_environment feature-login "" myproject https://github.com/owner/repo.git odoo:17.0
 
 # Create without a template (fresh Odoo with -i base)
-oduflow call create_environment feature-login none https://github.com/owner/repo.git odoo:17.0
+oduflow call create_environment feature-login "" none https://github.com/owner/repo.git odoo:17.0
 
 # Create with JSON arguments (more explicit)
-oduflow call create_environment '{"branch_name":"feature-login","template_name":"myproject","repo_url":"https://github.com/owner/repo.git","odoo_image":"odoo:17.0"}'
+oduflow call create_environment '{"branch":"feature-login","template_name":"myproject","repo_url":"https://github.com/owner/repo.git","odoo_image":"odoo:17.0"}'
 ```
 
 When creating an environment, Oduflow:
@@ -1063,7 +1063,7 @@ Python scripts receive the following environment variables: `ODOO_DB`, `DB_HOST`
 Pass `sanitize=false` when creating an environment to skip all sanitization (both team-level and per-project):
 
 ```bash
-oduflow call create_environment '{"branch_name":"my-branch","template_name":"mytemplate","repo_url":"https://...","odoo_image":"odoo:17.0","sanitize":false}'
+oduflow call create_environment '{"branch":"my-branch","template_name":"mytemplate","repo_url":"https://...","odoo_image":"odoo:17.0","sanitize":false}'
 ```
 
 !!! note
@@ -1380,10 +1380,10 @@ When creating an environment, specify which extra repos to mount:
 
 ```bash
 # Mount enterprise addons on branch 17.0
-oduflow call create_environment feature-x https://github.com/company/addons.git odoo:17.0 default enterprise 17.0
+oduflow call create_environment feature-x "" default https://github.com/company/addons.git odoo:17.0 "enterprise:17.0"
 
 # Mount multiple extra repos
-oduflow call create_environment feature-x https://github.com/company/addons.git odoo:17.0 default "enterprise,custom-themes" 17.0
+oduflow call create_environment feature-x "" default https://github.com/company/addons.git odoo:17.0 "enterprise:17.0,custom-themes:main"
 ```
 
 Oduflow automatically:
@@ -1451,7 +1451,7 @@ Delete and recreate the environment. The new environment will get a fresh worktr
 
 ```bash
 oduflow call delete_environment feature-x
-oduflow call create_environment feature-x ... "enterprise:17.0"
+oduflow call create_environment feature-x "" default https://github.com/company/addons.git odoo:17.0 "enterprise:17.0"
 ```
 
 !!! tip
@@ -1491,7 +1491,7 @@ All endpoints return JSON with an `ok` field. Authentication via HTTP Basic auth
 | Method | Endpoint | Description |
 |---|---|---|
 | `GET` | `/api/environments` | List all environments |
-| `POST` | `/api/environments/create` | Create a new environment (JSON body: `branch_name`, `repo_url`, `odoo_image`, `template_name`) |
+| `POST` | `/api/environments/create` | Create a new environment (JSON body: `env_name`, `repo_url`, `odoo_image`, `template_name`) |
 | `POST` | `/api/environments/{branch}/start` | Start an environment |
 | `POST` | `/api/environments/{branch}/stop` | Stop an environment |
 | `POST` | `/api/environments/{branch}/restart` | Restart an environment |
@@ -1751,7 +1751,7 @@ You can invoke any registered MCP tool directly from the terminal using `oduflow
 oduflow call
 
 # Call a tool with positional arguments (mapped to parameters in order)
-oduflow call create_environment dev "" https://github.com/owner/repo.git odoo:17.0
+oduflow call create_environment dev "" "" https://github.com/owner/repo.git odoo:17.0
 oduflow call delete_environment dev
 oduflow call list_environments
 oduflow call get_environment_logs main 50
@@ -1759,7 +1759,7 @@ oduflow call run_odoo_command dev "ls /mnt/extra-addons"
 oduflow call create_service redis redis:7 6379
 
 # Call a tool with JSON-encoded arguments
-oduflow call create_environment '{"branch_name":"dev","repo_url":"https://github.com/owner/repo.git","odoo_image":"odoo:17.0","template_name":"myproject"}'
+oduflow call create_environment '{"branch":"dev","repo_url":"https://github.com/owner/repo.git","odoo_image":"odoo:17.0","template_name":"myproject"}'
 
 # Type coercion is automatic: int, bool, and float parameters are cast from strings
 oduflow call get_environment_logs dev 500

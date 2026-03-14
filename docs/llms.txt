@@ -146,7 +146,7 @@ Same JSON format in `claude_desktop_config.json` or `.amp/settings.json`.
 ## Typical Agent Workflow
 
 1. Call `list_environments` to check if an environment for the branch exists
-2. If not, call `create_environment` with `branch_name`, `template_name`, `repo_url`, and `odoo_image`
+2. If not, call `create_environment` with `branch`, `template_name`, `repo_url`, and `odoo_image`
 3. Write code, `git push`, then call `pull_and_apply` (auto-detects what to do)
 4. Use `install_odoo_modules` / `run_odoo_tests` / `get_environment_logs` to verify
 5. Call `delete_environment` when the task is done
