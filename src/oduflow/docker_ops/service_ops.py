@@ -55,18 +55,20 @@ def create_service(
     port: int,
     hostname: str | None = None,
     env_vars: dict[str, str] | None = None,
+    host_mode: bool = False,
 ) -> dict[str, str]:
     client = get_client()
     container_name = f"oduflow-svc-{name}"
 
-    # Check that the shared network exists
-    try:
-        client.networks.get(settings.shared_network)
-    except docker.errors.NotFound:
-        raise PrerequisiteNotMetError(
-            f"Shared network '{settings.shared_network}' not found. "
-            "System not initialized. Restart oduflow."
-        )
+    # Check that the shared network exists (not needed for host mode)
+    if not host_mode:
+        try:
+            client.networks.get(settings.shared_network)
+        except docker.errors.NotFound:
+            raise PrerequisiteNotMetError(
+                f"Shared network '{settings.shared_network}' not found. "
+                "System not initialized. Restart oduflow."
+            )
 
     # Check for existing container
     try:
@@ -86,10 +88,15 @@ def create_service(
         "image": image,
         "name": container_name,
         "detach": True,
-        "network": settings.shared_network,
         "labels": labels,
         "restart_policy": {"Name": "unless-stopped"},
     }
+
+    if host_mode:
+        run_kwargs["network_mode"] = "host"
+        labels["oduflow.host_mode"] = "true"
+    else:
+        run_kwargs["network"] = settings.shared_network
 
     if settings.routing_mode == "traefik":
         if not hostname:
@@ -102,12 +109,18 @@ def create_service(
         labels[f"traefik.http.routers.{container_name}.tls.certresolver"] = (
             "letsencrypt"
         )
-        labels[f"traefik.http.services.{container_name}.loadbalancer.server.port"] = (
-            str(port)
-        )
+        if host_mode:
+            labels[
+                f"traefik.http.services.{container_name}.loadbalancer.server.url"
+            ] = f"http://host.docker.internal:{port}"
+        else:
+            labels[
+                f"traefik.http.services.{container_name}.loadbalancer.server.port"
+            ] = str(port)
         url = f"https://{hostname}"
     else:
-        run_kwargs["ports"] = {f"{port}/tcp": port}
+        if not host_mode:
+            run_kwargs["ports"] = {f"{port}/tcp": port}
         url = f"http://{team.hostname}:{port}"
 
     if env_vars:
@@ -126,6 +139,7 @@ def create_service(
             hostname=hostname,
             env_vars=env_vars,
             base_hostname=team.hostname,
+            host_mode=host_mode,
         )
     except Exception:
         logger.warning("Failed to save service preset for %s", name, exc_info=True)
@@ -191,12 +205,10 @@ def list_services(settings: Settings, team: TeamSettings) -> list[dict]:
         # Extract port and URL
         port_num = None
         url = None
+        is_host_mode = container.labels.get("oduflow.host_mode") == "true"
 
         if settings.routing_mode == "traefik":
             rule_label = f"traefik.http.routers.oduflow-svc-{svc_name}.rule"
-            port_label = (
-                f"traefik.http.services.oduflow-svc-{svc_name}.loadbalancer.server.port"
-            )
 
             rule_value = container.labels.get(rule_label, "")
             match = re.search(r"Host\(`([^`]+)`\)", rule_value)
@@ -204,24 +216,43 @@ def list_services(settings: Settings, team: TeamSettings) -> list[dict]:
                 traefik_hostname = match.group(1)
                 url = f"https://{traefik_hostname}"
 
-            label_port = container.labels.get(port_label)
-            if label_port:
-                port_num = int(label_port)
+            if is_host_mode:
+                url_label = f"traefik.http.services.oduflow-svc-{svc_name}.loadbalancer.server.url"
+                url_value = container.labels.get(url_label, "")
+                port_match = re.search(r":(\d+)$", url_value)
+                if port_match:
+                    port_num = int(port_match.group(1))
+            else:
+                port_label = f"traefik.http.services.oduflow-svc-{svc_name}.loadbalancer.server.port"
+                label_port = container.labels.get(port_label)
+                if label_port:
+                    port_num = int(label_port)
         else:
-            ports_dict = container.attrs.get("NetworkSettings", {}).get("Ports", {})
-            if ports_dict:
-                for port_key, mappings in ports_dict.items():
-                    # Extract port number from key like "6379/tcp"
-                    port_match = re.match(r"(\d+)/", port_key)
-                    if port_match:
-                        port_num = int(port_match.group(1))
-                    if mappings:
-                        for mapping in mappings:
-                            host_port = mapping.get("HostPort")
-                            if host_port:
-                                url = f"http://{team.hostname}:{host_port}"
-                                break
-                    break  # only process first port entry
+            if is_host_mode:
+                # In host mode without traefik, port is not mapped via Docker
+                # Try to get it from the preset
+                try:
+                    preset = service_presets.get_preset(team, svc_name)
+                    port_num = preset.get("port")
+                except Exception:
+                    pass
+                if port_num:
+                    url = f"http://{team.hostname}:{port_num}"
+            else:
+                ports_dict = container.attrs.get("NetworkSettings", {}).get("Ports", {})
+                if ports_dict:
+                    for port_key, mappings in ports_dict.items():
+                        # Extract port number from key like "6379/tcp"
+                        port_match = re.match(r"(\d+)/", port_key)
+                        if port_match:
+                            port_num = int(port_match.group(1))
+                        if mappings:
+                            for mapping in mappings:
+                                host_port = mapping.get("HostPort")
+                                if host_port:
+                                    url = f"http://{team.hostname}:{host_port}"
+                                    break
+                        break  # only process first port entry
 
         result.append(
             {
@@ -232,6 +263,7 @@ def list_services(settings: Settings, team: TeamSettings) -> list[dict]:
                 "port": port_num,
                 "url": url,
                 "env_vars": env_vars,
+                "host_mode": is_host_mode,
             }
         )
 
@@ -268,30 +300,47 @@ def update_service(settings: Settings, team: TeamSettings, name: str) -> dict[st
             if key not in _SYSTEM_ENV_KEYS:
                 env_vars[key] = value
 
+    # Detect host mode
+    is_host_mode = container.labels.get("oduflow.host_mode") == "true"
+
     # Capture port and hostname depending on routing mode
     port: int | None = None
     hostname: str | None = None
 
     if settings.routing_mode == "traefik":
         rule_label = f"traefik.http.routers.{container_name}.rule"
-        port_label = f"traefik.http.services.{container_name}.loadbalancer.server.port"
 
         rule_value = container.labels.get(rule_label, "")
         match = re.search(r"Host\(`([^`]+)`\)", rule_value)
         if match:
             hostname = match.group(1)
 
-        label_port = container.labels.get(port_label)
-        if label_port:
-            port = int(label_port)
+        if is_host_mode:
+            url_label = f"traefik.http.services.{container_name}.loadbalancer.server.url"
+            url_value = container.labels.get(url_label, "")
+            port_match = re.search(r":(\d+)$", url_value)
+            if port_match:
+                port = int(port_match.group(1))
+        else:
+            port_label = f"traefik.http.services.{container_name}.loadbalancer.server.port"
+            label_port = container.labels.get(port_label)
+            if label_port:
+                port = int(label_port)
     else:
-        ports_dict = container.attrs.get("NetworkSettings", {}).get("Ports", {})
-        if ports_dict:
-            for port_key in ports_dict:
-                port_match = re.match(r"(\d+)/", port_key)
-                if port_match:
-                    port = int(port_match.group(1))
-                    break
+        if is_host_mode:
+            try:
+                preset = service_presets.get_preset(team, name)
+                port = preset.get("port")
+            except Exception:
+                pass
+        else:
+            ports_dict = container.attrs.get("NetworkSettings", {}).get("Ports", {})
+            if ports_dict:
+                for port_key in ports_dict:
+                    port_match = re.match(r"(\d+)/", port_key)
+                    if port_match:
+                        port = int(port_match.group(1))
+                        break
 
     if port is None:
         raise NotFoundError(f"Cannot determine port for service '{name}'.")
@@ -334,6 +383,7 @@ def update_service(settings: Settings, team: TeamSettings, name: str) -> dict[st
         port=port,
         hostname=hostname,
         env_vars=env_vars or None,
+        host_mode=is_host_mode,
     )
 
     result["image_updated"] = True

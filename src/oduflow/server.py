@@ -1554,6 +1554,7 @@ def create_service(
     port: int,
     hostname: str = "",
     env_vars: str = "",
+    host_mode: bool = False,
     ctx: Context = None,
 ) -> str:
     """
@@ -1565,6 +1566,7 @@ def create_service(
         port: The container port the service listens on.
         hostname: Custom hostname for traefik routing (optional, traefik mode only).
         env_vars: Comma-separated KEY=VALUE pairs (e.g. "MEILI_MASTER_KEY=abc,MEILI_ENV=production").
+        host_mode: Run the container in host network mode instead of the shared Docker network. Use when the service needs direct host network access. Traefik routing still works.
     """
     settings = _get_settings()
     team = _resolve_team(ctx)
@@ -1581,6 +1583,7 @@ def create_service(
         port,
         hostname=hostname or None,
         env_vars=parsed_env,
+        host_mode=host_mode,
     )
     return (
         f"Service created successfully!\n"
@@ -1680,6 +1683,7 @@ def restore_service(name: str, ctx: Context = None) -> str:
         port=preset["port"],
         hostname=preset.get("hostname") or None,
         env_vars=preset.get("env_vars") or None,
+        host_mode=preset.get("host_mode", False),
     )
     return (
         f"Service restored from preset!\n"

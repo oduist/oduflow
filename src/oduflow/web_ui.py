@@ -452,6 +452,7 @@ def _build_routes(
             port = body.get("port")
             hostname = (body.get("hostname") or "").strip() or None
             env_vars_raw = (body.get("env_vars") or "").strip()
+            host_mode = bool(body.get("host_mode", False))
             if not name or not image or not port:
                 return JSONResponse(
                     {"ok": False, "error": "name, image and port are required."},
@@ -474,6 +475,7 @@ def _build_routes(
                 int(port),
                 hostname=hostname,
                 env_vars=env_vars,
+                host_mode=host_mode,
             )
             return JSONResponse({"ok": True, "result": result})
         except FlowError as e:
@@ -558,6 +560,7 @@ def _build_routes(
             port = body.get("port")
             hostname = (body.get("hostname") or "").strip() or None
             env_vars_raw = (body.get("env_vars") or "").strip()
+            host_mode = bool(body.get("host_mode", False))
             if not name or not image or not port:
                 return JSONResponse(
                     {"ok": False, "error": "name, image and port are required."},
@@ -580,6 +583,7 @@ def _build_routes(
                 int(port),
                 hostname=hostname,
                 env_vars=env_vars,
+                host_mode=host_mode,
             )
             return JSONResponse({"ok": True, "result": result})
         except FlowError as e:
