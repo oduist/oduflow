@@ -633,6 +633,10 @@
         <label for="svc-envvars">Environment variables (optional)</label>
         <textarea id="svc-envvars" rows="5" placeholder="KEY1=val1&#10;KEY2=val2"></textarea>
       </div>
+      <div class="form-group" style="display:flex;align-items:center;gap:8px;">
+        <input type="checkbox" id="svc-host-mode">
+        <label for="svc-host-mode" style="margin-bottom:0;cursor:pointer;">Host network mode</label>
+      </div>
       <div class="form-actions">
         <button class="btn" onclick="closeCreateServiceModal()">Cancel</button>
         <button class="btn-create" id="svc-submit" onclick="submitCreateService()">Create</button>
@@ -673,6 +677,10 @@
       <div class="form-group">
         <label for="restore-svc-envvars">Environment variables (optional)</label>
         <textarea id="restore-svc-envvars" rows="4" placeholder="KEY1=val1&#10;KEY2=val2"></textarea>
+      </div>
+      <div class="form-group" style="display:flex;align-items:center;gap:8px;">
+        <input type="checkbox" id="restore-svc-host-mode">
+        <label for="restore-svc-host-mode" style="margin-bottom:0;cursor:pointer;">Host network mode</label>
       </div>
       <div class="form-actions">
         <button class="btn" onclick="closeRestoreServiceModal()">Cancel</button>
@@ -1564,12 +1572,13 @@ async function showServiceLogs(name) {
 }
 
 function openCreateServiceModal() {
-  document.getElementById('svc-name').value = '';
-  document.getElementById('svc-image').value = '';
-  document.getElementById('svc-port').value = '';
-  document.getElementById('svc-hostname').value = '';
-  document.getElementById('svc-envvars').value = '';
-  var errEl = document.getElementById('create-svc-error');
+   document.getElementById('svc-name').value = '';
+   document.getElementById('svc-image').value = '';
+   document.getElementById('svc-port').value = '';
+   document.getElementById('svc-hostname').value = '';
+   document.getElementById('svc-envvars').value = '';
+   document.getElementById('svc-host-mode').checked = false;
+   var errEl = document.getElementById('create-svc-error');
   errEl.style.display = 'none';
   errEl.textContent = '';
   document.getElementById('svc-submit').disabled = false;
@@ -1602,7 +1611,8 @@ async function submitCreateService() {
   btn.textContent = 'Creating...';
 
   try {
-    var payload = { name: name, image: image, port: parseInt(port, 10) };
+    var hostMode = document.getElementById('svc-host-mode').checked;
+    var payload = { name: name, image: image, port: parseInt(port, 10), host_mode: hostMode };
     if (hostname) payload.hostname = hostname;
     if (envvars) payload.env_vars = envvars;
     var r = await fetch(API_SERVICES + '/create', {
@@ -1698,27 +1708,29 @@ async function doDeletePreset(name) {
 }
 
 function _fillRestoreFields(p) {
-  document.getElementById('restore-svc-name').value = p.name || '';
-  document.getElementById('restore-svc-image').value = p.image || '';
-  document.getElementById('restore-svc-port').value = p.port || '';
-  document.getElementById('restore-svc-hostname').value = p.hostname || '';
-  var envStr = '';
-  if (p.env_vars && Object.keys(p.env_vars).length) {
-    envStr = Object.keys(p.env_vars).map(function(k) { return k + '=' + p.env_vars[k]; }).join('\n');
-  }
-  document.getElementById('restore-svc-envvars').value = envStr;
+   document.getElementById('restore-svc-name').value = p.name || '';
+   document.getElementById('restore-svc-image').value = p.image || '';
+   document.getElementById('restore-svc-port').value = p.port || '';
+   document.getElementById('restore-svc-hostname').value = p.hostname || '';
+   var envStr = '';
+   if (p.env_vars && Object.keys(p.env_vars).length) {
+     envStr = Object.keys(p.env_vars).map(function(k) { return k + '=' + p.env_vars[k]; }).join('\n');
+   }
+   document.getElementById('restore-svc-envvars').value = envStr;
+   document.getElementById('restore-svc-host-mode').checked = !!p.host_mode;
 }
 
 function openRestoreServiceModal(preselect) {
-  var sel = document.getElementById('restore-svc-select');
-  var errEl = document.getElementById('restore-svc-error');
-  errEl.style.display = 'none';
-  document.getElementById('restore-svc-submit').disabled = false;
-  document.getElementById('restore-svc-name').value = '';
-  document.getElementById('restore-svc-image').value = '';
-  document.getElementById('restore-svc-port').value = '';
-  document.getElementById('restore-svc-hostname').value = '';
-  document.getElementById('restore-svc-envvars').value = '';
+   var sel = document.getElementById('restore-svc-select');
+   var errEl = document.getElementById('restore-svc-error');
+   errEl.style.display = 'none';
+   document.getElementById('restore-svc-submit').disabled = false;
+   document.getElementById('restore-svc-name').value = '';
+   document.getElementById('restore-svc-image').value = '';
+   document.getElementById('restore-svc-port').value = '';
+   document.getElementById('restore-svc-hostname').value = '';
+   document.getElementById('restore-svc-envvars').value = '';
+   document.getElementById('restore-svc-host-mode').checked = false;
 
   sel.innerHTML = '<option value="">Loading...</option>';
   document.getElementById('restore-svc-modal').classList.add('show');
@@ -1772,7 +1784,8 @@ async function submitRestoreService() {
   btn.disabled = true;
   btn.textContent = 'Restoring...';
   try {
-    var payload = { name: name, image: image, port: parseInt(port, 10) };
+    var hostMode = document.getElementById('restore-svc-host-mode').checked;
+    var payload = { name: name, image: image, port: parseInt(port, 10), host_mode: hostMode };
     if (hostname) payload.hostname = hostname;
     if (envvars) payload.env_vars = envvars;
     var r = await fetch(API_PRESETS + '/restore', {
