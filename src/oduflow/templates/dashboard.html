@@ -154,7 +154,7 @@
     margin-bottom: 4px;
     color: var(--text);
   }
-  .form-group input, .form-group textarea {
+  .form-group input:not([type="checkbox"]), .form-group textarea {
     width: 100%;
     padding: 8px 10px;
     font-size: 13px;
@@ -167,7 +167,7 @@
     box-sizing: border-box;
   }
   .form-group textarea { resize: vertical; }
-  .form-group input:focus, .form-group textarea:focus { border-color: var(--accent); }
+  .form-group input:not([type="checkbox"]):focus, .form-group textarea:focus { border-color: var(--accent); }
   .form-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 18px; }
   .form-error { color: var(--red); font-size: 12px; margin-bottom: 10px; display: none; }
   .modal-overlay {
