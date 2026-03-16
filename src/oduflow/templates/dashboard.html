@@ -70,6 +70,7 @@
   }
   .env-header .left { display: flex; align-items: center; gap: 10px; }
   .branch-name { font-weight: 600; font-size: 15px; }
+  .git-branch { font-size: 12px; color: var(--text-dim); font-weight: 400; }
   .badge {
     display: inline-block;
     padding: 2px 8px;
@@ -627,7 +628,7 @@
       </div>
       <div class="form-group">
         <label for="svc-hostname">Hostname (optional, traefik mode)</label>
-        <input type="text" id="svc-hostname" placeholder="e.g. redis.example.com">
+        <input type="text" id="svc-hostname" placeholder="e.g. redis">
       </div>
       <div class="form-group">
         <label for="svc-envvars">Environment variables (optional)</label>
@@ -672,7 +673,7 @@
       </div>
       <div class="form-group">
         <label for="restore-svc-hostname">Hostname (optional, traefik mode)</label>
-        <input type="text" id="restore-svc-hostname" placeholder="e.g. redis.example.com">
+        <input type="text" id="restore-svc-hostname" placeholder="e.g. redis">
       </div>
       <div class="form-group">
         <label for="restore-svc-envvars">Environment variables (optional)</label>
@@ -896,6 +897,7 @@ function renderEnvironments(envs) {
       '<div class="env-header">' +
         '<div class="left">' +
           '<span class="branch-name">' + esc(env.branch) + '</span>' +
+          (env.git_branch && env.git_branch !== env.branch ? '<span class="git-branch">⎇ ' + esc(env.git_branch) + '</span>' : '') +
           '<span class="badge ' + badgeClass(env.status) + '">' + esc(env.status) + '</span>' +
         '</div>' +
         '<div class="env-actions">' +
