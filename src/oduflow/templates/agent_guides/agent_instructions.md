@@ -91,7 +91,8 @@ MCP endpoint: `http://<host>:8000/mcp`
 | Tool | When to use |
 |---|---|
 | `create_service(name, image, port, hostname?, env_vars?)` | Spin up a sidecar (Redis, Meilisearch, etc.). Accessible from Odoo containers via `oduflow-svc-{name}:{port}` |
-| `list_services` / `get_service_logs(name)` / `delete_service(name)` | Manage auxiliary services |
+| `list_services` / `get_service_logs(name)` / `restart_service(name)` / `delete_service(name)` | Manage auxiliary services |
+| `run_service_command(name, command, user?)` | Execute a shell command inside a service container. Default user is `root`. Output is cached if large — use `read_output` for drill-down |
 
 ### Template Management (use with caution)
 
@@ -105,10 +106,10 @@ MCP endpoint: `http://<host>:8000/mcp`
 
 ## Working with Large Outputs
 
-Tools like `install_odoo_modules`, `upgrade_odoo_modules`, `run_odoo_tests`, `pull_and_apply`, `run_odoo_command`, and `run_db_query` can produce very large output (tens of thousands of lines). When output exceeds ~5K characters, Oduflow automatically:
+Tools like `install_odoo_modules`, `upgrade_odoo_modules`, `run_odoo_tests`, `pull_and_apply`, `run_odoo_command`, `run_service_command`, and `run_db_query` can produce very large output (tens of thousands of lines). When output exceeds ~5K characters, Oduflow automatically:
 
 1. **Caches** the full output on the server
-2. **Returns a smart summary**: first 20 lines + all errors with context + last 30 lines + metadata
+2. **Returns a smart summary**: first 200 lines + all errors with context + last 100 lines + metadata
 3. **Includes an `output_id`** for drill-down
 
 The summary footer looks like:

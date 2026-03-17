@@ -152,6 +152,24 @@ def create_service(
     }
 
 
+def restart_service(settings: Settings, name: str) -> dict[str, str]:
+    client = get_client()
+    container_name = f"oduflow-svc-{name}"
+
+    try:
+        container = client.containers.get(container_name)
+    except docker.errors.NotFound:
+        raise NotFoundError(f"Service '{name}' not found")
+
+    container.restart()
+    logger.info("Restarted service container %s", container_name)
+
+    return {
+        "name": name,
+        "container_name": container_name,
+    }
+
+
 def delete_service(settings: Settings, name: str) -> dict[str, str]:
     client = get_client()
     container_name = f"oduflow-svc-{name}"
@@ -405,3 +423,27 @@ def get_service_logs(settings: Settings, name: str, lines: int = 100) -> str:
 
     output = container.logs(tail=lines, timestamps=True)
     return output.decode("utf-8")
+
+
+def run_command_in_service(
+    settings: Settings, name: str, command: str, user: str = "root"
+) -> dict[str, object]:
+    client = get_client()
+    container_name = f"oduflow-svc-{name}"
+
+    try:
+        container = client.containers.get(container_name)
+    except docker.errors.NotFound:
+        raise NotFoundError(f"Service '{name}' not found")
+
+    logger.info(
+        "Executing command in service",
+        extra={"service": name, "command": command, "user": user},
+    )
+    exit_code, output = container.exec_run(command, user=user)
+    output_str = output.decode("utf-8") if isinstance(output, bytes) else str(output)
+
+    return {
+        "exit_code": exit_code,
+        "output": output_str,
+    }

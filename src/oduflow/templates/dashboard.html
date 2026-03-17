@@ -1501,6 +1501,7 @@ function renderServices(services) {
         '</div>' +
         '<div class="svc-actions">' +
           '<button class="btn btn-update" onclick="doUpdateService(\'' + escAttr(svc.name) + '\')">Update</button>' +
+          '<button class="btn btn-restart" onclick="doRestartService(\'' + escAttr(svc.name) + '\')">Restart</button>' +
           '<button class="btn btn-logs" onclick="showServiceLogs(\'' + escAttr(svc.name) + '\')">Logs</button>' +
           '<button class="btn btn-delete" onclick="doDeleteService(\'' + escAttr(svc.name) + '\')">Delete</button>' +
         '</div>' +
@@ -1533,6 +1534,24 @@ async function doUpdateService(name) {
       }
     } else {
       showToast(data.error || 'Update failed', true);
+    }
+  } catch (e) {
+    showToast('Connection error: ' + e.message, true);
+  }
+  await loadServices();
+}
+
+async function doRestartService(name) {
+  if (!confirm('Restart service "' + name + '"?')) return;
+  var card = document.querySelector('[data-svc="' + name + '"]');
+  if (card) card.querySelectorAll('.btn').forEach(function(b) { b.disabled = true; });
+  try {
+    var r = await fetch(API_SERVICES + '/' + encodeURIComponent(name) + '/restart', { method: 'POST' });
+    var data = await r.json();
+    if (data.ok) {
+      showToast('Service "' + name + '" restarted');
+    } else {
+      showToast(data.error || 'Restart failed', true);
     }
   } catch (e) {
     showToast('Connection error: ' + e.message, true);

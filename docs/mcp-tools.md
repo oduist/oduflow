@@ -41,9 +41,11 @@ All tools are accessible via MCP clients (Cursor, Cline, Amp, etc.) and the CLI 
 | **Auxiliary Services** | | |
 | `create_service` | ✓ | Create a managed service container (e.g. Redis, Meilisearch) |
 | `delete_service` | ✓ | Stop and remove a service container |
+| `restart_service` | | Restart a service container |
 | `update_service` | ✓ | Pull latest image and recreate the service |
 | `list_services` | | List all managed service containers |
 | `get_service_logs` | | Retrieve service container logs |
+| `run_service_command` | | Execute a shell command inside a service container |
 | **Service Presets** | | |
 | `list_service_presets` | | List saved service presets (configurations that can be restored) |
 | `restore_service` | ✓ | Restore a service from a saved preset |

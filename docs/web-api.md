@@ -15,7 +15,7 @@ When running in HTTP mode, a web dashboard is available at the server root (`htt
 - **Live log viewer** for each environment
 - **Interactive terminal** — WebSocket-based Odoo Python shell directly in the browser
 - **Container and system resource stats** (CPU, RAM, load average)
-- **Service management** — create, update, delete, and view logs for auxiliary services
+- **Service management** — create, update, restart, delete, and view logs for auxiliary services
 - **Extra addons management** — clone, pull, protect, and delete extra addon repositories
 - **Git credential management** — list, add, delete, and validate stored git credentials
 - **Template listing** — view available template profiles with their status
@@ -49,6 +49,7 @@ All endpoints return JSON with an `ok` field. Authentication via HTTP Basic auth
 | `GET` | `/api/services` | List all managed services |
 | `POST` | `/api/services/create` | Create a service (JSON body: `name`, `image`, `port`, `hostname`, `env_vars`) |
 | `POST` | `/api/services/{name}/update` | Update (pull latest image & recreate) |
+| `POST` | `/api/services/{name}/restart` | Restart a service |
 | `POST` | `/api/services/{name}/delete` | Delete a service |
 | `GET` | `/api/services/{name}/logs?n=200` | Get service logs |
 

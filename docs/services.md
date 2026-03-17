@@ -35,11 +35,17 @@ oduflow call list_services
 # View service logs
 oduflow call get_service_logs redis 200
 
+# Restart a service
+oduflow call restart_service redis
+
 # Update a service (pull latest image, recreate container with same settings)
 oduflow call update_service meilisearch
 
 # Delete a service
 oduflow call delete_service redis
+
+# Execute a command inside a service container
+oduflow call run_service_command redis "redis-cli ping"
 ```
 
 ## Service Update Flow

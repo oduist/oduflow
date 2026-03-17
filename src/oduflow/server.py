@@ -28,8 +28,8 @@ logger = logging.getLogger("oduflow")
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
 _CACHE_THRESHOLD = 5_000  # chars — outputs above this are cached + summarized
-_SUMMARY_HEAD_LINES = 20
-_SUMMARY_TAIL_LINES = 30
+_SUMMARY_HEAD_LINES = 200
+_SUMMARY_TAIL_LINES = 100
 _SUMMARY_ERROR_CONTEXT = 5
 
 _output_cache = OutputCache()
@@ -1640,6 +1640,19 @@ def delete_service(name: str, ctx: Context = None) -> str:
 
 @mcp.tool()
 @handle_errors
+def restart_service(name: str, ctx: Context = None) -> str:
+    """
+    Restart a managed auxiliary service container.
+
+    Args:
+        name: The name of the service to restart (e.g. "redis", "meilisearch").
+    """
+    result = service_ops.restart_service(_get_settings(), name)
+    return f"Service '{result['name']}' restarted."
+
+
+@mcp.tool()
+@handle_errors
 def list_service_presets(ctx: Context = None) -> str:
     """List saved service presets (configurations that can be restored)."""
     team = _resolve_team(ctx)
@@ -1744,6 +1757,34 @@ def get_service_logs(name: str, n_lines: int = 100, ctx: Context = None) -> str:
     """
     output = service_ops.get_service_logs(_get_settings(), name, n_lines)
     return f"Recent logs for service '{name}':\n\n{_ANSI_RE.sub('', output)}"
+
+
+@mcp.tool()
+@handle_errors
+def run_service_command(
+    name: str, command: str, user: str = "root", ctx: Context = None
+) -> str:
+    """
+    Execute an arbitrary shell command inside a managed auxiliary service container.
+
+    Args:
+        name: The name of the service (e.g. "redis", "meilisearch").
+        command: The shell command to execute (e.g. "redis-cli ping", "ls /data").
+        user: The OS user to run the command as (default "root").
+    """
+    result = service_ops.run_command_in_service(
+        _get_settings(), name, command, user
+    )
+    exit_code = result["exit_code"]
+    output = result.get("output", "")
+    status = "Success" if exit_code == 0 else "Error"
+    header = f"{status}. Exit code: {exit_code}."
+    return _maybe_cache(
+        output,
+        header,
+        "run_service_command",
+        f"service={name}, command={command[:80]}",
+    )
 
 
 # =============================================================================

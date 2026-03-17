@@ -504,6 +504,17 @@ def _build_routes(
         finally:
             locks.release_team(team.team_id)
 
+    def api_service_restart(request: Request) -> JSONResponse:
+        name = request.path_params["name"]
+        try:
+            result = service_ops.restart_service(get_settings(), name)
+            return JSONResponse({"ok": True, "result": result})
+        except FlowError as e:
+            return _error_response(e)
+        except Exception as e:
+            logger.exception("Unexpected error in api_service_restart")
+            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+
     def api_service_delete(request: Request) -> JSONResponse:
         name = request.path_params["name"]
         team = _get_ui_team(request)
@@ -1135,6 +1146,7 @@ def _build_routes(
         Route("/api/services", api_services, methods=["GET"]),
         Route("/api/services/create", api_service_create, methods=["POST"]),
         Route("/api/services/{name}/update", api_service_update, methods=["POST"]),
+        Route("/api/services/{name}/restart", api_service_restart, methods=["POST"]),
         Route("/api/services/{name}/delete", api_service_delete, methods=["POST"]),
         Route("/api/services/{name}/logs", api_service_logs, methods=["GET"]),
         Route("/api/service-presets", api_service_presets, methods=["GET"]),
