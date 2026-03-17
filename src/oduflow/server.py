@@ -1905,14 +1905,30 @@ def _run_upgrade(settings: Settings) -> None:
 
     # --- Filter to only new or changed files (compare by size) ---
     files_to_update: list[tuple[str, str, str, str]] = []  # (label, src, dest, tag)
+    files_kept: list[tuple[str, str]] = []  # (label, dest)
     for label, src, dest in files_to_write:
         if not os.path.isfile(dest):
             files_to_update.append((label, src, dest, "new"))
         elif os.path.getsize(src) != os.path.getsize(dest):
+            # Check if the deployed file is marked with # KEEP on the first line
+            try:
+                with open(dest, "r", encoding="utf-8", errors="replace") as f:
+                    first_line = f.readline().strip()
+                if first_line == "# KEEP":
+                    files_kept.append((label, dest))
+                    continue
+            except OSError:
+                pass
             files_to_update.append((label, src, dest, "changed"))
 
-    if not files_to_update:
+    if not files_to_update and not files_kept:
         print("\nAll bundled files are already up to date. Nothing to do.")
+        return
+
+    if not files_to_update and files_kept:
+        print("\nAll changed files are marked with # KEEP. Nothing to overwrite.")
+        for label, dest in files_kept:
+            print(f"  {label} {dest} (kept)")
         return
 
     # --- Warning banner ---
@@ -1924,6 +1940,11 @@ def _run_upgrade(settings: Settings) -> None:
     print()
     for label, _src, dest, tag in files_to_update:
         print(f"  {label} {dest} ({tag})")
+    if files_kept:
+        print()
+        print("  The following files are marked with # KEEP and will NOT be overwritten:")
+        for label, dest in files_kept:
+            print(f"  {label} {dest} (kept)")
     print()
     print("  If you have made custom changes to any of these files,")
     print("  press Ctrl+C NOW and back them up before proceeding.")

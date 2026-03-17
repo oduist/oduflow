@@ -338,6 +338,8 @@ uv sync          # or: python -m venv .venv && pip install -e .
 uv tool upgrade oduflow
 ```
 
+During upgrade, Oduflow overwrites bundled files with latest versions. To prevent a customized file from being overwritten, add `# KEEP` as the very first line. Kept files are skipped and listed as `(kept)` in upgrade output.
+
 ## Configuration Reference
 
 All settings are configured via a TOML file. Oduflow searches for `oduflow.toml` in the following order:

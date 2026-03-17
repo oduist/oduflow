@@ -69,6 +69,14 @@ port_range = [50000, 50100]           # port range for Odoo containers
 oduflow init              # Create shared Docker network, PostgreSQL, team directories
 ```
 
+### Upgrade
+
+```bash
+uv tool upgrade oduflow
+```
+
+During upgrade, bundled files are overwritten. Add `# KEEP` as the first line of any customized file to prevent it from being overwritten.
+
 ### Set up a template
 
 ```bash

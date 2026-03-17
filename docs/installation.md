@@ -74,6 +74,17 @@ uv sync          # or: python -m venv .venv && pip install -e .
 uv tool upgrade oduflow
 ```
 
+During upgrade, Oduflow overwrites bundled files (agent guides, `postgresql.conf`, sanitize scripts, `odoo.conf`) with the latest versions. If you have customized any of these files and want to prevent them from being overwritten, add `# KEEP` as the **very first line** of the file:
+
+```conf
+# KEEP
+# My custom postgresql.conf
+listen_addresses = '*'
+...
+```
+
+Files marked with `# KEEP` will be skipped during upgrade and listed as `(kept)` in the upgrade output.
+
 ## Configuration Reference
 
 All settings are configured via a TOML file. Oduflow searches for `oduflow.toml` in the following order:
