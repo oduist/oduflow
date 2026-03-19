@@ -16,6 +16,7 @@ from oduflow.docker_ops import (
     service_ops,
     service_presets,
     system_ops,
+    volume_ops,
 )
 from oduflow import git_ops
 from oduflow.errors import FlowError
@@ -1555,6 +1556,7 @@ def create_service(
     hostname: str = "",
     env_vars: str = "",
     host_mode: bool = False,
+    volumes: str = "",
     ctx: Context = None,
 ) -> str:
     """
@@ -1567,6 +1569,7 @@ def create_service(
         hostname: Custom hostname for traefik routing (optional, traefik mode only).
         env_vars: Comma-separated KEY=VALUE pairs (e.g. "MEILI_MASTER_KEY=abc,MEILI_ENV=production").
         host_mode: Run the container in host network mode instead of the shared Docker network. Use when the service needs direct host network access. Traefik routing still works.
+        volumes: Comma-separated volume mounts (e.g. "mydata:/data,config:/etc/app:ro"). Each entry is volume_name:/container/path[:ro|rw]. Volumes must be created first via create_volume.
     """
     settings = _get_settings()
     team = _resolve_team(ctx)
@@ -1575,6 +1578,7 @@ def create_service(
         parsed_env = dict(
             item.split("=", 1) for item in env_vars.split(",") if "=" in item
         )
+    parsed_volumes = volume_ops.parse_volume_mounts(volumes) if volumes else None
     result = service_ops.create_service(
         settings,
         team,
@@ -1584,13 +1588,20 @@ def create_service(
         hostname=hostname or None,
         env_vars=parsed_env,
         host_mode=host_mode,
+        volumes=parsed_volumes,
     )
+    vol_info = ""
+    if parsed_volumes:
+        vol_info = "\nVolumes: " + ", ".join(
+            f"{v['volume']}:{v['mount_path']}:{v['mode']}" for v in parsed_volumes
+        )
     return (
         f"Service created successfully!\n"
         f"Name: {result['name']}\n"
         f"Container: {result['container_name']}\n"
         f"Image: {result['image']}\n"
         f"URL: {result['url']}"
+        f"{vol_info}"
     )
 
 
@@ -1688,6 +1699,7 @@ def restore_service(name: str, ctx: Context = None) -> str:
     settings = _get_settings()
     team = _resolve_team(ctx)
     preset = service_presets.get_preset(team, name)
+    preset_volumes = preset.get("volumes") or None
     result = service_ops.create_service(
         settings,
         team,
@@ -1697,13 +1709,21 @@ def restore_service(name: str, ctx: Context = None) -> str:
         hostname=preset.get("hostname") or None,
         env_vars=preset.get("env_vars") or None,
         host_mode=preset.get("host_mode", False),
+        volumes=preset_volumes,
     )
+    vol_info = ""
+    if preset_volumes:
+        vol_info = "\nVolumes: " + ", ".join(
+            f"{v['volume']}:{v['mount_path']}:{v.get('mode', 'rw')}"
+            for v in preset_volumes
+        )
     return (
         f"Service restored from preset!\n"
         f"Name: {result['name']}\n"
         f"Container: {result['container_name']}\n"
         f"Image: {result['image']}\n"
         f"URL: {result['url']}"
+        f"{vol_info}"
     )
 
 
@@ -1772,9 +1792,7 @@ def run_service_command(
         command: The shell command to execute (e.g. "redis-cli ping", "ls /data").
         user: The OS user to run the command as (default "root").
     """
-    result = service_ops.run_command_in_service(
-        _get_settings(), name, command, user
-    )
+    result = service_ops.run_command_in_service(_get_settings(), name, command, user)
     exit_code = result["exit_code"]
     output = result.get("output", "")
     status = "Success" if exit_code == 0 else "Error"
@@ -1785,6 +1803,100 @@ def run_service_command(
         "run_service_command",
         f"service={name}, command={command[:80]}",
     )
+
+
+# =============================================================================
+# Volume management
+# =============================================================================
+
+
+@mcp.tool()
+@handle_errors
+@with_team_lock
+def create_volume(
+    name: str,
+    description: str = "",
+    ctx: Context = None,
+) -> str:
+    """
+    Create a named Docker volume for use with services.
+
+    Args:
+        name: Short name for the volume (e.g. "redis-data", "meilisearch-data").
+        description: Optional description of what this volume is for.
+    """
+    settings = _get_settings()
+    team = _resolve_team(ctx)
+    result = volume_ops.create_volume(settings, team, name, description=description)
+    desc_info = (
+        f"\nDescription: {result['description']}" if result["description"] else ""
+    )
+    return (
+        f"Volume created successfully!\n"
+        f"Name: {result['name']}\n"
+        f"Docker name: {result['docker_name']}"
+        f"{desc_info}"
+    )
+
+
+@mcp.tool()
+@handle_errors
+def list_volumes(ctx: Context = None) -> str:
+    """List all managed Docker volumes and their usage by services."""
+    settings = _get_settings()
+    team = _resolve_team(ctx)
+    vols = volume_ops.list_volumes(settings, team)
+    if not vols:
+        return "No volumes found. Create one with create_volume."
+    output = "Managed Volumes:\n"
+    for vol in vols:
+        used = ", ".join(vol["used_by"]) if vol["used_by"] else "not in use"
+        desc = f" — {vol['description']}" if vol.get("description") else ""
+        output += f"- {vol['name']}{desc}\n"
+        output += f"  Docker name: {vol['docker_name']}\n"
+        output += f"  Used by: {used}\n"
+    return output
+
+
+@mcp.tool()
+@handle_errors
+def inspect_volume(name: str, ctx: Context = None) -> str:
+    """
+    Get detailed information about a specific volume, including which services use it.
+
+    Args:
+        name: The name of the volume to inspect.
+    """
+    settings = _get_settings()
+    team = _resolve_team(ctx)
+    vol = volume_ops.inspect_volume(settings, team, name)
+    used = ", ".join(vol["used_by"]) if vol["used_by"] else "not in use"
+    desc = f"\nDescription: {vol['description']}" if vol.get("description") else ""
+    return (
+        f"Volume: {vol['name']}\n"
+        f"Docker name: {vol['docker_name']}"
+        f"{desc}\n"
+        f"Driver: {vol['driver']}\n"
+        f"Created: {vol['created_at']}\n"
+        f"Mountpoint: {vol['mountpoint']}\n"
+        f"Used by: {used}"
+    )
+
+
+@mcp.tool()
+@handle_errors
+@with_team_lock
+def delete_volume(name: str, ctx: Context = None) -> str:
+    """
+    Delete a managed Docker volume. Fails if the volume is in use by any service.
+
+    Args:
+        name: The name of the volume to delete.
+    """
+    settings = _get_settings()
+    team = _resolve_team(ctx)
+    result = volume_ops.delete_volume(settings, team, name)
+    return f"Volume '{result['name']}' deleted."
 
 
 # =============================================================================
@@ -1942,7 +2054,9 @@ def _run_upgrade(settings: Settings) -> None:
         print(f"  {label} {dest} ({tag})")
     if files_kept:
         print()
-        print("  The following files are marked with # KEEP and will NOT be overwritten:")
+        print(
+            "  The following files are marked with # KEEP and will NOT be overwritten:"
+        )
         for label, dest in files_kept:
             print(f"  {label} {dest} (kept)")
     print()

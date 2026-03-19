@@ -7,6 +7,7 @@ import docker
 
 from oduflow.docker_ops.client import get_client
 from oduflow.docker_ops import service_presets
+from oduflow.docker_ops import volume_ops
 from oduflow.errors import ConflictError, NotFoundError, PrerequisiteNotMetError
 from oduflow.settings import Settings, TeamSettings
 
@@ -56,6 +57,7 @@ def create_service(
     hostname: str | None = None,
     env_vars: dict[str, str] | None = None,
     host_mode: bool = False,
+    volumes: list[dict[str, str]] | None = None,
 ) -> dict[str, str]:
     client = get_client()
     container_name = f"oduflow-svc-{name}"
@@ -126,6 +128,11 @@ def create_service(
     if env_vars:
         run_kwargs["environment"] = env_vars
 
+    if volumes:
+        vol_binds = volume_ops.resolve_volume_binds(team, volumes)
+        if vol_binds:
+            run_kwargs["volumes"] = vol_binds
+
     client.containers.run(**run_kwargs)
     logger.info("Created service container %s from image %s", container_name, image)
 
@@ -140,6 +147,7 @@ def create_service(
             env_vars=env_vars,
             base_hostname=team.hostname,
             host_mode=host_mode,
+            volumes=volumes,
         )
     except Exception:
         logger.warning("Failed to save service preset for %s", name, exc_info=True)
@@ -272,6 +280,27 @@ def list_services(settings: Settings, team: TeamSettings) -> list[dict]:
                                     break
                         break  # only process first port entry
 
+        # Extract volume mounts
+        svc_volumes: list[dict[str, str]] = []
+        mounts = container.attrs.get("Mounts", [])
+        for mount in mounts:
+            if mount.get("Type") == "volume":
+                vol_docker_name = mount.get("Name", "")
+                # Extract short name from oduflow-vol-{team}-{name}
+                prefix = f"oduflow-vol-{team.team_id}-"
+                short_name = (
+                    vol_docker_name[len(prefix) :]
+                    if vol_docker_name.startswith(prefix)
+                    else vol_docker_name
+                )
+                svc_volumes.append(
+                    {
+                        "volume": short_name,
+                        "mount_path": mount.get("Destination", ""),
+                        "mode": "ro" if not mount.get("RW", True) else "rw",
+                    }
+                )
+
         result.append(
             {
                 "name": svc_name,
@@ -282,6 +311,7 @@ def list_services(settings: Settings, team: TeamSettings) -> list[dict]:
                 "url": url,
                 "env_vars": env_vars,
                 "host_mode": is_host_mode,
+                "volumes": svc_volumes,
             }
         )
 
@@ -334,13 +364,17 @@ def update_service(settings: Settings, team: TeamSettings, name: str) -> dict[st
             hostname = match.group(1)
 
         if is_host_mode:
-            url_label = f"traefik.http.services.{container_name}.loadbalancer.server.url"
+            url_label = (
+                f"traefik.http.services.{container_name}.loadbalancer.server.url"
+            )
             url_value = container.labels.get(url_label, "")
             port_match = re.search(r":(\d+)$", url_value)
             if port_match:
                 port = int(port_match.group(1))
         else:
-            port_label = f"traefik.http.services.{container_name}.loadbalancer.server.port"
+            port_label = (
+                f"traefik.http.services.{container_name}.loadbalancer.server.port"
+            )
             label_port = container.labels.get(port_label)
             if label_port:
                 port = int(label_port)
@@ -362,6 +396,23 @@ def update_service(settings: Settings, team: TeamSettings, name: str) -> dict[st
 
     if port is None:
         raise NotFoundError(f"Cannot determine port for service '{name}'.")
+
+    # Capture volume mounts from old container
+    old_volumes: list[dict[str, str]] = []
+    mounts = container.attrs.get("Mounts", [])
+    for mount in mounts:
+        if mount.get("Type") == "volume":
+            vol_docker_name = mount.get("Name", "")
+            prefix = f"oduflow-vol-{team.team_id}-"
+            if vol_docker_name.startswith(prefix):
+                short_name = vol_docker_name[len(prefix) :]
+                old_volumes.append(
+                    {
+                        "volume": short_name,
+                        "mount_path": mount.get("Destination", ""),
+                        "mode": "ro" if not mount.get("RW", True) else "rw",
+                    }
+                )
 
     # Capture old image digest
     old_digest = container.image.id  # e.g. sha256:abc...
@@ -402,6 +453,7 @@ def update_service(settings: Settings, team: TeamSettings, name: str) -> dict[st
         hostname=hostname,
         env_vars=env_vars or None,
         host_mode=is_host_mode,
+        volumes=old_volumes or None,
     )
 
     result["image_updated"] = True

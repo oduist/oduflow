@@ -13,7 +13,13 @@ from starlette.routing import Route, WebSocketRoute
 from starlette.types import ASGIApp, Receive, Scope, Send
 from starlette.websockets import WebSocket
 
-from oduflow.docker_ops import env_ops, service_ops, service_presets, system_ops
+from oduflow.docker_ops import (
+    env_ops,
+    service_ops,
+    service_presets,
+    system_ops,
+    volume_ops,
+)
 from oduflow.docker_ops.odoo_ops import get_environment_logs
 from oduflow.docker_ops.stats import get_container_stats, get_system_stats
 from oduflow.errors import BusyError, FlowError, NotFoundError
@@ -467,6 +473,10 @@ def _build_routes(
                     for item in re.split(r"[\n,]+", env_vars_raw)
                     if "=" in item
                 )
+            volumes_raw = (body.get("volumes") or "").strip()
+            parsed_volumes = (
+                volume_ops.parse_volume_mounts(volumes_raw) if volumes_raw else None
+            )
             result = service_ops.create_service(
                 get_settings(),
                 team,
@@ -476,6 +486,7 @@ def _build_routes(
                 hostname=hostname,
                 env_vars=env_vars,
                 host_mode=host_mode,
+                volumes=parsed_volumes,
             )
             return JSONResponse({"ok": True, "result": result})
         except FlowError as e:
@@ -586,6 +597,10 @@ def _build_routes(
                     for item in re.split(r"[\n,]+", env_vars_raw)
                     if "=" in item
                 )
+            volumes_raw = (body.get("volumes") or "").strip()
+            parsed_volumes = (
+                volume_ops.parse_volume_mounts(volumes_raw) if volumes_raw else None
+            )
             result = service_ops.create_service(
                 get_settings(),
                 team,
@@ -595,6 +610,7 @@ def _build_routes(
                 hostname=hostname,
                 env_vars=env_vars,
                 host_mode=host_mode,
+                volumes=parsed_volumes,
             )
             return JSONResponse({"ok": True, "result": result})
         except FlowError as e:
@@ -615,6 +631,61 @@ def _build_routes(
         except Exception as e:
             logger.exception("Unexpected error in api_service_preset_delete")
             return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+
+    def api_volumes(request: Request) -> JSONResponse:
+        try:
+            vols = volume_ops.list_volumes(get_settings(), _get_ui_team(request))
+            return JSONResponse({"ok": True, "volumes": vols})
+        except FlowError as e:
+            return _error_response(e)
+        except Exception as e:
+            logger.exception("Unexpected error in api_volumes")
+            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+
+    async def api_volume_create(request: Request) -> JSONResponse:
+        team = _get_ui_team(request)
+        try:
+            locks.acquire_team(team.team_id)
+        except BusyError as e:
+            return _error_response(e)
+        try:
+            body = await request.json()
+            name = (body.get("name") or "").strip()
+            description = (body.get("description") or "").strip()
+            if not name:
+                return JSONResponse(
+                    {"ok": False, "error": "Volume name is required."},
+                    status_code=400,
+                )
+            result = volume_ops.create_volume(
+                get_settings(), team, name, description=description
+            )
+            return JSONResponse({"ok": True, "result": result})
+        except FlowError as e:
+            return _error_response(e)
+        except Exception as e:
+            logger.exception("Unexpected error in api_volume_create")
+            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+        finally:
+            locks.release_team(team.team_id)
+
+    def api_volume_delete(request: Request) -> JSONResponse:
+        name = request.path_params["name"]
+        team = _get_ui_team(request)
+        try:
+            locks.acquire_team(team.team_id)
+        except BusyError as e:
+            return _error_response(e)
+        try:
+            result = volume_ops.delete_volume(get_settings(), team, name)
+            return JSONResponse({"ok": True, "result": result})
+        except FlowError as e:
+            return _error_response(e)
+        except Exception as e:
+            logger.exception("Unexpected error in api_volume_delete")
+            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+        finally:
+            locks.release_team(team.team_id)
 
     def api_agent_guides_list(request: Request) -> JSONResponse:
         try:
@@ -1156,6 +1227,9 @@ def _build_routes(
             api_service_preset_delete,
             methods=["POST"],
         ),
+        Route("/api/volumes", api_volumes, methods=["GET"]),
+        Route("/api/volumes/create", api_volume_create, methods=["POST"]),
+        Route("/api/volumes/{name}/delete", api_volume_delete, methods=["POST"]),
         Route("/api/extra-repos", api_extra_repos, methods=["GET"]),
         Route("/api/extra-repos/add", api_extra_repo_add, methods=["POST"]),
         Route("/api/extra-repos/{name}/pull", api_extra_repo_pull, methods=["POST"]),
