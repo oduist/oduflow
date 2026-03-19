@@ -51,11 +51,6 @@ Start a new Odoo project from scratch:
 # Generate a clean template with common modules
 oduflow init-template --odoo-image odoo:17.0 --template-name default --modules base,web,contacts,sale,purchase,stock
 
-# Customize the template interactively
-oduflow template-up --odoo-image odoo:17.0 --template-name default
-# → Install additional modules, configure settings, create demo users in the browser
-oduflow template-down --template-name default
-
 # Now create environments that start with your customized setup
 oduflow call create_environment dev "" default https://github.com/company/new-project.git odoo:17.0
 ```

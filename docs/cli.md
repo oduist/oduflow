@@ -45,12 +45,6 @@ All template commands accept `--team` to specify the team ID (default: `1`).
 # Generate a clean template from a Docker image
 oduflow init-template --odoo-image odoo:17.0 --template-name myproject [--modules base,web,sale] [--force] [--team 1]
 
-# Start interactive template editor
-oduflow template-up --odoo-image odoo:17.0 --template-name myproject [--team 1]
-
-# Stop template editor and save changes
-oduflow template-down --template-name myproject [--team 1]
-
 # Save a branch environment as the new template
 oduflow template-from-env <branch> --template-name myproject [--team 1]
 

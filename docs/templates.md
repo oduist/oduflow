@@ -56,28 +56,6 @@ cp -r /path/to/filestore/ /srv/oduflow/team_1/templates/default/filestore/
 oduflow reload-template default
 ```
 
-## Editing the Template Database
-
-Once you have a template, you can modify it interactively — install modules, configure settings, create demo data — and save the result back as the new template.
-
-**Start the template editor:**
-
-```bash
-oduflow template-up --odoo-image odoo:17.0 --template-name default
-```
-
-This starts an Odoo container that works **directly** with the template database and filestore (no overlays, no copies). Open the printed URL in your browser, log in, and make any changes you need.
-
-**Save and stop:**
-
-```bash
-oduflow template-down --template-name default
-```
-
-This stops the container, dumps the updated database, and restores the PostgreSQL template flag. The filestore is already updated in place since it was mounted directly.
-
-All environments created after this will be based on the updated template.
-
 ## Saving a Branch as Template
 
 When you've made significant changes in a branch environment (installed modules, created configurations), you can save it as the new template:
@@ -148,7 +126,7 @@ The `use_overlay` flag determines whether new environments use fuse-overlayfs (f
 | Regenerate template from scratch | `oduflow init-template --odoo-image odoo:17.0 --template-name default --force` |
 | Named template for a specific project | `oduflow init-template --odoo-image odoo:17.0 --template-name myproject` |
 | Have a production dump file | Place dump at `{data_dir}/team_{ID}/templates/default/dump.sql` and run `oduflow reload-template default` |
-| Need to install modules or configure the template | `oduflow template-up --odoo-image odoo:17.0 --template-name default` / `oduflow template-down --template-name default` |
+| Need to install modules or configure the template | Create an env, configure it, then `oduflow template-from-env my-branch --template-name default` |
 | Update the template from a newer production dump | `oduflow reload-template default --dump-path /path/to/new.dump` |
 | Save a branch environment as template | `oduflow template-from-env my-branch --template-name default` |
 | List all templates | `oduflow list-templates` |

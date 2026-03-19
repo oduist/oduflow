@@ -2154,34 +2154,6 @@ def _run_init_template(
     print(msg)
 
 
-def _run_template_up(
-    settings: Settings, team: TeamSettings, odoo_image: str, template_name: str = ""
-) -> None:
-    result = system_ops.template_up(
-        settings, team, odoo_image=odoo_image, template_name=template_name
-    )
-    print(
-        f"Template editor started.\n"
-        f"URL: {result['url']}\n"
-        f"Container: {result['container']}\n"
-        f"Database: {result['database']}\n"
-        f"Filestore: {result['filestore']}\n\n"
-        f"Make your changes in the browser, then run: oduflow template-down"
-    )
-
-
-def _run_template_down(
-    settings: Settings, team: TeamSettings, template_name: str = ""
-) -> None:
-    result = system_ops.template_down(settings, team, template_name=template_name)
-    print(
-        f"Template editor stopped.\n"
-        f"Dump saved: {result['dump']}\n"
-        f"Filestore: {result['filestore']}\n"
-        f"Template DB '{result['database']}' restored."
-    )
-
-
 def _run_template_from_env(
     settings: Settings, team: TeamSettings, branch: str, template_name: str = ""
 ) -> None:
@@ -2481,27 +2453,6 @@ def main() -> None:
     )
     p_init_tpl.add_argument("--team", default="1", help="Team ID (default: 1)")
 
-    p_tpl_up = sub.add_parser(
-        "template-up",
-        help="Start a template editor: Odoo working directly with template DB and filestore",
-    )
-    p_tpl_up.add_argument(
-        "--odoo-image", required=True, help="Docker image for Odoo (e.g. odoo:17.0)"
-    )
-    p_tpl_up.add_argument(
-        "--template-name", required=True, help="Template profile name"
-    )
-    p_tpl_up.add_argument("--team", default="1", help="Team ID (default: 1)")
-
-    p_tpl_down = sub.add_parser(
-        "template-down",
-        help="Stop the template editor, dump the updated DB, restore template flag",
-    )
-    p_tpl_down.add_argument(
-        "--template-name", required=True, help="Template profile name"
-    )
-    p_tpl_down.add_argument("--team", default="1", help="Team ID (default: 1)")
-
     p_tfe = sub.add_parser(
         "template-from-env", help="Save a branch environment as the new template"
     )
@@ -2677,19 +2628,6 @@ def main() -> None:
             template_name=args.template_name,
             force=args.force,
         )
-        return
-
-    if args.command == "template-up":
-        _run_template_up(
-            _settings,
-            _cli_team(),
-            odoo_image=args.odoo_image,
-            template_name=args.template_name,
-        )
-        return
-
-    if args.command == "template-down":
-        _run_template_down(_settings, _cli_team(), template_name=args.template_name)
         return
 
     if args.command == "template-from-env":

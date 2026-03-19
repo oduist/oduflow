@@ -572,11 +572,6 @@ Start a new Odoo project from scratch:
 # Generate a clean template with common modules
 oduflow init-template --odoo-image odoo:17.0 --template-name default --modules base,web,contacts,sale,purchase,stock
 
-# Customize the template interactively
-oduflow template-up --odoo-image odoo:17.0 --template-name default
-# → Install additional modules, configure settings, create demo users in the browser
-oduflow template-down --template-name default
-
 # Now create environments that start with your customized setup
 oduflow call create_environment dev "" default https://github.com/company/new-project.git odoo:17.0
 ```
@@ -833,28 +828,6 @@ cp -r /path/to/filestore/ /srv/oduflow/team_1/templates/default/filestore/
 oduflow reload-template default
 ```
 
-## Editing the Template Database
-
-Once you have a template, you can modify it interactively — install modules, configure settings, create demo data — and save the result back as the new template.
-
-**Start the template editor:**
-
-```bash
-oduflow template-up --odoo-image odoo:17.0 --template-name default
-```
-
-This starts an Odoo container that works **directly** with the template database and filestore (no overlays, no copies). Open the printed URL in your browser, log in, and make any changes you need.
-
-**Save and stop:**
-
-```bash
-oduflow template-down --template-name default
-```
-
-This stops the container, dumps the updated database, and restores the PostgreSQL template flag. The filestore is already updated in place since it was mounted directly.
-
-All environments created after this will be based on the updated template.
-
 ## Saving a Branch as Template
 
 When you've made significant changes in a branch environment (installed modules, created configurations), you can save it as the new template:
@@ -925,7 +898,7 @@ The `use_overlay` flag determines whether new environments use fuse-overlayfs (f
 | Regenerate template from scratch | `oduflow init-template --odoo-image odoo:17.0 --template-name default --force` |
 | Named template for a specific project | `oduflow init-template --odoo-image odoo:17.0 --template-name myproject` |
 | Have a production dump file | Place dump at `{data_dir}/team_{ID}/templates/default/dump.sql` and run `oduflow reload-template default` |
-| Need to install modules or configure the template | `oduflow template-up --odoo-image odoo:17.0 --template-name default` / `oduflow template-down --template-name default` |
+| Need to install modules or configure the template | Create an env, configure it, then `oduflow template-from-env my-branch --template-name default` |
 | Update the template from a newer production dump | `oduflow reload-template default --dump-path /path/to/new.dump` |
 | Save a branch environment as template | `oduflow template-from-env my-branch --template-name default` |
 | List all templates | `oduflow list-templates` |
@@ -1676,12 +1649,6 @@ All template commands accept `--team` to specify the team ID (default: `1`).
 # Generate a clean template from a Docker image
 oduflow init-template --odoo-image odoo:17.0 --template-name myproject [--modules base,web,sale] [--force] [--team 1]
 
-# Start interactive template editor
-oduflow template-up --odoo-image odoo:17.0 --template-name myproject [--team 1]
-
-# Stop template editor and save changes
-oduflow template-down --template-name myproject [--team 1]
-
 # Save a branch environment as the new template
 oduflow template-from-env <branch> --template-name myproject [--team 1]
 
@@ -2262,7 +2229,7 @@ src/oduflow/
   docker_ops/
     client.py           # docker.from_env() wrapper + UID/GID auto-detection
     system_ops.py       # init_system / destroy_system / reload_template / init_template /
-                        # template_up / template_down / save_env_as_template / delete_template / list_templates
+                        # save_env_as_template / delete_template / list_templates
     env_ops.py          # create / delete / start / stop / restart / rebuild / list / status / pull /
                         # apt/pip auto-install / filestore overlay mount
     odoo_ops.py         # install / upgrade / test / logs / shell / search / run_command

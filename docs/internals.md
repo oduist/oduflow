@@ -84,7 +84,7 @@ src/oduflow/
   docker_ops/
     client.py           # docker.from_env() wrapper + UID/GID auto-detection
     system_ops.py       # init_system / destroy_system / reload_template / init_template /
-                        # template_up / template_down / save_env_as_template / delete_template / list_templates
+                        # save_env_as_template / delete_template / list_templates
     env_ops.py          # create / delete / start / stop / restart / rebuild / list / status / pull /
                         # apt/pip auto-install / filestore overlay mount
     odoo_ops.py         # install / upgrade / test / logs / shell / search / run_command
