@@ -20,6 +20,15 @@ logger = logging.getLogger("oduflow")
 _VOLUME_NAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_.-]*$")
 
 
+def _vol_labels(vol) -> dict[str, str]:
+    """Return labels dict from a Docker Volume object.
+
+    The Docker SDK Volume object stores labels in ``attrs['Labels']``
+    (not as a direct ``.labels`` property like containers do).
+    """
+    return vol.attrs.get("Labels") or {}
+
+
 def _docker_volume_name(team: TeamSettings, name: str) -> str:
     """Return the Docker volume name: ``oduflow-vol-{team_id}-{name}``."""
     return f"oduflow-vol-{team.team_id}-{name}"
@@ -82,7 +91,8 @@ def list_volumes(settings: Settings, team: TeamSettings) -> list[dict]:
 
     result = []
     for vol in volumes:
-        vol_name = vol.labels.get("oduflow.volume", "")
+        labels = _vol_labels(vol)
+        vol_name = labels.get("oduflow.volume", "")
         if not vol_name:
             continue
         docker_name = vol.name
@@ -91,7 +101,7 @@ def list_volumes(settings: Settings, team: TeamSettings) -> list[dict]:
             {
                 "name": vol_name,
                 "docker_name": docker_name,
-                "description": vol.labels.get("oduflow.description", ""),
+                "description": labels.get("oduflow.description", ""),
                 "created_at": vol.attrs.get("CreatedAt", ""),
                 "used_by": used_by,
             }
@@ -111,13 +121,14 @@ def inspect_volume(settings: Settings, team: TeamSettings, name: str) -> dict:
     except docker.errors.NotFound:
         raise NotFoundError(f"Volume '{name}' not found.")
 
+    labels = _vol_labels(vol)
     usage = _find_all_volume_usage(settings, team)
     used_by = usage.get(docker_name, [])
 
     return {
         "name": name,
         "docker_name": docker_name,
-        "description": vol.labels.get("oduflow.description", ""),
+        "description": labels.get("oduflow.description", ""),
         "created_at": vol.attrs.get("CreatedAt", ""),
         "driver": vol.attrs.get("Driver", ""),
         "mountpoint": vol.attrs.get("Mountpoint", ""),

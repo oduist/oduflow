@@ -103,13 +103,15 @@ class TestListVolumes:
     def test_list_with_volumes(self, mock_docker_client):
         vol = MagicMock()
         vol.name = "oduflow-vol-1-redis-data"
-        vol.labels = {
-            "oduflow.managed": "true",
-            "oduflow.team": "1",
-            "oduflow.volume": "redis-data",
-            "oduflow.description": "Redis cache",
+        vol.attrs = {
+            "CreatedAt": "2025-01-01T00:00:00Z",
+            "Labels": {
+                "oduflow.managed": "true",
+                "oduflow.team": "1",
+                "oduflow.volume": "redis-data",
+                "oduflow.description": "Redis cache",
+            },
         }
-        vol.attrs = {"CreatedAt": "2025-01-01T00:00:00Z"}
         mock_docker_client.volumes.list.return_value = [vol]
         mock_docker_client.containers.list.return_value = []
 
@@ -122,13 +124,15 @@ class TestListVolumes:
     def test_list_with_usage(self, mock_docker_client):
         vol = MagicMock()
         vol.name = "oduflow-vol-1-redis-data"
-        vol.labels = {
-            "oduflow.managed": "true",
-            "oduflow.team": "1",
-            "oduflow.volume": "redis-data",
-            "oduflow.description": "",
+        vol.attrs = {
+            "CreatedAt": "2025-01-01T00:00:00Z",
+            "Labels": {
+                "oduflow.managed": "true",
+                "oduflow.team": "1",
+                "oduflow.volume": "redis-data",
+                "oduflow.description": "",
+            },
         }
-        vol.attrs = {"CreatedAt": "2025-01-01T00:00:00Z"}
         mock_docker_client.volumes.list.return_value = [vol]
 
         # Service container using this volume
@@ -155,22 +159,26 @@ class TestListVolumes:
     def test_list_sorted(self, mock_docker_client):
         vol_b = MagicMock()
         vol_b.name = "oduflow-vol-1-zz-data"
-        vol_b.labels = {
-            "oduflow.managed": "true",
-            "oduflow.team": "1",
-            "oduflow.volume": "zz-data",
-            "oduflow.description": "",
+        vol_b.attrs = {
+            "CreatedAt": "",
+            "Labels": {
+                "oduflow.managed": "true",
+                "oduflow.team": "1",
+                "oduflow.volume": "zz-data",
+                "oduflow.description": "",
+            },
         }
-        vol_b.attrs = {"CreatedAt": ""}
         vol_a = MagicMock()
         vol_a.name = "oduflow-vol-1-aa-data"
-        vol_a.labels = {
-            "oduflow.managed": "true",
-            "oduflow.team": "1",
-            "oduflow.volume": "aa-data",
-            "oduflow.description": "",
+        vol_a.attrs = {
+            "CreatedAt": "",
+            "Labels": {
+                "oduflow.managed": "true",
+                "oduflow.team": "1",
+                "oduflow.volume": "aa-data",
+                "oduflow.description": "",
+            },
         }
-        vol_a.attrs = {"CreatedAt": ""}
         mock_docker_client.volumes.list.return_value = [vol_b, vol_a]
         mock_docker_client.containers.list.return_value = []
 
@@ -182,14 +190,14 @@ class TestListVolumes:
 class TestInspectVolume:
     def test_inspect(self, mock_docker_client):
         vol = MagicMock()
-        vol.labels = {
-            "oduflow.volume": "redis-data",
-            "oduflow.description": "Redis cache",
-        }
         vol.attrs = {
             "CreatedAt": "2025-01-01T00:00:00Z",
             "Driver": "local",
             "Mountpoint": "/var/lib/docker/volumes/oduflow-vol-1-redis-data/_data",
+            "Labels": {
+                "oduflow.volume": "redis-data",
+                "oduflow.description": "Redis cache",
+            },
         }
         mock_docker_client.volumes.get.return_value = vol
         mock_docker_client.containers.list.return_value = []
