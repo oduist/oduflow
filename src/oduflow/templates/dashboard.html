@@ -450,6 +450,7 @@
 <div class="tabs">
   <button class="tab-btn active" data-tab="environments" onclick="switchTab('environments')">Environments</button>
   <button class="tab-btn" data-tab="services" onclick="switchTab('services')">Services</button>
+  <button class="tab-btn" data-tab="volumes" onclick="switchTab('volumes')">Volumes</button>
   <button class="tab-btn" data-tab="extra-addons" onclick="switchTab('extra-addons')">Extra Addons</button>
   <button class="tab-btn" data-tab="credentials" onclick="switchTab('credentials')">Credentials</button>
   <button class="tab-btn" data-tab="templates" onclick="switchTab('templates')">Templates</button>
@@ -474,6 +475,13 @@
     <h3 style="font-size:14px;font-weight:600;margin-bottom:10px;color:var(--text-dim);">Saved Presets</h3>
     <div id="svc-presets-list"></div>
   </div>
+</div>
+
+<div id="tab-volumes" class="tab-content">
+  <div style="display:flex;justify-content:flex-end;margin-bottom:12px;">
+    <button class="btn-create" onclick="openCreateVolumeModal()">+ Create Volume</button>
+  </div>
+  <div id="vol-list"></div>
 </div>
 
 <div id="tab-extra-addons" class="tab-content">
@@ -638,6 +646,10 @@
         <input type="checkbox" id="svc-host-mode">
         <label for="svc-host-mode" style="margin-bottom:0;cursor:pointer;">Host network mode</label>
       </div>
+      <div class="form-group">
+        <label for="svc-volumes">Volumes (optional)</label>
+        <textarea id="svc-volumes" rows="3" placeholder="volume_name:/container/path&#10;volume_name:/container/path:ro"></textarea>
+      </div>
       <div class="form-actions">
         <button class="btn" onclick="closeCreateServiceModal()">Cancel</button>
         <button class="btn-create" id="svc-submit" onclick="submitCreateService()">Create</button>
@@ -683,9 +695,36 @@
         <input type="checkbox" id="restore-svc-host-mode">
         <label for="restore-svc-host-mode" style="margin-bottom:0;cursor:pointer;">Host network mode</label>
       </div>
+      <div class="form-group">
+        <label for="restore-svc-volumes">Volumes (optional)</label>
+        <textarea id="restore-svc-volumes" rows="3" placeholder="volume_name:/container/path&#10;volume_name:/container/path:ro"></textarea>
+      </div>
       <div class="form-actions">
         <button class="btn" onclick="closeRestoreServiceModal()">Cancel</button>
         <button class="btn-create" id="restore-svc-submit" onclick="submitRestoreService()" style="background:var(--green);border-color:var(--green);">Restore</button>
+      </div>
+    </div>
+  </div>
+</div>
+<div class="modal-overlay" id="create-vol-modal" onclick="closeCreateVolumeModal(event)">
+  <div class="modal" style="max-width:440px;">
+    <div class="modal-header">
+      <h2>Create Volume</h2>
+      <button class="modal-close" onclick="closeCreateVolumeModal()">&times;</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-error" id="create-vol-error"></div>
+      <div class="form-group">
+        <label for="vol-name">Volume name</label>
+        <input type="text" id="vol-name" placeholder="e.g. redis-data, pg-backups">
+      </div>
+      <div class="form-group">
+        <label for="vol-description">Description (optional)</label>
+        <input type="text" id="vol-description" placeholder="e.g. Persistent Redis cache data">
+      </div>
+      <div class="form-actions">
+        <button class="btn" onclick="closeCreateVolumeModal()">Cancel</button>
+        <button class="btn-create" id="vol-submit" onclick="submitCreateVolume()">Create</button>
       </div>
     </div>
   </div>
@@ -1164,6 +1203,7 @@ function switchTab(name) {
   });
   if (name === 'templates') loadTemplates();
   if (name === 'services') loadServices();
+  if (name === 'volumes') loadVolumes();
   if (name === 'agent-guides') loadAgentGuides();
   if (name === 'extra-addons') loadExtraRepos();
   if (name === 'credentials') loadCredentials();
@@ -1493,6 +1533,11 @@ function renderServices(services) {
       var envStr = Object.keys(svc.env_vars).map(function(k) { return esc(k) + '=' + esc(maskValue(k, svc.env_vars[k])); }).join(', ');
       envHtml = '<div class="svc-meta"><span>Env: <strong>' + envStr + '</strong></span></div>';
     }
+    var volHtml = '';
+    if (svc.volumes && svc.volumes.length > 0) {
+      var volStr = svc.volumes.map(function(v) { return esc(v.volume) + ':' + esc(v.mount_path) + (v.mode === 'ro' ? ':ro' : ''); }).join(', ');
+      volHtml = '<div class="svc-meta"><span>Volumes: <strong>' + volStr + '</strong></span></div>';
+    }
     return '<div class="svc-card" data-svc="' + esc(svc.name) + '">' +
       '<div class="svc-header">' +
         '<div class="left">' +
@@ -1513,6 +1558,7 @@ function renderServices(services) {
       '</div>' +
       urlHtml +
       envHtml +
+      volHtml +
     '</div>';
   }).join('');
 }
@@ -1599,6 +1645,7 @@ function openCreateServiceModal() {
    document.getElementById('svc-hostname').value = '';
    document.getElementById('svc-envvars').value = '';
    document.getElementById('svc-host-mode').checked = false;
+   document.getElementById('svc-volumes').value = '';
    var errEl = document.getElementById('create-svc-error');
   errEl.style.display = 'none';
   errEl.textContent = '';
@@ -1633,9 +1680,11 @@ async function submitCreateService() {
 
   try {
     var hostMode = document.getElementById('svc-host-mode').checked;
+    var svcVolumes = document.getElementById('svc-volumes').value.trim();
     var payload = { name: name, image: image, port: parseInt(port, 10), host_mode: hostMode };
     if (hostname) payload.hostname = hostname;
     if (envvars) payload.env_vars = envvars;
+    if (svcVolumes) payload.volumes = svcVolumes;
     var r = await fetch(API_SERVICES + '/create', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
@@ -1703,6 +1752,7 @@ function renderPresetsList(presets) {
         '<span style="margin-left:12px;">Port: <strong>' + p.port + '</strong></span>' +
         (p.hostname ? '<span style="margin-left:12px;">Host: <strong>' + esc(p.hostname) + '</strong></span>' : '') +
         envStr +
+        (p.volumes && p.volumes.length ? '<span style="margin-left:12px;">Volumes: <strong>' + p.volumes.map(function(v) { return esc(v.volume) + ':' + esc(v.mount_path); }).join(', ') + '</strong></span>' : '') +
       '</div>' +
     '</div>';
   }).join('');
@@ -1739,6 +1789,11 @@ function _fillRestoreFields(p) {
    }
    document.getElementById('restore-svc-envvars').value = envStr;
    document.getElementById('restore-svc-host-mode').checked = !!p.host_mode;
+   var volStr = '';
+   if (p.volumes && p.volumes.length) {
+     volStr = p.volumes.map(function(v) { return v.volume + ':' + v.mount_path + (v.mode === 'ro' ? ':ro' : ''); }).join('\n');
+   }
+   document.getElementById('restore-svc-volumes').value = volStr;
 }
 
 function openRestoreServiceModal(preselect) {
@@ -1752,6 +1807,7 @@ function openRestoreServiceModal(preselect) {
    document.getElementById('restore-svc-hostname').value = '';
    document.getElementById('restore-svc-envvars').value = '';
    document.getElementById('restore-svc-host-mode').checked = false;
+   document.getElementById('restore-svc-volumes').value = '';
 
   sel.innerHTML = '<option value="">Loading...</option>';
   document.getElementById('restore-svc-modal').classList.add('show');
@@ -1806,9 +1862,11 @@ async function submitRestoreService() {
   btn.textContent = 'Restoring...';
   try {
     var hostMode = document.getElementById('restore-svc-host-mode').checked;
+    var restoreVolumes = document.getElementById('restore-svc-volumes').value.trim();
     var payload = { name: name, image: image, port: parseInt(port, 10), host_mode: hostMode };
     if (hostname) payload.hostname = hostname;
     if (envvars) payload.env_vars = envvars;
+    if (restoreVolumes) payload.volumes = restoreVolumes;
     var r = await fetch(API_PRESETS + '/restore', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
@@ -1839,6 +1897,134 @@ loadServices = async function() {
   await _origLoadServices();
   await loadServicePresets();
 };
+
+// --- Volumes ---
+const API_VOLUMES = '/api/volumes';
+
+async function loadVolumes() {
+  try {
+    var r = await fetch(API_VOLUMES);
+    var data = await r.json();
+    if (data.ok) {
+      renderVolumes(data.volumes || []);
+    } else {
+      showToast(data.error || 'Failed to load volumes', true);
+    }
+  } catch (e) {
+    showToast('Connection error: ' + e.message, true);
+  }
+}
+
+function renderVolumes(volumes) {
+  var el = document.getElementById('vol-list');
+  if (!volumes || volumes.length === 0) {
+    el.innerHTML = '<div class="empty">No volumes found.<br>Create one to get started.</div>';
+    return;
+  }
+  el.innerHTML = volumes.map(function(vol) {
+    var usedHtml = '';
+    if (vol.used_by && vol.used_by.length > 0) {
+      usedHtml = '<span class="badge badge-running" style="font-size:10px;">in use</span>';
+    } else {
+      usedHtml = '<span class="badge badge-exited" style="font-size:10px;">unused</span>';
+    }
+    var usedByStr = vol.used_by && vol.used_by.length > 0
+      ? 'Used by: <strong>' + vol.used_by.map(function(s) { return esc(s); }).join(', ') + '</strong>'
+      : 'Not in use';
+    var descStr = vol.description ? '<span style="margin-left:12px;">' + esc(vol.description) + '</span>' : '';
+    var deleteDisabled = vol.used_by && vol.used_by.length > 0 ? ' disabled title="Volume is in use"' : '';
+    return '<div class="svc-card">' +
+      '<div class="svc-header">' +
+        '<div class="left">' +
+          '<span class="svc-name">' + esc(vol.name) + '</span>' +
+          usedHtml +
+        '</div>' +
+        '<div class="svc-actions">' +
+          '<button class="btn btn-delete"' + deleteDisabled + ' onclick="doDeleteVolume(\'' + escAttr(vol.name) + '\')">Delete</button>' +
+        '</div>' +
+      '</div>' +
+      '<div class="svc-meta">' +
+        '<span>Docker: <strong>' + esc(vol.docker_name) + '</strong></span>' +
+        '<span>' + usedByStr + '</span>' +
+        descStr +
+      '</div>' +
+    '</div>';
+  }).join('');
+}
+
+function openCreateVolumeModal() {
+  document.getElementById('vol-name').value = '';
+  document.getElementById('vol-description').value = '';
+  var errEl = document.getElementById('create-vol-error');
+  errEl.style.display = 'none';
+  errEl.textContent = '';
+  document.getElementById('vol-submit').disabled = false;
+  document.getElementById('create-vol-modal').classList.add('show');
+  document.getElementById('vol-name').focus();
+}
+
+function closeCreateVolumeModal(event) {
+  if (event && event.target !== event.currentTarget) return;
+  document.getElementById('create-vol-modal').classList.remove('show');
+}
+
+async function submitCreateVolume() {
+  var name = document.getElementById('vol-name').value.trim();
+  var description = document.getElementById('vol-description').value.trim();
+  var errEl = document.getElementById('create-vol-error');
+
+  if (!name) {
+    errEl.textContent = 'Volume name is required.';
+    errEl.style.display = 'block';
+    return;
+  }
+
+  errEl.style.display = 'none';
+  var btn = document.getElementById('vol-submit');
+  btn.disabled = true;
+  btn.textContent = 'Creating...';
+
+  try {
+    var payload = { name: name };
+    if (description) payload.description = description;
+    var r = await fetch(API_VOLUMES + '/create', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(payload)
+    });
+    var data = await r.json();
+    if (data.ok) {
+      closeCreateVolumeModal();
+      showToast('Volume "' + name + '" created');
+      await loadVolumes();
+    } else {
+      errEl.textContent = data.error || 'Creation failed';
+      errEl.style.display = 'block';
+    }
+  } catch (e) {
+    errEl.textContent = 'Connection error: ' + e.message;
+    errEl.style.display = 'block';
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Create';
+  }
+}
+
+async function doDeleteVolume(name) {
+  if (!confirm('Delete volume "' + name + '"? This will permanently remove the volume and its data.')) return;
+  try {
+    var r = await fetch(API_VOLUMES + '/' + encodeURIComponent(name) + '/delete', { method: 'POST' });
+    var data = await r.json();
+    if (data.ok) {
+      showToast('Volume "' + name + '" deleted');
+      await loadVolumes();
+    } else {
+      showToast(data.error || 'Delete failed', true);
+    }
+  } catch (e) {
+    showToast('Connection error: ' + e.message, true);
+  }
+}
 
 // --- Agent Guides ---
 const API_GUIDES = '/api/agent-guides';

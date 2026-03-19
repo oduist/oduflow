@@ -53,6 +53,7 @@ def save_preset(
     env_vars: dict[str, str] | None = None,
     base_hostname: str = "",
     host_mode: bool = False,
+    volumes: list[dict[str, str]] | None = None,
 ) -> dict:
     """Save (or overwrite) a single service preset and return it."""
     short_hostname = hostname or ""
@@ -68,6 +69,8 @@ def save_preset(
     }
     if host_mode:
         preset["host_mode"] = True
+    if volumes:
+        preset["volumes"] = volumes
     data = _load_presets(team)
     data[name] = preset
     _save_presets(team, data)
