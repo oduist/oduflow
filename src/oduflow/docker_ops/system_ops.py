@@ -943,7 +943,7 @@ def template_up(
     from oduflow.port_registry import allocate_port
     from oduflow.docker_ops.env_ops import _get_used_ports
 
-    used_ports = _get_used_ports(client, settings)
+    used_ports = _get_used_ports(client, settings, team)
     host_port = allocate_port(
         team.port_registry_path,
         _TEMPLATE_EDITOR_BRANCH,
