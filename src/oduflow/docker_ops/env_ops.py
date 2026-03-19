@@ -602,6 +602,57 @@ def create_environment(
         client, settings, env_creds["pg_user"], env_creds["pg_password"], env_db
     )
 
+    if template_name is not None:
+        # Transfer ownership of every object in the public schema to the
+        # new per-environment role.  DDL operations (ALTER TABLE) require
+        # ownership — GRANT ALL only covers DML.  We cannot use
+        # REASSIGN OWNED BY "<superuser>" because PostgreSQL refuses to
+        # reassign system objects owned by that role.  Instead we iterate
+        # over tables, sequences, and views individually.
+        new_user = env_creds["pg_user"]
+        _exec_sql(
+            client,
+            settings,
+            f'ALTER SCHEMA public OWNER TO "{new_user}";',
+            db=env_db,
+        )
+        _exec_sql(
+            client,
+            settings,
+            "DO $$ DECLARE r RECORD; BEGIN "
+            "FOR r IN SELECT tablename FROM pg_tables WHERE schemaname = 'public' LOOP "
+            f"EXECUTE 'ALTER TABLE public.' || quote_ident(r.tablename) || ' OWNER TO \"{new_user}\"'; "
+            "END LOOP; "
+            "FOR r IN SELECT sequence_name FROM information_schema.sequences WHERE sequence_schema = 'public' LOOP "
+            f"EXECUTE 'ALTER SEQUENCE public.' || quote_ident(r.sequence_name) || ' OWNER TO \"{new_user}\"'; "
+            "END LOOP; "
+            "FOR r IN SELECT viewname FROM pg_views WHERE schemaname = 'public' LOOP "
+            f"EXECUTE 'ALTER VIEW public.' || quote_ident(r.viewname) || ' OWNER TO \"{new_user}\"'; "
+            "END LOOP; "
+            "END $$;",
+            db=env_db,
+        )
+
+        # Drop Odoo signaling sequences carried over from the template DB.
+        # Odoo re-creates them on first startup (CREATE SEQUENCE without
+        # IF NOT EXISTS), so leftover sequences cause DuplicateTable errors.
+        _exec_sql(
+            client,
+            settings,
+            "DO $$ DECLARE r RECORD; BEGIN "
+            "FOR r IN SELECT c.relname FROM pg_class c "
+            "WHERE c.relkind = 'S' "
+            "AND (c.relname LIKE 'base_registry_signaling%' "
+            "OR c.relname LIKE 'base_cache_signaling%') "
+            "LOOP EXECUTE 'DROP SEQUENCE IF EXISTS ' || quote_ident(r.relname); "
+            "END LOOP; END $$;",
+            db=env_db,
+        )
+        logger.info(
+            "Post-clone fixup done for '%s': ownership transferred, signaling sequences dropped",
+            env_db,
+        )
+
     odoo_env = {
         "HOST": settings.shared_db_container,
         "USER": env_creds["pg_user"],
