@@ -86,6 +86,10 @@ oduflow init-template --odoo-image odoo:17.0 --template-name default
 # From production dump
 # Place dump.sql and filestore/ into {data_dir}/team_1/templates/default/ then:
 oduflow reload-template default
+
+# Sync template from S3 or local path and reload DB
+oduflow reload-template default --source s3://mybucket/prod/ [--quiet]
+oduflow reload-template default --source /backups/prod-latest/
 ```
 
 ### Start the MCP server

@@ -51,6 +51,10 @@ oduflow template-from-env <branch> --template-name myproject [--team 1]
 # Reload template DB from a dump file
 oduflow reload-template <template_name> [--dump-path /path/to/new.dump] [--team 1]
 
+# Sync template from S3 or local path and reload DB
+oduflow reload-template <template_name> --source s3://bucket/path/ [--quiet] [--team 1]
+oduflow reload-template <template_name> --source /backups/prod-latest/ [--team 1]
+
 # List all template profiles
 oduflow list-templates [--team 1]
 

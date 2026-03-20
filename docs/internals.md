@@ -78,6 +78,7 @@ src/oduflow/
   extra_addons.py      # Extra addon repo management (clone, worktree, odoo.conf generation)
   env_credentials.py   # Per-environment PostgreSQL credentials
   sanitizer.py         # DB sanitization (SQL/Python scripts)
+  sync.py              # Sync template data from S3 or local path (aws s3 sync / rsync)
   licensing.py         # License verification and installation (RSA signatures)
   systemd.py           # Systemd service install/uninstall
 

@@ -2431,6 +2431,16 @@ def main() -> None:
         default="",
         help="Path to dump file (overrides template profile path)",
     )
+    p_reload.add_argument(
+        "--source",
+        default="",
+        help="Sync template from s3://... or local path before reloading",
+    )
+    p_reload.add_argument(
+        "--quiet",
+        action="store_true",
+        help="Suppress info logging (for cron)",
+    )
     p_reload.add_argument("--team", default="1", help="Team ID (default: 1)")
 
     p_init_tpl = sub.add_parser(
@@ -2611,12 +2621,29 @@ def main() -> None:
         return
 
     if args.command == "reload-template":
-        _run_reload_template(
-            _settings,
-            _cli_team(),
-            template_name=args.template_name,
-            dump_path=args.dump_path,
-        )
+        if args.quiet:
+            logging.getLogger("oduflow").setLevel(logging.WARNING)
+        if args.source:
+            from oduflow.sync import sync_template_from_source
+
+            result = sync_template_from_source(
+                _settings,
+                _cli_team(),
+                args.template_name,
+                args.source,
+            )
+            msg = f"Template DB {result['status']}.\nTemplate DB: {result['template_db']}"
+            if "restore_seconds" in result:
+                msg += f"\nDB restore time: {result['restore_seconds']}s"
+            if not args.quiet:
+                print(msg)
+        else:
+            _run_reload_template(
+                _settings,
+                _cli_team(),
+                template_name=args.template_name,
+                dump_path=args.dump_path,
+            )
         return
 
     if args.command == "init-template":
