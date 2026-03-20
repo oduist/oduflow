@@ -258,7 +258,11 @@ def resolve_volume_binds(
     binds: dict[str, dict[str, str]] = {}
 
     for mount in volume_mounts:
-        docker_name = _docker_volume_name(team, mount["volume"])
+        vol_name = mount["volume"]
+        prefix = f"oduflow-vol-{team.team_id}-"
+        if vol_name.startswith(prefix):
+            vol_name = vol_name[len(prefix):]
+        docker_name = _docker_volume_name(team, vol_name)
         try:
             client.volumes.get(docker_name)
         except docker.errors.NotFound:
