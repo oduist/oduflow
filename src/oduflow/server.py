@@ -16,6 +16,7 @@ from oduflow.docker_ops import (
     service_ops,
     service_presets,
     system_ops,
+    volume_file_ops,
     volume_ops,
 )
 from oduflow import git_ops
@@ -1900,6 +1901,133 @@ def delete_volume(name: str, ctx: Context = None) -> str:
 
 
 # =============================================================================
+# Volume file operations
+# =============================================================================
+
+
+@mcp.tool()
+@handle_errors
+def read_file_in_volume(
+    name: str,
+    path: str,
+    read_range: str = "",
+    ctx: Context = None,
+) -> str:
+    """
+    Read a text file or list a directory inside a Docker volume.
+
+    Spins up a temporary helper container to access the volume contents.
+    If the path is a directory, returns a listing (like ``ls -la``).
+    If the path is a text file, returns its contents (up to 100KB by default).
+    Binary files are detected and rejected.
+
+    Args:
+        name: The name of the volume (e.g. "redis-data").
+        path: Path inside the volume (e.g. "data/dump.rdb", "config/redis.conf").
+              Leading "/" is optional — paths are relative to the volume root.
+        read_range: Optional line range "START:END" (e.g. "1:50", "100:200").
+                    If omitted, returns the full file (up to 100KB).
+    """
+    settings = _get_settings()
+    team = _resolve_team(ctx)
+    result = volume_file_ops.read_file_in_volume(settings, team, name, path, read_range)
+    if "error" in result:
+        return f"Error: {result['error']}"
+    return result["output"]
+
+
+@mcp.tool()
+@handle_errors
+@with_team_lock
+def write_file_in_volume(
+    name: str,
+    path: str,
+    content: str,
+    ctx: Context = None,
+) -> str:
+    """
+    Write a text file inside a Docker volume.
+
+    Creates parent directories if they don't exist. Overwrites the file if it
+    already exists. Uses a temporary helper container to access the volume.
+
+    Args:
+        name: The name of the volume (e.g. "redis-data").
+        path: Path inside the volume (e.g. "config/my.conf").
+              Leading "/" is optional — paths are relative to the volume root.
+        content: Text content to write to the file.
+    """
+    settings = _get_settings()
+    team = _resolve_team(ctx)
+    result = volume_file_ops.write_file_in_volume(settings, team, name, path, content)
+    return f"File written: {result['path']} ({result['size']} bytes)"
+
+
+@mcp.tool()
+@handle_errors
+def search_in_volume(
+    name: str,
+    pattern: str,
+    path: str = "",
+    glob: str = "*",
+    max_results: int = 50,
+    ctx: Context = None,
+) -> str:
+    """
+    Search for a pattern in files inside a Docker volume.
+
+    Runs a recursive fixed-string grep inside a temporary helper container
+    and returns matching lines with file paths and line numbers.
+
+    Args:
+        name: The name of the volume (e.g. "redis-data").
+        pattern: Search pattern (fixed string, case-sensitive).
+        path: Directory to search in, relative to volume root (default: entire volume).
+        glob: File glob pattern (default "*"). Use "*.py", "*.xml", "*.conf", etc.
+        max_results: Maximum number of matching lines to return (default 50).
+    """
+    settings = _get_settings()
+    team = _resolve_team(ctx)
+    result = volume_file_ops.search_in_volume(
+        settings, team, name, pattern, path, glob, max_results
+    )
+    output = result["output"]
+    if not output:
+        return f"No matches for '{pattern}' in volume '{name}' ({glob})."
+    header = f"Matches: {result['matches']}"
+    if result["truncated"]:
+        header += f" (truncated to {max_results})"
+    return f"{header}\n\n{output}"
+
+
+@mcp.tool()
+@handle_errors
+@with_team_lock
+def delete_file_in_volume(
+    name: str,
+    path: str,
+    ctx: Context = None,
+) -> str:
+    """
+    Delete a file or directory inside a Docker volume.
+
+    Uses a temporary helper container to access the volume.
+    Cannot delete the volume root — use delete_volume to remove the entire volume.
+
+    Args:
+        name: The name of the volume (e.g. "redis-data").
+        path: Path inside the volume to delete (e.g. "data/old-dump.rdb").
+              Leading "/" is optional — paths are relative to the volume root.
+    """
+    settings = _get_settings()
+    team = _resolve_team(ctx)
+    result = volume_file_ops.delete_file_in_volume(settings, team, name, path)
+    if "error" in result:
+        return f"Error: {result['error']}"
+    return f"Deleted: {result['path']}"
+
+
+# =============================================================================
 # CLI helpers
 # =============================================================================
 
@@ -2632,7 +2760,9 @@ def main() -> None:
                 args.template_name,
                 args.source,
             )
-            msg = f"Template DB {result['status']}.\nTemplate DB: {result['template_db']}"
+            msg = (
+                f"Template DB {result['status']}.\nTemplate DB: {result['template_db']}"
+            )
             if "restore_seconds" in result:
                 msg += f"\nDB restore time: {result['restore_seconds']}s"
             if not args.quiet:

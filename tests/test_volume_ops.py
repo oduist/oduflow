@@ -36,14 +36,14 @@ def mock_docker_client():
 
 class TestDockerVolumeName:
     def test_basic(self):
-        result = volume_ops._docker_volume_name(TEST_TEAM, "redis-data")
+        result = volume_ops.docker_volume_name(TEST_TEAM, "redis-data")
         assert result == "oduflow-vol-1-redis-data"
 
     def test_different_team(self):
         team2 = TeamSettings(
             team_id="2", data_dir="/tmp", port_registry_path="/tmp/p.json"
         )
-        result = volume_ops._docker_volume_name(team2, "mydata")
+        result = volume_ops.docker_volume_name(team2, "mydata")
         assert result == "oduflow-vol-2-mydata"
 
 
