@@ -94,6 +94,19 @@ MCP endpoint: `http://<host>:8000/mcp`
 | `list_services` / `get_service_logs(name)` / `restart_service(name)` / `delete_service(name)` | Manage auxiliary services |
 | `run_service_command(name, command, user?)` | Execute a shell command inside a service container. Default user is `root`. Output is cached if large — use `read_output` for drill-down |
 
+### Volumes
+
+| Tool | When to use |
+|---|---|
+| `create_volume(name, description?)` | Create a named Docker volume for use with services |
+| `list_volumes` | List all managed volumes and which services use them |
+| `inspect_volume(name)` | Get detailed info about a volume (Docker name, mountpoint, usage) |
+| `delete_volume(name)` | Delete a volume (fails if mounted by a service) |
+| `read_file_in_volume(name, path, read_range?)` | Read a text file or list a directory inside a volume. Spins up a temporary container |
+| `write_file_in_volume(name, path, content)` | Write a text file inside a volume |
+| `search_in_volume(name, pattern, path?, glob?, max_results?)` | Grep for a pattern in files inside a volume. Fixed-string search with file/line numbers |
+| `delete_file_in_volume(name, path)` | Delete a file or directory inside a volume |
+
 ### Template Management (use with caution)
 
 | Tool | When to use |

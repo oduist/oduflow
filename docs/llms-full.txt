@@ -1606,6 +1606,15 @@ All tools are accessible via MCP clients (Cursor, Cline, Amp, etc.) and the CLI 
 | `list_services` | | List all managed service containers |
 | `get_service_logs` | | Retrieve service container logs |
 | `run_service_command` | | Execute a shell command inside a service container |
+| **Volumes** | | |
+| `create_volume` | ✓ | Create a named Docker volume for use with services |
+| `list_volumes` | | List all managed Docker volumes and their usage by services |
+| `inspect_volume` | | Get detailed information about a specific volume |
+| `delete_volume` | ✓ | Delete a managed Docker volume (fails if in use) |
+| `read_file_in_volume` | | Read a text file or list a directory inside a Docker volume |
+| `write_file_in_volume` | ✓ | Write a text file inside a Docker volume |
+| `search_in_volume` | | Search for a pattern (fixed-string grep) in files inside a Docker volume |
+| `delete_file_in_volume` | ✓ | Delete a file or directory inside a Docker volume |
 | **Service Presets** | | |
 | `list_service_presets` | | List saved service presets (configurations that can be restored) |
 | `restore_service` | ✓ | Restore a service from a saved preset |
