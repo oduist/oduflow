@@ -9,14 +9,15 @@ from __future__ import annotations
 import io
 import logging
 import os
+import shlex
 import tarfile
 from typing import Any
 
 import docker
 
 from oduflow.docker_ops.client import get_client
-from oduflow.docker_ops.volume_ops import _docker_volume_name
-from oduflow.errors import ConflictError, ExternalCommandError, NotFoundError
+from oduflow.docker_ops.volume_ops import docker_volume_name
+from oduflow.errors import ConflictError, NotFoundError
 from oduflow.settings import Settings, TeamSettings
 
 logger = logging.getLogger("oduflow")
@@ -27,15 +28,15 @@ _FILE_SIZE_LIMIT = 100 * 1024  # 100 KB
 _WRITE_FILE_LIMIT = 1_000_000  # 1 MB
 
 
-def _validate_volume(team: TeamSettings, name: str) -> str:
-    """Validate that a volume exists and return its Docker name."""
+def _validate_volume(team: TeamSettings, name: str) -> tuple[str, docker.DockerClient]:
+    """Validate that a volume exists and return its Docker name and client."""
     client = get_client()
-    docker_name = _docker_volume_name(team, name)
+    docker_name = docker_volume_name(team, name)
     try:
         client.volumes.get(docker_name)
     except docker.errors.NotFound:
         raise NotFoundError(f"Volume '{name}' not found.")
-    return docker_name
+    return docker_name, client
 
 
 def _safe_path(path: str) -> str:
@@ -66,8 +67,7 @@ def read_file_in_volume(
     read_range: str = "",
 ) -> dict[str, Any]:
     """Read a text file or list a directory inside a Docker volume."""
-    client = get_client()
-    docker_name = _validate_volume(team, name)
+    docker_name, client = _validate_volume(team, name)
     full_path = _safe_path(path)
 
     # Validate read_range early (before spinning up a container).
@@ -92,8 +92,9 @@ def read_file_in_volume(
         read_cmd = 'cat "$FILE"'
 
     size_limit = _FILE_SIZE_LIMIT
+    quoted = shlex.quote(full_path)
     script = f"""\
-FILE="{full_path}"
+FILE={quoted}
 if [ -d "$FILE" ]; then
     echo "TYPE:DIR"
     ls -la "$FILE"
@@ -196,14 +197,11 @@ def write_file_in_volume(
     """Write a text file inside a Docker volume via tar stream."""
     data = content.encode("utf-8")
     if len(data) > _WRITE_FILE_LIMIT:
-        raise ExternalCommandError(
-            "write_file_in_volume",
-            1,
+        raise ConflictError(
             f"Content exceeds {_WRITE_FILE_LIMIT} byte limit.",
         )
 
-    client = get_client()
-    docker_name = _validate_volume(team, name)
+    docker_name, client = _validate_volume(team, name)
     full_path = _safe_path(path)
     parent = full_path.rsplit("/", 1)[0] if "/" in full_path else "/"
     filename = full_path.rsplit("/", 1)[-1]
@@ -251,8 +249,7 @@ def search_in_volume(
     max_results: int = 50,
 ) -> dict[str, Any]:
     """Search for a pattern in files inside a Docker volume."""
-    client = get_client()
-    docker_name = _validate_volume(team, name)
+    docker_name, client = _validate_volume(team, name)
     search_path = _safe_path(path) if path else _MOUNT_POINT
 
     cmd = [
@@ -282,9 +279,11 @@ def search_in_volume(
             remove=True,
             volumes={docker_name: {"bind": _MOUNT_POINT, "mode": "ro"}},
         )
-    except docker.errors.ContainerError:
+    except docker.errors.ContainerError as exc:
         # grep returns exit code 1 when no matches — that's normal
-        return {"matches": 0, "output": "", "truncated": False}
+        if exc.exit_status == 1:
+            return {"matches": 0, "output": "", "truncated": False}
+        raise
 
     output_str = output.decode("utf-8") if isinstance(output, bytes) else str(output)
 
@@ -313,8 +312,7 @@ def delete_file_in_volume(
     path: str,
 ) -> dict[str, Any]:
     """Delete a file or directory inside a Docker volume."""
-    client = get_client()
-    docker_name = _validate_volume(team, name)
+    docker_name, client = _validate_volume(team, name)
     full_path = _safe_path(path)
 
     if full_path == _MOUNT_POINT:
@@ -322,11 +320,12 @@ def delete_file_in_volume(
             "Cannot delete the volume root. Specify a path within the volume."
         )
 
+    quoted = shlex.quote(full_path)
     script = f"""\
-if [ ! -e "{full_path}" ]; then
+if [ ! -e {quoted} ]; then
     echo "NOTFOUND"
 else
-    rm -rf "{full_path}" && echo "DELETED" || echo "FAILED"
+    rm -rf {quoted} && echo "DELETED" || echo "FAILED"
 fi
 """
 

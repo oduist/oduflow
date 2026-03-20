@@ -29,7 +29,7 @@ def _vol_labels(vol) -> dict[str, str]:
     return vol.attrs.get("Labels") or {}
 
 
-def _docker_volume_name(team: TeamSettings, name: str) -> str:
+def docker_volume_name(team: TeamSettings, name: str) -> str:
     """Return the Docker volume name: ``oduflow-vol-{team_id}-{name}``."""
     return f"oduflow-vol-{team.team_id}-{name}"
 
@@ -48,7 +48,7 @@ def create_volume(
         )
 
     client = get_client()
-    docker_name = _docker_volume_name(team, name)
+    docker_name = docker_volume_name(team, name)
 
     # Check for existing volume
     try:
@@ -114,7 +114,7 @@ def list_volumes(settings: Settings, team: TeamSettings) -> list[dict]:
 def inspect_volume(settings: Settings, team: TeamSettings, name: str) -> dict:
     """Return details for a single volume including usage."""
     client = get_client()
-    docker_name = _docker_volume_name(team, name)
+    docker_name = docker_volume_name(team, name)
 
     try:
         vol = client.volumes.get(docker_name)
@@ -139,7 +139,7 @@ def inspect_volume(settings: Settings, team: TeamSettings, name: str) -> dict:
 def delete_volume(settings: Settings, team: TeamSettings, name: str) -> dict[str, str]:
     """Delete a volume. Raises ConflictError if it is mounted by a service."""
     client = get_client()
-    docker_name = _docker_volume_name(team, name)
+    docker_name = docker_volume_name(team, name)
 
     try:
         vol = client.volumes.get(docker_name)
@@ -261,8 +261,8 @@ def resolve_volume_binds(
         vol_name = mount["volume"]
         prefix = f"oduflow-vol-{team.team_id}-"
         if vol_name.startswith(prefix):
-            vol_name = vol_name[len(prefix):]
-        docker_name = _docker_volume_name(team, vol_name)
+            vol_name = vol_name[len(prefix) :]
+        docker_name = docker_volume_name(team, vol_name)
         try:
             client.volumes.get(docker_name)
         except docker.errors.NotFound:

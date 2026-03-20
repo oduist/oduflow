@@ -4,7 +4,7 @@ from unittest.mock import MagicMock, patch
 
 from oduflow.docker_ops import volume_file_ops
 from oduflow.docker_ops.volume_file_ops import _safe_path, _MOUNT_POINT
-from oduflow.errors import ConflictError, ExternalCommandError, NotFoundError
+from oduflow.errors import ConflictError, NotFoundError
 from oduflow.settings import Settings, TeamSettings
 
 TEST_TEAM = TeamSettings(
@@ -187,7 +187,7 @@ class TestWriteFileInVolume:
         mock_container.remove.assert_called_once()
 
     def test_content_too_large(self, mock_docker_client):
-        with pytest.raises(ExternalCommandError):
+        with pytest.raises(ConflictError):
             volume_file_ops.write_file_in_volume(
                 TEST_SETTINGS,
                 TEST_TEAM,
@@ -288,6 +288,21 @@ class TestSearchInVolume:
         with pytest.raises(NotFoundError):
             volume_file_ops.search_in_volume(
                 TEST_SETTINGS, TEST_TEAM, "nonexistent", "pattern"
+            )
+
+    def test_non_exit1_error_reraised(self, mock_docker_client):
+        mock_docker_client.volumes.get.return_value = MagicMock()
+        mock_docker_client.containers.run.side_effect = docker.errors.ContainerError(
+            container=MagicMock(),
+            exit_status=2,
+            command="grep",
+            image="alpine",
+            stderr=b"grep: invalid option",
+        )
+
+        with pytest.raises(docker.errors.ContainerError):
+            volume_file_ops.search_in_volume(
+                TEST_SETTINGS, TEST_TEAM, "mydata", "pattern"
             )
 
     def test_search_with_path(self, mock_docker_client):
