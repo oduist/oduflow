@@ -307,6 +307,24 @@ class TestResolveVolumeBinds:
         with pytest.raises(NotFoundError, match="not found"):
             volume_ops.resolve_volume_binds(TEST_TEAM, mounts)
 
+    def test_resolve_external_volume(self, mock_docker_client):
+        """External volume is used as-is when managed name doesn't exist."""
+
+        def _get(name):
+            if name == "oduflow-vol-1-oduflow-traefik-acme":
+                raise docker.errors.NotFound("nf")
+            return MagicMock()  # original name exists
+
+        mock_docker_client.volumes.get.side_effect = _get
+
+        mounts = [
+            {"volume": "oduflow-traefik-acme", "mount_path": "/acme", "mode": "ro"}
+        ]
+        result = volume_ops.resolve_volume_binds(TEST_TEAM, mounts)
+
+        assert "oduflow-traefik-acme" in result
+        assert result["oduflow-traefik-acme"] == {"bind": "/acme", "mode": "ro"}
+
     def test_resolve_empty(self, mock_docker_client):
         result = volume_ops.resolve_volume_binds(TEST_TEAM, [])
         assert result == {}

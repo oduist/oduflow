@@ -266,9 +266,14 @@ def resolve_volume_binds(
         try:
             client.volumes.get(docker_name)
         except docker.errors.NotFound:
-            raise NotFoundError(
-                f"Volume '{mount['volume']}' not found. Create it first."
-            )
+            # Try the original name as-is (external / non-managed volume)
+            try:
+                client.volumes.get(mount["volume"])
+                docker_name = mount["volume"]
+            except docker.errors.NotFound:
+                raise NotFoundError(
+                    f"Volume '{mount['volume']}' not found. Create it first."
+                )
         binds[docker_name] = {"bind": mount["mount_path"], "mode": mount["mode"]}
 
     return binds
