@@ -65,15 +65,19 @@ def _get_one_container_stats(container) -> dict[str, Any] | None:
 def get_container_stats(settings: Settings, team: TeamSettings) -> list[dict[str, Any]]:
     """Collect CPU/RAM stats for all managed containers in parallel."""
     client = get_client()
-    containers = client.containers.list(
-        all=True,
-        filters={
-            "label": [
-                f"{settings.managed_label}=true",
-                f"{settings.team_label}={team.team_id}",
-            ]
-        },
-    )
+    containers = [
+        c
+        for c in client.containers.list(
+            all=True,
+            filters={
+                "label": [
+                    f"{settings.managed_label}=true",
+                    f"{settings.team_label}={team.team_id}",
+                ]
+            },
+        )
+        if c.name.startswith(settings.prefix)
+    ]
     if not containers:
         return []
 

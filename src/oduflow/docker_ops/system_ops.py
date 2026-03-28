@@ -1088,12 +1088,16 @@ def destroy_system(settings: Settings) -> dict[str, str]:
     env_containers = [
         c
         for c in containers
-        if c.labels.get(settings.branch_label) and c.name not in system_names
+        if c.name.startswith(settings.prefix)
+        and c.labels.get(settings.branch_label)
+        and c.name not in system_names
     ]
     svc_containers = [
         c
         for c in containers
-        if c.labels.get("oduflow.service") and c.name not in system_names
+        if c.name.startswith(settings.prefix)
+        and c.labels.get("oduflow.service")
+        and c.name not in system_names
     ]
     blocking = env_containers + svc_containers
     if blocking:
@@ -1350,6 +1354,8 @@ def cleanup_orphans(
     }
     live_branches: set[str] = set()
     for c in client.containers.list(all=True, filters=filters):
+        if not c.name.startswith(settings.prefix):
+            continue
         branch = c.labels.get(settings.branch_label)
         if branch:
             live_branches.add(branch)

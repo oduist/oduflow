@@ -84,6 +84,8 @@ def _get_used_ports(
         ]
     }
     for c in client.containers.list(all=True, filters=filters):
+        if not c.name.startswith(settings.prefix):
+            continue
         env = c.labels.get(settings.branch_label, "")
         if env == exclude_env:
             continue
@@ -969,6 +971,8 @@ def list_environments(settings: Settings, team: TeamSettings) -> list[dict[str, 
 
     envs: dict[str, dict[str, Any]] = {}
     for container in containers:
+        if not container.name.startswith(settings.prefix):
+            continue
         env_name = container.labels.get(settings.branch_label)
         if not env_name:
             continue
