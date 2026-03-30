@@ -98,6 +98,17 @@
     margin-bottom: 10px;
   }
   .env-meta strong { color: var(--text); font-weight: 500; }
+  .env-note {
+    font-size: 12px;
+    color: var(--text-dim);
+    margin-bottom: 10px;
+    padding: 4px 8px;
+    cursor: pointer;
+    border: 1px solid transparent;
+    border-radius: 4px;
+  }
+  .env-note:hover { border-color: var(--border); }
+  .env-note-empty { font-style: italic; opacity: 0.5; }
   .containers {
     font-size: 12px;
     color: var(--text-dim);
@@ -921,6 +932,7 @@ function renderEnvironments(envs) {
           (env.template_name && env.template_name !== 'none' ? '<span>Template: <strong>' + esc(env.template_name) + '</strong></span>' : '') +
           (env.odoo_image ? '<span>Image: <strong>' + esc(env.odoo_image) + '</strong></span>' : '') +
           (env.repo_url ? '<span>Repo: <strong>' + esc(env.repo_url) + '</strong></span>' : '') +
+          (env.created_at ? '<span>Created: <strong>' + formatDate(env.created_at) + '</strong></span>' : '') +
         '</div>'
       : '';
 
@@ -967,6 +979,11 @@ function renderEnvironments(envs) {
       urlHtml +
       metaHtml +
       extraHtml +
+      '<div class="env-note' + (!env.note ? ' env-note-empty' : '') + '" ' +
+        'onclick="editNote(\'' + escAttr(env.branch) + '\')" ' +
+        'title="Click to edit note">' +
+        (env.note ? esc(env.note) : 'Add a note...') +
+      '</div>' +
       '<div class="containers">' + containerHtml + '</div>' +
     '</div>';
   }).join('');
@@ -980,6 +997,30 @@ function esc(s) {
 
 function escAttr(s) {
   return (s || '').replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+}
+
+function formatDate(iso) {
+  if (!iso) return '';
+  try { return new Date(iso).toLocaleString(); }
+  catch(e) { return esc(iso); }
+}
+
+async function editNote(branch) {
+  var el = document.querySelector('.env-card[data-branch="' + branch + '"] .env-note');
+  var current = el && el.classList.contains('env-note-empty') ? '' : (el ? el.textContent : '');
+  var note = prompt('Note for "' + branch + '":', current);
+  if (note === null) return;
+  try {
+    var r = await fetch(API + '/' + encodeURIComponent(branch) + '/note', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({note: note})
+    });
+    var data = await r.json();
+    if (data.ok) { showToast('Note updated'); }
+    else { showToast(data.error || 'Failed to update note', true); }
+  } catch(e) { showToast('Connection error: ' + e.message, true); }
+  await loadEnvironments();
 }
 
 async function loadEnvironments() {

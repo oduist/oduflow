@@ -977,6 +977,20 @@ def _build_routes(
             logger.exception("Unexpected error in api_unprotect")
             return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
 
+    async def api_set_note(request: Request) -> JSONResponse:
+        branch = request.path_params["branch"]
+        try:
+            team = _get_ui_team(request)
+            body = await request.json()
+            note = body.get("note", "")
+            result = env_ops.set_note(get_settings(), team, branch, note)
+            return JSONResponse({"ok": True, "result": result})
+        except FlowError as e:
+            return _error_response(e)
+        except Exception as e:
+            logger.exception("Unexpected error in api_set_note")
+            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+
     async def ws_terminal(websocket: WebSocket) -> None:
         branch = websocket.path_params["branch"]
         await websocket.accept()
@@ -1209,6 +1223,7 @@ def _build_routes(
         Route(
             "/api/environments/{branch:path}/unprotect", api_unprotect, methods=["POST"]
         ),
+        Route("/api/environments/{branch:path}/note", api_set_note, methods=["POST"]),
         Route("/api/environments/{branch:path}/rebuild", api_rebuild, methods=["POST"]),
         Route(
             "/api/environments/{branch:path}/recreate", api_recreate, methods=["POST"]
