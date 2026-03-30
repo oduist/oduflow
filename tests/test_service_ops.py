@@ -375,6 +375,9 @@ class TestUpdateService:
         with patch(
             "oduflow.docker_ops.service_ops.service_presets.get_preset",
             return_value=preset,
+        ), patch(
+            "oduflow.docker_ops.service_ops.volume_ops.resolve_volume_binds",
+            return_value={"vol1": {"bind": "/acme", "mode": "ro"}},
         ):
             result = service_ops.update_service(TEST_SETTINGS, TEST_TEAM, "redis")
 
