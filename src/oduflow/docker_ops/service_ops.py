@@ -339,80 +339,92 @@ def update_service(settings: Settings, team: TeamSettings, name: str) -> dict[st
             "The container has no image tag or Config.Image."
         )
 
-    # Capture current environment variables (filtering system keys)
-    raw_env = container.attrs.get("Config", {}).get("Env", [])
-    env_vars: dict[str, str] = {}
-    for entry in raw_env:
-        if "=" in entry:
-            key, value = entry.split("=", 1)
-            if key not in _SYSTEM_ENV_KEYS:
-                env_vars[key] = value
+    # Read service options from saved preset (authoritative source).
+    # Fall back to container inspection for legacy services without a preset.
+    preset = None
+    try:
+        preset = service_presets.get_preset(team, name)
+    except Exception:
+        pass
 
-    # Detect host mode
-    is_host_mode = container.labels.get("oduflow.host_mode") == "true"
-
-    # Capture port and hostname depending on routing mode
-    port: int | None = None
-    hostname: str | None = None
-
-    if settings.routing_mode == "traefik":
-        rule_label = f"traefik.http.routers.{container_name}.rule"
-
-        rule_value = container.labels.get(rule_label, "")
-        match = re.search(r"Host\(`([^`]+)`\)", rule_value)
-        if match:
-            hostname = match.group(1)
-
-        if is_host_mode:
-            url_label = (
-                f"traefik.http.services.{container_name}.loadbalancer.server.url"
-            )
-            url_value = container.labels.get(url_label, "")
-            port_match = re.search(r":(\d+)$", url_value)
-            if port_match:
-                port = int(port_match.group(1))
-        else:
-            port_label = (
-                f"traefik.http.services.{container_name}.loadbalancer.server.port"
-            )
-            label_port = container.labels.get(port_label)
-            if label_port:
-                port = int(label_port)
+    if preset:
+        port = preset.get("port")
+        hostname = preset.get("hostname") or None
+        env_vars = preset.get("env_vars") or None
+        is_host_mode = preset.get("host_mode", False)
+        old_volumes = preset.get("volumes") or None
     else:
-        if is_host_mode:
-            try:
-                preset = service_presets.get_preset(team, name)
-                port = preset.get("port")
-            except Exception:
-                pass
+        # Legacy fallback: extract from running container
+        raw_env = container.attrs.get("Config", {}).get("Env", [])
+        env_vars: dict[str, str] = {}
+        for entry in raw_env:
+            if "=" in entry:
+                key, value = entry.split("=", 1)
+                if key not in _SYSTEM_ENV_KEYS:
+                    env_vars[key] = value
+
+        is_host_mode = container.labels.get("oduflow.host_mode") == "true"
+
+        port: int | None = None
+        hostname: str | None = None
+
+        if settings.routing_mode == "traefik":
+            rule_label = f"traefik.http.routers.{container_name}.rule"
+            rule_value = container.labels.get(rule_label, "")
+            match = re.search(r"Host\(`([^`]+)`\)", rule_value)
+            if match:
+                hostname = match.group(1)
+
+            if is_host_mode:
+                url_label = (
+                    f"traefik.http.services.{container_name}.loadbalancer.server.url"
+                )
+                url_value = container.labels.get(url_label, "")
+                port_match = re.search(r":(\d+)$", url_value)
+                if port_match:
+                    port = int(port_match.group(1))
+            else:
+                port_label = (
+                    f"traefik.http.services.{container_name}.loadbalancer.server.port"
+                )
+                label_port = container.labels.get(port_label)
+                if label_port:
+                    port = int(label_port)
         else:
-            ports_dict = container.attrs.get("NetworkSettings", {}).get("Ports", {})
-            if ports_dict:
-                for port_key in ports_dict:
-                    port_match = re.match(r"(\d+)/", port_key)
-                    if port_match:
-                        port = int(port_match.group(1))
-                        break
+            if is_host_mode:
+                pass  # Cannot determine port without preset in host mode
+            else:
+                ports_dict = container.attrs.get("NetworkSettings", {}).get("Ports", {})
+                if ports_dict:
+                    for port_key in ports_dict:
+                        port_match = re.match(r"(\d+)/", port_key)
+                        if port_match:
+                            port = int(port_match.group(1))
+                            break
+
+        old_volumes = None
+        mounts_data = container.attrs.get("Mounts", [])
+        vols: list[dict[str, str]] = []
+        for mount in mounts_data:
+            if mount.get("Type") == "volume":
+                vol_docker_name = mount.get("Name", "")
+                prefix = f"oduflow-vol-{team.team_id}-"
+                if vol_docker_name.startswith(prefix):
+                    short_name = vol_docker_name[len(prefix):]
+                    vols.append(
+                        {
+                            "volume": short_name,
+                            "mount_path": mount.get("Destination", ""),
+                            "mode": "ro" if not mount.get("RW", True) else "rw",
+                        }
+                    )
+        if vols:
+            old_volumes = vols
+
+        env_vars = env_vars or None
 
     if port is None:
         raise NotFoundError(f"Cannot determine port for service '{name}'.")
-
-    # Capture volume mounts from old container
-    old_volumes: list[dict[str, str]] = []
-    mounts = container.attrs.get("Mounts", [])
-    for mount in mounts:
-        if mount.get("Type") == "volume":
-            vol_docker_name = mount.get("Name", "")
-            prefix = f"oduflow-vol-{team.team_id}-"
-            if vol_docker_name.startswith(prefix):
-                short_name = vol_docker_name[len(prefix) :]
-                old_volumes.append(
-                    {
-                        "volume": short_name,
-                        "mount_path": mount.get("Destination", ""),
-                        "mode": "ro" if not mount.get("RW", True) else "rw",
-                    }
-                )
 
     # Capture old image digest
     old_digest = container.image.id  # e.g. sha256:abc...
