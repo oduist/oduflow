@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import datetime
 import json
 import logging
 import os
@@ -485,6 +486,7 @@ def create_environment(
         settings.image_label: odoo_image,
         "oduflow.template": template_name if template_name is not None else "none",
         "oduflow.git_branch": branch,
+        "oduflow.created_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
     }
 
     if extra_addons:
@@ -862,6 +864,17 @@ def is_protected(settings: Settings, team: TeamSettings, env_name: str) -> bool:
     return os.path.exists(os.path.join(workspace_path, ".protected"))
 
 
+def _get_note_text(env_name: str, workspaces_dir: str) -> str:
+    note_path = os.path.join(get_workspace_path(env_name, workspaces_dir), ".note")
+    if os.path.exists(note_path):
+        try:
+            with open(note_path) as f:
+                return f.read().strip()
+        except OSError:
+            return ""
+    return ""
+
+
 def protect_environment(
     settings: Settings, team: TeamSettings, env_name: str
 ) -> dict[str, Any]:
@@ -895,6 +908,32 @@ def unprotect_environment(
         os.remove(marker)
     logger.info("Environment unprotected", extra={"env_name": env_name})
     return {"env_name": env_name, "protected": False}
+
+
+def get_note(settings: Settings, team: TeamSettings, env_name: str) -> str:
+    return _get_note_text(env_name, team.workspaces_dir)
+
+
+def set_note(
+    settings: Settings, team: TeamSettings, env_name: str, note: str
+) -> dict[str, Any]:
+    """Set or clear a note for an environment."""
+    client = get_client()
+    container_name = get_resource_name(env_name, "odoo", settings.prefix)
+    try:
+        client.containers.get(container_name)
+    except docker.errors.NotFound:
+        raise NotFoundError(f"Environment '{env_name}' does not exist.")
+    workspace_path = get_workspace_path(env_name, team.workspaces_dir)
+    note_path = os.path.join(workspace_path, ".note")
+    note = note.strip()
+    if note:
+        with open(note_path, "w") as f:
+            f.write(note)
+    elif os.path.exists(note_path):
+        os.remove(note_path)
+    logger.info("Environment note updated", extra={"env_name": env_name, "note": note})
+    return {"env_name": env_name, "note": note}
 
 
 def delete_environment(
@@ -999,6 +1038,9 @@ def list_environments(settings: Settings, team: TeamSettings) -> list[dict[str, 
                 "auto_install_modules": container.labels.get(
                     "oduflow.auto_install_modules", ""
                 ),
+                "created_at": container.labels.get("oduflow.created_at", "")
+                or container.attrs.get("Created", ""),
+                "note": _get_note_text(env_name, team.workspaces_dir),
             }
 
         try:
@@ -1164,6 +1206,10 @@ def get_environment_info(
             json.loads(labels.get("oduflow.extra_addons", "{}")),
         )
         result["auto_install_modules"] = labels.get("oduflow.auto_install_modules", "")
+        result["created_at"] = labels.get("oduflow.created_at", "") or odoo_container.attrs.get(
+            "Created", ""
+        )
+        result["note"] = _get_note_text(env_name, team.workspaces_dir)
 
         if settings.routing_mode == "traefik":
             result["url"] = (
