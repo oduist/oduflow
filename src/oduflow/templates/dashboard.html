@@ -98,6 +98,21 @@
     margin-bottom: 10px;
   }
   .env-meta strong { color: var(--text); font-weight: 500; }
+  .repo-link {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 22px;
+    height: 22px;
+    border-radius: 4px;
+    color: var(--text-dim);
+    text-decoration: none;
+    transition: background 0.15s, color 0.15s;
+    vertical-align: middle;
+    margin-left: 4px;
+  }
+  .repo-link:hover { background: var(--card-hover); color: var(--accent); }
+  .repo-link svg { width: 14px; height: 14px; }
   .env-note {
     font-size: 12px;
     color: var(--text-dim);
@@ -931,7 +946,21 @@ function renderEnvironments(envs) {
           (env.db_name ? '<span>DB: <strong>' + esc(env.db_name) + '</strong></span>' : '') +
           (env.template_name && env.template_name !== 'none' ? '<span>Template: <strong>' + esc(env.template_name) + '</strong></span>' : '') +
           (env.odoo_image ? '<span>Image: <strong>' + esc(env.odoo_image) + '</strong></span>' : '') +
-          (env.repo_url ? '<span>Repo: <strong>' + esc(env.repo_url) + '</strong></span>' : '') +
+          (env.repo_url ? '<span>Repo: <strong>' + esc(env.repo_url) + '</strong>' +
+            (function() {
+              var rh = repoHttpUrl(env.repo_url);
+              if (!rh) return '';
+              var branch = env.git_branch || env.branch || '';
+              var prsUrl = rh + (isGitlab(rh) ? '/-/merge_requests' : '/pulls');
+              var commitsUrl = rh + (isGitlab(rh) ? '/-/commits/' : '/commits/') + encodeURIComponent(branch);
+              return '<a class="repo-link" href="' + esc(prsUrl) + '" target="_blank" title="Pull Requests">' +
+                '<svg viewBox="0 0 16 16" fill="currentColor"><path d="M5 3.254V3.25a.75.75 0 110-.005v.009zM11 13.75a.75.75 0 110-1.5.75.75 0 010 1.5zm-6 0a.75.75 0 110-1.5.75.75 0 010 1.5zM5.75 9.5a.75.75 0 01-.75-.75v-5a.75.75 0 011.5 0v5a.75.75 0 01-.75.75zm5.5 4a2.25 2.25 0 10-1.5-3.937V7.875a1.25 1.25 0 00-1.25-1.25H6.75a.75.75 0 010-1.5H8.5a2.75 2.75 0 012.75 2.75v1.688a2.25 2.25 0 100 3.937zM5.75 15a2.25 2.25 0 100-4.5 2.25 2.25 0 000 4.5z"/></svg>' +
+              '</a>' +
+              '<a class="repo-link" href="' + esc(commitsUrl) + '" target="_blank" title="Commits">' +
+                '<svg viewBox="0 0 16 16" fill="currentColor"><path d="M10.5 7.75a2.5 2.5 0 11-5 0 2.5 2.5 0 015 0zm1.43.75a4.002 4.002 0 01-7.86 0H.75a.75.75 0 010-1.5h3.32a4.002 4.002 0 017.86 0h3.32a.75.75 0 010 1.5h-3.32z"/></svg>' +
+              '</a>';
+            })() +
+          '</span>' : '') +
           (env.created_at ? '<span>Created: <strong>' + formatDate(env.created_at) + '</strong></span>' : '') +
         '</div>'
       : '';
@@ -1003,6 +1032,26 @@ function formatDate(iso) {
   if (!iso) return '';
   try { return new Date(iso).toLocaleString(); }
   catch(e) { return esc(iso); }
+}
+
+function repoHttpUrl(url) {
+  if (!url) return '';
+  // SSH: git@host:owner/repo.git
+  var m = url.match(/^git@([^:]+):(.+?)(?:\.git)?$/);
+  if (m) return 'https://' + m[1] + '/' + m[2];
+  // HTTPS: https://host/owner/repo.git
+  try {
+    var u = new URL(url);
+    if (u.protocol === 'https:' || u.protocol === 'http:') {
+      var p = u.pathname.replace(/\.git$/, '');
+      return u.origin + p;
+    }
+  } catch(e) {}
+  return '';
+}
+
+function isGitlab(url) {
+  return url.indexOf('gitlab') !== -1;
 }
 
 async function editNote(branch) {
