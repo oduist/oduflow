@@ -273,6 +273,7 @@ def pull_repo(
                 "-C",
                 repo_path,
                 "fetch",
+                "--recurse-submodules=no",
                 "origin",
                 f"+refs/heads/{branch}:refs/remotes/origin/{branch}",
             ],

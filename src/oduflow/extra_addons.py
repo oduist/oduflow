@@ -282,7 +282,7 @@ def fetch_extra_repo(team: TeamSettings, name: str) -> dict:
 
     try:
         subprocess.run(
-            ["git", "-C", path, "fetch", "--all", "--prune"],
+            ["git", "-C", path, "fetch", "--all", "--prune", "--recurse-submodules=no"],
             check=True,
             capture_output=True,
             text=True,
