@@ -24,7 +24,7 @@ When creating an environment, Oduflow:
 3. **Mounts the filestore overlay** — fuse-overlayfs with the template as lower layer
 4. **Detects UID/GID** — runs `id` in the Odoo image to set correct file ownership
 5. **Installs dependencies** — auto-installs from `apt_packages.txt` and `requirements.txt` if present in the repo
-6. **Configures Odoo** — uses repo's `odoo.conf` if available, otherwise the default template
+6. **Configures Odoo** — uses repo's `.oduflow/odoo.conf` if available, otherwise the default template
 7. **Starts the container** — with `--dev=xml` for hot-reloading XML/QWeb changes
 8. **Initializes base** — when `template=none`, runs `odoo -i base --stop-after-init`
 
