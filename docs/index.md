@@ -60,7 +60,7 @@ The agent writes code, installs the module, reads the traceback, fixes the error
 ### Smart Automation
 - **Smart pull** — `pull_and_apply` analyzes changed files (manifest, Python fields, security XML, JS) and automatically decides whether to install, upgrade, restart, or do nothing
 - **Auto-install dependencies** — `requirements.txt` (pip) and `apt_packages.txt` (apt) in the repository root are automatically installed when creating an environment
-- **Custom odoo.conf** — if the repository contains an `odoo.conf` at its root, it is used instead of the default template
+- **Custom odoo.conf** — if the repository contains an `odoo.conf` in its `.oduflow/` directory, it is used instead of the default template
 - **Field change detection** — Python files are analyzed for `fields.*` definition changes, triggering module upgrades only when necessary
 
 ### Infrastructure

@@ -206,7 +206,7 @@ On startup, Oduflow copies the bundled `postgresql.conf` and `odoo.conf` to the 
   traefik/                ← Traefik dynamic configuration (auto-generated)
 ```
 
-If a repository contains an `odoo.conf` at its root, it takes priority over both the bundled and system-level versions for that specific environment.
+If a repository contains an `odoo.conf` in its `.oduflow/` directory (`<repo>/.oduflow/odoo.conf`), it takes priority over both the bundled and system-level versions for that specific environment.
 
 ## Telemetry
 

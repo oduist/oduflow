@@ -8,6 +8,7 @@
 
 ### Features
 
+- **Move repo-level `odoo.conf` to `.oduflow/odoo.conf`** — per-repo Odoo config is now read from `<repo>/.oduflow/odoo.conf` instead of the repo root
 - **Auto-initialize on startup** — `oduflow` automatically runs initialization (system setup, Docker check) on first start, removing the need for a separate `oduflow init` step ([34e42fa](https://github.com/oduist/oduflow/commit/34e42fa), [f33dfe6](https://github.com/oduist/oduflow/commit/f33dfe6))
 - **MCP tools refinement** — output cache for long-running tool results, 7 new MCP tools, 3 enhanced tools; renamed `exec_in_odoo` to `run_odoo_command` ([44810aa](https://github.com/oduist/oduflow/commit/44810aa))
 - **Include odoo.conf in upgrade** — module upgrades now apply odoo.conf changes, skipping files that haven't changed ([f69bc2f](https://github.com/oduist/oduflow/commit/f69bc2f))

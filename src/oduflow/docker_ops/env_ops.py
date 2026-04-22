@@ -667,7 +667,7 @@ def create_environment(
     for host_path, container_path in extra_mount_paths:
         odoo_volumes[host_path] = {"bind": container_path, "mode": "ro"}
 
-    repo_odoo_conf = os.path.join(repo_path, "odoo.conf")
+    repo_odoo_conf = os.path.join(repo_path, ".oduflow", "odoo.conf")
     if os.path.isfile(repo_odoo_conf):
         base_conf_path = repo_odoo_conf
         logger.info("Using odoo.conf from repository")
@@ -1580,7 +1580,7 @@ def rebuild_environment(
     # Copy odoo.conf into the container (same resolution logic as create)
     repo_path = get_repo_path(env_name, team.workspaces_dir)
     workspace_path = get_workspace_path(env_name, team.workspaces_dir)
-    repo_odoo_conf = os.path.join(repo_path, "odoo.conf")
+    repo_odoo_conf = os.path.join(repo_path, ".oduflow", "odoo.conf")
     if os.path.isfile(repo_odoo_conf):
         base_conf_path: str | None = repo_odoo_conf
     elif _resolve_instance_conf("odoo.conf", team.data_dir).exists():
