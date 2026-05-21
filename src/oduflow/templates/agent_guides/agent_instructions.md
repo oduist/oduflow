@@ -90,7 +90,7 @@ MCP endpoint: `http://<host>:8000/mcp`
 
 | Tool | When to use |
 |---|---|
-| `create_service(name, image, port, hostname?, env_vars?)` | Spin up a sidecar (Redis, Meilisearch, etc.). Accessible from Odoo containers via `oduflow-svc-{name}:{port}` |
+| `create_service(name, image, port, hostname?, env_vars?, host_mode?, volumes?, privileged?, net_admin?)` | Spin up a sidecar (Redis, Meilisearch, etc.). Accessible from Odoo containers via `oduflow-svc-{name}:{port}`. Set `net_admin=true` for VPN/tun/iptables; `privileged=true` for full host access |
 | `list_services` / `get_service_logs(name)` / `restart_service(name)` / `delete_service(name)` | Manage auxiliary services |
 | `run_service_command(name, command, user?)` | Execute a shell command inside a service container. Default user is `root`. Output is cached if large — use `read_output` for drill-down |
 
