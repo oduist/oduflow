@@ -25,7 +25,6 @@ class TeamSettings:
     hostname: str = "localhost"
     auth_token: str = ""
     ui_password: str = ""
-    github_users: tuple[str, ...] = ()
     port_range_start: int = 50000
     port_range_end: int = 50100
     data_dir: str = ""
@@ -111,9 +110,11 @@ class Settings:
     repo_label: str = "oduflow.repo"
     image_label: str = "oduflow.image"
 
-    # OAuth (GitHub)
-    oauth_client_id: str = ""
-    oauth_client_secret: str = ""
+    # OAuth (self-hosted Authorization Server). Public base URL of this server,
+    # used as the OAuth issuer and to advertise authorize/token endpoints.
+    # When set, Oduflow exposes /.well-known/oauth-authorization-server,
+    # /authorize, and /token, and each team's auth_token doubles as
+    # client_id, client_secret, and the issued access token.
     oauth_base_url: str = ""
 
     # Config location
@@ -145,21 +146,9 @@ class Settings:
                 return team
         return None
 
-    def get_team_by_github_user(self, login: str) -> TeamSettings | None:
-        if not login:
-            return None
-        for team in self.teams.values():
-            if login in team.github_users:
-                return team
-        return None
-
     @property
     def oauth_enabled(self) -> bool:
-        return bool(self.oauth_client_id)
-
-    @property
-    def any_team_has_github_users(self) -> bool:
-        return any(t.github_users for t in self.teams.values())
+        return bool(self.oauth_base_url)
 
     def get_team_by_ui_password(self, password: str) -> TeamSettings | None:
         if not password:
@@ -206,38 +195,14 @@ class Settings:
         if len(passwords) != len(set(passwords)):
             raise ValueError("Duplicate ui_password values across teams.")
 
-        # Validate OAuth settings: all-or-nothing
-        oauth_fields = [
-            self.oauth_client_id,
-            self.oauth_client_secret,
-            self.oauth_base_url,
-        ]
-        has_any = any(oauth_fields)
-        has_all = all(oauth_fields)
-        if has_any and not has_all:
-            missing = []
-            if not self.oauth_client_id:
-                missing.append("oauth_client_id")
-            if not self.oauth_client_secret:
-                missing.append("oauth_client_secret")
-            if not self.oauth_base_url:
-                missing.append("oauth_base_url")
+        # Validate OAuth: when oauth_base_url is set, at least one team must
+        # have a non-empty auth_token (it doubles as OAuth client credentials).
+        if self.oauth_base_url and not any(t.auth_token for t in self.teams.values()):
             raise ValueError(
-                f"Incomplete OAuth configuration: missing {', '.join(missing)}. "
-                "Set all three (oauth_client_id, oauth_client_secret, oauth_base_url) "
-                "or remove them entirely."
+                "oauth_base_url is set but no team has an auth_token. "
+                "Self-hosted OAuth requires at least one [team.*] section "
+                "with a non-empty auth_token."
             )
-
-        # Validate github_users: no duplicates across teams
-        if self.oauth_client_id:
-            all_gh_users: list[str] = []
-            for team in self.teams.values():
-                for user in team.github_users:
-                    if user in all_gh_users:
-                        raise ValueError(
-                            f"Duplicate github_users entry '{user}' across teams."
-                        )
-                    all_gh_users.append(user)
 
     @staticmethod
     def from_toml(path: str) -> Settings:
@@ -277,15 +242,11 @@ class Settings:
             )
             hostname = re.sub(r"^https?://", "", raw_hostname).strip()
 
-            raw_gh_users = team_cfg.get("github_users", [])
-            github_users = tuple(str(u) for u in raw_gh_users)
-
             teams[team_id] = TeamSettings(
                 team_id=team_id,
                 hostname=hostname,
                 auth_token=str(team_cfg.get("auth_token", "")),
                 ui_password=str(team_cfg.get("ui_password", "")),
-                github_users=github_users,
                 port_range_start=port_start,
                 port_range_end=port_end,
                 data_dir=team_data_dir,
@@ -309,8 +270,6 @@ class Settings:
             postgres_image=str(database.get("image", "postgres:15")),
             base_data_dir=base_data_dir,
             overlay_threshold_mb=int(storage.get("overlay_threshold_mb", 50)),
-            oauth_client_id=str(oauth.get("oauth_client_id", "")).strip(),
-            oauth_client_secret=str(oauth.get("oauth_client_secret", "")).strip(),
             oauth_base_url=str(oauth.get("oauth_base_url", "")).strip(),
             etc_dir=etc_dir,
             toml_path=path,
@@ -355,7 +314,9 @@ def _resolve_etc_dir() -> str:
         _cached_etc_dir = default
     else:
         _cached_etc_dir = os.path.join(os.path.expanduser("~"), ".oduflow", "conf")
-        logger.debug("Default %s is not writable, falling back to %s", default, _cached_etc_dir)
+        logger.debug(
+            "Default %s is not writable, falling back to %s", default, _cached_etc_dir
+        )
     return _cached_etc_dir
 
 
@@ -377,5 +338,7 @@ def _resolve_data_dir(explicit: str) -> str:
         _cached_data_dir = default
     else:
         _cached_data_dir = os.path.join(os.path.expanduser("~"), ".oduflow", "data")
-        logger.debug("Default %s is not writable, falling back to %s", default, _cached_data_dir)
+        logger.debug(
+            "Default %s is not writable, falling back to %s", default, _cached_data_dir
+        )
     return _cached_data_dir

@@ -22,62 +22,56 @@ auth_token = "secret-token-team-2"
 
 The token is used to both authenticate and identify the team. This is implemented via FastMCP's `StaticTokenVerifier`.
 
-## GitHub OAuth (for Claude.ai and other MCP clients)
+## Self-hosted OAuth (for Claude.ai and other MCP clients)
 
-Oduflow supports GitHub OAuth 2.1 for MCP clients that use OAuth authorization (e.g. Claude.ai Remote MCP, MCP Inspector). This allows users to authenticate via their GitHub account instead of static tokens.
+Oduflow can act as its own OAuth 2.1 Authorization Server, so MCP clients that require an OAuth flow (e.g. Claude.ai Remote MCP, MCP Inspector) can connect without any external identity provider.
+
+When the OAuth flow completes, the issued `access_token` is exactly the team's `auth_token` from `oduflow.toml` — so the same value works as a plain Bearer token for CLI clients.
 
 ### Setup
 
-1. Create a [GitHub OAuth App](https://github.com/settings/developers):
-    - **Authorization callback URL**: `https://your-server.com/auth/callback`
-    - Note the **Client ID** and **Client Secret**
-
-2. Configure `oduflow.toml`:
+In `oduflow.toml`, set the public URL of this instance and an `auth_token` per team:
 
 ```toml
-[server]
-oauth_client_id = "Ov23li..."
-oauth_client_secret = "your-github-client-secret"
+[oauth]
 oauth_base_url = "https://your-server.com"
-```
 
-3. (Optional) Restrict access to specific GitHub users per team:
-
-```toml
 [team.1]
-github_users = ["octocat", "dev1"]
-
-[team.2]
-github_users = ["admin2"]
+auth_token = "secret-token-team-1"
 ```
 
-If `github_users` is not set in any team and there is only one team, all authenticated GitHub users get access. If `github_users` is set, only listed users can access the MCP server — others get **403 Access Denied**.
+That's it. Oduflow now exposes:
+
+- `GET /.well-known/oauth-authorization-server` — discovery metadata
+- `GET /authorize` — authorization endpoint (Authorization Code + PKCE)
+- `POST /token` — token endpoint
+
+Dynamic Client Registration (`/register`) is **disabled** — clients must use the preregistered credentials.
 
 ### Connecting from Claude.ai
 
-1. Go to Claude.ai Settings → Integrations → Add Remote MCP Server
-2. Enter your oduflow URL: `https://your-server.com/mcp`
-3. In **Advanced Settings**, enter the GitHub OAuth App **Client ID** and **Client Secret**
-4. Claude will redirect you to GitHub for login, then connect to oduflow
+1. Go to Claude.ai Settings → Connectors → Add custom MCP
+2. Enter your Oduflow URL: `https://your-server.com/mcp`
+3. In the OAuth fields enter the team's `auth_token` as **both** `Client ID` **and** `Client Secret`:
 
-### Combined mode (static tokens + OAuth)
+   ```
+   Client ID     = secret-token-team-1
+   Client Secret = secret-token-team-1
+   ```
 
-Both auth methods can work simultaneously. Static Bearer tokens are checked first; if no match, the OAuth flow is used:
+4. Claude.ai performs the OAuth flow against your Oduflow instance, receives an access token, and connects.
 
-```toml
-[server]
-oauth_client_id = "Ov23li..."
-oauth_client_secret = "abc..."
-oauth_base_url = "https://your-server.com"
+The team is identified by the `auth_token`, so each team's claude.ai connector ends up scoped to its own workspaces, templates, and credentials.
 
-[team.1]
-auth_token = "secret-token"         # for CLI / automation
-github_users = ["octocat", "dev1"]  # for Claude.ai / browser-based clients
+### Bearer-only mode (CLI / automation)
+
+For curl, IDE clients, or anything that doesn't need OAuth, simply send the `auth_token` as a Bearer header:
+
+```
+Authorization: Bearer secret-token-team-1
 ```
 
-### GitHub username in MCP context
-
-When a user authenticates via GitHub OAuth, their GitHub login is available in the MCP tool context. This can be used for audit trails and environment metadata (e.g. "created by octocat").
+This works whether or not `oauth_base_url` is configured.
 
 ## Web Dashboard Auth
 
@@ -100,6 +94,8 @@ Warnings are logged on startup for each team:
 ```
 INFO  [team.1] http://localhost:8000/ (MCP token OFF, OAuth OFF, UI auth OFF)
 ```
+
+When OAuth is enabled the status reads `OAuth ON (self-hosted)`.
 
 ## Git Credentials
 

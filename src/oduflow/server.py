@@ -54,25 +54,14 @@ def _get_settings() -> Settings:
 def _resolve_team(ctx: Context | None) -> TeamSettings:
     """Resolve the team from MCP Context.
 
-    Priority: static token → GitHub user → Host header → single-team → team "1".
+    Priority: token/OAuth client_id → Host header → single-team → team "1".
     """
     settings = _get_settings()
-    # 1. Token-based: client_id set by auth provider (static tokens map to team_id)
+    # 1. Token-based: client_id set by auth provider maps to team_id
     team_id = ctx.client_id if ctx and ctx.client_id else None
     if team_id and team_id in settings.teams:
         return settings.teams[team_id]
-    # 2. GitHub OAuth: resolve by GitHub login from access token claims
-    if settings.oauth_enabled and ctx:
-        github_login = _get_github_user(ctx)
-        if github_login:
-            team = settings.get_team_by_github_user(github_login)
-            if team:
-                return team
-            # No github_users configured anywhere → single-team fallback
-            if not settings.any_team_has_github_users:
-                if len(settings.teams) == 1:
-                    return next(iter(settings.teams.values()))
-    # 3. Hostname-based: match Host header against team hostnames
+    # 2. Hostname-based: match Host header against team hostnames
     if ctx:
         try:
             from fastmcp.server.dependencies import get_http_request
@@ -84,28 +73,10 @@ def _resolve_team(ctx: Context | None) -> TeamSettings:
                 return team
         except Exception:
             pass
-    # 4. Fallback: single team or default team "1"
+    # 3. Fallback: single team or default team "1"
     if len(settings.teams) == 1:
         return next(iter(settings.teams.values()))
     return settings.get_team("1")
-
-
-def _get_github_user(ctx: Context | None) -> str:
-    """Extract GitHub login from MCP Context access token claims.
-
-    Returns empty string if not available (e.g. static token auth).
-    """
-    if not ctx:
-        return ""
-    try:
-        from fastmcp.server.dependencies import get_access_token
-
-        token = get_access_token()
-        if token and hasattr(token, "claims") and token.claims:
-            return str(token.claims.get("login", ""))
-    except Exception:
-        pass
-    return ""
 
 
 # -- Output cache helpers --
@@ -2860,7 +2831,9 @@ def _start_http() -> None:
         else:
             url = f"http://{host}:{port}/"
         mcp_status = "MCP token ON" if team.auth_token else "MCP token OFF"
-        oauth_status = "OAuth ON" if settings.oauth_enabled else "OAuth OFF"
+        oauth_status = (
+            "OAuth ON (self-hosted)" if settings.oauth_enabled else "OAuth OFF"
+        )
         ui_status = "UI auth ON" if team.ui_password else "UI auth OFF"
         logger.info(
             "[team.%s] %s (%s, %s, %s)", tid, url, mcp_status, oauth_status, ui_status
@@ -2874,93 +2847,38 @@ def _start_http() -> None:
 def _build_auth(settings: Settings):  # type: ignore[no-untyped-def]
     """Build the auth provider from settings.
 
-    Supports three modes (auto-detected):
-    - Static tokens only (auth_token in team sections)
-    - GitHub OAuth only (oauth_* in server/oauth section)
-    - Both combined: static tokens checked first, GitHub OAuth fallback
+    Two modes (auto-detected by ``oauth_base_url``):
+    - Self-hosted OAuth Authorization Server (when oauth_base_url is set):
+      Oduflow exposes /authorize, /token, /.well-known/oauth-authorization-server.
+      Each team's auth_token doubles as client_id, client_secret, and the
+      issued access token. Suitable for claude.ai and other MCP clients that
+      require an OAuth flow.
+    - Static Bearer tokens (default when oauth_base_url is empty):
+      auth_token is consumed directly from the Authorization header.
+      Suitable for curl, CLI clients, and IDEs that don't need OAuth.
     """
-    # Collect static tokens
     tokens: dict[str, dict[str, object]] = {}
     for team_id, team in settings.teams.items():
         if team.auth_token:
             tokens[team.auth_token] = {"client_id": team_id, "scopes": []}
 
-    has_tokens = bool(tokens)
-    has_oauth = settings.oauth_enabled
+    if settings.oauth_enabled:
+        if not tokens:
+            logger.warning(
+                "oauth_base_url is set but no team has auth_token; OAuth disabled"
+            )
+            return None
+        from oduflow.oauth_provider import OduflowOAuthProvider
 
-    if has_oauth and has_tokens:
-        # Both: GitHub OAuth provider with composite verifier
-        return _build_github_auth(settings, static_tokens=tokens)
+        return OduflowOAuthProvider(settings)
 
-    if has_oauth:
-        # GitHub OAuth only
-        return _build_github_auth(settings)
-
-    if has_tokens:
-        # Static tokens only (current behavior)
+    if tokens:
         from fastmcp.server.auth.providers.jwt import StaticTokenVerifier
 
         return StaticTokenVerifier(tokens=tokens)
 
-    logger.warning("HTTP auth DISABLED (no auth_token or OAuth configured)")
+    logger.warning("HTTP auth DISABLED (no auth_token or oauth_base_url set)")
     return None
-
-
-def _build_github_auth(
-    settings: Settings,
-    static_tokens: dict[str, dict[str, object]] | None = None,
-) -> object:
-    """Build GitHubProvider with optional static token fallback."""
-    from fastmcp.server.auth.providers.github import (
-        GitHubProvider,
-        GitHubTokenVerifier,
-    )
-
-    if static_tokens:
-        from fastmcp.server.auth.providers.jwt import StaticTokenVerifier
-
-        static_verifier = StaticTokenVerifier(tokens=static_tokens)
-        github_verifier = GitHubTokenVerifier()
-        token_verifier = _CompositeTokenVerifier(static_verifier, github_verifier)
-
-        from fastmcp.server.auth.oauth_proxy import OAuthProxy
-
-        return OAuthProxy(
-            upstream_authorization_endpoint="https://github.com/login/oauth/authorize",
-            upstream_token_endpoint="https://github.com/login/oauth/access_token",
-            upstream_client_id=settings.oauth_client_id,
-            upstream_client_secret=settings.oauth_client_secret,
-            token_verifier=token_verifier,
-            base_url=settings.oauth_base_url,
-            require_authorization_consent=False,
-        )
-
-    return GitHubProvider(
-        client_id=settings.oauth_client_id,
-        client_secret=settings.oauth_client_secret,
-        base_url=settings.oauth_base_url,
-        require_authorization_consent=False,
-    )
-
-
-class _CompositeTokenVerifier:
-    """Token verifier that tries static tokens first, then GitHub API.
-
-    Implements the TokenVerifier protocol (verify_token + required_scopes)
-    without inheriting from it to avoid pulling in pydantic BaseModel.
-    """
-
-    required_scopes: list[str] | None = None
-
-    def __init__(self, *verifiers: object) -> None:
-        self.verifiers = verifiers
-
-    async def verify_token(self, token: str):  # type: ignore[no-untyped-def]
-        for verifier in self.verifiers:
-            result = await verifier.verify_token(token)  # type: ignore[union-attr]
-            if result is not None:
-                return result
-        return None
 
 
 if __name__ == "__main__":
