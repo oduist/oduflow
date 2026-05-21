@@ -477,6 +477,9 @@ def _build_routes(
             parsed_volumes = (
                 volume_ops.parse_volume_mounts(volumes_raw) if volumes_raw else None
             )
+            privileged = bool(body.get("privileged", False))
+            net_admin = bool(body.get("net_admin", False))
+            cap_add = ["NET_ADMIN"] if net_admin else None
             result = service_ops.create_service(
                 get_settings(),
                 team,
@@ -487,6 +490,8 @@ def _build_routes(
                 env_vars=env_vars,
                 host_mode=host_mode,
                 volumes=parsed_volumes,
+                cap_add=cap_add,
+                privileged=privileged,
             )
             return JSONResponse({"ok": True, "result": result})
         except FlowError as e:
@@ -601,6 +606,9 @@ def _build_routes(
             parsed_volumes = (
                 volume_ops.parse_volume_mounts(volumes_raw) if volumes_raw else None
             )
+            privileged = bool(body.get("privileged", False))
+            net_admin = bool(body.get("net_admin", False))
+            cap_add = ["NET_ADMIN"] if net_admin else None
             result = service_ops.create_service(
                 get_settings(),
                 team,
@@ -611,6 +619,8 @@ def _build_routes(
                 env_vars=env_vars,
                 host_mode=host_mode,
                 volumes=parsed_volumes,
+                cap_add=cap_add,
+                privileged=privileged,
             )
             return JSONResponse({"ok": True, "result": result})
         except FlowError as e:

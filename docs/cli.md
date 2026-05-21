@@ -133,6 +133,9 @@ oduflow call create_service redis redis:7 6379
 # Call a tool with JSON-encoded arguments
 oduflow call create_environment '{"branch":"dev","repo_url":"https://github.com/owner/repo.git","odoo_image":"odoo:17.0","template_name":"myproject"}'
 
+# Service with NET_ADMIN capability (VPN / tun / iptables)
+oduflow call create_service '{"name":"vpn","image":"linuxserver/wireguard","port":51820,"net_admin":true}'
+
 # Type coercion is automatic: int, bool, and float parameters are cast from strings
 oduflow call get_environment_logs dev 500
 ```

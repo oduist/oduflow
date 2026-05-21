@@ -58,6 +58,8 @@ def create_service(
     env_vars: dict[str, str] | None = None,
     host_mode: bool = False,
     volumes: list[dict[str, str]] | None = None,
+    cap_add: list[str] | None = None,
+    privileged: bool = False,
 ) -> dict[str, str]:
     client = get_client()
     container_name = f"oduflow-svc-{name}"
@@ -133,6 +135,11 @@ def create_service(
         if vol_binds:
             run_kwargs["volumes"] = vol_binds
 
+    if privileged:
+        run_kwargs["privileged"] = True
+    elif cap_add:
+        run_kwargs["cap_add"] = list(cap_add)
+
     client.containers.run(**run_kwargs)
     logger.info("Created service container %s from image %s", container_name, image)
 
@@ -148,6 +155,8 @@ def create_service(
             base_hostname=team.hostname,
             host_mode=host_mode,
             volumes=volumes,
+            cap_add=cap_add,
+            privileged=privileged,
         )
     except Exception:
         logger.warning("Failed to save service preset for %s", name, exc_info=True)
@@ -301,6 +310,10 @@ def list_services(settings: Settings, team: TeamSettings) -> list[dict]:
                     }
                 )
 
+        host_config = container.attrs.get("HostConfig", {}) or {}
+        svc_cap_add = list(host_config.get("CapAdd") or [])
+        svc_privileged = bool(host_config.get("Privileged", False))
+
         result.append(
             {
                 "name": svc_name,
@@ -312,6 +325,8 @@ def list_services(settings: Settings, team: TeamSettings) -> list[dict]:
                 "env_vars": env_vars,
                 "host_mode": is_host_mode,
                 "volumes": svc_volumes,
+                "cap_add": svc_cap_add,
+                "privileged": svc_privileged,
             }
         )
 
@@ -353,6 +368,8 @@ def update_service(settings: Settings, team: TeamSettings, name: str) -> dict[st
         env_vars = preset.get("env_vars") or None
         is_host_mode = preset.get("host_mode", False)
         old_volumes = preset.get("volumes") or None
+        cap_add = preset.get("cap_add") or None
+        privileged = preset.get("privileged", False)
     else:
         # Legacy fallback: extract from running container
         raw_env = container.attrs.get("Config", {}).get("Env", [])
@@ -364,6 +381,10 @@ def update_service(settings: Settings, team: TeamSettings, name: str) -> dict[st
                     env_vars[key] = value
 
         is_host_mode = container.labels.get("oduflow.host_mode") == "true"
+
+        host_config = container.attrs.get("HostConfig", {}) or {}
+        cap_add = list(host_config.get("CapAdd") or []) or None
+        privileged = bool(host_config.get("Privileged", False))
 
         port: int | None = None
         hostname: str | None = None
@@ -466,6 +487,8 @@ def update_service(settings: Settings, team: TeamSettings, name: str) -> dict[st
         env_vars=env_vars or None,
         host_mode=is_host_mode,
         volumes=old_volumes or None,
+        cap_add=cap_add,
+        privileged=privileged,
     )
 
     result["image_updated"] = True

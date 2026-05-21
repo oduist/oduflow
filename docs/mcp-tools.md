@@ -39,7 +39,7 @@ All tools are accessible via MCP clients (Cursor, Cline, Amp, etc.) and the CLI 
 | `delete_template` | ✓ | ⚠️ Delete a template profile (DB + files) |
 | `import_template_from_odoo` | ✓ | Import a template from a running Odoo instance via database manager API |
 | **Auxiliary Services** | | |
-| `create_service` | ✓ | Create a managed service container (e.g. Redis, Meilisearch) |
+| `create_service` | ✓ | Create a managed service container (e.g. Redis, Meilisearch). Supports `host_mode`, `volumes`, `privileged`, `net_admin` (adds `NET_ADMIN` capability for VPN/tun/iptables) |
 | `delete_service` | ✓ | Stop and remove a service container |
 | `restart_service` | | Restart a service container |
 | `update_service` | ✓ | Pull latest image and recreate the service |

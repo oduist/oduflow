@@ -1558,6 +1558,8 @@ def create_service(
     env_vars: str = "",
     host_mode: bool = False,
     volumes: str = "",
+    privileged: bool = False,
+    net_admin: bool = False,
     ctx: Context = None,
 ) -> str:
     """
@@ -1571,6 +1573,8 @@ def create_service(
         env_vars: Comma-separated KEY=VALUE pairs (e.g. "MEILI_MASTER_KEY=abc,MEILI_ENV=production").
         host_mode: Run the container in host network mode instead of the shared Docker network. Use when the service needs direct host network access. Traefik routing still works.
         volumes: Comma-separated volume mounts (e.g. "mydata:/data,config:/etc/app:ro"). Each entry is volume_name:/container/path[:ro|rw]. Volumes must be created first via create_volume.
+        privileged: Run the container in privileged mode (full host access). Use with care — implies all Linux capabilities. Mutually exclusive with net_admin (privileged already grants NET_ADMIN).
+        net_admin: Add the NET_ADMIN Linux capability. Required for VPN/WireGuard, tun/tap devices, and iptables manipulation inside the container.
     """
     settings = _get_settings()
     team = _resolve_team(ctx)
@@ -1580,6 +1584,7 @@ def create_service(
             item.split("=", 1) for item in env_vars.split(",") if "=" in item
         )
     parsed_volumes = volume_ops.parse_volume_mounts(volumes) if volumes else None
+    cap_add = ["NET_ADMIN"] if net_admin else None
     result = service_ops.create_service(
         settings,
         team,
@@ -1590,6 +1595,8 @@ def create_service(
         env_vars=parsed_env,
         host_mode=host_mode,
         volumes=parsed_volumes,
+        cap_add=cap_add,
+        privileged=privileged,
     )
     vol_info = ""
     if parsed_volumes:

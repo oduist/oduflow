@@ -676,6 +676,17 @@
         <label for="svc-volumes">Volumes (optional)</label>
         <textarea id="svc-volumes" rows="3" placeholder="volume_name:/container/path&#10;volume_name:/container/path:ro"></textarea>
       </div>
+      <div class="form-group">
+        <label>Capabilities</label>
+        <div style="display:flex;align-items:center;gap:8px;margin-top:4px;">
+          <input type="checkbox" id="svc-privileged">
+          <label for="svc-privileged" style="margin-bottom:0;cursor:pointer;">Privileged <span style="color:var(--muted);font-weight:normal;">— full host access (use with care)</span></label>
+        </div>
+        <div style="display:flex;align-items:center;gap:8px;margin-top:6px;">
+          <input type="checkbox" id="svc-net-admin">
+          <label for="svc-net-admin" style="margin-bottom:0;cursor:pointer;">NET_ADMIN <span style="color:var(--muted);font-weight:normal;">— VPN / tun / iptables</span></label>
+        </div>
+      </div>
       <div class="form-actions">
         <button class="btn" onclick="closeCreateServiceModal()">Cancel</button>
         <button class="btn-create" id="svc-submit" onclick="submitCreateService()">Create</button>
@@ -724,6 +735,17 @@
       <div class="form-group">
         <label for="restore-svc-volumes">Volumes (optional)</label>
         <textarea id="restore-svc-volumes" rows="3" placeholder="volume_name:/container/path&#10;volume_name:/container/path:ro"></textarea>
+      </div>
+      <div class="form-group">
+        <label>Capabilities</label>
+        <div style="display:flex;align-items:center;gap:8px;margin-top:4px;">
+          <input type="checkbox" id="restore-svc-privileged">
+          <label for="restore-svc-privileged" style="margin-bottom:0;cursor:pointer;">Privileged <span style="color:var(--muted);font-weight:normal;">— full host access (use with care)</span></label>
+        </div>
+        <div style="display:flex;align-items:center;gap:8px;margin-top:6px;">
+          <input type="checkbox" id="restore-svc-net-admin">
+          <label for="restore-svc-net-admin" style="margin-bottom:0;cursor:pointer;">NET_ADMIN <span style="color:var(--muted);font-weight:normal;">— VPN / tun / iptables</span></label>
+        </div>
       </div>
       <div class="form-actions">
         <button class="btn" onclick="closeRestoreServiceModal()">Cancel</button>
@@ -1628,11 +1650,18 @@ function renderServices(services) {
       var volStr = svc.volumes.map(function(v) { return esc(v.volume) + ':' + esc(v.mount_path) + (v.mode === 'ro' ? ':ro' : ''); }).join(', ');
       volHtml = '<div class="svc-meta"><span>Volumes: <strong>' + volStr + '</strong></span></div>';
     }
+    var capBadges = '';
+    if (svc.privileged) {
+      capBadges += '<span class="badge" style="background:#7a1f1f;color:#fff;margin-left:6px;" title="Privileged container (full host access)">privileged</span>';
+    } else if (svc.cap_add && svc.cap_add.indexOf('NET_ADMIN') !== -1) {
+      capBadges += '<span class="badge" style="background:#1f4f7a;color:#fff;margin-left:6px;" title="NET_ADMIN capability granted">NET_ADMIN</span>';
+    }
     return '<div class="svc-card" data-svc="' + esc(svc.name) + '">' +
       '<div class="svc-header">' +
         '<div class="left">' +
           '<span class="svc-name">' + esc(svc.name) + '</span>' +
           '<span class="badge ' + badgeClass(svc.status) + '">' + esc(svc.status) + '</span>' +
+          capBadges +
         '</div>' +
         '<div class="svc-actions">' +
           '<button class="btn btn-update" onclick="doUpdateService(\'' + escAttr(svc.name) + '\')">Update</button>' +
@@ -1736,6 +1765,8 @@ function openCreateServiceModal() {
    document.getElementById('svc-envvars').value = '';
    document.getElementById('svc-host-mode').checked = false;
    document.getElementById('svc-volumes').value = '';
+   document.getElementById('svc-privileged').checked = false;
+   document.getElementById('svc-net-admin').checked = false;
    var errEl = document.getElementById('create-svc-error');
   errEl.style.display = 'none';
   errEl.textContent = '';
@@ -1771,7 +1802,9 @@ async function submitCreateService() {
   try {
     var hostMode = document.getElementById('svc-host-mode').checked;
     var svcVolumes = document.getElementById('svc-volumes').value.trim();
-    var payload = { name: name, image: image, port: parseInt(port, 10), host_mode: hostMode };
+    var privileged = document.getElementById('svc-privileged').checked;
+    var netAdmin = document.getElementById('svc-net-admin').checked;
+    var payload = { name: name, image: image, port: parseInt(port, 10), host_mode: hostMode, privileged: privileged, net_admin: netAdmin };
     if (hostname) payload.hostname = hostname;
     if (envvars) payload.env_vars = envvars;
     if (svcVolumes) payload.volumes = svcVolumes;
@@ -1884,6 +1917,8 @@ function _fillRestoreFields(p) {
      volStr = p.volumes.map(function(v) { return v.volume + ':' + v.mount_path + (v.mode === 'ro' ? ':ro' : ''); }).join('\n');
    }
    document.getElementById('restore-svc-volumes').value = volStr;
+   document.getElementById('restore-svc-privileged').checked = !!p.privileged;
+   document.getElementById('restore-svc-net-admin').checked = !!(p.cap_add && p.cap_add.indexOf('NET_ADMIN') !== -1);
 }
 
 function openRestoreServiceModal(preselect) {
@@ -1898,6 +1933,8 @@ function openRestoreServiceModal(preselect) {
    document.getElementById('restore-svc-envvars').value = '';
    document.getElementById('restore-svc-host-mode').checked = false;
    document.getElementById('restore-svc-volumes').value = '';
+   document.getElementById('restore-svc-privileged').checked = false;
+   document.getElementById('restore-svc-net-admin').checked = false;
 
   sel.innerHTML = '<option value="">Loading...</option>';
   document.getElementById('restore-svc-modal').classList.add('show');
@@ -1953,7 +1990,9 @@ async function submitRestoreService() {
   try {
     var hostMode = document.getElementById('restore-svc-host-mode').checked;
     var restoreVolumes = document.getElementById('restore-svc-volumes').value.trim();
-    var payload = { name: name, image: image, port: parseInt(port, 10), host_mode: hostMode };
+    var privileged = document.getElementById('restore-svc-privileged').checked;
+    var netAdmin = document.getElementById('restore-svc-net-admin').checked;
+    var payload = { name: name, image: image, port: parseInt(port, 10), host_mode: hostMode, privileged: privileged, net_admin: netAdmin };
     if (hostname) payload.hostname = hostname;
     if (envvars) payload.env_vars = envvars;
     if (restoreVolumes) payload.volumes = restoreVolumes;

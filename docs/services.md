@@ -17,6 +17,9 @@ oduflow call create_service meilisearch getmeili/meilisearch:v1.6 7700 "" "MEILI
 
 # Elasticsearch
 oduflow call create_service elasticsearch docker.elastic.co/elasticsearch/elasticsearch:8.11.0 9200 "" "discovery.type=single-node,ES_JAVA_OPTS=-Xms512m -Xmx512m"
+
+# WireGuard VPN — needs NET_ADMIN to manage tun/iptables
+oduflow call create_service '{"name":"vpn","image":"linuxserver/wireguard","port":51820,"net_admin":true}'
 ```
 
 Services are:
@@ -25,6 +28,15 @@ Services are:
 - Given an `unless-stopped` restart policy
 - Automatically routed through Traefik with HTTPS when in traefik mode
 - Labeled for management (`oduflow.managed=true`, `oduflow.service=<name>`)
+
+### Linux Capabilities
+
+Two optional flags grant additional container privileges:
+
+- `net_admin` — adds the `NET_ADMIN` Linux capability. Required for VPN / WireGuard, `tun`/`tap` devices, and `iptables` manipulation inside the container.
+- `privileged` — runs the container in privileged mode (full host access, all capabilities). Use with care — only when a service genuinely needs it (e.g. Docker-in-Docker, hardware passthrough).
+
+Both can be enabled at the same time; on the Docker side, `privileged` implies all capabilities so `net_admin` is then redundant — but it is still recorded in the preset so disabling `privileged` later keeps `NET_ADMIN` active.
 
 ## Managing Services
 
@@ -52,14 +64,14 @@ oduflow call run_service_command redis "redis-cli ping"
 
 The `update_service` operation:
 
-1. Captures the current image name, environment variables, port, and hostname
+1. Captures the current image name, environment variables, port, hostname, volumes, and capabilities (`cap_add`, `privileged`)
 2. Pulls the latest version of the image
 3. Compares image digests — if unchanged, reports "already up-to-date"
 4. If the image changed: stops the old container, removes it, and creates a new one with identical settings
 
 ## Service Presets
 
-Every time a service is created, its configuration (image, port, hostname, environment variables) is automatically saved as a **preset** in `{team_data_dir}/service_presets.json`. This allows you to restore a service after deletion without re-entering its configuration.
+Every time a service is created, its configuration (image, port, hostname, environment variables, volumes, `host_mode`, `cap_add`, `privileged`) is automatically saved as a **preset** in `{team_data_dir}/service_presets.json`. This allows you to restore a service after deletion without re-entering its configuration.
 
 ```bash
 # List saved presets
