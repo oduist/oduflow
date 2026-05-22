@@ -946,6 +946,17 @@ def delete_environment(
     client = get_client()
     odoo_container_name = get_resource_name(env_name, "odoo", settings.prefix)
     env_db = get_db_name(env_name, team.team_id)
+    workspace_path = get_workspace_path(env_name, team.workspaces_dir)
+
+    container_exists = True
+    try:
+        client.containers.get(odoo_container_name)
+    except docker.errors.NotFound:
+        container_exists = False
+
+    if not container_exists and not os.path.exists(workspace_path):
+        raise NotFoundError(f"Environment '{env_name}' does not exist.")
+
     warnings: list[str] = []
 
     logger.info("Deleting environment", extra={"env_name": env_name})
@@ -953,12 +964,13 @@ def delete_environment(
     if settings.routing_mode == "port":
         release_port(team.port_registry_path, env_name)
 
-    try:
-        container = client.containers.get(odoo_container_name)
-        container.stop()
-        container.remove(v=True)
-    except docker.errors.NotFound:
-        pass
+    if container_exists:
+        try:
+            container = client.containers.get(odoo_container_name)
+            container.stop()
+            container.remove(v=True)
+        except docker.errors.NotFound:
+            pass
 
     try:
         _exec_sql(
@@ -981,7 +993,6 @@ def delete_environment(
         logger.warning(msg, extra={"env_name": env_name})
         warnings.append(msg)
 
-    workspace_path = get_workspace_path(env_name, team.workspaces_dir)
     if os.path.exists(workspace_path):
         _unmount_filestore(env_name, team)
         extra_dir = os.path.join(workspace_path, "extra")

@@ -327,6 +327,24 @@ class TestDeleteEnvironment:
             TEST_TEAM.port_registry_path, "feature/payments"
         )
 
+    @patch("oduflow.docker_ops.env_ops.release_port")
+    @patch("oduflow.docker_ops.env_ops._exec_sql")
+    @patch("oduflow.docker_ops.env_ops.os.path.exists", return_value=False)
+    def test_delete_missing_raises_not_found(
+        self,
+        mock_exists,
+        mock_sql,
+        mock_release,
+        mock_docker_client,
+    ):
+        mock_docker_client.containers.get.side_effect = docker.errors.NotFound("nf")
+
+        with pytest.raises(NotFoundError, match="does not exist"):
+            env_ops.delete_environment(TEST_SETTINGS, TEST_TEAM, "ghost")
+
+        mock_release.assert_not_called()
+        mock_sql.assert_not_called()
+
 
 class TestRestartEnvironment:
     def test_restart(self, mock_docker_client):
