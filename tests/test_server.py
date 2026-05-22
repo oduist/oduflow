@@ -90,6 +90,16 @@ class TestDeleteEnvironmentTool:
         assert "Warnings:" in result
         assert "Failed to drop database" in result
 
+    @patch("oduflow.docker_ops.env_ops.delete_environment")
+    def test_delete_missing_raises(self, mock_delete):
+        from oduflow.errors import NotFoundError
+
+        mock_delete.side_effect = NotFoundError(
+            "Environment 'firewall' does not exist."
+        )
+        with pytest.raises(ToolError, match="does not exist"):
+            _call_tool("delete_environment", env_name="firewall")
+
 
 class TestListEnvironmentsTool:
     @patch("oduflow.docker_ops.env_ops.list_environments")
