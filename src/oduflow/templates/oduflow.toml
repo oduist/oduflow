@@ -20,12 +20,27 @@ image = "postgres:15"
 # data_dir = "/srv/oduflow"       # default: /srv/oduflow or ~/.oduflow/data
 overlay_threshold_mb = 50         # filestore size limit for overlay vs copy
 
+# ── OAuth (optional) ──────────────────────────────────
+# Set oauth_base_url to the public URL of this Oduflow instance to enable
+# the self-hosted OAuth Authorization Server. Endpoints exposed:
+#   /.well-known/oauth-authorization-server
+#   /authorize
+#   /token
+# For each team, claude.ai (and any OAuth-based MCP client) should be
+# configured with:
+#   client_id     = team.<id>.auth_token
+#   client_secret = team.<id>.auth_token   (same value)
+# After the OAuth flow the issued access_token is also auth_token, so plain
+# Bearer-token clients keep working. Leave empty to use Bearer-only auth.
+# [oauth]
+# oauth_base_url = "https://oduflow.example.com"
+
 # ── Teams ─────────────────────────────────────────────
 # Each team gets isolated workspaces, templates, credentials and services.
 # At least one [team.*] section is required.
 
 [team.1]
 hostname = "localhost"            # port: http://{hostname}:{port}, traefik: https://{slug}.{hostname}
-auth_token = ""                   # MCP bearer token (empty = auth disabled)
+auth_token = ""                   # MCP bearer token / OAuth client_id+secret (empty = auth disabled)
 ui_password = ""                  # Web UI password (empty = UI open)
 port_range = [50000, 50100]       # port range for Odoo containers
