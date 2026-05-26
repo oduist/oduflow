@@ -44,6 +44,7 @@ All tools are accessible via MCP clients (Cursor, Cline, Amp, etc.) and the CLI 
 | `restart_service` | | Restart a service container |
 | `update_service` | ✓ | Pull latest image and recreate the service |
 | `list_services` | | List all managed service containers |
+| `get_service_info` | | Full live state of a single service (image+digest, port, hostname, host_mode, volumes, env, cap_add, privileged, restart count, has_preset). Call before recreating a service to preserve all options |
 | `get_service_logs` | | Retrieve service container logs |
 | `run_service_command` | | Execute a shell command inside a service container |
 | **Volumes** | | |
