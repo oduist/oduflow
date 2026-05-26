@@ -365,3 +365,137 @@ class TestEnvLock:
                 )
         finally:
             _locks.release_env("main")
+
+
+class TestListServicePresetsTool:
+    @patch("oduflow.docker_ops.service_presets.list_presets")
+    def test_list_shows_all_fields(self, mock_list):
+        mock_list.return_value = [
+            {
+                "name": "wg",
+                "image": "linuxserver/wireguard:latest",
+                "port": 51820,
+                "hostname": "wg",
+                "env_vars": {"PUID": "1000"},
+                "host_mode": True,
+                "privileged": True,
+                "cap_add": ["NET_ADMIN", "SYS_MODULE"],
+                "volumes": [
+                    {"volume": "wg-data", "mount_path": "/config", "mode": "rw"},
+                ],
+            }
+        ]
+        result = _call_tool("list_service_presets")
+        assert "wg" in result
+        assert "image=linuxserver/wireguard:latest" in result
+        assert "port=51820" in result
+        assert "hostname=wg" in result
+        assert "env=[PUID=1000]" in result
+        assert "host_mode=true" in result
+        assert "privileged=true" in result
+        assert "cap_add=[NET_ADMIN,SYS_MODULE]" in result
+        assert "volumes=[wg-data:/config:rw]" in result
+
+    @patch("oduflow.docker_ops.service_presets.list_presets")
+    def test_list_omits_absent_fields(self, mock_list):
+        mock_list.return_value = [
+            {
+                "name": "redis",
+                "image": "redis:7",
+                "port": 6379,
+                "hostname": "",
+                "env_vars": {},
+            }
+        ]
+        result = _call_tool("list_service_presets")
+        assert "redis" in result
+        assert "host_mode" not in result
+        assert "privileged" not in result
+        assert "cap_add" not in result
+        assert "volumes" not in result
+
+
+class TestRestoreServiceTool:
+    @patch("oduflow.docker_ops.service_ops.create_service")
+    @patch("oduflow.docker_ops.service_presets.get_preset")
+    def test_restore_propagates_capabilities(self, mock_get, mock_create):
+        mock_get.return_value = {
+            "name": "wg",
+            "image": "linuxserver/wireguard:latest",
+            "port": 51820,
+            "hostname": "wg",
+            "env_vars": {"PUID": "1000"},
+            "host_mode": True,
+            "privileged": False,
+            "cap_add": ["NET_ADMIN"],
+            "volumes": [
+                {"volume": "wg-data", "mount_path": "/config", "mode": "rw"},
+            ],
+        }
+        mock_create.return_value = {
+            "name": "wg",
+            "container_name": "oduflow-svc-wg",
+            "image": "linuxserver/wireguard:latest",
+            "url": "http://localhost:51820",
+        }
+        result = _get_tool_fn("restore_service")(name="wg")
+
+        kwargs = mock_create.call_args.kwargs
+        assert kwargs["cap_add"] == ["NET_ADMIN"]
+        assert kwargs["privileged"] is False
+        assert kwargs["host_mode"] is True
+        assert kwargs["volumes"] == [
+            {"volume": "wg-data", "mount_path": "/config", "mode": "rw"},
+        ]
+        assert kwargs["env_vars"] == {"PUID": "1000"}
+        assert "Service restored from preset!" in result
+        assert "Capabilities: NET_ADMIN" in result
+        assert "Volumes: wg-data:/config:rw" in result
+
+    @patch("oduflow.docker_ops.service_ops.create_service")
+    @patch("oduflow.docker_ops.service_presets.get_preset")
+    def test_restore_propagates_privileged(self, mock_get, mock_create):
+        mock_get.return_value = {
+            "name": "dind",
+            "image": "docker:dind",
+            "port": 2375,
+            "hostname": "",
+            "env_vars": {},
+            "privileged": True,
+        }
+        mock_create.return_value = {
+            "name": "dind",
+            "container_name": "oduflow-svc-dind",
+            "image": "docker:dind",
+            "url": "http://localhost:2375",
+        }
+        result = _get_tool_fn("restore_service")(name="dind")
+
+        kwargs = mock_create.call_args.kwargs
+        assert kwargs["privileged"] is True
+        assert kwargs["cap_add"] is None
+        assert "Privileged: true" in result
+
+    @patch("oduflow.docker_ops.service_ops.create_service")
+    @patch("oduflow.docker_ops.service_presets.get_preset")
+    def test_restore_minimal_preset(self, mock_get, mock_create):
+        mock_get.return_value = {
+            "name": "redis",
+            "image": "redis:7",
+            "port": 6379,
+            "hostname": "",
+            "env_vars": {},
+        }
+        mock_create.return_value = {
+            "name": "redis",
+            "container_name": "oduflow-svc-redis",
+            "image": "redis:7",
+            "url": "http://localhost:6379",
+        }
+        _get_tool_fn("restore_service")(name="redis")
+
+        kwargs = mock_create.call_args.kwargs
+        assert kwargs["cap_add"] is None
+        assert kwargs["privileged"] is False
+        assert kwargs["host_mode"] is False
+        assert kwargs["volumes"] is None

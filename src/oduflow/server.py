@@ -1661,6 +1661,18 @@ def list_service_presets(ctx: Context = None) -> str:
             output += f", hostname={p['hostname']}"
         if env_str:
             output += f", env=[{env_str}]"
+        if p.get("host_mode"):
+            output += ", host_mode=true"
+        if p.get("privileged"):
+            output += ", privileged=true"
+        if p.get("cap_add"):
+            output += f", cap_add=[{','.join(p['cap_add'])}]"
+        if p.get("volumes"):
+            vol_str = ",".join(
+                f"{v['volume']}:{v['mount_path']}:{v.get('mode', 'rw')}"
+                for v in p["volumes"]
+            )
+            output += f", volumes=[{vol_str}]"
         output += "\n"
     return output
 
@@ -1679,6 +1691,8 @@ def restore_service(name: str, ctx: Context = None) -> str:
     team = _resolve_team(ctx)
     preset = service_presets.get_preset(team, name)
     preset_volumes = preset.get("volumes") or None
+    preset_cap_add = preset.get("cap_add") or None
+    preset_privileged = preset.get("privileged", False)
     result = service_ops.create_service(
         settings,
         team,
@@ -1689,20 +1703,26 @@ def restore_service(name: str, ctx: Context = None) -> str:
         env_vars=preset.get("env_vars") or None,
         host_mode=preset.get("host_mode", False),
         volumes=preset_volumes,
+        cap_add=preset_cap_add,
+        privileged=preset_privileged,
     )
-    vol_info = ""
+    extra = ""
     if preset_volumes:
-        vol_info = "\nVolumes: " + ", ".join(
+        extra += "\nVolumes: " + ", ".join(
             f"{v['volume']}:{v['mount_path']}:{v.get('mode', 'rw')}"
             for v in preset_volumes
         )
+    if preset_privileged:
+        extra += "\nPrivileged: true"
+    elif preset_cap_add:
+        extra += f"\nCapabilities: {','.join(preset_cap_add)}"
     return (
         f"Service restored from preset!\n"
         f"Name: {result['name']}\n"
         f"Container: {result['container_name']}\n"
         f"Image: {result['image']}\n"
         f"URL: {result['url']}"
-        f"{vol_info}"
+        f"{extra}"
     )
 
 
