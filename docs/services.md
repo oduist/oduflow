@@ -28,6 +28,7 @@ Services are:
 - Given an `unless-stopped` restart policy
 - Automatically routed through Traefik with HTTPS when in traefik mode
 - Labeled for management (`oduflow.managed=true`, `oduflow.service=<name>`)
+- Always created from a freshly pulled image — `create_service` and `restore_service` explicitly pull before running, so mutable tags like `:latest` get the current published version instead of a stale local cache
 
 ### Linux Capabilities
 
@@ -44,6 +45,10 @@ Both can be enabled at the same time; on the Docker side, `privileged` implies a
 # List all services with status, ports, URLs, and env vars
 oduflow call list_services
 
+# Full state of a single service — image + digest, port, hostname, host_mode,
+# volumes, env vars, capabilities, restart count, started_at, has_preset
+oduflow call get_service_info redis
+
 # View service logs
 oduflow call get_service_logs redis 200
 
@@ -59,6 +64,12 @@ oduflow call delete_service redis
 # Execute a command inside a service container
 oduflow call run_service_command redis "redis-cli ping"
 ```
+
+### Inspecting a Service Before Recreating It
+
+When you need to delete and recreate a service (e.g. to change the image tag or a single env var), call `get_service_info` first and reuse its fields in the new `create_service` call. The returned dict carries the full configuration (`image`, `port`, `hostname`, `env_vars`, `host_mode`, `volumes`, `cap_add`, `privileged`) so you do not lose anything that `list_services` truncates or that lived only inside the preset.
+
+For a plain image refresh prefer `update_service`, which captures and preserves every setting automatically.
 
 ## Service Update Flow
 

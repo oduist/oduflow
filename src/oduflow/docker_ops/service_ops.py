@@ -140,6 +140,9 @@ def create_service(
     elif cap_add:
         run_kwargs["cap_add"] = list(cap_add)
 
+    logger.info("Pulling image %s for service %s", image, name)
+    client.images.pull(image)
+
     client.containers.run(**run_kwargs)
     logger.info("Created service container %s from image %s", container_name, image)
 
@@ -206,6 +209,115 @@ def delete_service(settings: Settings, name: str) -> dict[str, str]:
     }
 
 
+def _describe_service_container(
+    settings: Settings, team: TeamSettings, container
+) -> dict:
+    """Extract a normalized state dict for a managed service container.
+
+    Used by both ``list_services`` and ``get_service_info``.
+    """
+    svc_name = container.labels.get("oduflow.service")
+    container_name = container.name
+    image = container.image.tags[0] if container.image.tags else "unknown"
+    status = container.status
+
+    raw_env = container.attrs.get("Config", {}).get("Env", [])
+    env_vars: dict[str, str] = {}
+    for entry in raw_env:
+        if "=" in entry:
+            key, value = entry.split("=", 1)
+            if key not in _SYSTEM_ENV_KEYS:
+                env_vars[key] = value
+
+    port_num: int | None = None
+    url: str | None = None
+    hostname: str | None = None
+    is_host_mode = container.labels.get("oduflow.host_mode") == "true"
+
+    if settings.routing_mode == "traefik":
+        rule_label = f"traefik.http.routers.oduflow-svc-{svc_name}.rule"
+        rule_value = container.labels.get(rule_label, "")
+        match = re.search(r"Host\(`([^`]+)`\)", rule_value)
+        if match:
+            hostname = match.group(1)
+            url = f"https://{hostname}"
+
+        if is_host_mode:
+            url_label = f"traefik.http.services.oduflow-svc-{svc_name}.loadbalancer.server.url"
+            url_value = container.labels.get(url_label, "")
+            port_match = re.search(r":(\d+)$", url_value)
+            if port_match:
+                port_num = int(port_match.group(1))
+        else:
+            port_label = f"traefik.http.services.oduflow-svc-{svc_name}.loadbalancer.server.port"
+            label_port = container.labels.get(port_label)
+            if label_port:
+                port_num = int(label_port)
+    else:
+        if is_host_mode:
+            # In host mode without traefik, port is not mapped via Docker.
+            # Try to get it from the preset.
+            try:
+                preset = service_presets.get_preset(team, svc_name)
+                port_num = preset.get("port")
+            except Exception:
+                pass
+            if port_num:
+                url = f"http://{team.hostname}:{port_num}"
+        else:
+            ports_dict = container.attrs.get("NetworkSettings", {}).get("Ports", {})
+            if ports_dict:
+                for port_key, mappings in ports_dict.items():
+                    port_match = re.match(r"(\d+)/", port_key)
+                    if port_match:
+                        port_num = int(port_match.group(1))
+                    if mappings:
+                        for mapping in mappings:
+                            host_port = mapping.get("HostPort")
+                            if host_port:
+                                url = f"http://{team.hostname}:{host_port}"
+                                break
+                    break  # only process first port entry
+
+    svc_volumes: list[dict[str, str]] = []
+    mounts = container.attrs.get("Mounts", [])
+    for mount in mounts:
+        if mount.get("Type") == "volume":
+            vol_docker_name = mount.get("Name", "")
+            prefix = f"oduflow-vol-{team.team_id}-"
+            short_name = (
+                vol_docker_name[len(prefix) :]
+                if vol_docker_name.startswith(prefix)
+                else vol_docker_name
+            )
+            svc_volumes.append(
+                {
+                    "volume": short_name,
+                    "mount_path": mount.get("Destination", ""),
+                    "mode": "ro" if not mount.get("RW", True) else "rw",
+                }
+            )
+
+    host_config = container.attrs.get("HostConfig", {}) or {}
+    svc_cap_add = list(host_config.get("CapAdd") or [])
+    svc_privileged = bool(host_config.get("Privileged", False))
+
+    return {
+        "name": svc_name,
+        "container_name": container_name,
+        "image": image,
+        "status": status,
+        "port": port_num,
+        "hostname": hostname,
+        "url": url,
+        "env_vars": env_vars,
+        "host_mode": is_host_mode,
+        "volumes": svc_volumes,
+        "cap_add": svc_cap_add,
+        "privileged": svc_privileged,
+    }
+
+
 def list_services(settings: Settings, team: TeamSettings) -> list[dict]:
     client = get_client()
     containers = client.containers.list(
@@ -220,117 +332,50 @@ def list_services(settings: Settings, team: TeamSettings) -> list[dict]:
 
     result = []
     for container in containers:
-        svc_name = container.labels.get("oduflow.service")
-        if not svc_name:
+        if not container.labels.get("oduflow.service"):
             continue
-
-        container_name = container.name
-        image = container.image.tags[0] if container.image.tags else "unknown"
-        status = container.status
-
-        # Parse environment variables, filtering out system keys
-        raw_env = container.attrs.get("Config", {}).get("Env", [])
-        env_vars = {}
-        for entry in raw_env:
-            if "=" in entry:
-                key, value = entry.split("=", 1)
-                if key not in _SYSTEM_ENV_KEYS:
-                    env_vars[key] = value
-
-        # Extract port and URL
-        port_num = None
-        url = None
-        is_host_mode = container.labels.get("oduflow.host_mode") == "true"
-
-        if settings.routing_mode == "traefik":
-            rule_label = f"traefik.http.routers.oduflow-svc-{svc_name}.rule"
-
-            rule_value = container.labels.get(rule_label, "")
-            match = re.search(r"Host\(`([^`]+)`\)", rule_value)
-            if match:
-                traefik_hostname = match.group(1)
-                url = f"https://{traefik_hostname}"
-
-            if is_host_mode:
-                url_label = f"traefik.http.services.oduflow-svc-{svc_name}.loadbalancer.server.url"
-                url_value = container.labels.get(url_label, "")
-                port_match = re.search(r":(\d+)$", url_value)
-                if port_match:
-                    port_num = int(port_match.group(1))
-            else:
-                port_label = f"traefik.http.services.oduflow-svc-{svc_name}.loadbalancer.server.port"
-                label_port = container.labels.get(port_label)
-                if label_port:
-                    port_num = int(label_port)
-        else:
-            if is_host_mode:
-                # In host mode without traefik, port is not mapped via Docker
-                # Try to get it from the preset
-                try:
-                    preset = service_presets.get_preset(team, svc_name)
-                    port_num = preset.get("port")
-                except Exception:
-                    pass
-                if port_num:
-                    url = f"http://{team.hostname}:{port_num}"
-            else:
-                ports_dict = container.attrs.get("NetworkSettings", {}).get("Ports", {})
-                if ports_dict:
-                    for port_key, mappings in ports_dict.items():
-                        # Extract port number from key like "6379/tcp"
-                        port_match = re.match(r"(\d+)/", port_key)
-                        if port_match:
-                            port_num = int(port_match.group(1))
-                        if mappings:
-                            for mapping in mappings:
-                                host_port = mapping.get("HostPort")
-                                if host_port:
-                                    url = f"http://{team.hostname}:{host_port}"
-                                    break
-                        break  # only process first port entry
-
-        # Extract volume mounts
-        svc_volumes: list[dict[str, str]] = []
-        mounts = container.attrs.get("Mounts", [])
-        for mount in mounts:
-            if mount.get("Type") == "volume":
-                vol_docker_name = mount.get("Name", "")
-                # Extract short name from oduflow-vol-{team}-{name}
-                prefix = f"oduflow-vol-{team.team_id}-"
-                short_name = (
-                    vol_docker_name[len(prefix) :]
-                    if vol_docker_name.startswith(prefix)
-                    else vol_docker_name
-                )
-                svc_volumes.append(
-                    {
-                        "volume": short_name,
-                        "mount_path": mount.get("Destination", ""),
-                        "mode": "ro" if not mount.get("RW", True) else "rw",
-                    }
-                )
-
-        host_config = container.attrs.get("HostConfig", {}) or {}
-        svc_cap_add = list(host_config.get("CapAdd") or [])
-        svc_privileged = bool(host_config.get("Privileged", False))
-
-        result.append(
-            {
-                "name": svc_name,
-                "container_name": container_name,
-                "image": image,
-                "status": status,
-                "port": port_num,
-                "url": url,
-                "env_vars": env_vars,
-                "host_mode": is_host_mode,
-                "volumes": svc_volumes,
-                "cap_add": svc_cap_add,
-                "privileged": svc_privileged,
-            }
-        )
+        result.append(_describe_service_container(settings, team, container))
 
     return result
+
+
+def get_service_info(settings: Settings, team: TeamSettings, name: str) -> dict:
+    """Return full state and configuration of a single managed service.
+
+    Combines live container state (image, digest, ports, volumes, env, caps,
+    runtime status) with preset presence flag. Raises :class:`NotFoundError`
+    if the service container is missing.
+    """
+    client = get_client()
+    container_name = f"oduflow-svc-{name}"
+
+    try:
+        container = client.containers.get(container_name)
+    except docker.errors.NotFound:
+        raise NotFoundError(f"Service '{name}' not found")
+
+    if not container.labels.get("oduflow.service"):
+        raise NotFoundError(f"Service '{name}' not found")
+
+    info = _describe_service_container(settings, team, container)
+
+    info["image_digest"] = container.image.id
+
+    state = container.attrs.get("State", {}) or {}
+    info["started_at"] = state.get("StartedAt")
+    info["restart_count"] = int(container.attrs.get("RestartCount", 0) or 0)
+
+    has_preset = False
+    try:
+        service_presets.get_preset(team, name)
+        has_preset = True
+    except NotFoundError:
+        pass
+    except Exception:
+        logger.warning("Failed to check preset for service %s", name, exc_info=True)
+    info["has_preset"] = has_preset
+
+    return info
 
 
 def update_service(settings: Settings, team: TeamSettings, name: str) -> dict[str, str]:
@@ -458,10 +503,19 @@ def update_service(settings: Settings, team: TeamSettings, name: str) -> dict[st
 
     if not image_updated:
         logger.info("Image unchanged for service %s: %s", name, new_digest[:19])
+        if settings.routing_mode == "traefik":
+            if not hostname:
+                hostname = f"{name}.{team.hostname}"
+            elif "." not in hostname:
+                hostname = f"{hostname}.{team.hostname}"
+            url = f"https://{hostname}"
+        else:
+            url = f"http://{team.hostname}:{port}"
         return {
             "name": name,
             "container_name": container_name,
             "image": old_image,
+            "url": url,
             "image_updated": False,
             "old_digest": old_digest,
             "new_digest": new_digest,

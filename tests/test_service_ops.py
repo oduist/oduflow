@@ -77,6 +77,8 @@ class TestCreateService:
         assert run_kwargs[1]["labels"]["oduflow.managed"] == "true"
         assert run_kwargs[1]["labels"]["oduflow.service"] == "redis"
 
+        mock_docker_client.images.pull.assert_called_once_with("redis:7")
+
     def test_create_traefik_mode(self, mock_docker_client):
         mock_docker_client.networks.get.return_value = MagicMock()
         mock_docker_client.containers.get.side_effect = docker.errors.NotFound("nf")
@@ -460,7 +462,7 @@ class TestUpdateService:
         assert result["image"] == "redis:7"
         assert result["url"] == "http://localhost:6379"
 
-        mock_docker_client.images.pull.assert_called_once_with("redis:7")
+        mock_docker_client.images.pull.assert_any_call("redis:7")
         container.stop.assert_called_once()
         container.remove.assert_called_once_with(v=True)
 
@@ -503,9 +505,7 @@ class TestUpdateService:
             )
 
         assert result["url"] == "https://meili.example.com"
-        mock_docker_client.images.pull.assert_called_once_with(
-            "getmeili/meilisearch:v1.6"
-        )
+        mock_docker_client.images.pull.assert_any_call("getmeili/meilisearch:v1.6")
 
         run_kwargs = mock_docker_client.containers.run.call_args
         labels = run_kwargs[1]["labels"]
@@ -546,6 +546,80 @@ class TestUpdateService:
         run_kwargs = mock_docker_client.containers.run.call_args
         assert "environment" not in run_kwargs[1]
 
+    def test_update_image_unchanged_returns_url_port_mode(self, mock_docker_client):
+        """When image digest is unchanged, return early with a valid URL (port mode)."""
+        container = self._make_container(
+            image_tags=["redis:7"],
+            labels={"oduflow.managed": "true", "oduflow.service": "redis"},
+            attrs={"Config": {"Env": []}},
+        )
+        container.image.id = "sha256:same"
+
+        mock_docker_client.containers.get.return_value = container
+        mock_docker_client.networks.get.return_value = MagicMock()
+        pulled = MagicMock()
+        pulled.id = "sha256:same"
+        mock_docker_client.images.pull.return_value = pulled
+
+        preset = {
+            "name": "redis",
+            "image": "redis:7",
+            "port": 6379,
+            "hostname": "",
+            "env_vars": {},
+        }
+
+        with patch(
+            "oduflow.docker_ops.service_ops.service_presets.get_preset",
+            return_value=preset,
+        ):
+            result = service_ops.update_service(TEST_SETTINGS, TEST_TEAM, "redis")
+
+        assert result["image_updated"] is False
+        assert result["url"] == "http://localhost:6379"
+        assert result["name"] == "redis"
+        assert result["image"] == "redis:7"
+        container.stop.assert_not_called()
+        container.remove.assert_not_called()
+        mock_docker_client.containers.run.assert_not_called()
+
+    def test_update_image_unchanged_returns_url_traefik(self, mock_docker_client):
+        """When image digest is unchanged in traefik mode, URL is built from hostname."""
+        container = self._make_container(
+            image_tags=["getmeili/meilisearch:v1.6"],
+            labels={"oduflow.managed": "true", "oduflow.service": "meili"},
+            attrs={"Config": {"Env": []}},
+        )
+        container.image.id = "sha256:same"
+
+        mock_docker_client.containers.get.return_value = container
+        mock_docker_client.networks.get.return_value = MagicMock()
+        pulled = MagicMock()
+        pulled.id = "sha256:same"
+        mock_docker_client.images.pull.return_value = pulled
+
+        preset = {
+            "name": "meili",
+            "image": "getmeili/meilisearch:v1.6",
+            "port": 7700,
+            "hostname": "meili",
+            "env_vars": {},
+        }
+
+        with patch(
+            "oduflow.docker_ops.service_ops.service_presets.get_preset",
+            return_value=preset,
+        ):
+            result = service_ops.update_service(
+                TRAEFIK_SETTINGS, TRAEFIK_TEAM, "meili"
+            )
+
+        assert result["image_updated"] is False
+        assert result["url"] == "https://meili.example.com"
+        container.stop.assert_not_called()
+        container.remove.assert_not_called()
+        mock_docker_client.containers.run.assert_not_called()
+
     def test_update_not_found(self, mock_docker_client):
         mock_docker_client.containers.get.side_effect = docker.errors.NotFound("nf")
 
@@ -582,7 +656,137 @@ class TestUpdateService:
             result = service_ops.update_service(TEST_SETTINGS, TEST_TEAM, "redis")
 
         assert result["image"] == "redis:7-alpine"
-        mock_docker_client.images.pull.assert_called_once_with("redis:7-alpine")
+        mock_docker_client.images.pull.assert_any_call("redis:7-alpine")
+
+
+class TestGetServiceInfo:
+    def _make_container(self, image_tags, image_id, labels, attrs, status="running"):
+        container = MagicMock()
+        container.name = labels.get("__name") or "oduflow-svc-redis"
+        container.image.tags = image_tags
+        container.image.id = image_id
+        container.labels = {k: v for k, v in labels.items() if k != "__name"}
+        container.attrs = attrs
+        container.status = status
+        return container
+
+    def test_get_service_info_port_mode(self, mock_docker_client):
+        container = self._make_container(
+            image_tags=["redis:7"],
+            image_id="sha256:abc123def456",
+            labels={
+                "__name": "oduflow-svc-redis",
+                "oduflow.managed": "true",
+                "oduflow.service": "redis",
+            },
+            attrs={
+                "Config": {
+                    "Env": [
+                        "REDIS_PASSWORD=secret",
+                        "PATH=/usr/bin",
+                    ]
+                },
+                "NetworkSettings": {
+                    "Ports": {
+                        "6379/tcp": [{"HostIp": "0.0.0.0", "HostPort": "6379"}]
+                    }
+                },
+                "Mounts": [
+                    {
+                        "Type": "volume",
+                        "Name": "oduflow-vol-1-data",
+                        "Destination": "/data",
+                        "RW": True,
+                    }
+                ],
+                "HostConfig": {"CapAdd": ["NET_ADMIN"], "Privileged": False},
+                "State": {"StartedAt": "2026-05-26T13:00:00Z"},
+                "RestartCount": 2,
+            },
+        )
+        mock_docker_client.containers.get.return_value = container
+
+        with patch(
+            "oduflow.docker_ops.service_ops.service_presets.get_preset",
+            return_value={"name": "redis"},
+        ):
+            info = service_ops.get_service_info(TEST_SETTINGS, TEST_TEAM, "redis")
+
+        assert info["name"] == "redis"
+        assert info["container_name"] == "oduflow-svc-redis"
+        assert info["image"] == "redis:7"
+        assert info["image_digest"] == "sha256:abc123def456"
+        assert info["status"] == "running"
+        assert info["port"] == 6379
+        assert info["url"] == "http://localhost:6379"
+        assert info["env_vars"] == {"REDIS_PASSWORD": "secret"}
+        assert info["host_mode"] is False
+        assert info["volumes"] == [
+            {"volume": "data", "mount_path": "/data", "mode": "rw"}
+        ]
+        assert info["cap_add"] == ["NET_ADMIN"]
+        assert info["privileged"] is False
+        assert info["restart_count"] == 2
+        assert info["started_at"] == "2026-05-26T13:00:00Z"
+        assert info["has_preset"] is True
+
+    def test_get_service_info_traefik_mode(self, mock_docker_client):
+        container = self._make_container(
+            image_tags=["getmeili/meilisearch:v1.6"],
+            image_id="sha256:meili123",
+            labels={
+                "__name": "oduflow-svc-meili",
+                "oduflow.managed": "true",
+                "oduflow.service": "meili",
+                "traefik.http.routers.oduflow-svc-meili.rule": "Host(`meili.example.com`)",
+                "traefik.http.services.oduflow-svc-meili.loadbalancer.server.port": "7700",
+            },
+            attrs={
+                "Config": {"Env": ["MEILI_MASTER_KEY=abc"]},
+                "Mounts": [],
+                "HostConfig": {"CapAdd": [], "Privileged": False},
+                "State": {"StartedAt": "2026-05-26T13:00:00Z"},
+                "RestartCount": 0,
+            },
+        )
+        mock_docker_client.containers.get.return_value = container
+
+        with patch(
+            "oduflow.docker_ops.service_ops.service_presets.get_preset",
+            side_effect=NotFoundError("no preset"),
+        ):
+            info = service_ops.get_service_info(
+                TRAEFIK_SETTINGS, TRAEFIK_TEAM, "meili"
+            )
+
+        assert info["hostname"] == "meili.example.com"
+        assert info["url"] == "https://meili.example.com"
+        assert info["port"] == 7700
+        assert info["has_preset"] is False
+
+    def test_get_service_info_not_found(self, mock_docker_client):
+        mock_docker_client.containers.get.side_effect = docker.errors.NotFound("nf")
+
+        with pytest.raises(NotFoundError, match="Service 'redis' not found"):
+            service_ops.get_service_info(TEST_SETTINGS, TEST_TEAM, "redis")
+
+    def test_get_service_info_not_managed(self, mock_docker_client):
+        """A container with name oduflow-svc-X but no oduflow.service label is rejected."""
+        container = self._make_container(
+            image_tags=["redis:7"],
+            image_id="sha256:abc",
+            labels={"some_other_label": "foo"},
+            attrs={
+                "Config": {"Env": []},
+                "Mounts": [],
+                "HostConfig": {},
+                "State": {},
+            },
+        )
+        mock_docker_client.containers.get.return_value = container
+
+        with pytest.raises(NotFoundError, match="Service 'redis' not found"):
+            service_ops.get_service_info(TEST_SETTINGS, TEST_TEAM, "redis")
 
 
 class TestGetServiceLogs:
