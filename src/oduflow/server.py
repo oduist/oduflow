@@ -1643,6 +1643,61 @@ def restart_service(name: str, ctx: Context = None) -> str:
 
 @mcp.tool()
 @handle_errors
+def get_service_info(name: str, ctx: Context = None) -> str:
+    """
+    Get full state and configuration of a managed auxiliary service.
+
+    Returns image (with digest), runtime status, port, hostname, URL, host_mode,
+    volumes, environment variables, capabilities, privileged flag, restart count,
+    started_at, and whether a saved preset exists. Use this before recreating or
+    updating a service so all current options (volumes, host_mode, cap_add, env)
+    are preserved.
+
+    Args:
+        name: The name of the service to inspect (e.g. "redis", "fs").
+    """
+    settings = _get_settings()
+    team = _resolve_team(ctx)
+    info = service_ops.get_service_info(settings, team, name)
+
+    digest = (info.get("image_digest") or "")
+    digest_short = digest[:19] if digest else ""
+
+    lines = [f"Service '{info['name']}': {info['status']}"]
+    lines.append(f"Container: {info['container_name']}")
+    lines.append(f"Image: {info['image']}")
+    if digest_short:
+        lines.append(f"Digest: {digest_short}")
+    if info.get("port") is not None:
+        lines.append(f"Port: {info['port']}")
+    if info.get("hostname"):
+        lines.append(f"Hostname: {info['hostname']}")
+    if info.get("url"):
+        lines.append(f"URL: {info['url']}")
+    lines.append(f"Host mode: {'true' if info.get('host_mode') else 'false'}")
+    if info.get("privileged"):
+        lines.append("Privileged: true")
+    if info.get("cap_add"):
+        lines.append(f"Capabilities: {','.join(info['cap_add'])}")
+    if info.get("volumes"):
+        vol_str = ", ".join(
+            f"{v['volume']}:{v['mount_path']}:{v.get('mode', 'rw')}"
+            for v in info["volumes"]
+        )
+        lines.append(f"Volumes: {vol_str}")
+    if info.get("env_vars"):
+        env_str = ", ".join(f"{k}={v}" for k, v in info["env_vars"].items())
+        lines.append(f"Env: {env_str}")
+    if info.get("started_at"):
+        lines.append(
+            f"Started: {info['started_at']} (restart_count={info.get('restart_count', 0)})"
+        )
+    lines.append(f"Preset: {'yes' if info.get('has_preset') else 'no'}")
+    return "\n".join(lines)
+
+
+@mcp.tool()
+@handle_errors
 def list_service_presets(ctx: Context = None) -> str:
     """List saved service presets (configurations that can be restored)."""
     team = _resolve_team(ctx)
