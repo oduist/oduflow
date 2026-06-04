@@ -15,11 +15,11 @@ to assume the python venv.
 
 ## Publishing Documentation
 
-Documentation is published to GitHub Pages **automatically by a GitHub Action when changes are merged into `main`**. Do NOT run `mkdocs gh-deploy --force` (or otherwise deploy docs) from a working/feature branch — publishing a not-yet-merged branch would make the live site reflect unmerged content.
+Documentation is published to GitHub Pages **automatically** by `.github/workflows/docs.yml`: on every push to `main` touching `docs/`, `mkdocs.yml`, or `requirements-docs.txt`, it installs `requirements-docs.txt` and runs `mkdocs gh-deploy --force` to update the `gh-pages` branch, which GitHub's `pages-build-deployment` then publishes live.
 
-Just commit the `docs/`/`mkdocs.yml` changes as part of your branch; the site updates on merge. Documentation build dependencies (for local preview only) are listed in `requirements-docs.txt`.
+Do NOT run `mkdocs gh-deploy` (or otherwise deploy docs) from a working/feature branch — that would push unmerged content live. Just commit the `docs/`/`mkdocs.yml` changes as part of your branch; the site updates once they merge to `main`. A manual redeploy is available via the workflow's `workflow_dispatch` trigger.
 
-The site is hosted at: https://oduist.github.io/oduflow/
+The site is hosted at: https://docs.oduflow.dev/
 
 ## Publishing Docker Image
 

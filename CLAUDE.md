@@ -93,9 +93,11 @@ MCP Clients (Cursor, Claude, etc.)
 
 ## Documentation
 
-Documentation is published to GitHub Pages **automatically by a GitHub Action when changes land on `main`**. Do NOT run `mkdocs gh-deploy --force` (or otherwise deploy docs) from a working/feature branch — that would push an unmerged branch's docs to the live site. Just commit the `docs/`/`mkdocs.yml` changes; publishing happens on merge.
+Documentation is published to GitHub Pages **automatically**. `.github/workflows/docs.yml` runs `mkdocs gh-deploy --force` on every push to `main` that touches `docs/`, `mkdocs.yml`, or `requirements-docs.txt`; that updates the `gh-pages` branch, which GitHub's built-in `pages-build-deployment` then mirrors to the live site.
 
-Site: https://oduist.github.io/oduflow/
+Do NOT run `mkdocs gh-deploy --force` manually from a working/feature branch — just commit the `docs/`/`mkdocs.yml` changes; publishing happens once they land on `main`. (A manual redeploy is available via the workflow's `workflow_dispatch` trigger.)
+
+Site: https://docs.oduflow.dev/
 
 ## Agent workflow
 @AGENTS.md
