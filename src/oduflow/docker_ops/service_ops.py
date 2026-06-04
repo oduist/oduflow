@@ -378,8 +378,24 @@ def get_service_info(settings: Settings, team: TeamSettings, name: str) -> dict:
     return info
 
 
-def update_service(settings: Settings, team: TeamSettings, name: str) -> dict[str, str]:
-    """Pull the latest image for a service and re-create it with the same settings."""
+def update_service(
+    settings: Settings,
+    team: TeamSettings,
+    name: str,
+    *,
+    env_override: dict[str, str] | None = None,
+    image_override: str | None = None,
+    port_override: int | None = None,
+    hostname_override: str | None = None,
+    host_mode_override: bool | None = None,
+    volume_override: list[dict[str, str]] | None = None,
+) -> dict[str, str]:
+    """Pull the latest image for a service and re-create it with the same settings.
+
+    Optional overrides replace the corresponding setting from the saved preset.
+    When any override differs from the current config the container is recreated
+    even if the image digest has not changed.
+    """
     client = get_client()
     container_name = f"oduflow-svc-{name}"
 
@@ -489,40 +505,69 @@ def update_service(settings: Settings, team: TeamSettings, name: str) -> dict[st
 
         env_vars = env_vars or None
 
-    if port is None:
+    if port is None and port_override is None:
         raise NotFoundError(f"Cannot determine port for service '{name}'.")
+
+    # Apply overrides and track whether config changed
+    config_changed = False
+    if env_override is not None and env_override != (env_vars or {}):
+        env_vars = env_override or None
+        config_changed = True
+    if port_override is not None and port_override != port:
+        port = port_override
+        config_changed = True
+    if hostname_override is not None and hostname_override != hostname:
+        hostname = hostname_override or None
+        config_changed = True
+    if host_mode_override is not None and host_mode_override != is_host_mode:
+        is_host_mode = host_mode_override
+        config_changed = True
+    if volume_override is not None and volume_override != (old_volumes or []):
+        old_volumes = volume_override or None
+        config_changed = True
+
+    # Determine the image to pull (override or current)
+    target_image = image_override if image_override else old_image
+    if image_override and image_override != old_image:
+        config_changed = True
 
     # Capture old image digest
     old_digest = container.image.id  # e.g. sha256:abc...
 
     # Pull the latest image
-    logger.info("Pulling latest image %s for service %s", old_image, name)
-    new_image_obj = client.images.pull(old_image)
+    logger.info("Pulling latest image %s for service %s", target_image, name)
+    new_image_obj = client.images.pull(target_image)
     new_digest = new_image_obj.id
     image_updated = old_digest != new_digest
 
-    if not image_updated:
-        logger.info("Image unchanged for service %s: %s", name, new_digest[:19])
+    needs_recreate = image_updated or config_changed
+
+    if not needs_recreate:
+        logger.info("No changes for service %s: %s", name, new_digest[:19])
+        # Compute URL for return
         if settings.routing_mode == "traefik":
-            if not hostname:
-                hostname = f"{name}.{team.hostname}"
-            elif "." not in hostname:
-                hostname = f"{hostname}.{team.hostname}"
-            url = f"https://{hostname}"
+            h = hostname or f"{name}.{team.hostname}"
+            if "." not in h:
+                h = f"{h}.{team.hostname}"
+            url = f"https://{h}"
         else:
             url = f"http://{team.hostname}:{port}"
         return {
             "name": name,
             "container_name": container_name,
-            "image": old_image,
+            "image": target_image,
             "url": url,
             "image_updated": False,
+            "config_updated": False,
             "old_digest": old_digest,
             "new_digest": new_digest,
         }
 
     logger.info(
-        "Image changed for service %s: %s -> %s", name, old_digest[:19], new_digest[:19]
+        "Recreating service %s (image_updated=%s, config_changed=%s)",
+        name,
+        image_updated,
+        config_changed,
     )
 
     # Stop and remove the old container
@@ -530,12 +575,12 @@ def update_service(settings: Settings, team: TeamSettings, name: str) -> dict[st
     container.remove(v=True)
     logger.info("Removed old container %s for update", container_name)
 
-    # Re-create with the same settings
+    # Re-create with the (possibly overridden) settings
     result = create_service(
         settings,
         team,
         name=name,
-        image=old_image,
+        image=target_image,
         port=port,
         hostname=hostname,
         env_vars=env_vars or None,
@@ -545,11 +590,12 @@ def update_service(settings: Settings, team: TeamSettings, name: str) -> dict[st
         privileged=privileged,
     )
 
-    result["image_updated"] = True
+    result["image_updated"] = image_updated
+    result["config_updated"] = config_changed
     result["old_digest"] = old_digest
     result["new_digest"] = new_digest
 
-    logger.info("Service %s updated with image %s", name, old_image)
+    logger.info("Service %s updated with image %s", name, target_image)
     return result
 
 

@@ -658,6 +658,195 @@ class TestUpdateService:
         assert result["image"] == "redis:7-alpine"
         mock_docker_client.images.pull.assert_any_call("redis:7-alpine")
 
+    def test_update_env_override_replaces_env_vars(self, mock_docker_client):
+        """env_override fully replaces preset env_vars and forces recreation."""
+        container = self._make_container(
+            image_tags=["redis:7"],
+            labels={"oduflow.managed": "true", "oduflow.service": "redis"},
+            attrs={"Config": {"Env": []}},
+        )
+        # Force same digest so only config change triggers recreate
+        pulled_image = MagicMock()
+        pulled_image.id = container.image.id
+        mock_docker_client.images.pull.return_value = pulled_image
+        mock_docker_client.containers.get.side_effect = [
+            container,
+            docker.errors.NotFound("nf"),
+        ]
+        mock_docker_client.networks.get.return_value = MagicMock()
+        mock_docker_client.containers.run.return_value = MagicMock()
+
+        preset = {
+            "name": "redis",
+            "image": "redis:7",
+            "port": 6379,
+            "hostname": "",
+            "env_vars": {"OLD_KEY": "old", "KEEP_ME": "1"},
+        }
+
+        with patch(
+            "oduflow.docker_ops.service_ops.service_presets.get_preset",
+            return_value=preset,
+        ):
+            result = service_ops.update_service(
+                TEST_SETTINGS,
+                TEST_TEAM,
+                "redis",
+                env_override={"NEW_KEY": "new"},
+            )
+
+        assert result["config_updated"] is True
+        assert result["image_updated"] is False
+        container.stop.assert_called_once()
+        container.remove.assert_called_once_with(v=True)
+
+        run_kwargs = mock_docker_client.containers.run.call_args
+        # Full replace: only NEW_KEY remains
+        assert run_kwargs[1]["environment"] == {"NEW_KEY": "new"}
+
+    def test_update_no_changes_no_recreate(self, mock_docker_client):
+        """When image digest and all overrides match, no recreation happens."""
+        container = self._make_container(
+            image_tags=["redis:7"],
+            labels={"oduflow.managed": "true", "oduflow.service": "redis"},
+            attrs={"Config": {"Env": []}},
+        )
+        pulled_image = MagicMock()
+        pulled_image.id = container.image.id
+        mock_docker_client.images.pull.return_value = pulled_image
+        mock_docker_client.containers.get.return_value = container
+
+        preset = {
+            "name": "redis",
+            "image": "redis:7",
+            "port": 6379,
+            "hostname": "",
+            "env_vars": {"A": "1"},
+        }
+
+        with patch(
+            "oduflow.docker_ops.service_ops.service_presets.get_preset",
+            return_value=preset,
+        ):
+            result = service_ops.update_service(TEST_SETTINGS, TEST_TEAM, "redis")
+
+        assert result["image_updated"] is False
+        assert result["config_updated"] is False
+        assert result["url"] == "http://localhost:6379"
+        container.stop.assert_not_called()
+        container.remove.assert_not_called()
+
+    def test_update_image_override(self, mock_docker_client):
+        """image_override pulls a new image tag and recreates."""
+        container = self._make_container(
+            image_tags=["redis:7"],
+            labels={"oduflow.managed": "true", "oduflow.service": "redis"},
+            attrs={"Config": {"Env": []}},
+        )
+        mock_docker_client.containers.get.side_effect = [
+            container,
+            docker.errors.NotFound("nf"),
+        ]
+        mock_docker_client.networks.get.return_value = MagicMock()
+        mock_docker_client.containers.run.return_value = MagicMock()
+
+        preset = {
+            "name": "redis",
+            "image": "redis:7",
+            "port": 6379,
+            "hostname": "",
+            "env_vars": {},
+        }
+
+        with patch(
+            "oduflow.docker_ops.service_ops.service_presets.get_preset",
+            return_value=preset,
+        ):
+            result = service_ops.update_service(
+                TEST_SETTINGS, TEST_TEAM, "redis", image_override="redis:8"
+            )
+
+        assert result["image"] == "redis:8"
+        assert result["config_updated"] is True
+        mock_docker_client.images.pull.assert_any_call("redis:8")
+
+    def test_update_port_override(self, mock_docker_client):
+        """port_override changes port and recreates even if image digest unchanged."""
+        container = self._make_container(
+            image_tags=["redis:7"],
+            labels={"oduflow.managed": "true", "oduflow.service": "redis"},
+            attrs={"Config": {"Env": []}},
+        )
+        pulled_image = MagicMock()
+        pulled_image.id = container.image.id
+        mock_docker_client.images.pull.return_value = pulled_image
+        mock_docker_client.containers.get.side_effect = [
+            container,
+            docker.errors.NotFound("nf"),
+        ]
+        mock_docker_client.networks.get.return_value = MagicMock()
+        mock_docker_client.containers.run.return_value = MagicMock()
+
+        preset = {
+            "name": "redis",
+            "image": "redis:7",
+            "port": 6379,
+            "hostname": "",
+            "env_vars": {},
+        }
+
+        with patch(
+            "oduflow.docker_ops.service_ops.service_presets.get_preset",
+            return_value=preset,
+        ):
+            result = service_ops.update_service(
+                TEST_SETTINGS, TEST_TEAM, "redis", port_override=6380
+            )
+
+        assert result["config_updated"] is True
+        assert result["image_updated"] is False
+        run_kwargs = mock_docker_client.containers.run.call_args
+        assert run_kwargs[1]["ports"] == {"6380/tcp": 6380}
+
+    def test_update_port_override_repairs_legacy_host_mode(self, mock_docker_client):
+        """port_override repairs a legacy host-mode service whose port cannot be inferred.
+
+        In non-traefik host mode without a preset the port is unknowable, so the
+        guard would normally raise. Supplying port_override must bypass the guard
+        and let the service be recreated with the given port.
+        """
+        container = self._make_container(
+            image_tags=["redis:7"],
+            labels={
+                "oduflow.managed": "true",
+                "oduflow.service": "redis",
+                "oduflow.host_mode": "true",
+            },
+            attrs={"Config": {"Env": []}, "HostConfig": {}, "Mounts": []},
+        )
+        pulled_image = MagicMock()
+        pulled_image.id = container.image.id
+        mock_docker_client.images.pull.return_value = pulled_image
+        mock_docker_client.containers.get.side_effect = [
+            container,
+            docker.errors.NotFound("nf"),
+        ]
+        mock_docker_client.networks.get.return_value = MagicMock()
+        mock_docker_client.containers.run.return_value = MagicMock()
+
+        with patch(
+            "oduflow.docker_ops.service_ops.service_presets.get_preset",
+            side_effect=NotFoundError("no preset"),
+        ):
+            result = service_ops.update_service(
+                TEST_SETTINGS, TEST_TEAM, "redis", port_override=7700
+            )
+
+        assert result["config_updated"] is True
+        assert result["url"] == "http://localhost:7700"
+        container.stop.assert_called_once()
+        container.remove.assert_called_once_with(v=True)
+
 
 class TestGetServiceInfo:
     def _make_container(self, image_tags, image_id, labels, attrs, status="running"):

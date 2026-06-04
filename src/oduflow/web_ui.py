@@ -502,7 +502,7 @@ def _build_routes(
         finally:
             locks.release_team(team.team_id)
 
-    def api_service_update(request: Request) -> JSONResponse:
+    async def api_service_update(request: Request) -> JSONResponse:
         name = request.path_params["name"]
         team = _get_ui_team(request)
         try:
@@ -510,7 +510,51 @@ def _build_routes(
         except BusyError as e:
             return _error_response(e)
         try:
-            result = service_ops.update_service(get_settings(), team, name)
+            # Body is optional; if missing or not JSON, treat as no overrides
+            try:
+                body = await request.json()
+            except Exception:
+                body = {}
+
+            env_override = None
+            env_vars_raw = (body.get("env_vars") or "").strip() if body else ""
+            if env_vars_raw:
+                import re
+
+                env_override = dict(
+                    item.split("=", 1)
+                    for item in re.split(r"[\n,]+", env_vars_raw)
+                    if "=" in item
+                )
+
+            volumes_raw = (body.get("volumes") or "").strip() if body else ""
+            volume_override = (
+                volume_ops.parse_volume_mounts(volumes_raw) if volumes_raw else None
+            )
+
+            image_override = (body.get("image") or "").strip() or None if body else None
+            hostname_override = (
+                (body.get("hostname") or "").strip() or None if body else None
+            )
+            port_raw = body.get("port") if body else None
+            port_override = int(port_raw) if port_raw else None
+            host_mode_override = (
+                bool(body["host_mode"])
+                if body and "host_mode" in body and body["host_mode"] is not None
+                else None
+            )
+
+            result = service_ops.update_service(
+                get_settings(),
+                team,
+                name,
+                env_override=env_override,
+                image_override=image_override,
+                port_override=port_override,
+                hostname_override=hostname_override,
+                host_mode_override=host_mode_override,
+                volume_override=volume_override,
+            )
             return JSONResponse({"ok": True, "result": result})
         except FlowError as e:
             return _error_response(e)

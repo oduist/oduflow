@@ -242,7 +242,17 @@ class TestUpdateServiceTool:
         assert "Service updated successfully!" in result
         assert "redis" in result
         assert "oduflow-svc-redis" in result
-        mock_update.assert_called_once_with(TEST_SETTINGS, TEST_TEAM, "redis")
+        mock_update.assert_called_once_with(
+            TEST_SETTINGS,
+            TEST_TEAM,
+            "redis",
+            env_override=None,
+            image_override=None,
+            port_override=None,
+            hostname_override=None,
+            host_mode_override=None,
+            volume_override=None,
+        )
 
     @patch("oduflow.docker_ops.service_ops.update_service")
     def test_update_not_found(self, mock_update):

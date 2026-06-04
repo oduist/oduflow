@@ -1591,21 +1591,63 @@ def create_service(
 @mcp.tool()
 @handle_errors
 @with_team_lock
-def update_service(name: str, ctx: Context = None) -> str:
+def update_service(
+    name: str,
+    env_vars: str = "",
+    image: str = "",
+    port: int = 0,
+    hostname: str = "",
+    host_mode: bool | None = None,
+    volumes: str = "",
+    ctx: Context = None,
+) -> str:
     """
-    Update a managed auxiliary service container by pulling the latest image and re-creating the container with the same settings.
+    Update a managed auxiliary service container. Pulls the latest image and
+    optionally changes settings (env vars, image, port, hostname, host_mode,
+    volumes). The container is recreated when the image or any setting changes.
 
     Args:
         name: The name of the service to update (e.g. "redis", "meilisearch").
+        env_vars: Comma-separated KEY=VALUE pairs that fully replace existing env vars (e.g. "MEILI_MASTER_KEY=abc,MEILI_ENV=production"). Leave empty to keep current env vars.
+        image: New Docker image with tag (e.g. "redis:8"). Leave empty to keep current image.
+        port: New container port. Pass 0 to keep current port.
+        hostname: New hostname for traefik routing. Leave empty to keep current hostname.
+        host_mode: Run in host network mode. Leave unset (null) to keep current mode.
+        volumes: Comma-separated volume mounts that fully replace existing volumes (e.g. "mydata:/data,config:/etc/app:ro"). Leave empty to keep current volumes.
     """
     settings = _get_settings()
     team = _resolve_team(ctx)
-    result = service_ops.update_service(settings, team, name)
-    status = (
-        "Image updated (new image pulled, container recreated)"
-        if result.get("image_updated")
-        else "Already up-to-date (no changes)"
+
+    # Parse optional overrides
+    parsed_env = None
+    if env_vars:
+        parsed_env = dict(
+            item.split("=", 1) for item in env_vars.split(",") if "=" in item
+        )
+
+    parsed_volumes = None
+    if volumes:
+        parsed_volumes = volume_ops.parse_volume_mounts(volumes)
+
+    result = service_ops.update_service(
+        settings,
+        team,
+        name,
+        env_override=parsed_env,
+        image_override=image or None,
+        port_override=port or None,
+        hostname_override=hostname or None,
+        host_mode_override=host_mode,
+        volume_override=parsed_volumes,
     )
+
+    if result.get("image_updated"):
+        status = "Image updated (new image pulled, container recreated)"
+    elif result.get("config_updated"):
+        status = "Config updated (container recreated)"
+    else:
+        status = "Already up-to-date (no changes)"
+
     digest_short = (result.get("new_digest") or "")[:19]
     return (
         f"Service updated successfully!\n"
