@@ -43,13 +43,11 @@ class TeamSettings:
 
     def get_template_sql_path(self, template_name: str) -> str:
         tpl_dir = self.get_template_dir(template_name)
-        pgdump = os.path.join(tpl_dir, "dump.pgdump")
-        if os.path.isfile(pgdump):
-            return pgdump
-        sql = os.path.join(tpl_dir, "dump.sql")
-        if os.path.isfile(sql):
-            return sql
-        return pgdump
+        for name in ("dump.pgdump", "dump.sql", "dump.pgdump.gz", "dump.sql.gz"):
+            path = os.path.join(tpl_dir, name)
+            if os.path.isfile(path):
+                return path
+        return os.path.join(tpl_dir, "dump.pgdump")
 
     def get_template_filestore_path(self, template_name: str) -> str:
         return os.path.join(self.get_template_dir(template_name), "filestore")

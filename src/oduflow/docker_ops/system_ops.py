@@ -295,28 +295,6 @@ def _db_exists(client: DockerClient, settings: Settings, db_name: str) -> bool:
     return result == "1"
 
 
-def _decompress_if_gzip(path: str) -> str:
-    """Decompress .gz file to temporary location if needed. Return path to uncompressed file."""
-    if not path.endswith(".gz"):
-        return path
-
-    import tempfile
-
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".sql") as tmp:
-        tmp_path = tmp.name
-
-    try:
-        with gzip.open(path, "rb") as f_in:
-            with open(tmp_path, "wb") as f_out:
-                shutil.copyfileobj(f_in, f_out)
-        logger.info("Decompressed gzip dump from %s to %s", path, tmp_path)
-        return tmp_path
-    except Exception as e:
-        if os.path.exists(tmp_path):
-            os.remove(tmp_path)
-        raise ExternalCommandError("gzip", 1, f"Failed to decompress {path}: {e}")
-
-
 def _is_text_dump(path: str) -> bool:
     """Check if dump is text format (SQL) or binary (pgdump). Handles gzip files."""
     try:
@@ -505,29 +483,38 @@ def reload_template(
 
     _wait_pg_ready(client, settings)
 
-    # Decompress gzip dump if needed
-    decompressed_dump = _decompress_if_gzip(resolved_dump)
-    cleanup_decompressed = decompressed_dump != resolved_dump
+    is_gzipped = resolved_dump.endswith(".gz")
+    use_psql = _is_text_dump(resolved_dump)
 
-    try:
-        if _db_exists(client, settings, tpl_db):
-            _exec_sql(
-                client,
-                settings,
-                f"UPDATE pg_database SET datistemplate=false WHERE datname='{tpl_db}';",
+    if _db_exists(client, settings, tpl_db):
+        _exec_sql(
+            client,
+            settings,
+            f"UPDATE pg_database SET datistemplate=false WHERE datname='{tpl_db}';",
+        )
+        _exec_sql(client, settings, f'DROP DATABASE "{tpl_db}" WITH (FORCE);')
+        logger.info("Dropped template DB %s", tpl_db)
+
+    _exec_sql(client, settings, f'CREATE DATABASE "{tpl_db}";')
+
+    db_container = client.containers.get(settings.shared_db_container)
+    tmp_name = os.path.basename(resolved_dump)
+
+    _copy_file_to_container(db_container, resolved_dump, "/tmp")
+
+    restore_tool = "psql" if use_psql else "pg_restore"
+    if is_gzipped:
+        if use_psql:
+            pipeline = (
+                f"gunzip -c /tmp/{tmp_name} | psql -U {settings.db_user} -d {tpl_db}"
             )
-            _exec_sql(client, settings, f'DROP DATABASE "{tpl_db}" WITH (FORCE);')
-            logger.info("Dropped template DB %s", tpl_db)
-
-        _exec_sql(client, settings, f'CREATE DATABASE "{tpl_db}";')
-
-        db_container = client.containers.get(settings.shared_db_container)
-        tmp_name = os.path.basename(decompressed_dump)
-
-        _copy_file_to_container(db_container, decompressed_dump, "/tmp")
-
-        use_psql = _is_text_dump(decompressed_dump)
-
+        else:
+            pipeline = (
+                f"gunzip -c /tmp/{tmp_name} | "
+                f"pg_restore -U {settings.db_user} -d {tpl_db}"
+            )
+        restore_cmd = ["bash", "-c", f"set -o pipefail; {pipeline}"]
+    else:
         if use_psql:
             restore_cmd = [
                 "psql",
@@ -548,99 +535,82 @@ def reload_template(
                 f"/tmp/{tmp_name}",
             ]
 
-        logger.info(
-            "DB restore started, template_db=%s, dump=%s", tpl_db, resolved_dump
-        )
-        restore_start = time.monotonic()
+    logger.info("DB restore started, template_db=%s, dump=%s", tpl_db, resolved_dump)
+    restore_start = time.monotonic()
 
-        exit_code, output = db_container.exec_run(restore_cmd)
+    exit_code, output = db_container.exec_run(restore_cmd)
 
-        restore_elapsed = time.monotonic() - restore_start
-        output_str = (
-            output.decode("utf-8") if isinstance(output, bytes) else str(output)
-        )
+    restore_elapsed = time.monotonic() - restore_start
+    output_str = output.decode("utf-8") if isinstance(output, bytes) else str(output)
 
-        if exit_code != 0:
-            logger.error(
-                "DB restore failed after %.1fs: %s", restore_elapsed, output_str
-            )
-            cmd_name = "psql" if use_psql else "pg_restore"
-            raise ExternalCommandError(cmd_name, exit_code, output_str)
+    if exit_code != 0:
+        logger.error("DB restore failed after %.1fs: %s", restore_elapsed, output_str)
+        raise ExternalCommandError(restore_tool, exit_code, output_str)
 
-        # Log restore output even on success (may contain warnings/info)
-        if output_str.strip():
-            logger.info("DB restore output: %s", output_str)
+    if output_str.strip():
+        logger.info("DB restore output: %s", output_str)
 
-        logger.info("DB restore finished in %.1fs", restore_elapsed)
+    logger.info("DB restore finished in %.1fs", restore_elapsed)
 
-        # Verify that tables were actually restored
-        table_count = _exec_sql(
-            client,
-            settings,
-            "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='public' AND table_type='BASE TABLE';",
-            tpl_db,
-        ).strip()
+    table_count = _exec_sql(
+        client,
+        settings,
+        "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='public' AND table_type='BASE TABLE';",
+        tpl_db,
+    ).strip()
 
-        try:
-            num_tables = int(table_count)
-        except ValueError:
-            num_tables = 0
+    try:
+        num_tables = int(table_count)
+    except ValueError:
+        num_tables = 0
 
-        if num_tables == 0:
-            error_msg = (
-                f"Dump restore succeeded but no tables found in database {tpl_db}"
-            )
-            logger.error(error_msg)
-            raise ExternalCommandError("restore", 1, error_msg)
+    if num_tables == 0:
+        error_msg = f"Dump restore succeeded but no tables found in database {tpl_db}"
+        logger.error(error_msg)
+        raise ExternalCommandError("restore", 1, error_msg)
 
-        logger.info("Verified %d tables in restored database %s", num_tables, tpl_db)
+    logger.info("Verified %d tables in restored database %s", num_tables, tpl_db)
 
-        if dump_path:
-            tpl_dir = team.get_template_dir(template_name)
-            os.makedirs(tpl_dir, exist_ok=True)
-            dest_name = "dump.sql" if use_psql else "dump.pgdump"
-            other_name = "dump.pgdump" if use_psql else "dump.sql"
-            dest_path = os.path.join(tpl_dir, dest_name)
-            other_path = os.path.join(tpl_dir, other_name)
-            if not os.path.exists(dest_path) or not os.path.samefile(
-                dump_path, dest_path
-            ):
-                shutil.copy2(dump_path, dest_path)
-            if os.path.isfile(other_path):
-                os.remove(other_path)
-                logger.info("Removed old dump %s", other_path)
-            logger.info("Saved dump to workspace: %s", dest_path)
+    if dump_path:
+        tpl_dir = team.get_template_dir(template_name)
+        os.makedirs(tpl_dir, exist_ok=True)
+        base = "dump.sql" if use_psql else "dump.pgdump"
+        if is_gzipped:
+            base += ".gz"
+        dest_path = os.path.join(tpl_dir, base)
+        for old_name in ("dump.sql", "dump.pgdump", "dump.sql.gz", "dump.pgdump.gz"):
+            old_path = os.path.join(tpl_dir, old_name)
+            if old_path == dest_path:
+                continue
+            if os.path.isfile(old_path):
+                os.remove(old_path)
+                logger.info("Removed old dump %s", old_path)
+        if not os.path.exists(dest_path) or not os.path.samefile(
+            dump_path, dest_path
+        ):
+            shutil.copy2(dump_path, dest_path)
+        logger.info("Saved dump to workspace: %s", dest_path)
 
-        _exec_sql(
-            client,
-            settings,
-            f"UPDATE pg_database SET datistemplate=true WHERE datname='{tpl_db}';",
-        )
+    _exec_sql(
+        client,
+        settings,
+        f"UPDATE pg_database SET datistemplate=true WHERE datname='{tpl_db}';",
+    )
 
-        _update_template_sizes(team, settings, template_name)
-        logger.info(
-            "Template DB reloaded, template_db=%s, restore_time=%.1fs, tables=%d",
-            tpl_db,
-            restore_elapsed,
-            num_tables,
-        )
-        return {
-            "status": "reloaded",
-            "template_db": tpl_db,
-            "restore_seconds": round(restore_elapsed, 1),
-            "tables": str(num_tables),
-            "message": output_str,
-        }
-    finally:
-        # Cleanup decompressed temp file
-        if cleanup_decompressed and os.path.exists(decompressed_dump):
-            try:
-                os.remove(decompressed_dump)
-                logger.debug("Cleaned up decompressed dump at %s", decompressed_dump)
-            except OSError as e:
-                logger.warning(
-                    "Failed to cleanup decompressed dump %s: %s", decompressed_dump, e
-                )
+    _update_template_sizes(team, settings, template_name)
+    logger.info(
+        "Template DB reloaded, template_db=%s, restore_time=%.1fs, tables=%d",
+        tpl_db,
+        restore_elapsed,
+        num_tables,
+    )
+    return {
+        "status": "reloaded",
+        "template_db": tpl_db,
+        "restore_seconds": round(restore_elapsed, 1),
+        "tables": str(num_tables),
+        "message": output_str,
+    }
 
 
 def init_template(
