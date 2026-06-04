@@ -478,6 +478,11 @@ class TestRunEnvironmentTests:
         assert "--db_host=oduflow-db" in args
         assert "--database=oduflow_1_main" in args
         assert "-r u_1_main" in args
+        # Tests run via `docker exec` inside the already-running odoo container,
+        # which already holds port 8069 — the test process must not start its own
+        # HTTP server, otherwise it crashes on bind.
+        assert "--no-http" in args
+        assert "--workers 0" in args
 
 
 class TestGetLogs:

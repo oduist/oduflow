@@ -32,7 +32,7 @@ def run_environment_tests(
         env_name, team.workspaces_dir, settings.db_user, settings.db_password
     )
     cmd = (
-        f"odoo --test-enable --stop-after-init -i {modules} "
+        f"odoo --test-enable --stop-after-init --no-http --workers 0 -i {modules} "
         f"--db_host={settings.shared_db_container} "
         f"-r {creds['pg_user']} -w {creds['pg_password']} "
         f"--database={env_db}"
