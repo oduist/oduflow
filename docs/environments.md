@@ -198,10 +198,13 @@ oduflow call upgrade_odoo_modules feature-login sale,crm
 oduflow call run_odoo_tests feature-login sale,crm
 ```
 
-This runs `odoo --test-enable --stop-after-init --no-http --workers 0 -i <modules>` inside the
-container. The `--no-http` flag prevents the test process from starting a second HTTP server on
-the already-bound port 8069, and `--workers 0` makes the test run deterministic (Odoo recommends
-single-worker mode for unit tests).
+This runs `odoo --test-enable --stop-after-init --workers 0 --http-port 8089 --gevent-port 8090 -u
+<modules>` inside the container. The module must already be installed — tests run via an upgrade
+(`-u`); `-i` on an already-installed module is a no-op that never enters the test phase ("0 of 0
+tests"). Because `--no-http` has no effect under `--test-enable` (tests require a live HTTP
+server), the test server's HTTP and gevent ports are moved off the defaults (8069/8072) — already
+held by the running Odoo container — to avoid a port conflict. `--workers 0` makes the run
+deterministic (Odoo recommends single-worker mode for unit tests).
 
 ## Smart Pull — Intelligent Change Detection
 

@@ -478,10 +478,15 @@ class TestRunEnvironmentTests:
         assert "--db_host=oduflow-db" in args
         assert "--database=oduflow_1_main" in args
         assert "-r u_1_main" in args
+        # Use -u (upgrade), not -i: the module is already installed, and -i would be
+        # a no-op that never runs the test phase ("0 of 0 tests").
+        assert "-u base" in args
         # Tests run via `docker exec` inside the already-running odoo container,
-        # which already holds port 8069 — the test process must not start its own
-        # HTTP server, otherwise it crashes on bind.
-        assert "--no-http" in args
+        # which already holds 8069/8072. --no-http is ignored under --test-enable
+        # (tests need a live HTTP server), so the test server's ports are moved off
+        # the defaults to avoid the bind conflict.
+        assert "--http-port 8089" in args
+        assert "--gevent-port 8090" in args
         assert "--workers 0" in args
 
 

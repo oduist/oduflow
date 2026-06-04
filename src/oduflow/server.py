@@ -758,9 +758,13 @@ def run_odoo_tests(env_name: str, modules: str, ctx: Context = None) -> str:
     """
     Run Odoo tests for specific modules in an environment.
 
+    The module must already be installed in the environment (it runs the tests via
+    an upgrade, `-u`). Install it first with install_odoo_modules or pull_and_apply
+    if it is not present; testing an uninstalled module yields "0 of 0 tests".
+
     Args:
         env_name: The name of the environment.
-        modules: Comma-separated list of modules to test.
+        modules: Comma-separated list of already-installed modules to test.
     """
     settings = _get_settings()
     team = _resolve_team(ctx)

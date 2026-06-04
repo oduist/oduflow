@@ -31,13 +31,20 @@ def run_environment_tests(
     creds = load_credentials(
         env_name, team.workspaces_dir, settings.db_user, settings.db_password
     )
+    # Use -u (upgrade), not -i (install): the module is already installed in the
+    # template, and -i on an installed module is a no-op that never enters the test
+    # phase (→ "0 of 0 tests"). -u re-runs the module's tests on the existing DB.
+    #
+    # --no-http has no effect under --test-enable (tests need a live HTTP server),
+    # so instead of disabling HTTP we move the test server's HTTP and gevent ports
+    # off the defaults (8069/8072) already held by the running Odoo container.
     cmd = (
-        f"odoo --test-enable --stop-after-init --no-http --workers 0 -i {modules} "
+        f"odoo --test-enable --stop-after-init --workers 0 "
+        f"--http-port 8089 --gevent-port 8090 -u {modules} "
         f"--db_host={settings.shared_db_container} "
         f"-r {creds['pg_user']} -w {creds['pg_password']} "
         f"--database={env_db}"
     )
-
     logger.info(
         "Running tests",
         extra={"env_name": env_name, "modules": modules},
