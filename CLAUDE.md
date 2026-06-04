@@ -93,11 +93,11 @@ MCP Clients (Cursor, Claude, etc.)
 
 ## Documentation
 
-After committing changes to `docs/` or `mkdocs.yml`, auto-publish to GitHub Pages:
-```bash
-source .venv/bin/activate && mkdocs gh-deploy --force
-```
-Site: https://oduist.github.io/oduflow/
+Documentation is published to GitHub Pages **automatically**. `.github/workflows/docs.yml` runs `mkdocs gh-deploy --force` on every push to `main` that touches `docs/`, `mkdocs.yml`, or `requirements-docs.txt`; that updates the `gh-pages` branch, which GitHub's built-in `pages-build-deployment` then mirrors to the live site.
+
+Do NOT run `mkdocs gh-deploy --force` manually from a working/feature branch — just commit the `docs/`/`mkdocs.yml` changes; publishing happens once they land on `main`. (A manual redeploy is available via the workflow's `workflow_dispatch` trigger.)
+
+Site: https://docs.oduflow.dev/
 
 ## Agent workflow
 @AGENTS.md

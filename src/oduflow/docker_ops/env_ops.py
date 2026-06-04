@@ -287,9 +287,9 @@ def _unmount_filestore(env_name: str, team: TeamSettings) -> None:
 
 def _install_apt_packages(container, repo_path: str) -> str:
     """Install apt packages. Returns a human-readable log of what happened."""
-    apt_file = os.path.join(repo_path, "apt_packages.txt")
+    apt_file = os.path.join(repo_path, ".oduflow", "apt_packages.txt")
     if not os.path.isfile(apt_file):
-        logger.debug("No apt_packages.txt in repo, skipping apt install")
+        logger.debug("No .oduflow/apt_packages.txt in repo, skipping apt install")
         return ""
 
     with open(apt_file) as f:
@@ -345,21 +345,28 @@ def _install_pip_requirements(
     When *restart* is False the caller is responsible for restarting the
     container after all setup steps are done.
     """
-    req_file = os.path.join(repo_path, "requirements.txt")
-    if not os.path.isfile(req_file):
+    # Prefer .oduflow/requirements.txt; fall back to the repo root for
+    # compatibility with conventions used elsewhere (e.g. odoo.sh).
+    oduflow_req = os.path.join(repo_path, ".oduflow", "requirements.txt")
+    root_req = os.path.join(repo_path, "requirements.txt")
+    if os.path.isfile(oduflow_req):
+        container_req = "/mnt/extra-addons/.oduflow/requirements.txt"
+    elif os.path.isfile(root_req):
+        container_req = "/mnt/extra-addons/requirements.txt"
+    else:
         logger.debug("No requirements.txt in repo, skipping pip install")
         return False, ""
 
     # Ensure the odoo user can write to its local site-packages
     _ensure_user_site_packages(container)
 
-    cmd = "pip3 install --user --break-system-packages -r /mnt/extra-addons/requirements.txt"
-    logger.info("Installing pip requirements from requirements.txt")
+    cmd = f"pip3 install --user --break-system-packages -r {container_req}"
+    logger.info("Installing pip requirements from %s", container_req)
     exit_code, output = container.exec_run(cmd, user="odoo")
     output_str = output.decode("utf-8") if isinstance(output, bytes) else str(output)
     if exit_code != 0 and "no such option" in output_str.lower():
         logger.info("--break-system-packages not supported, retrying without it")
-        cmd = "pip3 install --user -r /mnt/extra-addons/requirements.txt"
+        cmd = f"pip3 install --user -r {container_req}"
         exit_code, output = container.exec_run(cmd, user="odoo")
         output_str = (
             output.decode("utf-8") if isinstance(output, bytes) else str(output)
