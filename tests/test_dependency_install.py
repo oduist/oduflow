@@ -1,0 +1,107 @@
+"""Unit tests for dependency-file resolution in env_ops.
+
+Covers the `.oduflow/`-first lookup for ``apt_packages.txt`` (no repo-root
+fallback) and ``requirements.txt`` (falls back to the repo root).
+"""
+
+from __future__ import annotations
+
+import os
+from unittest.mock import MagicMock
+
+from oduflow.docker_ops import env_ops
+
+
+def _write(path: str, content: str = "# pkg\n") -> None:
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as f:
+        f.write(content)
+
+
+def _mock_container():
+    container = MagicMock()
+    container.exec_run.return_value = (0, b"ok")
+    return container
+
+
+def _pip_cmd(container) -> str | None:
+    """Return the ``pip3 install`` command passed to exec_run, if any."""
+    for call in container.exec_run.call_args_list:
+        cmd = call.args[0] if call.args else call.kwargs.get("cmd", "")
+        if "pip3 install" in cmd:
+            return cmd
+    return None
+
+
+class TestInstallAptPackages:
+    def test_reads_from_oduflow_dir(self, tmp_path):
+        repo = str(tmp_path)
+        _write(os.path.join(repo, ".oduflow", "apt_packages.txt"), "libfoo\nlibbar\n")
+        container = _mock_container()
+
+        result = env_ops._install_apt_packages(container, repo)
+
+        assert "[APT] Installed" in result
+        assert "libfoo" in result and "libbar" in result
+
+    def test_repo_root_is_ignored(self, tmp_path):
+        # apt_packages.txt at the repo root must NOT be picked up anymore.
+        repo = str(tmp_path)
+        _write(os.path.join(repo, "apt_packages.txt"), "libfoo\n")
+        container = _mock_container()
+
+        result = env_ops._install_apt_packages(container, repo)
+
+        assert result == ""
+        container.exec_run.assert_not_called()
+
+    def test_missing_returns_empty(self, tmp_path):
+        container = _mock_container()
+        result = env_ops._install_apt_packages(container, str(tmp_path))
+        assert result == ""
+        container.exec_run.assert_not_called()
+
+
+class TestInstallPipRequirements:
+    def test_prefers_oduflow_dir(self, tmp_path):
+        repo = str(tmp_path)
+        _write(os.path.join(repo, ".oduflow", "requirements.txt"), "phonenumbers\n")
+        container = _mock_container()
+
+        installed, _ = env_ops._install_pip_requirements(container, repo, restart=False)
+
+        assert installed is True
+        assert _pip_cmd(container) is not None
+        assert "/mnt/extra-addons/.oduflow/requirements.txt" in _pip_cmd(container)
+
+    def test_falls_back_to_repo_root(self, tmp_path):
+        repo = str(tmp_path)
+        _write(os.path.join(repo, "requirements.txt"), "phonenumbers\n")
+        container = _mock_container()
+
+        installed, _ = env_ops._install_pip_requirements(container, repo, restart=False)
+
+        assert installed is True
+        cmd = _pip_cmd(container)
+        assert cmd is not None
+        assert cmd.endswith("/mnt/extra-addons/requirements.txt")
+        assert ".oduflow" not in cmd
+
+    def test_oduflow_wins_over_root(self, tmp_path):
+        repo = str(tmp_path)
+        _write(os.path.join(repo, ".oduflow", "requirements.txt"), "phonenumbers\n")
+        _write(os.path.join(repo, "requirements.txt"), "other\n")
+        container = _mock_container()
+
+        env_ops._install_pip_requirements(container, repo, restart=False)
+
+        assert "/mnt/extra-addons/.oduflow/requirements.txt" in _pip_cmd(container)
+
+    def test_missing_returns_false(self, tmp_path):
+        container = _mock_container()
+        installed, log = env_ops._install_pip_requirements(
+            container, str(tmp_path), restart=False
+        )
+        assert installed is False
+        assert log == ""
+        assert _pip_cmd(container) is None

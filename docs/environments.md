@@ -23,7 +23,7 @@ When creating an environment, Oduflow:
 2. **Creates the database** — `CREATE DATABASE ... TEMPLATE oduflow_template_{team_id}_{name}` for instant copy, or empty DB when `template=none`
 3. **Mounts the filestore overlay** — fuse-overlayfs with the template as lower layer
 4. **Detects UID/GID** — runs `id` in the Odoo image to set correct file ownership
-5. **Installs dependencies** — auto-installs from `apt_packages.txt` and `requirements.txt` if present in the repo
+5. **Installs dependencies** — auto-installs from `.oduflow/apt_packages.txt` and `.oduflow/requirements.txt` (the latter falls back to the repo root) if present
 6. **Configures Odoo** — uses repo's `.oduflow/odoo.conf` if available, otherwise the default template
 7. **Starts the container** — with `--dev=xml` for hot-reloading XML/QWeb changes
 8. **Initializes base** — when `template=none`, runs `odoo -i base --stop-after-init`
@@ -40,9 +40,11 @@ Credentials are stored in the git credential store. Subsequent `create_environme
 
 ### Auto-dependency installation
 
-Place these files in your repository root for automatic installation during environment creation:
+Place these files in your repository for automatic installation during environment creation:
 
-**`requirements.txt`** — Python packages installed via pip:
+**`.oduflow/requirements.txt`** — Python packages installed via pip. Oduflow looks in
+`.oduflow/` first and falls back to a `requirements.txt` in the repository root (for
+compatibility with conventions used elsewhere, e.g. odoo.sh):
 
 ```
 phonenumbers==8.13.0
@@ -50,7 +52,8 @@ python-barcode==0.15.1
 xlsxwriter>=3.0
 ```
 
-**`apt_packages.txt`** — System packages installed via apt:
+**`.oduflow/apt_packages.txt`** — System packages installed via apt. This is an
+Oduflow-specific convention and is read **only** from `.oduflow/` (no repo-root fallback):
 
 ```
 # Dependencies for wkhtmltopdf
