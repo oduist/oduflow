@@ -58,6 +58,12 @@ oduflow call restart_service redis
 # Update a service (pull latest image, recreate container with same settings)
 oduflow call update_service meilisearch
 
+# Change environment variables on a running service (fully replaces existing env_vars)
+oduflow call update_service meilisearch --env_vars "MEILI_MASTER_KEY=newkey,MEILI_ENV=production"
+
+# Change the image (tag) of a running service
+oduflow call update_service meilisearch --image getmeili/meilisearch:v1.8
+
 # Delete a service
 oduflow call delete_service redis
 
@@ -75,10 +81,15 @@ For a plain image refresh prefer `update_service`, which captures and preserves 
 
 The `update_service` operation:
 
-1. Captures the current image name, environment variables, port, hostname, volumes, and capabilities (`cap_add`, `privileged`)
-2. Pulls the latest version of the image
-3. Compares image digests — if unchanged, reports "already up-to-date"
-4. If the image changed: stops the old container, removes it, and creates a new one with identical settings
+1. Reads the saved preset (authoritative source) or inspects the running container as a legacy fallback
+2. Applies any overrides passed in (`env_vars`, `image`, `port`, `hostname`, `host_mode`, `volumes`) — each override **fully replaces** the current value
+3. Pulls the target image (the override, or the current one)
+4. Decides whether to recreate:
+    - If neither the image digest nor any setting changed → reports "already up-to-date"
+    - If the image digest changed or any setting was overridden → stops the old container, removes it, and creates a new one with the merged settings
+5. Updates the saved preset so subsequent `restore_service` calls use the new configuration
+
+Overrides are optional: calling `update_service` with only `name` preserves the previous behaviour (pull and recreate only on digest change).
 
 ## Service Presets
 
