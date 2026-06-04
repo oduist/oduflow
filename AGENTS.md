@@ -15,14 +15,9 @@ to assume the python venv.
 
 ## Publishing Documentation
 
-After committing and pushing changes to `docs/` or `mkdocs.yml`, always publish the documentation to GitHub Pages automatically — do not ask the user:
+Documentation is published to GitHub Pages **automatically by a GitHub Action when changes are merged into `main`**. Do NOT run `mkdocs gh-deploy --force` (or otherwise deploy docs) from a working/feature branch — publishing a not-yet-merged branch would make the live site reflect unmerged content.
 
-```bash
-pip install -r requirements-docs.txt
-source .venv/bin/activate && mkdocs gh-deploy --force
-```
-
-Documentation dependencies are listed in `requirements-docs.txt`.
+Just commit the `docs/`/`mkdocs.yml` changes as part of your branch; the site updates on merge. Documentation build dependencies (for local preview only) are listed in `requirements-docs.txt`.
 
 The site is hosted at: https://oduist.github.io/oduflow/
 
