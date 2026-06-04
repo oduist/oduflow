@@ -124,6 +124,12 @@
   }
   .env-note:hover { border-color: var(--border); }
   .env-note-empty { font-style: italic; opacity: 0.5; }
+  .copy-db {
+    cursor: pointer;
+    border-bottom: 1px dashed transparent;
+    transition: border-color 0.15s, color 0.15s;
+  }
+  .copy-db:hover { border-bottom-color: var(--accent); color: var(--accent); }
   .containers {
     font-size: 12px;
     color: var(--text-dim);
@@ -872,6 +878,27 @@ function showToast(msg, isError) {
   t._tid = setTimeout(() => t.className = 'toast', 3000);
 }
 
+function copyToClipboard(text) {
+  const onErr = () => showToast('Copy failed', true);
+  if (navigator.clipboard && window.isSecureContext) {
+    navigator.clipboard.writeText(text)
+      .then(() => showToast('Copied: ' + text))
+      .catch(onErr);
+    return;
+  }
+  try {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.select();
+    const ok = document.execCommand('copy');
+    document.body.removeChild(ta);
+    ok ? showToast('Copied: ' + text) : onErr();
+  } catch (e) { onErr(); }
+}
+
 function closeSyncResult(event) {
   if (event && event.target !== event.currentTarget) return;
   document.getElementById('sync-result-modal').classList.remove('show');
@@ -965,7 +992,7 @@ function renderEnvironments(envs) {
 
     const metaHtml = (env.odoo_image || env.repo_url || env.db_name || env.template_name)
       ? '<div class="env-meta">' +
-          (env.db_name ? '<span>DB: <strong>' + esc(env.db_name) + '</strong></span>' : '') +
+          (env.db_name ? '<span>DB: <strong class="copy-db" title="Click to copy" onclick="copyToClipboard(\'' + esc(env.db_name).replace(/'/g, "\\'") + '\')">' + esc(env.db_name) + '</strong></span>' : '') +
           (env.template_name && env.template_name !== 'none' ? '<span>Template: <strong>' + esc(env.template_name) + '</strong></span>' : '') +
           (env.odoo_image ? '<span>Image: <strong>' + esc(env.odoo_image) + '</strong></span>' : '') +
           (env.repo_url ? '<span>Repo: <strong>' + esc(env.repo_url) + '</strong>' +
