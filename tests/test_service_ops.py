@@ -808,6 +808,45 @@ class TestUpdateService:
         run_kwargs = mock_docker_client.containers.run.call_args
         assert run_kwargs[1]["ports"] == {"6380/tcp": 6380}
 
+    def test_update_port_override_repairs_legacy_host_mode(self, mock_docker_client):
+        """port_override repairs a legacy host-mode service whose port cannot be inferred.
+
+        In non-traefik host mode without a preset the port is unknowable, so the
+        guard would normally raise. Supplying port_override must bypass the guard
+        and let the service be recreated with the given port.
+        """
+        container = self._make_container(
+            image_tags=["redis:7"],
+            labels={
+                "oduflow.managed": "true",
+                "oduflow.service": "redis",
+                "oduflow.host_mode": "true",
+            },
+            attrs={"Config": {"Env": []}, "HostConfig": {}, "Mounts": []},
+        )
+        pulled_image = MagicMock()
+        pulled_image.id = container.image.id
+        mock_docker_client.images.pull.return_value = pulled_image
+        mock_docker_client.containers.get.side_effect = [
+            container,
+            docker.errors.NotFound("nf"),
+        ]
+        mock_docker_client.networks.get.return_value = MagicMock()
+        mock_docker_client.containers.run.return_value = MagicMock()
+
+        with patch(
+            "oduflow.docker_ops.service_ops.service_presets.get_preset",
+            side_effect=NotFoundError("no preset"),
+        ):
+            result = service_ops.update_service(
+                TEST_SETTINGS, TEST_TEAM, "redis", port_override=7700
+            )
+
+        assert result["config_updated"] is True
+        assert result["url"] == "http://localhost:7700"
+        container.stop.assert_called_once()
+        container.remove.assert_called_once_with(v=True)
+
 
 class TestGetServiceInfo:
     def _make_container(self, image_tags, image_id, labels, attrs, status="running"):

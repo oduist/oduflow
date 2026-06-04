@@ -505,7 +505,7 @@ def update_service(
 
         env_vars = env_vars or None
 
-    if port is None:
+    if port is None and port_override is None:
         raise NotFoundError(f"Cannot determine port for service '{name}'.")
 
     # Apply overrides and track whether config changed
