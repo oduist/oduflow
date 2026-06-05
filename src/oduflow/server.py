@@ -6,6 +6,7 @@ import logging
 import os
 import re
 import sys
+from typing import cast
 
 from fastmcp import FastMCP, Context
 from fastmcp.exceptions import ToolError
@@ -488,31 +489,46 @@ def create_environment(
 
 @mcp.tool()
 @handle_errors
-@with_env_lock
-def save_as_template(env_name: str, template_name: str, ctx: Context = None) -> str:
+@with_team_lock
+def save_as_template(
+    env_name: str,
+    template_name: str,
+    reset_env_changes: bool = False,
+    ctx: Context = None,
+) -> str:
     """
     Save an environment as the new template (DB + filestore).
 
     Replaces the template database and filestore with the data from the specified
-    environment. If other environments use this template with overlay-mounted filestores,
-    their filestore deltas will be reset to the new baseline — this is destructive
-    for those environments. If no other environments share this template, the
-    operation is safe.
+    environment. Other environments that use this template with overlay-mounted
+    filestores are remounted against the new baseline: by default their filestore
+    changes (the overlay upper layer) are PRESERVED — non-destructive. Set
+    reset_env_changes=True to discard those changes and reset every affected
+    environment to the new baseline. The source environment itself is always
+    reset (its data just became the new template).
 
     Requires EXPLICIT user permission and confirmation before execution.
     If the user has not clearly and unambiguously asked you to save
-    a specific environment as template, DO NOT call this tool.
+    a specific environment as template, DO NOT call this tool. Setting
+    reset_env_changes=True is destructive for other environments — only do so
+    when the user explicitly asks to reset them.
 
     Args:
         env_name: The name of the environment whose DB and filestore will become the new template.
         template_name: Name of the template profile to publish into.
+        reset_env_changes: If True, discard other environments' filestore deltas (destructive). Default False (preserve).
     """
     settings = _get_settings()
     team = _resolve_team(ctx)
     result = system_ops.publish_env_as_template(
-        settings, team, env_name, template_name=template_name
+        settings,
+        team,
+        env_name,
+        template_name=template_name,
+        reset_env_changes=reset_env_changes,
     )
-    affected = result.get("affected_envs", [])
+    affected = cast("list[str]", result.get("affected_envs", []))
+    failures = cast("list[tuple[str, str]]", result.get("remount_failures", []))
     lines = [
         f"Environment '{result['env_name']}' saved as template '{template_name}'.",
         f"Template DB: {result['template_db']}",
@@ -520,9 +536,15 @@ def save_as_template(env_name: str, template_name: str, ctx: Context = None) -> 
         f"Filestore: {result['filestore']}",
     ]
     if affected:
-        lines.append(f"⚠️ Reset filestore overlays for: {', '.join(affected)}")
+        verb = "Reset" if reset_env_changes else "Remounted (changes preserved)"
+        lines.append(f"{verb} filestore overlays for: {', '.join(affected)}")
     else:
         lines.append("No other environments were affected.")
+    if failures:
+        lines.append(
+            "⚠️ Remount issues:\n"
+            + "\n".join(f"- {env}: {msg}" for env, msg in failures)
+        )
     return "\n".join(lines)
 
 
@@ -594,6 +616,67 @@ def import_template_from_odoo(
         f"Backup size: {result['zip_size_mb']} MB",
         f"DB restore time: {result['restore_seconds']}s",
     ]
+    affected = cast("list[str]", result.get("affected_envs", []))
+    failures = cast("list[tuple[str, str]]", result.get("remount_failures", []))
+    if affected:
+        lines.append(
+            "Remounted (changes preserved) filestore overlays for: "
+            + ", ".join(affected)
+        )
+    if failures:
+        lines.append(
+            "⚠️ Remount issues:\n"
+            + "\n".join(f"- {env}: {msg}" for env, msg in failures)
+        )
+    return "\n".join(lines)
+
+
+@mcp.tool()
+@handle_errors
+@with_team_lock
+def refresh_template(
+    template_name: str,
+    reset_env_changes: bool = False,
+    ctx: Context = None,
+) -> str:
+    """
+    Re-apply a template's current filestore to live overlay environments.
+
+    Unmounts and remounts every overlay-mounted environment that uses this
+    template against the template's current on-disk filestore. By default each
+    environment's filestore changes (the overlay upper layer) are PRESERVED —
+    non-destructive. Set reset_env_changes=True to discard those changes and
+    reset every affected environment to the template baseline (destructive).
+
+    Use this after the template filestore was changed on disk, or to re-sync an
+    environment that was busy/skipped during an import or save.
+
+    Requires EXPLICIT user permission, especially with reset_env_changes=True.
+
+    Args:
+        template_name: Name of the template profile to re-apply.
+        reset_env_changes: If True, discard environments' filestore deltas (destructive). Default False (preserve).
+    """
+    settings = _get_settings()
+    team = _resolve_team(ctx)
+    result = system_ops.refresh_template(
+        settings, team, template_name, reset_env_changes=reset_env_changes
+    )
+    affected = cast("list[str]", result.get("affected_envs", []))
+    failures = cast("list[tuple[str, str]]", result.get("remount_failures", []))
+    if affected:
+        verb = "Reset" if reset_env_changes else "Remounted (changes preserved)"
+        lines = [f"{verb} filestore overlays for: {', '.join(affected)}"]
+    else:
+        lines = [
+            f"No live overlay environments use template '{template_name}'; "
+            "nothing to do."
+        ]
+    if failures:
+        lines.append(
+            "⚠️ Remount issues:\n"
+            + "\n".join(f"- {env}: {msg}" for env, msg in failures)
+        )
     return "\n".join(lines)
 
 
@@ -2382,17 +2465,63 @@ def _run_init_template(
 
 
 def _run_template_from_env(
-    settings: Settings, team: TeamSettings, branch: str, template_name: str = ""
+    settings: Settings,
+    team: TeamSettings,
+    branch: str,
+    template_name: str = "",
+    reset_env_changes: bool = False,
 ) -> None:
     result = system_ops.publish_env_as_template(
-        settings, team, env_name=branch, template_name=template_name
+        settings,
+        team,
+        env_name=branch,
+        template_name=template_name,
+        reset_env_changes=reset_env_changes,
     )
-    print(
-        f"Environment '{result['env_name']}' saved as template '{template_name}'.\n"
-        f"Template DB: {result['template_db']}\n"
-        f"Dump: {result['dump']}\n"
-        f"Filestore: {result['filestore']}"
+    lines = [
+        f"Environment '{result['env_name']}' saved as template '{template_name}'.",
+        f"Template DB: {result['template_db']}",
+        f"Dump: {result['dump']}",
+        f"Filestore: {result['filestore']}",
+    ]
+    affected = cast("list[str]", result.get("affected_envs", []))
+    failures = cast("list[tuple[str, str]]", result.get("remount_failures", []))
+    if affected:
+        verb = "Reset" if reset_env_changes else "Remounted (changes preserved)"
+        lines.append(f"{verb} filestore overlays for: {', '.join(affected)}")
+    if failures:
+        lines.append(
+            "Remount issues:\n"
+            + "\n".join(f"- {env}: {msg}" for env, msg in failures)
+        )
+    print("\n".join(lines))
+
+
+def _run_refresh_template(
+    settings: Settings,
+    team: TeamSettings,
+    template_name: str,
+    reset_env_changes: bool = False,
+) -> None:
+    result = system_ops.refresh_template(
+        settings, team, template_name, reset_env_changes=reset_env_changes
     )
+    affected = cast("list[str]", result.get("affected_envs", []))
+    failures = cast("list[tuple[str, str]]", result.get("remount_failures", []))
+    if affected:
+        verb = "Reset" if reset_env_changes else "Remounted (changes preserved)"
+        lines = [f"{verb} filestore overlays for: {', '.join(affected)}"]
+    else:
+        lines = [
+            f"No live overlay environments use template '{template_name}'; "
+            "nothing to do."
+        ]
+    if failures:
+        lines.append(
+            "Remount issues:\n"
+            + "\n".join(f"- {env}: {msg}" for env, msg in failures)
+        )
+    print("\n".join(lines))
 
 
 def _run_delete_template(
@@ -2420,15 +2549,28 @@ def _run_import_template(
         db_name=db_name,
         template_name=template_name,
     )
-    print(
-        f"Template '{result['template_name']}' imported successfully!\n"
-        f"Source: {result['source_url']} (db: {result['source_db']})\n"
-        f"Odoo version: {result['odoo_version']}\n"
-        f"Odoo image: {result['odoo_image']}\n"
-        f"Template DB: {result['template_db']}\n"
-        f"Backup size: {result['zip_size_mb']} MB\n"
-        f"DB restore time: {result['restore_seconds']}s"
-    )
+    lines = [
+        f"Template '{result['template_name']}' imported successfully!",
+        f"Source: {result['source_url']} (db: {result['source_db']})",
+        f"Odoo version: {result['odoo_version']}",
+        f"Odoo image: {result['odoo_image']}",
+        f"Template DB: {result['template_db']}",
+        f"Backup size: {result['zip_size_mb']} MB",
+        f"DB restore time: {result['restore_seconds']}s",
+    ]
+    affected = cast("list[str]", result.get("affected_envs", []))
+    failures = cast("list[tuple[str, str]]", result.get("remount_failures", []))
+    if affected:
+        lines.append(
+            "Remounted (changes preserved) filestore overlays for: "
+            + ", ".join(affected)
+        )
+    if failures:
+        lines.append(
+            "Remount issues:\n"
+            + "\n".join(f"- {env}: {msg}" for env, msg in failures)
+        )
+    print("\n".join(lines))
 
 
 def _run_list_templates(settings: Settings, team: TeamSettings) -> None:
@@ -2695,7 +2837,26 @@ def main() -> None:
     )
     p_tfe.add_argument("branch", help="Branch name to use as template source")
     p_tfe.add_argument("--template-name", required=True, help="Template profile name")
+    p_tfe.add_argument(
+        "--reset-env-changes",
+        action="store_true",
+        help="Discard other environments' filestore changes (destructive). "
+        "Default: preserve them.",
+    )
     p_tfe.add_argument("--team", default="1", help="Team ID (default: 1)")
+
+    p_refresh = sub.add_parser(
+        "refresh-template",
+        help="Re-apply a template's filestore to live overlay envs (non-destructive)",
+    )
+    p_refresh.add_argument("template_name", help="Template profile name")
+    p_refresh.add_argument(
+        "--reset-env-changes",
+        action="store_true",
+        help="Discard environments' filestore changes (destructive). "
+        "Default: preserve them.",
+    )
+    p_refresh.add_argument("--team", default="1", help="Team ID (default: 1)")
 
     p_drop_tpl = sub.add_parser(
         "delete-template", help="Delete a template profile (template DB + files)"
@@ -2888,7 +3049,20 @@ def main() -> None:
 
     if args.command == "template-from-env":
         _run_template_from_env(
-            _settings, _cli_team(), branch=args.branch, template_name=args.template_name
+            _settings,
+            _cli_team(),
+            branch=args.branch,
+            template_name=args.template_name,
+            reset_env_changes=args.reset_env_changes,
+        )
+        return
+
+    if args.command == "refresh-template":
+        _run_refresh_template(
+            _settings,
+            _cli_team(),
+            template_name=args.template_name,
+            reset_env_changes=args.reset_env_changes,
         )
         return
 
