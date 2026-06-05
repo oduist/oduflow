@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import datetime
 import json
 import logging
@@ -8,6 +9,7 @@ import pathlib
 import shutil
 import subprocess
 import time
+from collections.abc import Iterator
 from typing import Any
 
 import docker
@@ -283,6 +285,150 @@ def _unmount_filestore(env_name: str, team: TeamSettings) -> None:
             continue
 
     logger.warning("Could not unmount filestore overlay at %s", merged)
+
+
+def _wait_unmounted(merged: str, timeout: float = 3.0) -> None:
+    """Poll until ``merged`` is no longer a mount point (best-effort)."""
+    deadline = time.time() + timeout
+    while time.time() < deadline and os.path.ismount(merged):
+        time.sleep(0.1)
+
+
+class RemountResult:
+    """Outcome of :func:`remount_template_overlays`."""
+
+    def __init__(self, affected: list[str]) -> None:
+        self.affected = affected
+        self.failures: list[tuple[str, str]] = []
+
+
+@contextlib.contextmanager
+def remount_template_overlays(
+    client: DockerClient,
+    settings: Settings,
+    team: TeamSettings,
+    template_name: str,
+    *,
+    reset_upper: bool = False,
+    exclude_envs: tuple[str, ...] = (),
+) -> Iterator[RemountResult]:
+    """Safely mutate a template's lower filestore layer under live overlay envs.
+
+    Non-destructive template update (see issue #2): fuse-overlayfs keeps each
+    environment's changes in a separate ``upper`` layer, so we can unmount an
+    overlay while preserving its ``upper``/``work`` dirs, swap the read-only
+    lower layer (the template filestore), and remount against the new lower with
+    the same ``upper`` — keeping the environment's data.
+
+    Usage::
+
+        with remount_template_overlays(client, settings, team, name) as r:
+            # ... mutate team.get_template_filestore_path(name) ...
+        # r.affected / r.failures now describe what happened
+
+    On enter: for every overlay-mounted environment that uses ``template_name``
+    (excluding ``exclude_envs``), stop its Odoo container and unmount the
+    overlay, keeping ``upper``/``work``. The caller mutates the template
+    filestore inside the ``with`` block. On exit (always — even if the block
+    raised, so envs are never left without a lower layer): remount each
+    environment against the new lower reusing its preserved ``upper`` (unless
+    ``reset_upper=True``) and restart the container if it had been running.
+
+    Copy-mode environments (``use_overlay=False``) are not mounted, so they are
+    skipped — updating the lower layer does not affect their independent copy.
+    """
+    exclude = set(exclude_envs)
+    affected: list[dict[str, Any]] = []
+
+    for env in list_environments(settings, team):
+        env_name = env["env_name"]
+        if env_name in exclude:
+            continue
+        if env.get("template_name") != template_name:
+            continue
+        merged = get_filestore_paths(env_name, team.workspaces_dir)["merged"]
+        if not os.path.ismount(merged):
+            continue
+
+        container_name = get_resource_name(env_name, "odoo", settings.prefix)
+        image = env.get("odoo_image") or "odoo:17.0"
+        was_running = False
+        try:
+            container = client.containers.get(container_name)
+            was_running = container.status == "running"
+            if container.image.tags:
+                image = container.image.tags[0]
+        except docker.errors.NotFound:
+            pass
+
+        affected.append(
+            {
+                "env_name": env_name,
+                "container_name": container_name,
+                "image": image,
+                "env_db": get_db_name(env_name, team.team_id),
+                "was_running": was_running,
+            }
+        )
+
+    result = RemountResult([a["env_name"] for a in affected])
+
+    # Stop containers and unmount overlays (keeping upper/work).
+    for a in affected:
+        try:
+            try:
+                client.containers.get(a["container_name"]).stop(timeout=10)
+            except docker.errors.NotFound:
+                pass
+            _unmount_filestore(a["env_name"], team)
+            _wait_unmounted(
+                get_filestore_paths(a["env_name"], team.workspaces_dir)["merged"]
+            )
+            logger.info("Unmounted overlay for env %s", a["env_name"])
+        except Exception as exc:  # noqa: BLE001 - best-effort, reported via result
+            logger.warning("Could not unmount overlay for %s: %s", a["env_name"], exc)
+            result.failures.append((a["env_name"], f"unmount: {exc}"))
+
+    try:
+        yield result
+    finally:
+        for a in affected:
+            env_name = a["env_name"]
+            paths = get_filestore_paths(env_name, team.workspaces_dir)
+            try:
+                if os.path.ismount(paths["merged"]):
+                    # Unmount failed earlier — don't stack a second mount.
+                    result.failures.append(
+                        (env_name, "still mounted, skipped remount")
+                    )
+                else:
+                    if reset_upper:
+                        for key in ("upper", "work"):
+                            d = paths[key]
+                            if os.path.isdir(d):
+                                shutil.rmtree(d)
+                                os.makedirs(d, mode=0o777, exist_ok=True)
+                    _mount_filestore(
+                        client,
+                        settings,
+                        team,
+                        env_name,
+                        a["env_db"],
+                        a["image"],
+                        {},
+                        template_name=template_name,
+                    )
+                    logger.info("Remounted overlay for env %s", env_name)
+                if a["was_running"]:
+                    try:
+                        client.containers.get(a["container_name"]).start()
+                    except docker.errors.NotFound:
+                        pass
+                    except docker.errors.APIError:
+                        pass  # already running
+            except Exception as exc:  # noqa: BLE001 - best-effort, reported via result
+                logger.warning("Could not remount overlay for %s: %s", env_name, exc)
+                result.failures.append((env_name, f"remount: {exc}"))
 
 
 def _install_apt_packages(container, repo_path: str) -> str:

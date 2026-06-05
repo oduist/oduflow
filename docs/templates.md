@@ -70,13 +70,35 @@ This operation:
 1. Dumps the branch database to a new template dump file
 2. Reloads the template database from the new dump
 3. Snapshots the branch's merged filestore
-4. Unmounts all overlay filesystems across active environments
+4. Unmounts the overlay filesystems of other active environments on this template (keeping their `upper` deltas)
 5. Replaces the template filestore with the snapshot
-6. Remounts overlays for all active environments (clearing their upper dirs)
-7. Restarts all active containers
+6. Remounts those overlays against the new baseline, **preserving each environment's filestore changes** by default
+7. Restarts the affected containers
 
-!!! warning
-    **Destructive operation**: All other environments lose their filestore deltas and are reset to the new baseline.
+The **source environment** is always reset to the new baseline (its data just became the template). **Other environments keep their filestore changes** (the overlay `upper` layer) — this is non-destructive by default. Their existing files shadow the new template (env-local edits win); files they deleted stay deleted; new template files show through.
+
+To instead discard other environments' changes and reset them to the clean new baseline:
+
+```bash
+oduflow template-from-env my-branch --template-name default --reset-env-changes
+```
+
+!!! note
+    `--reset-env-changes` is **destructive**: other environments lose their filestore deltas. Without it, their changes are preserved.
+
+!!! info "Copy-mode templates"
+    Environments created from a small (copy-mode, `use_overlay=false`) template have an independent filestore copy, not an overlay. They are not affected by template filestore updates and are left untouched.
+
+## Refreshing Template Overlays
+
+Re-apply a template's current on-disk filestore to all live overlay environments without re-importing or re-saving — non-destructive by default (each environment keeps its `upper` deltas):
+
+```bash
+oduflow refresh-template default
+oduflow refresh-template default --reset-env-changes   # discard env deltas (destructive)
+```
+
+Use this after changing the template filestore on disk, or to re-sync an environment that was busy/skipped during an import or save.
 
 ## Reloading a Template
 
@@ -103,6 +125,9 @@ oduflow reload-template default --source s3://mybucket/prod/ --quiet
 ```
 
 The source directory should contain `dump.pgdump` (or `dump.sql`) and optionally `filestore/`. Files are synced using `aws s3 sync` (S3) or `rsync` (local), then the template DB is reloaded.
+
+!!! info "Non-destructive for live environments"
+    When `--source` replaces the template filestore, live overlay environments on that template are automatically unmounted and remounted against the new lower layer, **keeping their filestore changes**. The same applies to `import-template` re-imports.
 
 ## Listing and Dropping Templates
 
@@ -146,6 +171,8 @@ The `use_overlay` flag determines whether new environments use fuse-overlayfs (f
 | Need to install modules or configure the template | Create an env, configure it, then `oduflow template-from-env my-branch --template-name default` |
 | Update the template from a newer production dump | `oduflow reload-template default --dump-path /path/to/new.dump` |
 | Sync template from S3 and reload | `oduflow reload-template default --source s3://bucket/prod/` |
-| Save a branch environment as template | `oduflow template-from-env my-branch --template-name default` |
+| Save a branch environment as template (keep other envs' changes) | `oduflow template-from-env my-branch --template-name default` |
+| Save a branch as template and reset all other envs | `oduflow template-from-env my-branch --template-name default --reset-env-changes` |
+| Re-apply a template's filestore to live envs | `oduflow refresh-template default` |
 | List all templates | `oduflow list-templates` |
 | Delete a template | `oduflow delete-template myproject` |

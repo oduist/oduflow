@@ -45,8 +45,14 @@ All template commands accept `--team` to specify the team ID (default: `1`).
 # Generate a clean template from a Docker image
 oduflow init-template --odoo-image odoo:17.0 --template-name myproject [--modules base,web,sale] [--force] [--team 1]
 
-# Save a branch environment as the new template
-oduflow template-from-env <branch> --template-name myproject [--team 1]
+# Save a branch environment as the new template.
+# Other environments on this template keep their filestore changes by default;
+# pass --reset-env-changes to discard them and reset to the new baseline.
+oduflow template-from-env <branch> --template-name myproject [--reset-env-changes] [--team 1]
+
+# Re-apply a template's current filestore to live overlay environments
+# (non-destructive by default; --reset-env-changes discards env deltas)
+oduflow refresh-template <template_name> [--reset-env-changes] [--team 1]
 
 # Reload template DB from a dump file
 oduflow reload-template <template_name> [--dump-path /path/to/new.dump] [--team 1]
@@ -64,6 +70,8 @@ oduflow delete-template <template_name> [--team 1]
 # Import a template from a running Odoo instance
 oduflow import-template <odoo_url> <master_pwd> --template-name myproject [--db-name <db>] [--team 1]
 ```
+
+`template-from-env`, `refresh-template`, `import-template`, and `reload-template --source` are **non-destructive** for live overlay environments: each is unmounted and remounted against the new template filestore while keeping its `upper` changes. Use `--reset-env-changes` (on `template-from-env`/`refresh-template`) to reset environments to the clean baseline instead.
 
 ## Service Commands
 

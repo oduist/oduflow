@@ -845,10 +845,15 @@ def init_template(
 
 
 def publish_env_as_template(
-    settings: Settings, team: TeamSettings, env_name: str, template_name: str
-) -> dict[str, str]:
+    settings: Settings,
+    team: TeamSettings,
+    env_name: str,
+    template_name: str,
+    *,
+    reset_env_changes: bool = False,
+) -> dict[str, object]:
     from oduflow.docker_ops import env_ops
-    from oduflow.naming import get_db_name, get_filestore_paths
+    from oduflow.naming import get_db_name, get_filestore_paths, get_resource_name
 
     client = get_client()
     tpl_db = get_template_db_name(template_name, team.team_id)
@@ -881,129 +886,104 @@ def publish_env_as_template(
     # 2. Reload template DB from new dump
     reload_template(settings, team, template_name=template_name, dump_path=dump_path)
 
-    # 3. Collect active envs that use THIS template AND overlay mount
-    active_envs = env_ops.list_environments(settings, team)
-    affected_envs = [
-        e["env_name"]
-        for e in active_envs
-        if e.get("template_name") == template_name
-        and os.path.ismount(
-            get_filestore_paths(e["env_name"], team.workspaces_dir)["merged"]
-        )
-    ]
-
-    # 4. Snapshot the source env's merged filestore (while overlay is still mounted)
+    # ------------------------------------------------------------------
+    # 3-7. Swap the template's lower filestore non-destructively (issue #2).
+    # ------------------------------------------------------------------
+    # The SOURCE env's deltas become the new lower layer, so it is always reset.
+    # OTHER overlay envs on this template keep their upper deltas by default;
+    # reset_env_changes=True resets them to the new baseline instead.
     env_paths = get_filestore_paths(env_name, team.workspaces_dir)
     branch_merged = env_paths["merged"]
     template_filestore_path = team.get_template_filestore_path(template_name)
+    source_container = get_resource_name(env_name, "odoo", settings.prefix)
+    source_is_overlay = os.path.isdir(branch_merged) and os.path.ismount(branch_merged)
 
-    if os.path.isdir(branch_merged) and os.path.ismount(branch_merged):
-        # Overlay-mounted filestore — snapshot while still mounted
+    # Snapshot the source env's merged filestore while it is still mounted.
+    snapshot_dir: str | None = None
+    if os.path.isdir(branch_merged):
         snapshot_dir = branch_merged + "_snapshot"
         if os.path.exists(snapshot_dir):
             shutil.rmtree(snapshot_dir)
         shutil.copytree(branch_merged, snapshot_dir)
-        logger.info("Snapshot of merged filestore created for env %s", env_name)
-    elif os.path.isdir(branch_merged) and not os.path.ismount(branch_merged):
-        # Plain (non-overlay) filestore — e.g. env created with template=none
-        snapshot_dir = branch_merged + "_snapshot"
-        if os.path.exists(snapshot_dir):
-            shutil.rmtree(snapshot_dir)
-        shutil.copytree(branch_merged, snapshot_dir)
-        logger.info("Snapshot of plain filestore created for env %s", env_name)
+        logger.info("Snapshot of filestore created for env %s", env_name)
     else:
-        snapshot_dir = None
         logger.warning(
             "Branch filestore %s not found, skipping filestore update", branch_merged
         )
 
-    # 5. Unmount all overlays
-    for affected_env in affected_envs:
-        try:
-            env_ops._unmount_filestore(affected_env, team)
-            logger.info("Unmounted overlay for env %s", affected_env)
-        except Exception as e:
-            logger.warning("Could not unmount overlay for %s: %s", affected_env, e)
+    try:
+        sc = client.containers.get(source_container)
+        source_was_running = sc.status == "running"
+        source_image = sc.image.tags[0] if sc.image.tags else "odoo:17.0"
+    except (docker.errors.NotFound, IndexError):
+        source_was_running = False
+        source_image = "odoo:17.0"
 
-    # 6. Replace template filestore with snapshot
-    if snapshot_dir and os.path.isdir(snapshot_dir):
-        if os.path.exists(template_filestore_path):
-            shutil.rmtree(template_filestore_path)
+    with env_ops.remount_template_overlays(
+        client,
+        settings,
+        team,
+        template_name,
+        reset_upper=reset_env_changes,
+        exclude_envs=(env_name,),
+    ) as remount:
+        # Unmount the source overlay (after snapshot) so its lower can change.
+        if source_is_overlay:
+            try:
+                client.containers.get(source_container).stop(timeout=10)
+            except docker.errors.NotFound:
+                pass
+            env_ops._unmount_filestore(env_name, team)
+            env_ops._wait_unmounted(branch_merged)
 
-        os.makedirs(os.path.dirname(template_filestore_path), exist_ok=True)
-        try:
-            os.rename(snapshot_dir, template_filestore_path)
-        except OSError:
-            shutil.copytree(snapshot_dir, template_filestore_path)
-            shutil.rmtree(snapshot_dir)
-        logger.info("Template filestore replaced from env %s", env_name)
+        # Replace template filestore with the snapshot.
+        if snapshot_dir and os.path.isdir(snapshot_dir):
+            if os.path.exists(template_filestore_path):
+                shutil.rmtree(template_filestore_path)
+            os.makedirs(os.path.dirname(template_filestore_path), exist_ok=True)
+            try:
+                os.rename(snapshot_dir, template_filestore_path)
+            except OSError:
+                shutil.copytree(snapshot_dir, template_filestore_path)
+                shutil.rmtree(snapshot_dir)
+            logger.info("Template filestore replaced from env %s", env_name)
 
-        promoted_container_name = f"{settings.prefix}{env_name.replace('/', '-')}-odoo"
-        try:
-            pc = client.containers.get(promoted_container_name)
-            promoted_image = pc.image.tags[0] if pc.image.tags else "odoo:17.0"
-        except (docker.errors.NotFound, IndexError):
-            promoted_image = "odoo:17.0"
-        odoo_uid_gid = get_odoo_uid_gid(client, promoted_image)
-        uid_str, gid_str = odoo_uid_gid.split(":")
-        chown_recursive(
-            template_filestore_path, int(uid_str), int(gid_str), client, promoted_image
-        )
-        logger.info("Template filestore chowned to %s", odoo_uid_gid)
+            odoo_uid_gid = get_odoo_uid_gid(client, source_image)
+            uid_str, gid_str = odoo_uid_gid.split(":")
+            chown_recursive(
+                template_filestore_path,
+                int(uid_str),
+                int(gid_str),
+                client,
+                source_image,
+            )
+            logger.info("Template filestore chowned to %s", odoo_uid_gid)
 
-    # 7. Reset filestores to new template baseline
-    for affected_env in affected_envs:
-        try:
-            bp = get_filestore_paths(affected_env, team.workspaces_dir)
-
-            if os.path.ismount(bp["merged"]):
-                env_ops._unmount_filestore(affected_env, team)
-                deadline = time.time() + 3.0
-                while time.time() < deadline and os.path.ismount(bp["merged"]):
-                    time.sleep(0.1)
-                if os.path.ismount(bp["merged"]):
-                    logger.warning(
-                        "Overlay for %s still mounted after retry, skipping remount",
-                        affected_env,
-                    )
-                    continue
-
+        # Remount the source overlay against the new lower (always reset) + restart.
+        if source_is_overlay:
             for key in ("upper", "work"):
-                d = bp[key]
+                d = env_paths[key]
                 if os.path.isdir(d):
                     shutil.rmtree(d)
                     os.makedirs(d, mode=0o777, exist_ok=True)
-
-            odoo_container_name = (
-                f"{settings.prefix}{affected_env.replace('/', '-')}-odoo"
-            )
-            try:
-                container = client.containers.get(odoo_container_name)
-                image = container.image.tags[0] if container.image.tags else "odoo:17.0"
-            except (docker.errors.NotFound, IndexError):
-                image = "odoo:17.0"
-
-            env_db = get_db_name(affected_env, team.team_id)
             env_ops._mount_filestore(
                 client,
                 settings,
                 team,
-                affected_env,
-                env_db,
-                image,
+                env_name,
+                get_db_name(env_name, team.team_id),
+                source_image,
                 {},
                 template_name=template_name,
             )
-            logger.info("Filestore reset for env %s", affected_env)
+            if source_was_running:
+                try:
+                    client.containers.get(source_container).start()
+                except (docker.errors.NotFound, docker.errors.APIError):
+                    pass
 
-            try:
-                container = client.containers.get(odoo_container_name)
-                container.restart(timeout=10)
-                logger.info("Restarted container %s", odoo_container_name)
-            except docker.errors.NotFound:
-                pass
-        except Exception as e:
-            logger.warning("Could not reset filestore for %s: %s", affected_env, e)
+    affected_envs = remount.affected
+    remount_failures = remount.failures
 
     # Save template metadata from source environment
     promoted_container_name = f"{settings.prefix}{env_name.replace('/', '-')}-odoo"
@@ -1045,6 +1025,51 @@ def publish_env_as_template(
         "filestore": template_filestore_path,
         "template_db": tpl_db,
         "affected_envs": affected_envs,
+        "remount_failures": remount_failures,
+        "reset_env_changes": reset_env_changes,
+    }
+
+
+def refresh_template(
+    settings: Settings,
+    team: TeamSettings,
+    template_name: str,
+    *,
+    reset_env_changes: bool = False,
+) -> dict[str, object]:
+    """Re-apply a template's current on-disk filestore to live overlay envs.
+
+    Non-destructive by default: each affected environment is unmounted and
+    remounted against the template's current lower layer while keeping its
+    ``upper`` deltas. Pass ``reset_env_changes=True`` to discard those deltas
+    and reset every affected environment to the template baseline.
+
+    Useful after the template filestore was changed on disk, or to re-sync an
+    environment that was busy/skipped during an import or save.
+    """
+    from oduflow.docker_ops import env_ops
+
+    client = get_client()
+    tpl_db = get_template_db_name(template_name, team.team_id)
+
+    with env_ops.remount_template_overlays(
+        client,
+        settings,
+        team,
+        template_name,
+        reset_upper=reset_env_changes,
+    ) as remount:
+        # The unmount→remount cycle performed by the context manager is itself
+        # the operation; nothing to mutate here.
+        pass
+
+    return {
+        "status": "refreshed",
+        "template_name": template_name,
+        "template_db": tpl_db,
+        "affected_envs": remount.affected,
+        "remount_failures": remount.failures,
+        "reset_env_changes": reset_env_changes,
     }
 
 
@@ -1211,6 +1236,9 @@ def import_from_odoo(
     logger.info("Backup downloaded in %.1fs (%.1f MB)", download_elapsed, zip_size_mb)
 
     # 3. Extract ZIP
+    from oduflow.docker_ops import env_ops
+
+    client = get_client()
     template_dir = team.get_template_dir(template_name)
     template_sql_path = os.path.join(template_dir, "dump.sql")
     template_filestore_path = team.get_template_filestore_path(template_name)
@@ -1218,51 +1246,79 @@ def import_from_odoo(
     os.makedirs(template_dir, exist_ok=True)
 
     manifest = {}
+    affected_envs: list[str] = []
+    remount_failures: list[tuple[str, str]] = []
     try:
-        with zipfile.ZipFile(tmp_zip, "r") as zf:
-            # Extract manifest.json
-            if "manifest.json" in zf.namelist():
-                with zf.open("manifest.json") as mf:
-                    manifest = json.load(mf)
+        # Swap the template's filestore (the overlay lower layer) non-destructively:
+        # live overlay envs are unmounted (keeping their upper deltas) and remounted
+        # against the new lower on exit. See issue #2.
+        with env_ops.remount_template_overlays(
+            client, settings, team, template_name
+        ) as remount:
+            with zipfile.ZipFile(tmp_zip, "r") as zf:
+                # Extract manifest.json
+                if "manifest.json" in zf.namelist():
+                    with zf.open("manifest.json") as mf:
+                        manifest = json.load(mf)
 
-            # Extract dump.sql
-            with zf.open("dump.sql") as src, open(template_sql_path, "wb") as dst:
-                shutil.copyfileobj(src, dst)
-            logger.info("Extracted dump.sql to %s", template_sql_path)
+                # Extract dump.sql
+                with zf.open("dump.sql") as src, open(template_sql_path, "wb") as dst:
+                    shutil.copyfileobj(src, dst)
+                logger.info("Extracted dump.sql to %s", template_sql_path)
 
-            # Extract filestore
-            if os.path.exists(template_filestore_path):
-                shutil.rmtree(template_filestore_path)
-            os.makedirs(template_filestore_path, exist_ok=True)
+                # Extract filestore
+                if os.path.exists(template_filestore_path):
+                    shutil.rmtree(template_filestore_path)
+                os.makedirs(template_filestore_path, exist_ok=True)
 
-            fs_prefix = "filestore/"
-            for member in zf.namelist():
-                if not member.startswith(fs_prefix):
-                    continue
-                rel = member[len(fs_prefix) :]
-                if not rel:
-                    continue
-                # Skip checklist/ symlink-like entries
-                if rel.startswith("checklist/"):
-                    continue
-                target = os.path.join(template_filestore_path, rel)
-                if member.endswith("/"):
-                    os.makedirs(target, exist_ok=True)
-                else:
-                    os.makedirs(os.path.dirname(target), exist_ok=True)
-                    with zf.open(member) as src, open(target, "wb") as dst:
-                        shutil.copyfileobj(src, dst)
+                fs_prefix = "filestore/"
+                for member in zf.namelist():
+                    if not member.startswith(fs_prefix):
+                        continue
+                    rel = member[len(fs_prefix) :]
+                    if not rel:
+                        continue
+                    # Skip checklist/ symlink-like entries
+                    if rel.startswith("checklist/"):
+                        continue
+                    target = os.path.join(template_filestore_path, rel)
+                    if member.endswith("/"):
+                        os.makedirs(target, exist_ok=True)
+                    else:
+                        os.makedirs(os.path.dirname(target), exist_ok=True)
+                        with zf.open(member) as src, open(target, "wb") as dst:
+                            shutil.copyfileobj(src, dst)
 
-            fs_count = sum(
-                1
-                for f in pathlib.Path(template_filestore_path).rglob("*")
-                if f.is_file()
-            )
-            logger.info(
-                "Extracted filestore to %s (%d files)",
-                template_filestore_path,
-                fs_count,
-            )
+                fs_count = sum(
+                    1
+                    for f in pathlib.Path(template_filestore_path).rglob("*")
+                    if f.is_file()
+                )
+                logger.info(
+                    "Extracted filestore to %s (%d files)",
+                    template_filestore_path,
+                    fs_count,
+                )
+
+            # chown the new lower layer so the odoo user can read it through the
+            # overlay once it is remounted.
+            major = manifest.get("major_version", "")
+            if major:
+                try:
+                    uid_gid = get_odoo_uid_gid(client, f"odoo:{major}")
+                    uid_str, gid_str = uid_gid.split(":")
+                    chown_recursive(
+                        template_filestore_path,
+                        int(uid_str),
+                        int(gid_str),
+                        client,
+                        f"odoo:{major}",
+                    )
+                    logger.info("Template filestore chowned to %s", uid_gid)
+                except Exception as exc:  # noqa: BLE001 - chown is best-effort
+                    logger.warning("Could not chown template filestore: %s", exc)
+        affected_envs = remount.affected
+        remount_failures = remount.failures
     finally:
         if os.path.exists(tmp_zip):
             os.remove(tmp_zip)
@@ -1297,6 +1353,8 @@ def import_from_odoo(
         "template_db": result["template_db"],
         "restore_seconds": result.get("restore_seconds", 0),
         "zip_size_mb": round(zip_size_mb, 1),
+        "affected_envs": affected_envs,
+        "remount_failures": remount_failures,
     }
 
 

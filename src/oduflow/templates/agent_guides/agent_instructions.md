@@ -117,7 +117,8 @@ MCP endpoint: `http://<host>:8000/mcp`
 | Tool | When to use |
 |---|---|
 | `list_templates` | List available database template profiles |
-| `save_as_template(env_name)` | Make a branch the new template baseline. ⚠️ Destructive only if other environments share this template with overlay mounts. Requires explicit user permission |
+| `save_as_template(env_name, reset_env_changes=False)` | Make a branch the new template baseline. Other overlay environments on this template are remounted against the new baseline, **keeping their filestore changes by default** (non-destructive); `reset_env_changes=True` discards them. The source env is always reset. Requires explicit user permission |
+| `refresh_template(template_name, reset_env_changes=False)` | Re-apply a template's current filestore to live overlay environments, keeping their changes (non-destructive); `reset_env_changes=True` resets them to the template baseline. Use after the template filestore changed on disk or to re-sync a skipped env. Requires explicit user permission |
 | `delete_template(template_name)` | ⚠️ **Destructive**. Remove a template profile. Requires explicit user permission |
 
 ---
