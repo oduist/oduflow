@@ -152,6 +152,7 @@ Same JSON format in `claude_desktop_config.json` or `.amp/settings.json`.
 - `list_service_presets` / `restore_service` / `delete_service_preset` — manage service presets
 - `save_as_template` / `delete_template` / `list_templates` — template management
 - `import_template_from_odoo` — import a template from a running Odoo instance
+- `refresh_template` — re-apply a template's filestore to live overlay environments (preserves env changes by default; `reset_env_changes=True` is destructive)
 - `setup_repo_auth` — cache git credentials for private repositories
 - `add_extra_repo` / `list_extra_repos` / `update_extra_repo` / `delete_extra_repo` — manage extra addons repositories
 - `get_agent_instructions` — get AI agent instructions for using Oduflow

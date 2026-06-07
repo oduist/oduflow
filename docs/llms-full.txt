@@ -138,6 +138,7 @@ Same JSON format in `claude_desktop_config.json` or `.amp/settings.json`.
 - `list_service_presets` / `restore_service` / `delete_service_preset` — manage service presets
 - `save_as_template` / `delete_template` / `list_templates` — template management
 - `import_template_from_odoo` — import a template from a running Odoo instance
+- `refresh_template` — re-apply a template's filestore to live overlay environments (preserves env changes by default; `reset_env_changes=True` is destructive)
 - `setup_repo_auth` — cache git credentials for private repositories
 - `add_extra_repo` / `list_extra_repos` / `update_extra_repo` / `delete_extra_repo` — manage extra addons repositories
 - `get_agent_instructions` — get AI agent instructions for using Oduflow
@@ -1624,6 +1625,7 @@ All tools are accessible via MCP clients (Cursor, Cline, Amp, etc.) and the CLI 
 | `list_templates` | | List available template profiles |
 | `delete_template` | ✓ | ⚠️ Delete a template profile (DB + files) |
 | `import_template_from_odoo` | ✓ | Import a template from a running Odoo instance via database manager API |
+| `refresh_template` | ✓ | ⚠️ Re-apply a template's filestore to live overlay environments (preserves env changes by default; `reset_env_changes=True` discards them — destructive) |
 | **Auxiliary Services** | | |
 | `create_service` | ✓ | Create a managed service container (e.g. Redis, Meilisearch). Supports `host_mode`, `volumes`, `privileged`, `net_admin` (adds `NET_ADMIN` capability for VPN/tun/iptables) |
 | `delete_service` | ✓ | Stop and remove a service container |
