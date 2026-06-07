@@ -1,7 +1,5 @@
 # Use Cases & Workflows
 
-[TOC]
-
 ## 🚀 Feature Branch Development
 
 The most common workflow — test your changes against real production data:

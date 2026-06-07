@@ -1,7 +1,5 @@
 # Authentication & Security
 
-[TOC]
-
 ## MCP HTTP Auth
 
 When `auth_token` is set for a team in `oduflow.toml`, the MCP endpoint (`/mcp`) requires a Bearer token:

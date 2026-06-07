@@ -1,7 +1,5 @@
 # Multi-Team Support
 
-[TOC]
-
 Oduflow supports running **multiple isolated teams** within a single server instance. Each team has its own environments, templates, services, credentials, and port registry, while sharing the Docker network and PostgreSQL container.
 
 ## Configuration

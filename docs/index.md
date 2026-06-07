@@ -1,10 +1,78 @@
-# Oduflow
+---
+hide:
+  - navigation
+  - toc
+---
 
-[TOC]
+<section class="odu-hero">
+  <span class="odu-hero__eyebrow">⎇ AI-First Odoo Development</span>
+  <h1 class="odu-hero__title">Oduflow</h1>
+  <p class="odu-hero__subtitle">
+    Provision isolated, ephemeral <strong>Odoo</strong> environments on Docker —
+    one per git branch — and hand them to your AI agents over <strong>MCP</strong>.
+    A closed feedback loop for fully autonomous, spec-driven Odoo development.
+  </p>
+  <div class="odu-hero__actions">
+    <a class="odu-btn odu-btn--primary" href="quick-start/">Get Started →</a>
+    <a class="odu-btn odu-btn--ghost" href="https://github.com/oduist/oduflow">View on GitHub</a>
+  </div>
+</section>
 
-![Oduflow Dashboard](img/envs.png)
+<div class="grid cards" markdown>
 
-An **AI-first** Odoo development and CI tool, powered by **reusable database templates**. Oduflow provisions isolated, ephemeral Odoo environments on Docker — one per git branch — and exposes them to AI coding agents via [MCP](https://modelcontextprotocol.io/), creating a **closed feedback loop** that enables fully autonomous Odoo development.
+-   :material-rocket-launch:{ .lg .middle } **Quick Start**
+
+    ---
+
+    Spin up a fully working Odoo instance for any git branch with a single command.
+
+    [:octicons-arrow-right-24: Quick Start](quick-start.md)
+
+-   :material-content-duplicate:{ .lg .middle } **Reusable Templates**
+
+    ---
+
+    Clone large production databases instantly via PostgreSQL templates and overlayfs.
+
+    [:octicons-arrow-right-24: Template Management](templates.md)
+
+-   :material-source-branch:{ .lg .middle } **Branch Environments**
+
+    ---
+
+    One isolated, ephemeral environment per branch — sharing the template DB and filestore.
+
+    [:octicons-arrow-right-24: Environment Management](environments.md)
+
+-   :material-robot-happy-outline:{ .lg .middle } **MCP for AI Agents**
+
+    ---
+
+    Expose install, test, log and upgrade tools to Cursor, Cline, Amp, Claude and more.
+
+    [:octicons-arrow-right-24: MCP Tools Reference](mcp-tools.md)
+
+-   :material-api:{ .lg .middle } **Dashboard & REST API**
+
+    ---
+
+    Manage everything from a built-in web dashboard or a full JSON HTTP API.
+
+    [:octicons-arrow-right-24: Web Dashboard & REST API](web-api.md)
+
+-   :material-console-line:{ .lg .middle } **CLI Tooling**
+
+    ---
+
+    Every MCP tool is one `oduflow call` away from your terminal and CI pipelines.
+
+    [:octicons-arrow-right-24: CLI Reference](cli.md)
+
+</div>
+
+<div class="odu-shot">
+  <img src="img/envs.png" alt="Oduflow web dashboard">
+</div>
 
 ## Beyond Vibe Coding: Spec-Driven Development
 

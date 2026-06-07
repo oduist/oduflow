@@ -1,7 +1,5 @@
 # Template Management
 
-[TOC]
-
 ![Templates Dashboard](img/templates.png)
 
 Templates are the foundation of Oduflow's instant environment creation. A template consists of a PostgreSQL dump file and an optional filestore directory.
