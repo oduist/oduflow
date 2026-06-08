@@ -1,7 +1,5 @@
 # Auxiliary Services
 
-[TOC]
-
 ![Services Dashboard](img/services.png)
 
 Oduflow can manage sidecar containers for auxiliary services your Odoo instance depends on — Redis, Meilisearch, Elasticsearch, RabbitMQ, or any other Docker-based service.

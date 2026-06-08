@@ -1,7 +1,5 @@
 # Quick Start
 
-[TOC]
-
 ## Install
 
 The fastest way — run directly without installing (requires [uv](https://docs.astral.sh/uv/)):

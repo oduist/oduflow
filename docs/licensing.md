@@ -1,7 +1,5 @@
 # Licensing
 
-[TOC]
-
 Oduflow is source-available under the [Polyform Noncommercial License 1.0.0](https://github.com/oduist/oduflow/blob/main/LICENSE). Commercial use requires a license.
 
 ## License Types

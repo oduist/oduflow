@@ -1,7 +1,5 @@
 # Web Dashboard & REST API
 
-[TOC]
-
 ## Web Dashboard
 
 ![Web Dashboard — Agent Guides](img/agent_guides.png)

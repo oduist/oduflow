@@ -1,42 +1,109 @@
 site_name: Oduflow
 site_url: https://docs.oduflow.dev
 site_description: AI-first Odoo development and CI tool with reusable database templates, powered by MCP
+site_author: Oduist
+copyright: Copyright &copy; Oduist — Oduflow
 repo_url: https://github.com/oduist/oduflow
 repo_name: oduist/oduflow
 
 theme:
-  name: gitbook
+  name: material
+  logo: assets/logo.png
+  favicon: assets/favicon.ico
+  icon:
+    repo: fontawesome/brands/github
+  font:
+    text: Inter
+    code: JetBrains Mono
+  palette:
+    # Dark mode is the default (matches docs.oduist.com)
+    - scheme: slate
+      primary: custom
+      accent: custom
+      toggle:
+        icon: material/weather-night
+        name: Switch to light mode
+    - scheme: default
+      primary: custom
+      accent: custom
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to dark mode
+  features:
+    - navigation.instant
+    - navigation.instant.progress
+    - navigation.tracking
+    - navigation.sections
+    - navigation.top
+    - navigation.footer
+    - toc.follow
+    - search.suggest
+    - search.highlight
+    - search.share
+    - content.code.copy
+    - content.code.annotate
+    - content.tabs.link
 
 plugins:
+  - search
   - glightbox
 
 markdown_extensions:
   - admonition
-  - pymdownx.highlight
+  - attr_list
+  - md_in_html
+  - tables
+  - def_list
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
   - pymdownx.superfences
   - pymdownx.details
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.tasklist:
+      custom_checkbox: true
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
   - toc:
       permalink: true
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/oduist/oduflow
+      name: Oduflow on GitHub
+    - icon: fontawesome/solid/globe
+      link: https://docs.oduflow.dev
+      name: Oduflow Docs
 
 extra_css:
   - css/custom.css
 
 nav:
-  - Home: index.md
-  - Quick Start: quick-start.md
-  - Installation & Configuration: installation.md
-  - Use Cases & Workflows: use-cases.md
-  - Template Management: templates.md
-  - Environment Management: environments.md
-  - Auxiliary Services: services.md
-  - Extra Addons Repositories: extra-addons.md
-  - Web Dashboard & REST API: web-api.md
-  - MCP Tools Reference: mcp-tools.md
-  - CLI Reference: cli.md
-  - Traefik Routing: traefik.md
-  - Multi-Team Support: multi-instance.md
-  - Authentication & Security: security.md
-  - Running in Docker: docker.md
-  - Internals: internals.md
-  - Licensing: licensing.md
-  - Changelog: changelog.md
+  - Getting Started:
+      - Home: index.md
+      - Quick Start: quick-start.md
+      - Installation & Configuration: installation.md
+  - Core Concepts:
+      - Use Cases & Workflows: use-cases.md
+      - Template Management: templates.md
+      - Environment Management: environments.md
+      - Auxiliary Services: services.md
+      - Extra Addons Repositories: extra-addons.md
+  - Reference:
+      - Web Dashboard & REST API: web-api.md
+      - MCP Tools Reference: mcp-tools.md
+      - CLI Reference: cli.md
+  - Operations:
+      - Traefik Routing: traefik.md
+      - Multi-Team Support: multi-instance.md
+      - Authentication & Security: security.md
+      - Running in Docker: docker.md
+      - Internals: internals.md
+  - About:
+      - Licensing: licensing.md
+      - Changelog: changelog.md
