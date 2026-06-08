@@ -1,69 +1,70 @@
 /* ===========================================================================
    Oduflow docs — Material theme customisation
-   Dark-first, teal brand accent, seamless header, landing hero + cards.
+   Dark-first, blue brand accent (matches oduflow.dev), seamless header,
+   landing hero + cards.
    =========================================================================== */
 
 :root {
-  --odu-teal:        #0F766E;  /* brand primary  */
-  --odu-teal-bright: #14B8A6;  /* accent / hover */
-  --odu-teal-400:    #2dd4bf;  /* dark-mode links */
-  --odu-teal-glow:   rgba(20, 184, 166, .28);
+  --odu-brand:        #2e79f5;  /* brand primary (oduflow.dev) */
+  --odu-brand-bright: #4f8dff;  /* accent / hover            */
+  --odu-brand-link:   #74a8ff;  /* dark-mode links           */
+  --odu-brand-glow:   rgba(46, 121, 245, .30);
 }
 
 /* --- Custom primary / accent (applies to both colour schemes) ------------- */
 [data-md-color-primary="custom"] {
-  --md-primary-fg-color:         #0F766E;
-  --md-primary-fg-color--light:  #14B8A6;
-  --md-primary-fg-color--dark:   #0B5A53;
+  --md-primary-fg-color:         #2e79f5;
+  --md-primary-fg-color--light:  #4f8dff;
+  --md-primary-fg-color--dark:   #1f5fd0;
   --md-primary-bg-color:         #ffffff;
   --md-primary-bg-color--light:  rgba(255, 255, 255, .7);
 }
 [data-md-color-accent="custom"] {
-  --md-accent-fg-color:             #14B8A6;
-  --md-accent-fg-color--transparent: rgba(20, 184, 166, .1);
+  --md-accent-fg-color:             #4f8dff;
+  --md-accent-fg-color--transparent: rgba(46, 121, 245, .1);
   --md-accent-bg-color:             #ffffff;
   --md-accent-bg-color--light:      rgba(255, 255, 255, .7);
 }
 
-/* --- Dark scheme: deepen toward near-black -------------------------------- */
+/* --- Dark scheme: blue-tinted near-black (matches oduflow.dev) ------------ */
 [data-md-color-scheme="slate"] {
-  --md-default-bg-color:          #0a0c0e;
-  --md-default-bg-color--light:   rgba(10, 12, 14, .7);
-  --md-default-bg-color--lighter: rgba(10, 12, 14, .3);
-  --md-default-bg-color--lightest:rgba(10, 12, 14, .12);
+  --md-default-bg-color:          #060a12;
+  --md-default-bg-color--light:   rgba(6, 10, 18, .7);
+  --md-default-bg-color--lighter: rgba(6, 10, 18, .3);
+  --md-default-bg-color--lightest:rgba(6, 10, 18, .12);
 
-  --md-default-fg-color:          rgba(236, 243, 243, .92);
-  --md-default-fg-color--light:   rgba(236, 243, 243, .70);
-  --md-default-fg-color--lighter: rgba(236, 243, 243, .42);
-  --md-default-fg-color--lightest:rgba(236, 243, 243, .10);
+  --md-default-fg-color:          rgba(230, 232, 235, .92);
+  --md-default-fg-color--light:   rgba(230, 232, 235, .70);
+  --md-default-fg-color--lighter: rgba(230, 232, 235, .42);
+  --md-default-fg-color--lightest:rgba(230, 232, 235, .10);
 
-  --md-code-bg-color:  #11161a;
-  --md-code-fg-color:  #d7e2e2;
+  --md-code-bg-color:  #0c1322;
+  --md-code-fg-color:  #d6dee8;
 
-  --md-typeset-a-color: var(--odu-teal-400);
+  --md-typeset-a-color: var(--odu-brand-link);
 
-  --md-footer-bg-color:      #070809;
-  --md-footer-bg-color--dark:#050607;
+  --md-footer-bg-color:      #04070d;
+  --md-footer-bg-color--dark:#03050a;
 
-  --odu-surface:        #0f1316;
-  --odu-surface-2:      #12181c;
-  --odu-border:         rgba(236, 243, 243, .10);
-  --odu-border-strong:  rgba(236, 243, 243, .16);
+  --odu-surface:        #0b1220;
+  --odu-surface-2:      #111a2b;
+  --odu-border:         rgba(140, 170, 225, .12);
+  --odu-border-strong:  rgba(140, 170, 225, .20);
 }
 
-/* --- Light scheme: subtle warmth + soft borders -------------------------- */
+/* --- Light scheme: cool white + soft blue borders ------------------------ */
 [data-md-color-scheme="default"] {
   --md-default-bg-color: #ffffff;
-  --md-typeset-a-color:  #0c6057;
+  --md-typeset-a-color:  #1b5fd0;
 
-  --odu-surface:        #f7faf9;
-  --odu-surface-2:      #eef4f3;
-  --odu-border:         rgba(2, 23, 22, .10);
-  --odu-border-strong:  rgba(2, 23, 22, .16);
+  --odu-surface:        #f4f8ff;
+  --odu-surface-2:      #e9f1ff;
+  --odu-border:         rgba(20, 60, 140, .10);
+  --odu-border-strong:  rgba(20, 60, 140, .16);
 }
 
 /* ===========================================================================
-   Seamless header — page-coloured bar instead of a solid teal band
+   Seamless header — page-coloured bar instead of a solid blue band
    =========================================================================== */
 .md-header {
   background-color: var(--md-default-bg-color);
@@ -95,7 +96,7 @@
 }
 .md-search__form:hover { background-color: var(--odu-surface-2); }
 [data-md-toggle="search"]:checked ~ .md-header .md-search__form {
-  border-color: var(--odu-teal-bright);
+  border-color: var(--odu-brand-bright);
 }
 
 /* ===========================================================================
@@ -113,7 +114,7 @@
 }
 
 .md-typeset a { transition: color .15s, opacity .15s; }
-.md-typeset a:hover { color: var(--odu-teal-bright); }
+.md-typeset a:hover { color: var(--odu-brand-bright); }
 
 /* Inline code + fenced blocks */
 .md-typeset code { border-radius: .35rem; }
@@ -158,7 +159,7 @@
 
 /* Active nav link accent */
 .md-nav__link--active,
-.md-nav__link--active:focus { color: var(--odu-teal-bright); font-weight: 600; }
+.md-nav__link--active:focus { color: var(--odu-brand-bright); font-weight: 600; }
 
 /* Headerlinks (kept from previous theme) */
 .headerlink { opacity: 0; transition: opacity .2s; text-decoration: none; color: inherit; }
@@ -177,15 +178,15 @@ h4:hover .headerlink, h5:hover .headerlink, h6:hover .headerlink { opacity: 1; }
   overflow: hidden;
   isolation: isolate;
 }
-/* Layered teal glow + grid texture */
+/* Layered blue glow + grid texture */
 .odu-hero::before {
   content: "";
   position: absolute;
   inset: 0;
   z-index: -2;
   background:
-    radial-gradient(120% 120% at 50% -10%, var(--odu-teal-glow) 0%, transparent 55%),
-    radial-gradient(80% 80% at 85% 20%, rgba(15, 118, 110, .18) 0%, transparent 60%);
+    radial-gradient(120% 120% at 50% -10%, var(--odu-brand-glow) 0%, transparent 55%),
+    radial-gradient(80% 80% at 85% 20%, rgba(46, 121, 245, .18) 0%, transparent 60%);
 }
 .odu-hero::after {
   content: "";
@@ -212,9 +213,9 @@ h4:hover .headerlink, h5:hover .headerlink, h6:hover .headerlink { opacity: 1; }
   font-weight: 600;
   letter-spacing: .14em;
   text-transform: uppercase;
-  color: var(--odu-teal-bright);
+  color: var(--odu-brand-bright);
   background: var(--md-accent-fg-color--transparent);
-  border: 1px solid var(--odu-teal-glow);
+  border: 1px solid var(--odu-brand-glow);
   border-radius: 2rem;
 }
 
@@ -224,10 +225,21 @@ h4:hover .headerlink, h5:hover .headerlink, h6:hover .headerlink { opacity: 1; }
   line-height: 1.02;
   font-weight: 800;
   letter-spacing: -.035em;
-  background: linear-gradient(180deg, var(--md-default-fg-color) 25%, var(--odu-teal-bright) 130%);
+  background: linear-gradient(180deg, var(--md-default-fg-color) 25%, var(--odu-brand-bright) 130%);
   -webkit-background-clip: text;
           background-clip: text;
   color: transparent;
+}
+/* "Documentation" qualifier under the wordmark */
+.md-typeset .odu-hero__title-doc {
+  display: block;
+  margin-top: .45rem;
+  font-size: .34em;
+  font-weight: 600;
+  letter-spacing: .02em;
+  background: none;
+  color: var(--md-default-fg-color--light);
+  -webkit-text-fill-color: var(--md-default-fg-color--light);
 }
 
 .odu-hero__subtitle {
@@ -259,13 +271,13 @@ h4:hover .headerlink, h5:hover .headerlink, h6:hover .headerlink { opacity: 1; }
 }
 .md-typeset .odu-btn:hover { transform: translateY(-2px); }
 .md-typeset .odu-btn--primary {
-  color: #04221f;
-  background: linear-gradient(180deg, var(--odu-teal-bright), var(--odu-teal));
-  box-shadow: 0 .4rem 1.2rem var(--odu-teal-glow);
+  color: #061328;
+  background: linear-gradient(180deg, var(--odu-brand-bright), var(--odu-brand));
+  box-shadow: 0 .4rem 1.2rem var(--odu-brand-glow);
 }
 .md-typeset .odu-btn--primary:hover {
-  color: #04221f;
-  box-shadow: 0 .7rem 1.6rem var(--odu-teal-glow);
+  color: #061328;
+  box-shadow: 0 .7rem 1.6rem var(--odu-brand-glow);
 }
 .md-typeset .odu-btn--ghost {
   color: var(--md-default-fg-color);
@@ -274,7 +286,7 @@ h4:hover .headerlink, h5:hover .headerlink, h6:hover .headerlink { opacity: 1; }
 }
 .md-typeset .odu-btn--ghost:hover {
   color: var(--md-default-fg-color);
-  border-color: var(--odu-teal-bright);
+  border-color: var(--odu-brand-bright);
   background: var(--odu-surface-2);
 }
 
@@ -291,7 +303,7 @@ h4:hover .headerlink, h5:hover .headerlink, h6:hover .headerlink { opacity: 1; }
 }
 .md-typeset .grid.cards > ul > li:hover {
   transform: translateY(-4px);
-  border-color: var(--odu-teal-bright);
+  border-color: var(--odu-brand-bright);
   background: var(--odu-surface-2);
   box-shadow: 0 .6rem 1.6rem rgba(0, 0, 0, .18);
 }
@@ -305,7 +317,7 @@ h4:hover .headerlink, h5:hover .headerlink, h6:hover .headerlink { opacity: 1; }
   width: 1.6rem;
 }
 .md-typeset .grid.cards > ul > li .twemoji {
-  color: var(--odu-teal-bright);
+  color: var(--odu-brand-bright);
 }
 
 /* ===========================================================================

@@ -3,17 +3,19 @@
 **Date:** 2026-06-08
 **Branch:** `docs-material-redesign`
 **Goal:** Replace the dated `gitbook` MkDocs theme with a modern, attractive design
-in the spirit of `https://docs.oduist.com/connect` (Mintlify: dark-first, teal accent,
+in the spirit of `https://docs.oduist.com/connect` (Mintlify: dark-first,
 Inter + JetBrains Mono), while keeping MkDocs and the existing `.md` content.
+Brand accent matches the main site `https://oduflow.dev` — **blue**, not teal.
 
 > Spec lives outside `docs/` so MkDocs (docs_dir = `docs/`) does not publish it.
 
 ## Decisions (approved)
 
 1. **Theme:** migrate `gitbook` → **MkDocs Material**. Content `.md` files unchanged.
-2. **Mode:** **dark by default** + light toggle. Brand accent **teal `#0F766E`**,
-   link/hover **`#14B8A6`**. Deepen dark background toward near-black (closer to the
-   reference than Material's default `slate`).
+2. **Mode:** **dark by default** + light toggle. Brand accent **blue `#2e79f5`**
+   (from oduflow.dev), hover/accent **`#4f8dff`**, dark-mode links **`#74a8ff`**.
+   Blue-tinted near-black background **`#060a12`** (matches oduflow.dev), closer to
+   the reference than Material's default `slate`.
 3. **Typography:** Inter (text) + JetBrains Mono (code).
 4. **Homepage:** custom **hero + feature card grid** landing page.
 

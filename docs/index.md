@@ -6,14 +6,14 @@ hide:
 
 <section class="odu-hero">
   <span class="odu-hero__eyebrow">⎇ AI-First Odoo Development</span>
-  <h1 class="odu-hero__title">Oduflow</h1>
+  <h1 class="odu-hero__title">Oduflow<span class="odu-hero__title-doc">Documentation</span></h1>
   <p class="odu-hero__subtitle">
     Provision isolated, ephemeral <strong>Odoo</strong> environments on Docker —
     one per git branch — and hand them to your AI agents over <strong>MCP</strong>.
     A closed feedback loop for fully autonomous, spec-driven Odoo development.
   </p>
   <div class="odu-hero__actions">
-    <a class="odu-btn odu-btn--primary" href="quick-start/">Get Started →</a>
+    <a class="odu-btn odu-btn--primary" href="quick-start/">Read the Docs →</a>
     <a class="odu-btn odu-btn--ghost" href="https://github.com/oduist/oduflow">View on GitHub</a>
   </div>
 </section>
