@@ -134,7 +134,7 @@ Same JSON format in `claude_desktop_config.json` or `.amp/settings.json`.
 - `reset_admin_password` — reset the admin user password (default: "test")
 - `read_output` — read from a cached tool output by ID (paginate, grep, errors, tail)
 - `list_environments` / `get_environment_info` — inspect environments
-- `create_service` / `delete_service` / `restart_service` / `update_service` / `list_services` / `get_service_logs` / `run_service_command` — manage auxiliary services
+- `create_service` / `delete_service` / `restart_service` / `update_service` / `list_services` / `get_service_info` / `get_service_logs` / `run_service_command` — manage auxiliary services
 - `list_service_presets` / `restore_service` / `delete_service_preset` — manage service presets
 - `save_as_template` / `delete_template` / `list_templates` — template management
 - `import_template_from_odoo` — import a template from a running Odoo instance
@@ -1632,6 +1632,7 @@ All tools are accessible via MCP clients (Cursor, Cline, Amp, etc.) and the CLI 
 | `restart_service` | | Restart a service container |
 | `update_service` | ✓ | Pull latest image and/or change service settings (env vars, image, port, hostname, host_mode, volumes); recreates the container when anything changes |
 | `list_services` | | List all managed service containers |
+| `get_service_info` | | Full live state of a single service (image+digest, port, hostname, host_mode, volumes, env, cap_add, privileged, restart count, has_preset). Call before recreating a service to preserve all options |
 | `get_service_logs` | | Retrieve service container logs |
 | `run_service_command` | | Execute a shell command inside a service container |
 | **Volumes** | | |
