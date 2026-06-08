@@ -81,7 +81,7 @@ hide:
 **Spec-Driven Development (SDD)** is the next step: you write a precise specification of *what* the module should do, and the AI agent autonomously implements *how* — because it has a **closed feedback loop** with the running system:
 
 ```
-┌─────────────────────────────────────────────────────┐
+┌──────────────────────────────────────────────────────┐
 │                    AI Agent                          │
 │          (Cursor, Cline, Amp, Claude, …)             │
 └──────┬──────────────────────────────▲────────────────┘
@@ -91,16 +91,16 @@ hide:
        │ 4. Click-test UI via         │
        │    Playwright MCP            │
 ┌──────▼──────────────────────────────┴────────────────┐
-│               Oduflow (MCP Server)                    │
-│  • install_odoo_modules → traceback or success        │
-│  • run_odoo_tests → test pass/fail with details     │
-│  • get_environment_logs → runtime errors              │
-│  • upgrade_odoo_modules → upgrade output              │
+│               Oduflow (MCP Server)                   │
+│  • install_odoo_modules → traceback or success       │
+│  • run_odoo_tests → test pass/fail with details      │
+│  • get_environment_logs → runtime errors             │
+│  • upgrade_odoo_modules → upgrade output             │
 ├──────────────────────────────────────────────────────┤
-│            + Playwright MCP / other tools              │
-│  • Navigate Odoo UI, click buttons, fill forms        │
-│  • Verify business logic end-to-end                   │
-│  • Validate acceptance criteria from the spec         │
+│            + Playwright MCP / other tools            │
+│  • Navigate Odoo UI, click buttons, fill forms       │
+│  • Verify business logic end-to-end                  │
+│  • Validate acceptance criteria from the spec        │
 └──────────────────────────────────────────────────────┘
 ```
 
