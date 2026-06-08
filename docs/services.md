@@ -64,6 +64,10 @@ oduflow call update_service meilisearch --env_vars "MEILI_MASTER_KEY=newkey,MEIL
 # Change the image (tag) of a running service
 oduflow call update_service meilisearch --image getmeili/meilisearch:v1.8
 
+# Toggle Linux capabilities / privileged mode on a running service (recreates it)
+oduflow call update_service wireguard --net_admin true
+oduflow call update_service wireguard --privileged true
+
 # Delete a service
 oduflow call delete_service redis
 
@@ -71,18 +75,18 @@ oduflow call delete_service redis
 oduflow call run_service_command redis "redis-cli ping"
 ```
 
-### Inspecting a Service Before Recreating It
+### Changing a Service
 
-When you need to delete and recreate a service (e.g. to change the image tag or a single env var), call `get_service_info` first and reuse its fields in the new `create_service` call. The returned dict carries the full configuration (`image`, `port`, `hostname`, `env_vars`, `host_mode`, `volumes`, `cap_add`, `privileged`) so you do not lose anything that `list_services` truncates or that lived only inside the preset.
+`update_service` is the preferred way to change **any** setting of a running service — image, env vars, port, hostname, `host_mode`, `volumes`, `privileged`, or `net_admin`. It recreates the container automatically and preserves every setting you do not override, so you rarely need to delete and recreate a service by hand.
 
-For a plain image refresh prefer `update_service`, which captures and preserves every setting automatically.
+If you do recreate a service manually (e.g. to rename it), call `get_service_info` first and reuse its fields in the new `create_service` call. The returned dict carries the full configuration (`image`, `port`, `hostname`, `env_vars`, `host_mode`, `volumes`, `cap_add`, `privileged`) so you do not lose anything that `list_services` truncates or that lived only inside the preset.
 
 ## Service Update Flow
 
 The `update_service` operation:
 
 1. Reads the saved preset (authoritative source) or inspects the running container as a legacy fallback
-2. Applies any overrides passed in (`env_vars`, `image`, `port`, `hostname`, `host_mode`, `volumes`) — each override **fully replaces** the current value
+2. Applies any overrides passed in (`env_vars`, `image`, `port`, `hostname`, `host_mode`, `volumes`, `privileged`, `net_admin`) — each override **fully replaces** the current value
 3. Pulls the target image (the override, or the current one)
 4. Decides whether to recreate:
     - If neither the image digest nor any setting changed → reports "already up-to-date"

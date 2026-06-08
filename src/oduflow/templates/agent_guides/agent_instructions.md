@@ -104,14 +104,14 @@ Extra addons repositories (Odoo Enterprise, OCA, your own shared addons) are clo
 |---|---|
 | `create_service(name, image, port, hostname?, env_vars?, host_mode?, volumes?, privileged?, net_admin?)` | Spin up a sidecar (Redis, Meilisearch, etc.). Accessible from Odoo containers via `oduflow-svc-{name}:{port}`. Set `net_admin=true` for VPN/tun/iptables; `privileged=true` for full host access. The image is always pulled fresh, so mutable tags like `:latest` get the current version |
 | `get_service_info(name)` | **Use this before recreating a service.** Returns full live state: image + digest, port, hostname, URL, `host_mode`, `volumes`, env vars, `cap_add`, `privileged`, restart count, started_at, whether a preset exists |
-| `update_service(name, env_vars?, image?, port?, hostname?, host_mode?, volumes?)` | Change settings on a running service. Without overrides, pulls the latest image. With any override, fully replaces that setting and recreates the container. `env_vars` is a full replacement, not a merge |
+| `update_service(name, env_vars?, image?, port?, hostname?, host_mode?, volumes?, privileged?, net_admin?)` | Change **any** setting on a running service. Without overrides, pulls the latest image. With any override, fully replaces that setting and recreates the container, preserving everything else. `env_vars` and `volumes` are full replacements, not merges. This is the preferred way to change a service |
 | `list_services` / `get_service_logs(name)` / `restart_service(name)` / `delete_service(name)` | Manage auxiliary services |
 | `restore_service(name)` | Recreate a service from its saved preset after deletion (volumes, host_mode, cap_add, env are all preserved) |
 | `list_service_presets` | List saved service presets (configurations that can be restored after a service is deleted) |
 | `delete_service_preset(name)` | Remove a saved service preset |
 | `run_service_command(name, command, user?)` | Execute a shell command inside a service container. Default user is `root`. Output is cached if large — use `read_output` for drill-down |
 
-> **Recreating a service:** if you are about to `delete_service` and then `create_service` for the same service (e.g. to change the image or a single parameter), **call `get_service_info(name)` first** and reuse its `image`, `port`, `hostname`, `env_vars`, `host_mode`, `volumes`, `cap_add`, `privileged` in the new `create_service` call. Otherwise you will silently drop volumes, env vars, capabilities, or host_mode and the recreated service will be broken. For a plain image refresh prefer `update_service`, which preserves everything automatically.
+> **Changing a service:** use `update_service` for **any** change — image, env vars, port, hostname, host_mode, volumes, privileged, or net_admin. It recreates the container automatically and preserves every setting you don't override, so you almost never need to `delete_service` + `create_service` by hand. (If you do recreate manually — e.g. to rename a service — call `get_service_info(name)` first and replay its `image`, `port`, `hostname`, `env_vars`, `host_mode`, `volumes`, `cap_add`, `privileged` in the new `create_service` call, otherwise you'll silently drop them.)
 
 ### Volumes
 

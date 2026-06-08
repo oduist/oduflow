@@ -43,7 +43,7 @@ All tools are accessible via MCP clients (Cursor, Cline, Amp, etc.) and the CLI 
 | `create_service` | ✓ | Create a managed service container (e.g. Redis, Meilisearch). Supports `host_mode`, `volumes`, `privileged`, `net_admin` (adds `NET_ADMIN` capability for VPN/tun/iptables) |
 | `delete_service` | ✓ | Stop and remove a service container |
 | `restart_service` | | Restart a service container |
-| `update_service` | ✓ | Pull latest image and/or change service settings (env vars, image, port, hostname, host_mode, volumes); recreates the container when anything changes |
+| `update_service` | ✓ | Pull latest image and/or change any service setting (env vars, image, port, hostname, host_mode, volumes, privileged, net_admin); recreates the container when anything changes and preserves the rest |
 | `list_services` | | List all managed service containers |
 | `get_service_info` | | Full live state of a single service (image+digest, port, hostname, host_mode, volumes, env, cap_add, privileged, restart count, has_preset). Call before recreating a service to preserve all options |
 | `get_service_logs` | | Retrieve service container logs |
