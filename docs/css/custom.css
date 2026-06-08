@@ -96,7 +96,7 @@
 }
 .md-search__form:hover { background-color: var(--odu-surface-2); }
 [data-md-toggle="search"]:checked ~ .md-header .md-search__form {
-  border-color: var(--odu-brand-bright);
+  border-color: var(--odu-brand);
 }
 
 /* ===========================================================================
@@ -159,7 +159,7 @@
 
 /* Active nav link accent */
 .md-nav__link--active,
-.md-nav__link--active:focus { color: var(--odu-brand-bright); font-weight: 600; }
+.md-nav__link--active:focus { color: var(--odu-brand); font-weight: 600; }
 
 /* Headerlinks (kept from previous theme) */
 .headerlink { opacity: 0; transition: opacity .2s; text-decoration: none; color: inherit; }
@@ -213,7 +213,7 @@ h4:hover .headerlink, h5:hover .headerlink, h6:hover .headerlink { opacity: 1; }
   font-weight: 600;
   letter-spacing: .14em;
   text-transform: uppercase;
-  color: var(--odu-brand-bright);
+  color: var(--odu-brand);
   background: var(--md-accent-fg-color--transparent);
   border: 1px solid var(--odu-brand-glow);
   border-radius: 2rem;
@@ -225,7 +225,7 @@ h4:hover .headerlink, h5:hover .headerlink, h6:hover .headerlink { opacity: 1; }
   line-height: 1.02;
   font-weight: 800;
   letter-spacing: -.035em;
-  background: linear-gradient(180deg, var(--md-default-fg-color) 25%, var(--odu-brand-bright) 130%);
+  background: linear-gradient(180deg, var(--md-default-fg-color) 25%, var(--odu-brand) 130%);
   -webkit-background-clip: text;
           background-clip: text;
   color: transparent;
@@ -260,12 +260,13 @@ h4:hover .headerlink, h5:hover .headerlink, h6:hover .headerlink { opacity: 1; }
 }
 .md-typeset .odu-btn:hover { transform: translateY(-2px); }
 .md-typeset .odu-btn--primary {
-  color: #061328;
-  background: linear-gradient(180deg, var(--odu-brand-bright), var(--odu-brand));
+  color: #ffffff;
+  background: var(--odu-brand);
   box-shadow: 0 .4rem 1.2rem var(--odu-brand-glow);
 }
 .md-typeset .odu-btn--primary:hover {
-  color: #061328;
+  color: #ffffff;
+  background: var(--odu-brand-bright);
   box-shadow: 0 .7rem 1.6rem var(--odu-brand-glow);
 }
 .md-typeset .odu-btn--ghost {
@@ -306,7 +307,7 @@ h4:hover .headerlink, h5:hover .headerlink, h6:hover .headerlink { opacity: 1; }
   width: 1.6rem;
 }
 .md-typeset .grid.cards > ul > li .twemoji {
-  color: var(--odu-brand-bright);
+  color: var(--odu-brand);
 }
 
 /* ===========================================================================
