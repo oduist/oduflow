@@ -25,7 +25,7 @@ MANIFEST
 # Environments
 .env*
 .venv
-.venv312
+.venv*
 env/
 venv/
 ENV/
@@ -66,3 +66,7 @@ site/
 .claude
 .entire
 uv.lock
+
+run.sh
+oduflow_data_*/
+.vscode/
