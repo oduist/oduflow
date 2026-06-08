@@ -389,6 +389,8 @@ def update_service(
     hostname_override: str | None = None,
     host_mode_override: bool | None = None,
     volume_override: list[dict[str, str]] | None = None,
+    cap_add_override: list[str] | None = None,
+    privileged_override: bool | None = None,
 ) -> dict[str, str]:
     """Pull the latest image for a service and re-create it with the same settings.
 
@@ -524,6 +526,12 @@ def update_service(
         config_changed = True
     if volume_override is not None and volume_override != (old_volumes or []):
         old_volumes = volume_override or None
+        config_changed = True
+    if cap_add_override is not None and cap_add_override != (cap_add or []):
+        cap_add = cap_add_override or None
+        config_changed = True
+    if privileged_override is not None and privileged_override != privileged:
+        privileged = privileged_override
         config_changed = True
 
     # Determine the image to pull (override or current)

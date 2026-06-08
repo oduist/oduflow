@@ -252,7 +252,35 @@ class TestUpdateServiceTool:
             hostname_override=None,
             host_mode_override=None,
             volume_override=None,
+            cap_add_override=None,
+            privileged_override=None,
         )
+
+    @patch("oduflow.docker_ops.service_ops.update_service")
+    def test_update_net_admin_and_privileged_mapping(self, mock_update):
+        mock_update.return_value = {
+            "name": "vpn",
+            "container_name": "oduflow-svc-vpn",
+            "url": "http://localhost:1194",
+            "image": "vpn:latest",
+        }
+        _get_tool_fn("update_service")(name="vpn", net_admin=True, privileged=False)
+        _, kwargs = mock_update.call_args
+        assert kwargs["cap_add_override"] == ["NET_ADMIN"]
+        assert kwargs["privileged_override"] is False
+
+    @patch("oduflow.docker_ops.service_ops.update_service")
+    def test_update_net_admin_false_clears_cap(self, mock_update):
+        mock_update.return_value = {
+            "name": "vpn",
+            "container_name": "oduflow-svc-vpn",
+            "url": "http://localhost:1194",
+            "image": "vpn:latest",
+        }
+        _get_tool_fn("update_service")(name="vpn", net_admin=False)
+        _, kwargs = mock_update.call_args
+        assert kwargs["cap_add_override"] == []
+        assert kwargs["privileged_override"] is None
 
     @patch("oduflow.docker_ops.service_ops.update_service")
     def test_update_not_found(self, mock_update):

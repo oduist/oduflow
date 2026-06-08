@@ -847,6 +847,157 @@ class TestUpdateService:
         container.stop.assert_called_once()
         container.remove.assert_called_once_with(v=True)
 
+    def test_update_net_admin_override_adds_cap(self, mock_docker_client):
+        """cap_add_override adds NET_ADMIN and recreates the container."""
+        container = self._make_container(
+            image_tags=["redis:7"],
+            labels={"oduflow.managed": "true", "oduflow.service": "redis"},
+            attrs={"Config": {"Env": []}},
+        )
+        pulled_image = MagicMock()
+        pulled_image.id = container.image.id
+        mock_docker_client.images.pull.return_value = pulled_image
+        mock_docker_client.containers.get.side_effect = [
+            container,
+            docker.errors.NotFound("nf"),
+        ]
+        mock_docker_client.networks.get.return_value = MagicMock()
+        mock_docker_client.containers.run.return_value = MagicMock()
+
+        preset = {
+            "name": "redis",
+            "image": "redis:7",
+            "port": 6379,
+            "hostname": "",
+            "env_vars": {},
+        }
+
+        with patch(
+            "oduflow.docker_ops.service_ops.service_presets.get_preset",
+            return_value=preset,
+        ):
+            result = service_ops.update_service(
+                TEST_SETTINGS, TEST_TEAM, "redis", cap_add_override=["NET_ADMIN"]
+            )
+
+        assert result["config_updated"] is True
+        assert result["image_updated"] is False
+        run_kwargs = mock_docker_client.containers.run.call_args
+        assert run_kwargs[1]["cap_add"] == ["NET_ADMIN"]
+
+    def test_update_clear_net_admin(self, mock_docker_client):
+        """cap_add_override=[] removes a previously set capability."""
+        container = self._make_container(
+            image_tags=["redis:7"],
+            labels={"oduflow.managed": "true", "oduflow.service": "redis"},
+            attrs={"Config": {"Env": []}},
+        )
+        pulled_image = MagicMock()
+        pulled_image.id = container.image.id
+        mock_docker_client.images.pull.return_value = pulled_image
+        mock_docker_client.containers.get.side_effect = [
+            container,
+            docker.errors.NotFound("nf"),
+        ]
+        mock_docker_client.networks.get.return_value = MagicMock()
+        mock_docker_client.containers.run.return_value = MagicMock()
+
+        preset = {
+            "name": "redis",
+            "image": "redis:7",
+            "port": 6379,
+            "hostname": "",
+            "env_vars": {},
+            "cap_add": ["NET_ADMIN"],
+        }
+
+        with patch(
+            "oduflow.docker_ops.service_ops.service_presets.get_preset",
+            return_value=preset,
+        ):
+            result = service_ops.update_service(
+                TEST_SETTINGS, TEST_TEAM, "redis", cap_add_override=[]
+            )
+
+        assert result["config_updated"] is True
+        run_kwargs = mock_docker_client.containers.run.call_args
+        assert "cap_add" not in run_kwargs[1]
+
+    def test_update_privileged_override(self, mock_docker_client):
+        """privileged_override switches the service to privileged mode and recreates."""
+        container = self._make_container(
+            image_tags=["redis:7"],
+            labels={"oduflow.managed": "true", "oduflow.service": "redis"},
+            attrs={"Config": {"Env": []}},
+        )
+        pulled_image = MagicMock()
+        pulled_image.id = container.image.id
+        mock_docker_client.images.pull.return_value = pulled_image
+        mock_docker_client.containers.get.side_effect = [
+            container,
+            docker.errors.NotFound("nf"),
+        ]
+        mock_docker_client.networks.get.return_value = MagicMock()
+        mock_docker_client.containers.run.return_value = MagicMock()
+
+        preset = {
+            "name": "redis",
+            "image": "redis:7",
+            "port": 6379,
+            "hostname": "",
+            "env_vars": {},
+        }
+
+        with patch(
+            "oduflow.docker_ops.service_ops.service_presets.get_preset",
+            return_value=preset,
+        ):
+            result = service_ops.update_service(
+                TEST_SETTINGS, TEST_TEAM, "redis", privileged_override=True
+            )
+
+        assert result["config_updated"] is True
+        run_kwargs = mock_docker_client.containers.run.call_args
+        assert run_kwargs[1]["privileged"] is True
+
+    def test_update_caps_unchanged_no_recreate(self, mock_docker_client):
+        """Capability overrides equal to current values do not trigger a recreate."""
+        container = self._make_container(
+            image_tags=["redis:7"],
+            labels={"oduflow.managed": "true", "oduflow.service": "redis"},
+            attrs={"Config": {"Env": []}},
+        )
+        pulled_image = MagicMock()
+        pulled_image.id = container.image.id
+        mock_docker_client.images.pull.return_value = pulled_image
+        mock_docker_client.containers.get.return_value = container
+        mock_docker_client.networks.get.return_value = MagicMock()
+
+        preset = {
+            "name": "redis",
+            "image": "redis:7",
+            "port": 6379,
+            "hostname": "",
+            "env_vars": {},
+            "cap_add": ["NET_ADMIN"],
+        }
+
+        with patch(
+            "oduflow.docker_ops.service_ops.service_presets.get_preset",
+            return_value=preset,
+        ):
+            result = service_ops.update_service(
+                TEST_SETTINGS,
+                TEST_TEAM,
+                "redis",
+                cap_add_override=["NET_ADMIN"],
+                privileged_override=False,
+            )
+
+        assert result["config_updated"] is False
+        assert result["image_updated"] is False
+        container.stop.assert_not_called()
+
 
 class TestGetServiceInfo:
     def _make_container(self, image_tags, image_id, labels, attrs, status="running"):

@@ -1,5 +1,5 @@
 # Oduflow — Agentic Odoo Development
-Version: 2
+Version: 3
 
 ## What is Oduflow
 
@@ -61,6 +61,7 @@ MCP endpoint: `http://<host>:8000/mcp`
 | `write_file_in_odoo(env_name, path, content, user?)` | Write a text file inside the container (CSV imports, scripts, configs). Uses tar stream — no shell escaping issues. Do NOT use for source code. |
 | `http_request_to_odoo(env_name, path, method?, body?, headers?, session_id?)` | HTTP request to the running Odoo instance. Test controllers, JSON-RPC, REST endpoints. |
 | `search_in_odoo(env_name, pattern, path?, glob?, max_results?)` | Grep for a pattern inside container files. Fixed-string search with file/line numbers. |
+| `reset_admin_password(env_name, new_password?)` | Reset the admin user's password in the environment's Odoo database (default: `"test"`). Useful to log into a template-based env whose admin password is unknown |
 
 ### Debugging & Logs
 
@@ -86,18 +87,31 @@ MCP endpoint: `http://<host>:8000/mcp`
 |---|---|
 | `setup_repo_auth(repo_url)` | Cache git credentials for a private repo. URL format: `https://user:PAT@github.com/owner/repo.git`. Call once, before `create_environment` |
 
+### Extra Addons (Enterprise & third-party repos)
+
+Extra addons repositories (Odoo Enterprise, OCA, your own shared addons) are cloned once on the server and then become available to environments. For private repos, call `setup_repo_auth` first.
+
+| Tool | When to use |
+|---|---|
+| `add_extra_repo(name, repo_url)` | Clone an extra addons repository so its modules become available when creating or rebuilding environments |
+| `list_extra_repos` | List all cloned extra addons repositories |
+| `update_extra_repo(name)` | Fetch the latest changes from the remote for an extra addons repository |
+| `delete_extra_repo(name)` | Remove a cloned extra addons repository |
+
 ### Auxiliary Services
 
 | Tool | When to use |
 |---|---|
 | `create_service(name, image, port, hostname?, env_vars?, host_mode?, volumes?, privileged?, net_admin?)` | Spin up a sidecar (Redis, Meilisearch, etc.). Accessible from Odoo containers via `oduflow-svc-{name}:{port}`. Set `net_admin=true` for VPN/tun/iptables; `privileged=true` for full host access. The image is always pulled fresh, so mutable tags like `:latest` get the current version |
 | `get_service_info(name)` | **Use this before recreating a service.** Returns full live state: image + digest, port, hostname, URL, `host_mode`, `volumes`, env vars, `cap_add`, `privileged`, restart count, started_at, whether a preset exists |
-| `update_service(name, env_vars?, image?, port?, hostname?, host_mode?, volumes?)` | Change settings on a running service. Without overrides, pulls the latest image. With any override, fully replaces that setting and recreates the container. `env_vars` is a full replacement, not a merge |
+| `update_service(name, env_vars?, image?, port?, hostname?, host_mode?, volumes?, privileged?, net_admin?)` | Change **any** setting on a running service. Without overrides, pulls the latest image. With any override, fully replaces that setting and recreates the container, preserving everything else. `env_vars` and `volumes` are full replacements, not merges. This is the preferred way to change a service |
 | `list_services` / `get_service_logs(name)` / `restart_service(name)` / `delete_service(name)` | Manage auxiliary services |
 | `restore_service(name)` | Recreate a service from its saved preset after deletion (volumes, host_mode, cap_add, env are all preserved) |
+| `list_service_presets` | List saved service presets (configurations that can be restored after a service is deleted) |
+| `delete_service_preset(name)` | Remove a saved service preset |
 | `run_service_command(name, command, user?)` | Execute a shell command inside a service container. Default user is `root`. Output is cached if large — use `read_output` for drill-down |
 
-> **Recreating a service:** if you are about to `delete_service` and then `create_service` for the same service (e.g. to change the image or a single parameter), **call `get_service_info(name)` first** and reuse its `image`, `port`, `hostname`, `env_vars`, `host_mode`, `volumes`, `cap_add`, `privileged` in the new `create_service` call. Otherwise you will silently drop volumes, env vars, capabilities, or host_mode and the recreated service will be broken. For a plain image refresh prefer `update_service`, which preserves everything automatically.
+> **Changing a service:** use `update_service` for **any** change — image, env vars, port, hostname, host_mode, volumes, privileged, or net_admin. It recreates the container automatically and preserves every setting you don't override, so you almost never need to `delete_service` + `create_service` by hand. (If you do recreate manually — e.g. to rename a service — call `get_service_info(name)` first and replay its `image`, `port`, `hostname`, `env_vars`, `host_mode`, `volumes`, `cap_add`, `privileged` in the new `create_service` call, otherwise you'll silently drop them.)
 
 ### Volumes
 
@@ -117,9 +131,17 @@ MCP endpoint: `http://<host>:8000/mcp`
 | Tool | When to use |
 |---|---|
 | `list_templates` | List available database template profiles |
+| `import_template_from_odoo(odoo_url, master_pwd, db_name?, template_name?)` | Import a template from a running Odoo instance via its database manager API (downloads a full backup and restores it as a new template). Requires explicit user permission |
 | `save_as_template(env_name, reset_env_changes=False)` | Make a branch the new template baseline. Other overlay environments on this template are remounted against the new baseline, **keeping their filestore changes by default** (non-destructive); `reset_env_changes=True` discards them. The source env is always reset. Requires explicit user permission |
 | `refresh_template(template_name, reset_env_changes=False)` | Re-apply a template's current filestore to live overlay environments, keeping their changes (non-destructive); `reset_env_changes=True` resets them to the template baseline. Use after the template filestore changed on disk or to re-sync a skipped env. Requires explicit user permission |
 | `delete_template(template_name)` | ⚠️ **Destructive**. Remove a template profile. Requires explicit user permission |
+
+### Reference & Guides
+
+| Tool | When to use |
+|---|---|
+| `get_odoo_development_guide(version)` | Fetch Odoo development standards and constraints for a specific Odoo version (15–19). Read it before writing or refactoring module code |
+| `get_agent_instructions` | Re-fetch this instruction document (the one you are reading) — e.g. after a context reset |
 
 ---
 

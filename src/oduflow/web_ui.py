@@ -543,6 +543,14 @@ def _build_routes(
                 if body and "host_mode" in body and body["host_mode"] is not None
                 else None
             )
+            privileged_override = (
+                bool(body["privileged"])
+                if body and "privileged" in body and body["privileged"] is not None
+                else None
+            )
+            cap_add_override = None
+            if body and "net_admin" in body and body["net_admin"] is not None:
+                cap_add_override = ["NET_ADMIN"] if bool(body["net_admin"]) else []
 
             result = service_ops.update_service(
                 get_settings(),
@@ -554,6 +562,8 @@ def _build_routes(
                 hostname_override=hostname_override,
                 host_mode_override=host_mode_override,
                 volume_override=volume_override,
+                cap_add_override=cap_add_override,
+                privileged_override=privileged_override,
             )
             return JSONResponse({"ok": True, "result": result})
         except FlowError as e:

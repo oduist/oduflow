@@ -1682,12 +1682,17 @@ def update_service(
     hostname: str = "",
     host_mode: bool | None = None,
     volumes: str = "",
+    privileged: bool | None = None,
+    net_admin: bool | None = None,
     ctx: Context = None,
 ) -> str:
     """
     Update a managed auxiliary service container. Pulls the latest image and
-    optionally changes settings (env vars, image, port, hostname, host_mode,
-    volumes). The container is recreated when the image or any setting changes.
+    optionally changes any setting (env vars, image, port, hostname, host_mode,
+    volumes, privileged, net_admin). The container is recreated when the image or
+    any setting changes; settings that are not overridden are preserved. This is
+    the preferred way to change a service — you do not need to delete and
+    recreate it manually.
 
     Args:
         name: The name of the service to update (e.g. "redis", "meilisearch").
@@ -1697,6 +1702,8 @@ def update_service(
         hostname: New hostname for traefik routing. Leave empty to keep current hostname.
         host_mode: Run in host network mode. Leave unset (null) to keep current mode.
         volumes: Comma-separated volume mounts that fully replace existing volumes (e.g. "mydata:/data,config:/etc/app:ro"). Leave empty to keep current volumes.
+        privileged: Run the container in privileged mode (full host access). Leave unset (null) to keep current mode. Mutually exclusive with net_admin (privileged already grants NET_ADMIN).
+        net_admin: Add (True) or remove (False) the NET_ADMIN Linux capability — required for VPN/WireGuard, tun/tap, and iptables. Leave unset (null) to keep current capabilities.
     """
     settings = _get_settings()
     team = _resolve_team(ctx)
@@ -1712,6 +1719,10 @@ def update_service(
     if volumes:
         parsed_volumes = volume_ops.parse_volume_mounts(volumes)
 
+    cap_add_override = None
+    if net_admin is not None:
+        cap_add_override = ["NET_ADMIN"] if net_admin else []
+
     result = service_ops.update_service(
         settings,
         team,
@@ -1722,6 +1733,8 @@ def update_service(
         hostname_override=hostname or None,
         host_mode_override=host_mode,
         volume_override=parsed_volumes,
+        cap_add_override=cap_add_override,
+        privileged_override=privileged,
     )
 
     if result.get("image_updated"):

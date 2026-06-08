@@ -15,7 +15,6 @@ from docker import DockerClient
 
 from oduflow.docker_ops.client import chown_recursive, get_client, get_odoo_uid_gid
 from oduflow.errors import (
-    ConflictError,
     ExternalCommandError,
     NotFoundError,
     PrerequisiteNotMetError,
