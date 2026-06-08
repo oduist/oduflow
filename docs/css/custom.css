@@ -230,17 +230,6 @@ h4:hover .headerlink, h5:hover .headerlink, h6:hover .headerlink { opacity: 1; }
           background-clip: text;
   color: transparent;
 }
-/* "Documentation" qualifier under the wordmark */
-.md-typeset .odu-hero__title-doc {
-  display: block;
-  margin-top: .45rem;
-  font-size: .34em;
-  font-weight: 600;
-  letter-spacing: .02em;
-  background: none;
-  color: var(--md-default-fg-color--light);
-  -webkit-text-fill-color: var(--md-default-fg-color--light);
-}
 
 .odu-hero__subtitle {
   max-width: 40rem;
