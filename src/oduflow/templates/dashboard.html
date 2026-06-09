@@ -596,6 +596,11 @@
         <input type="text" id="cr-auto-install" placeholder="e.g. sale,purchase,stock">
         <div style="font-size:11px;color:var(--text-dim);margin-top:4px;">Comma-separated list of modules to install after provisioning</div>
       </div>
+      <div class="form-group">
+        <label for="cr-env-vars">Environment variables</label>
+        <input type="text" id="cr-env-vars" placeholder="e.g. WORKERS=2,LIMIT_TIME_CPU=600">
+        <div style="font-size:11px;color:var(--text-dim);margin-top:4px;">Comma-separated KEY=VALUE pairs injected into the Odoo container</div>
+      </div>
 
       <div class="form-actions">
         <button class="btn" onclick="closeCreateModal()">Cancel</button>
@@ -1046,8 +1051,8 @@ function renderEnvironments(envs) {
           '<button class="btn btn-protect' + (env.protected ? ' active' : '') + '" ' +
             'onclick="doProtect(\'' + escAttr(env.branch) + '\',' + (env.protected ? 'true' : 'false') + ')">' +
             (env.protected ? '🔒 Protected' : '🔓 Protect') + '</button>' +
-          '<button class="btn btn-restart" onclick="doRebuild(\'' + escAttr(env.branch) + '\')" ' +
-            (env.protected ? 'disabled title="Environment is protected"' : '') + '>Rebuild</button>' +
+          '<button class="btn btn-restart" onclick="doUpdate(\'' + escAttr(env.branch) + '\')" ' +
+            (env.protected ? 'disabled title="Environment is protected"' : '') + '>Update</button>' +
           '<button class="btn btn-restart" onclick="doRecreate(\'' + escAttr(env.branch) + '\')" ' +
             (env.protected ? 'disabled title="Environment is protected"' : '') + '>Recreate</button>' +
           '<button class="btn btn-delete" onclick="doDelete(\'' + escAttr(env.branch) + '\')" ' +
@@ -1158,17 +1163,17 @@ async function loadStats() {
   }
 }
 
-async function doRebuild(branch) {
-  if (!confirm('Rebuild environment "' + branch + '"? This will recreate the container but keep the database and filestore.')) return;
+async function doUpdate(branch) {
+  if (!confirm('Update environment "' + branch + '"? This will recreate the container but keep the database and filestore.')) return;
   const card = document.querySelector('[data-branch="' + branch + '"]');
   if (card) card.querySelectorAll('.btn').forEach(b => b.disabled = true);
   try {
-    const r = await fetch(API + '/' + encodeURIComponent(branch) + '/rebuild', { method: 'POST' });
+    const r = await fetch(API + '/' + encodeURIComponent(branch) + '/update', { method: 'POST' });
     const data = await r.json();
     if (data.ok) {
-      showToast(branch + ': rebuilt');
+      showToast(branch + ': updated');
     } else {
-      showToast(data.error || 'Rebuild failed', true);
+      showToast(data.error || 'Update failed', true);
     }
   } catch (e) {
     showToast('Connection error: ' + e.message, true);
@@ -1496,6 +1501,7 @@ function openCreateModal() {
   document.getElementById('cr-repo').value = '';
   document.getElementById('cr-image').value = '';
   document.getElementById('cr-auto-install').value = '';
+  document.getElementById('cr-env-vars').value = '';
 
   var errEl = document.getElementById('create-error');
   errEl.style.display = 'none';
@@ -1541,6 +1547,7 @@ async function submitCreate() {
   var template = document.getElementById('cr-template').value;
   var gitUser = document.getElementById('cr-git-user').value;
   var autoInstall = document.getElementById('cr-auto-install').value.trim();
+  var envVars = document.getElementById('cr-env-vars').value.trim();
   var errEl = document.getElementById('create-error');
 
   if (!branch) {
@@ -1570,6 +1577,7 @@ async function submitCreate() {
       git_user: gitUser,
       extra_addons: extraAddonsObj,
       auto_install_modules: autoInstall,
+      env_vars: envVars,
     };
     var r = await fetch(API + '/create', {
       method: 'POST',

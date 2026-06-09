@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Breaking Changes
+
+- **`rebuild_environment` renamed to `update_environment`** — the tool (and its REST route `/api/environments/{branch}/update`) now also accepts `odoo_image` and `env_vars` to switch the image and replace container environment variables. Called with no arguments it behaves exactly like the old `rebuild_environment` (re-create the container, preserving DB and filestore).
+
+### Features
+
+- **Environment variables for environments** — `create_environment` accepts `env_vars` (comma-separated `KEY=VALUE`) to inject container environment variables on top of the database connection variables; `update_environment` can replace them later. Env vars are persisted on the container, reported by `get_environment_info`, and editable from the web dashboard create form.
+
 ## v1.20.1 (since v1.15.1)
 
 ### Breaking Changes

@@ -71,6 +71,91 @@ class TestCreateEnvironmentTool:
         assert "Database: oduflow_1_main" in result
         assert "Template: none (init from scratch)" in result
 
+    @patch("oduflow.docker_ops.env_ops.create_environment")
+    def test_create_with_env_vars(self, mock_create):
+        mock_create.return_value = {
+            "url": "http://localhost:50000",
+            "odoo_container": "oduflow-main-odoo",
+            "database": "oduflow_1_main",
+            "workspace": "/tmp/ws",
+        }
+        result = _call_tool(
+            "create_environment",
+            branch="main",
+            template_name="none",
+            repo_url="https://repo.url",
+            odoo_image="odoo:17.0",
+            env_vars="FOO=bar,BAZ=qux",
+        )
+        assert mock_create.call_args.kwargs["env_vars"] == {
+            "FOO": "bar",
+            "BAZ": "qux",
+        }
+        assert "Env vars: FOO=bar, BAZ=qux" in result
+
+    @patch("oduflow.docker_ops.env_ops.create_environment")
+    def test_create_without_env_vars(self, mock_create):
+        mock_create.return_value = {
+            "url": "http://localhost:50000",
+            "odoo_container": "oduflow-main-odoo",
+            "database": "oduflow_1_main",
+            "workspace": "/tmp/ws",
+        }
+        _call_tool(
+            "create_environment",
+            branch="main",
+            template_name="none",
+            repo_url="https://repo.url",
+            odoo_image="odoo:17.0",
+        )
+        assert mock_create.call_args.kwargs["env_vars"] is None
+
+
+class TestUpdateEnvironmentTool:
+    @patch("oduflow.docker_ops.env_ops.update_environment")
+    def test_update_rebuild_only(self, mock_update):
+        mock_update.return_value = {
+            "url": "http://localhost:50000",
+            "odoo_container": "oduflow-main-odoo",
+            "database": "oduflow_1_main",
+            "workspace": "/tmp/ws",
+            "image": "odoo:17.0",
+            "image_updated": False,
+            "env_vars": {},
+        }
+        result = _call_tool("update_environment", env_name="main")
+        assert mock_update.call_args.kwargs == {
+            "env_override": None,
+            "image_override": None,
+        }
+        assert "Environment updated successfully!" in result
+        assert "Image: odoo:17.0" in result
+        assert "(updated)" not in result
+
+    @patch("oduflow.docker_ops.env_ops.update_environment")
+    def test_update_image_and_env(self, mock_update):
+        mock_update.return_value = {
+            "url": "http://localhost:50000",
+            "odoo_container": "oduflow-main-odoo",
+            "database": "oduflow_1_main",
+            "workspace": "/tmp/ws",
+            "image": "odoo:17.0",
+            "image_updated": True,
+            "env_vars": {"FOO": "new"},
+        }
+        result = _call_tool(
+            "update_environment",
+            env_name="main",
+            env_vars="FOO=new",
+            odoo_image="odoo:17.0",
+        )
+        assert mock_update.call_args.kwargs == {
+            "env_override": {"FOO": "new"},
+            "image_override": "odoo:17.0",
+        }
+        assert "Image: odoo:17.0 (updated)" in result
+        assert "Env vars: FOO=new" in result
+
 
 class TestDeleteEnvironmentTool:
     @patch("oduflow.docker_ops.env_ops.delete_environment")

@@ -7,14 +7,14 @@ All tools are accessible via MCP clients (Cursor, Cline, Amp, etc.) and the CLI 
 | Tool | Lock | Description |
 |---|:---:|---|
 | **Environment Management** | | |
-| `create_environment` | ✓ | Provision an Odoo environment for a branch (clone, DB, container, filestore) |
+| `create_environment` | ✓ | Provision an Odoo environment for a branch (clone, DB, container, filestore); optional `env_vars` injects container environment variables |
 | `delete_environment` | ✓ | Tear down all resources for a branch |
 | `list_environments` | | List all managed environments with status and URLs |
 | `get_environment_info` | | Full environment details: DB name, URL, repo, image, template, extra addons, workspace, container status, CPU/RAM stats |
 | `start_environment` | | Start a stopped environment |
 | `stop_environment` | | Stop a running environment |
 | `restart_environment` | | Restart the Odoo container |
-| `rebuild_environment` | ✓ | Re-create the container from the same image, preserving DB and filestore |
+| `update_environment` | ✓ | Re-create the container, preserving DB and filestore; optional `odoo_image` switches the image and `env_vars` replaces the container environment variables |
 | **Odoo Operations** | | |
 | `pull_and_apply` | ✓ | Git pull + smart analysis → auto install/upgrade/restart |
 | `install_odoo_modules` | ✓ | Install Odoo modules (`-i`) |

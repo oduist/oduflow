@@ -288,6 +288,205 @@ class TestCreateEnvironment:
         mock_odoo.restart.assert_called_once()
 
 
+class TestCreateEnvironmentEnvVars:
+    @patch(
+        "oduflow.extra_addons.generate_odoo_conf",
+        return_value="/tmp/flow-test/workspaces/feature-env/odoo.conf",
+    )
+    @patch("oduflow.docker_ops.env_ops._copy_file_to_container")
+    @patch("oduflow.docker_ops.env_ops._create_pg_role")
+    @patch(
+        "oduflow.docker_ops.env_ops.create_credentials",
+        return_value={"pg_user": "u_1_feature-env", "pg_password": "test-pw"},
+    )
+    @patch("oduflow.docker_ops.env_ops._ensure_system_ready")
+    @patch("oduflow.docker_ops.env_ops.get_odoo_uid_gid", return_value="100:101")
+    @patch("oduflow.docker_ops.env_ops._exec_sql")
+    @patch("oduflow.docker_ops.env_ops._db_exists", return_value=False)
+    @patch("oduflow.docker_ops.env_ops._mount_filestore")
+    @patch("oduflow.docker_ops.env_ops._get_used_ports", return_value=set())
+    @patch("oduflow.docker_ops.env_ops.allocate_port", return_value=50002)
+    @patch("oduflow.docker_ops.env_ops.subprocess.run")
+    @patch("oduflow.docker_ops.env_ops.os.chmod")
+    @patch("oduflow.docker_ops.env_ops.os.makedirs")
+    @patch("oduflow.docker_ops.env_ops.os.path.exists", return_value=False)
+    def test_create_merges_env_vars_and_label(
+        self,
+        mock_exists,
+        mock_makedirs,
+        mock_chmod,
+        mock_run,
+        mock_alloc,
+        mock_used,
+        mock_mount,
+        mock_db_exists,
+        mock_sql,
+        mock_uid_gid,
+        mock_ready,
+        mock_creds,
+        mock_role,
+        mock_copy_conf,
+        mock_gen_conf,
+        mock_docker_client,
+    ):
+        import json
+
+        mock_odoo = MagicMock()
+        mock_odoo.exec_run.return_value = (0, b"OK")
+        mock_docker_client.containers.run.return_value = mock_odoo
+        mock_docker_client.containers.get.side_effect = docker.errors.NotFound("nf")
+
+        env_ops.create_environment(
+            TEST_SETTINGS,
+            TEST_TEAM,
+            "feature/env",
+            "https://github.com/org/repo.git",
+            "odoo:15.0",
+            template_name=None,
+            env_vars={"FOO": "bar", "BAZ": "qux"},
+        )
+
+        run_kwargs = mock_docker_client.containers.run.call_args.kwargs
+        environment = run_kwargs["environment"]
+        assert environment["FOO"] == "bar"
+        assert environment["BAZ"] == "qux"
+        assert environment["HOST"] == TEST_SETTINGS.shared_db_container
+        assert environment["USER"] == "u_1_feature-env"
+        stored = json.loads(run_kwargs["labels"]["oduflow.env_vars"])
+        assert stored == {"FOO": "bar", "BAZ": "qux"}
+
+
+class TestUpdateEnvironment:
+    def _make_container(self):
+        container = MagicMock()
+        container.image.tags = ["odoo:15.0"]
+        container.image.id = "sha256:old"
+        container.labels = {
+            "oduflow.template": "none",
+            TEST_SETTINGS.image_label: "odoo:15.0",
+            "oduflow.env_vars": '{"OLD": "1"}',
+        }
+        container.attrs = {
+            "Config": {
+                "Env": ["HOST=db", "USER=old", "PASSWORD=x", "OLD=1"],
+                "Cmd": ["odoo", "-d", "oduflow_1_main", "--dev=xml"],
+                "Image": "odoo:15.0",
+            },
+            "HostConfig": {
+                "Binds": ["/host/repo:/mnt/extra-addons:rw"],
+                "PortBindings": {"8069/tcp": [{"HostPort": "50000"}]},
+            },
+        }
+        return container
+
+    @patch(
+        "oduflow.docker_ops.env_ops._install_pip_requirements", return_value=(False, "")
+    )
+    @patch("oduflow.docker_ops.env_ops._install_apt_packages", return_value="")
+    @patch("oduflow.docker_ops.env_ops._resolve_instance_conf")
+    @patch("oduflow.docker_ops.env_ops.os.path.isfile", return_value=False)
+    @patch("oduflow.docker_ops.env_ops.os.path.isdir", return_value=False)
+    @patch("oduflow.docker_ops.env_ops._create_pg_role")
+    @patch(
+        "oduflow.docker_ops.env_ops.load_credentials",
+        return_value={"pg_user": "u_1_main", "pg_password": "pw"},
+    )
+    def test_update_image_and_env_override(
+        self,
+        mock_creds,
+        mock_role,
+        mock_isdir,
+        mock_isfile,
+        mock_resolve_conf,
+        mock_apt,
+        mock_pip,
+        mock_docker_client,
+    ):
+        import json
+
+        mock_resolve_conf.return_value.exists.return_value = False
+        container = self._make_container()
+        mock_docker_client.containers.get.return_value = container
+        new_image = MagicMock()
+        new_image.id = "sha256:new"
+        mock_docker_client.images.pull.return_value = new_image
+        mock_docker_client.containers.run.return_value = MagicMock()
+
+        result = env_ops.update_environment(
+            TEST_SETTINGS,
+            TEST_TEAM,
+            "main",
+            env_override={"FOO": "new"},
+            image_override="odoo:17.0",
+        )
+
+        run_kwargs = mock_docker_client.containers.run.call_args.kwargs
+        assert run_kwargs["image"] == "odoo:17.0"
+        assert run_kwargs["environment"] == {
+            "HOST": TEST_SETTINGS.shared_db_container,
+            "USER": "u_1_main",
+            "PASSWORD": "pw",
+            "FOO": "new",
+        }
+        assert run_kwargs["labels"][TEST_SETTINGS.image_label] == "odoo:17.0"
+        assert json.loads(run_kwargs["labels"]["oduflow.env_vars"]) == {"FOO": "new"}
+        mock_docker_client.images.pull.assert_called_once_with("odoo:17.0")
+        assert result["image"] == "odoo:17.0"
+        assert result["image_updated"] is True
+        assert result["env_vars"] == {"FOO": "new"}
+
+    @patch(
+        "oduflow.docker_ops.env_ops._install_pip_requirements", return_value=(False, "")
+    )
+    @patch("oduflow.docker_ops.env_ops._install_apt_packages", return_value="")
+    @patch("oduflow.docker_ops.env_ops._resolve_instance_conf")
+    @patch("oduflow.docker_ops.env_ops.os.path.isfile", return_value=False)
+    @patch("oduflow.docker_ops.env_ops.os.path.isdir", return_value=False)
+    @patch("oduflow.docker_ops.env_ops._create_pg_role")
+    @patch(
+        "oduflow.docker_ops.env_ops.load_credentials",
+        return_value={"pg_user": "u_1_main", "pg_password": "pw"},
+    )
+    def test_update_no_overrides_keeps_label_env(
+        self,
+        mock_creds,
+        mock_role,
+        mock_isdir,
+        mock_isfile,
+        mock_resolve_conf,
+        mock_apt,
+        mock_pip,
+        mock_docker_client,
+    ):
+        mock_resolve_conf.return_value.exists.return_value = False
+        container = self._make_container()
+        mock_docker_client.containers.get.return_value = container
+        same_image = MagicMock()
+        same_image.id = "sha256:old"
+        mock_docker_client.images.pull.return_value = same_image
+        mock_docker_client.containers.run.return_value = MagicMock()
+
+        result = env_ops.update_environment(TEST_SETTINGS, TEST_TEAM, "main")
+
+        run_kwargs = mock_docker_client.containers.run.call_args.kwargs
+        # No image override → current image is reused and re-pulled
+        assert run_kwargs["image"] == "odoo:15.0"
+        mock_docker_client.images.pull.assert_called_once_with("odoo:15.0")
+        # No env override → env restored from the persisted label
+        assert run_kwargs["environment"]["OLD"] == "1"
+        assert result["env_vars"] == {"OLD": "1"}
+        assert result["image_updated"] is False
+
+    @patch(
+        "oduflow.docker_ops.env_ops.load_credentials",
+        return_value={"pg_user": "u_1_xyz", "pg_password": "pw"},
+    )
+    def test_update_missing_raises(self, mock_creds, mock_docker_client):
+        mock_docker_client.containers.get.side_effect = docker.errors.NotFound("nf")
+        with pytest.raises(NotFoundError, match="does not exist"):
+            env_ops.update_environment(TEST_SETTINGS, TEST_TEAM, "xyz")
+
+
 class TestDeleteEnvironment:
     @patch("oduflow.docker_ops.env_ops._drop_pg_role")
     @patch(

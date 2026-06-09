@@ -356,6 +356,7 @@ def create_environment(
     extra_addons: str = "",
     sanitize: bool = True,
     auto_install_modules: str = "",
+    env_vars: str = "",
     ctx: Context = None,
 ) -> str:
     """
@@ -370,6 +371,7 @@ def create_environment(
         extra_addons: Comma-separated list of extra addon repo names with branches (e.g. "enterprise:18.0,custom-themes:main"). Each entry must include a branch after a colon.
         sanitize: Sanitize the database after provisioning (default: True). Disables incoming/outgoing mail servers and runs custom scripts from the .odoo_sanitize/ folder in the repository.
         auto_install_modules: Comma-separated list of Odoo modules to install automatically after the environment is provisioned (e.g. "sale,purchase,stock"). When a template is specified and this is empty, the value is loaded from template metadata.
+        env_vars: Comma-separated KEY=VALUE pairs injected as environment variables into the Odoo container (e.g. "WORKERS=2,LIMIT_TIME_CPU=600"). These are added on top of the database connection variables (HOST/USER/PASSWORD).
     """
     import json
 
@@ -428,6 +430,11 @@ def create_environment(
             if auto_install_modules
             else []
         )
+        parsed_env = None
+        if env_vars:
+            parsed_env = dict(
+                item.split("=", 1) for item in env_vars.split(",") if "=" in item
+            )
         result = env_ops.create_environment(
             settings,
             team,
@@ -440,6 +447,7 @@ def create_environment(
             git_user=effective_git_user,
             sanitize=sanitize,
             auto_install_modules=auto_install_list or None,
+            env_vars=parsed_env,
         )
 
         from oduflow.telemetry import record_env_created
@@ -470,6 +478,10 @@ def create_environment(
             lines.append(f"Extra Addons: {extras_display}")
         if auto_install_list:
             lines.append(f"Auto-install modules: {', '.join(auto_install_list)}")
+        if parsed_env:
+            lines.append(
+                "Env vars: " + ", ".join(f"{k}={v}" for k, v in parsed_env.items())
+            )
         setup_logs = result.get("setup_logs", [])
         if setup_logs:
             lines.append("\n--- Setup Log ---")
@@ -913,27 +925,57 @@ def restart_environment(env_name: str, wait: bool = True, ctx: Context = None) -
 @mcp.tool()
 @handle_errors
 @with_env_lock
-def rebuild_environment(env_name: str, ctx: Context = None) -> str:
+def update_environment(
+    env_name: str,
+    env_vars: str = "",
+    odoo_image: str = "",
+    ctx: Context = None,
+) -> str:
     """
-    Rebuild the Odoo container for an environment without losing the database or filestore.
+    Re-create the Odoo container for an environment without losing the database
+    or filestore. Pulls the target image and re-creates the container.
 
-    Use this when the container is broken (e.g. packages were accidentally removed,
-    system files corrupted) and you need a fresh container from the same image,
+    With no arguments this simply rebuilds the container from its current image
+    and configuration — use it when the container is broken (e.g. packages were
+    accidentally removed, system files corrupted) and you need a fresh container
     reconnected to the existing database and filestore.
 
+    Pass odoo_image to switch to a different image, and/or env_vars to change the
+    environment variables. The database and filestore are always preserved.
+
     Args:
-        env_name: The name of the environment to rebuild.
+        env_name: The name of the environment to update.
+        env_vars: Comma-separated KEY=VALUE pairs that fully replace the current user-supplied env vars (e.g. "WORKERS=4,LIMIT_TIME_CPU=900"). Leave empty to keep the current env vars. The database connection variables (HOST/USER/PASSWORD) are always preserved.
+        odoo_image: New Docker image with tag to pull and run (e.g. "odoo:17.0"). Leave empty to keep the current image.
     """
     settings = _get_settings()
     team = _resolve_team(ctx)
-    result = env_ops.rebuild_environment(settings, team, env_name)
+    parsed_env = None
+    if env_vars:
+        parsed_env = dict(
+            item.split("=", 1) for item in env_vars.split(",") if "=" in item
+        )
+    result = env_ops.update_environment(
+        settings,
+        team,
+        env_name,
+        env_override=parsed_env,
+        image_override=odoo_image or None,
+    )
     lines = [
-        "Environment rebuilt successfully!",
+        "Environment updated successfully!",
         f"URL: {result['url']}",
         f"Odoo Container: {result['odoo_container']}",
         f"Database: {result['database']}",
         f"Workspace: {result['workspace']}",
+        f"Image: {result.get('image', '')}"
+        + (" (updated)" if result.get("image_updated") else ""),
     ]
+    env_result = result.get("env_vars") or {}
+    if env_result:
+        lines.append(
+            "Env vars: " + ", ".join(f"{k}={v}" for k, v in env_result.items())
+        )
     setup_logs = result.get("setup_logs", [])
     if setup_logs:
         lines.append("\n--- Setup Log ---")
@@ -977,6 +1019,9 @@ def get_environment_info(env_name: str, ctx: Context = None) -> str:
     if info.get("extra_addons"):
         addons = ", ".join(f"{k}:{v}" for k, v in info["extra_addons"].items())
         lines.append(f"Extra addons: {addons}")
+    if info.get("env_vars"):
+        env_display = ", ".join(f"{k}={v}" for k, v in info["env_vars"].items())
+        lines.append(f"Env vars: {env_display}")
     if info.get("workspace"):
         lines.append(f"Workspace: {info['workspace']}")
     for key in ("odoo", "db"):

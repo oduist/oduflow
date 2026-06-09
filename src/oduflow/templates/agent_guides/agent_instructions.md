@@ -31,12 +31,12 @@ MCP endpoint: `http://<host>:8000/mcp`
 | Tool | When to use |
 |---|---|
 | `list_environments` | Check existing environments before creating a new one |
-| `create_environment(branch, env_name?, repo_url, odoo_image, template_name?)` | Provision an environment. `branch` is the git branch; `env_name` defaults to the branch name. Use the correct Odoo Docker image. Pass `template_name="none"` for greenfield projects |
+| `create_environment(branch, env_name?, repo_url, odoo_image, template_name?, env_vars?)` | Provision an environment. `branch` is the git branch; `env_name` defaults to the branch name. Use the correct Odoo Docker image. Pass `template_name="none"` for greenfield projects. `env_vars` is a comma-separated `KEY=VALUE` list injected into the Odoo container |
 | `get_environment_info(env_name)` | Get full environment details: database name, URL, repo, image, template, extra addons, workspace, container status, CPU/RAM stats |
 | `delete_environment(env_name)` | Tear down when the task is complete or cancelled |
 | `start_environment` / `stop_environment` | Resume or pause a stopped environment |
 | `restart_environment(env_name)` | Restart the Odoo container (rarely needed — `pull_and_apply` handles this) |
-| `rebuild_environment(env_name)` | Recreate the container from scratch if it's broken, without losing DB or filestore |
+| `update_environment(env_name, env_vars, odoo_image)` | Recreate the container without losing DB or filestore — to fix a broken container, switch image, or change env vars |
 
 ### Code → Environment Sync
 
@@ -93,7 +93,7 @@ Extra addons repositories (Odoo Enterprise, OCA, your own shared addons) are clo
 
 | Tool | When to use |
 |---|---|
-| `add_extra_repo(name, repo_url)` | Clone an extra addons repository so its modules become available when creating or rebuilding environments |
+| `add_extra_repo(name, repo_url)` | Clone an extra addons repository so its modules become available when creating or updating environments |
 | `list_extra_repos` | List all cloned extra addons repositories |
 | `update_extra_repo(name)` | Fetch the latest changes from the remote for an extra addons repository |
 | `delete_extra_repo(name)` | Remove a cloned extra addons repository |

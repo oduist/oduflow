@@ -114,10 +114,10 @@ Same JSON format in `claude_desktop_config.json` or `.amp/settings.json`.
 
 ## Core MCP Tools
 
-- `create_environment` — provision a new Odoo environment for a branch
+- `create_environment` — provision a new Odoo environment for a branch (optional `env_vars` injects container environment variables)
 - `delete_environment` — tear down an environment
 - `start_environment` / `stop_environment` / `restart_environment` — lifecycle control
-- `rebuild_environment` — re-create the container from the same image, preserving DB and filestore
+- `update_environment` — re-create the container preserving DB and filestore (optional `odoo_image` switches image, `env_vars` replaces container environment variables)
 - `install_odoo_modules` — install Odoo modules
 - `upgrade_odoo_modules` — upgrade Odoo modules
 - `run_odoo_tests` — run Odoo tests for specific modules
@@ -1084,8 +1084,11 @@ oduflow call start_environment feature-login
 # Restart the Odoo container
 oduflow call restart_environment feature-login
 
-# Rebuild the container from scratch (keeps database and filestore)
-oduflow call rebuild_environment feature-login
+# Re-create the container (keeps database and filestore)
+oduflow call update_environment feature-login
+
+# Switch image and/or replace env vars (keeps database and filestore)
+oduflow call update_environment feature-login "WORKERS=4,LIMIT_TIME_CPU=900" odoo:17.0
 
 # Tear down everything (container, database, filestore, workspace)
 oduflow call delete_environment feature-login
@@ -1494,8 +1497,8 @@ oduflow call create_environment feature-x "" default https://github.com/company/
 When running in HTTP mode, a web dashboard is available at the server root (`http://<host>:<port>/`). It provides:
 
 - **Environment list** with status indicators (running / stopped / partial)
-- **Environment actions**: Start / Stop / Restart / Recreate / Protect / Delete
-- **Environment creation** form (branch, repo URL, Odoo image, template, extra addons)
+- **Environment actions**: Start / Stop / Restart / Update / Recreate / Protect / Delete
+- **Environment creation** form (branch, repo URL, Odoo image, template, extra addons, environment variables)
 - **Environment protection** — toggle to prevent accidental deletion
 - **Live log viewer** for each environment
 - **Interactive terminal** — WebSocket-based Odoo Python shell directly in the browser
@@ -1515,10 +1518,11 @@ All endpoints return JSON with an `ok` field. Authentication via HTTP Basic auth
 | Method | Endpoint | Description |
 |---|---|---|
 | `GET` | `/api/environments` | List all environments |
-| `POST` | `/api/environments/create` | Create a new environment (JSON body: `env_name`, `repo_url`, `odoo_image`, `template_name`) |
+| `POST` | `/api/environments/create` | Create a new environment (JSON body: `env_name`, `repo_url`, `odoo_image`, `template_name`, `extra_addons`, `auto_install_modules`, `env_vars`, `git_user`) |
 | `POST` | `/api/environments/{branch}/start` | Start an environment |
 | `POST` | `/api/environments/{branch}/stop` | Stop an environment |
 | `POST` | `/api/environments/{branch}/restart` | Restart an environment |
+| `POST` | `/api/environments/{branch}/update` | Re-create the container, preserving DB and filestore (JSON body, all optional: `env_vars`, `odoo_image`) |
 | `POST` | `/api/environments/{branch}/sync` | Pull latest code and auto-install/upgrade/restart |
 | `POST` | `/api/environments/{branch}/recreate` | Recreate an environment (delete + create with the same parameters) |
 | `POST` | `/api/environments/{branch}/delete` | Delete an environment |
@@ -1600,14 +1604,14 @@ All tools are accessible via MCP clients (Cursor, Cline, Amp, etc.) and the CLI 
 | Tool | Lock | Description |
 |---|:---:|---|
 | **Environment Management** | | |
-| `create_environment` | ✓ | Provision an Odoo environment for a branch (clone, DB, container, filestore) |
+| `create_environment` | ✓ | Provision an Odoo environment for a branch (clone, DB, container, filestore); optional `env_vars` injects container environment variables |
 | `delete_environment` | ✓ | Tear down all resources for a branch |
 | `list_environments` | | List all managed environments with status and URLs |
-| `get_environment_info` | | Full environment details: DB name, URL, repo, image, template, extra addons, workspace, container status, CPU/RAM stats |
+| `get_environment_info` | | Full environment details: DB name, URL, repo, image, template, extra addons, env vars, workspace, container status, CPU/RAM stats |
 | `start_environment` | | Start a stopped environment |
 | `stop_environment` | | Stop a running environment |
 | `restart_environment` | | Restart the Odoo container |
-| `rebuild_environment` | ✓ | Re-create the container from the same image, preserving DB and filestore |
+| `update_environment` | ✓ | Re-create the container, preserving DB and filestore; optional `odoo_image` switches the image and `env_vars` replaces the container environment variables |
 | **Odoo Operations** | | |
 | `pull_and_apply` | ✓ | Git pull + smart analysis → auto install/upgrade/restart |
 | `install_odoo_modules` | ✓ | Install Odoo modules (`-i`) |
@@ -2294,7 +2298,7 @@ src/oduflow/
     client.py           # docker.from_env() wrapper + UID/GID auto-detection
     system_ops.py       # init_system / destroy_system / reload_template / init_template /
                         # save_env_as_template / delete_template / list_templates
-    env_ops.py          # create / delete / start / stop / restart / rebuild / list / status / pull /
+    env_ops.py          # create / delete / start / stop / restart / update / list / status / pull /
                         # apt/pip auto-install / filestore overlay mount
     odoo_ops.py         # install / upgrade / test / logs / shell / search / run_command
     service_ops.py      # create / delete / update / list / logs for auxiliary services

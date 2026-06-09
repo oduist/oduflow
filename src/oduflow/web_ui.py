@@ -239,8 +239,23 @@ def _build_routes(
         finally:
             locks.release_env(branch)
 
-    def api_rebuild(request: Request) -> JSONResponse:
+    async def api_update(request: Request) -> JSONResponse:
         branch = request.path_params["branch"]
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        env_vars_raw = (body.get("env_vars") or "").strip() if body else ""
+        odoo_image = (body.get("odoo_image") or "").strip() if body else ""
+        env_override = None
+        if env_vars_raw:
+            import re
+
+            env_override = dict(
+                item.split("=", 1)
+                for item in re.split(r"[\n,]+", env_vars_raw)
+                if "=" in item
+            )
         try:
             locks.acquire_env(branch)
         except BusyError as e:
@@ -248,12 +263,18 @@ def _build_routes(
         try:
             settings = get_settings()
             team = _get_ui_team(request)
-            result = env_ops.rebuild_environment(settings, team, branch)
+            result = env_ops.update_environment(
+                settings,
+                team,
+                branch,
+                env_override=env_override,
+                image_override=odoo_image or None,
+            )
             return JSONResponse({"ok": True, "result": result})
         except FlowError as e:
             return _error_response(e)
         except Exception as e:
-            logger.exception("Unexpected error in api_rebuild")
+            logger.exception("Unexpected error in api_update")
             return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
         finally:
             locks.release_env(branch)
@@ -291,6 +312,7 @@ def _build_routes(
             extra_addons_raw = labels.get("oduflow.extra_addons", "{}")
             extra_addons = json.loads(extra_addons_raw) or None
             git_user = labels.get("oduflow.git_user", "")
+            env_vars = json.loads(labels.get("oduflow.env_vars", "{}")) or None
 
             env_ops.delete_environment(settings, team, branch)
             result = env_ops.create_environment(
@@ -302,6 +324,7 @@ def _build_routes(
                 template_name=template_name,
                 extra_addons=extra_addons,
                 git_user=git_user,
+                env_vars=env_vars,
             )
             return JSONResponse({"ok": True, "result": result})
         except FlowError as e:
@@ -324,6 +347,16 @@ def _build_routes(
             template_name_raw = (body.get("template_name") or "").strip()
             extra_addons_raw = body.get("extra_addons")
             auto_install_raw = (body.get("auto_install_modules") or "").strip()
+            env_vars_raw = (body.get("env_vars") or "").strip()
+            env_vars = None
+            if env_vars_raw:
+                import re
+
+                env_vars = dict(
+                    item.split("=", 1)
+                    for item in re.split(r"[\n,]+", env_vars_raw)
+                    if "=" in item
+                )
             if not env_name:
                 return JSONResponse(
                     {"ok": False, "error": "env_name is required."},
@@ -388,6 +421,7 @@ def _build_routes(
                 extra_addons=extra_dict,
                 git_user=git_user,
                 auto_install_modules=auto_install_list or None,
+                env_vars=env_vars,
             )
             return JSONResponse({"ok": True, "result": result})
         except FlowError as e:
@@ -1288,7 +1322,7 @@ def _build_routes(
             "/api/environments/{branch:path}/unprotect", api_unprotect, methods=["POST"]
         ),
         Route("/api/environments/{branch:path}/note", api_set_note, methods=["POST"]),
-        Route("/api/environments/{branch:path}/rebuild", api_rebuild, methods=["POST"]),
+        Route("/api/environments/{branch:path}/update", api_update, methods=["POST"]),
         Route(
             "/api/environments/{branch:path}/recreate", api_recreate, methods=["POST"]
         ),
