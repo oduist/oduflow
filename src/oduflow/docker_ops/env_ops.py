@@ -585,6 +585,7 @@ def create_environment(
     git_user: str = "",
     sanitize: bool = True,
     auto_install_modules: list[str] | None = None,
+    env_vars: dict[str, str] | None = None,
 ) -> dict[str, str]:
     env_name = env_name or branch
     start_time = time.time()
@@ -648,6 +649,8 @@ def create_environment(
         labels["oduflow.git_user"] = git_user
     if auto_install_modules:
         labels["oduflow.auto_install_modules"] = ",".join(auto_install_modules)
+    if env_vars:
+        labels["oduflow.env_vars"] = json.dumps(env_vars)
 
     if settings.routing_mode == "traefik":
         slug = slugify_branch(env_name)
@@ -814,6 +817,7 @@ def create_environment(
         "HOST": settings.shared_db_container,
         "USER": env_creds["pg_user"],
         "PASSWORD": env_creds["pg_password"],
+        **(env_vars or {}),
     }
     odoo_volumes = {repo_path: {"bind": "/mnt/extra-addons", "mode": "rw"}}
 
@@ -1370,6 +1374,7 @@ def get_environment_info(
             json.loads(labels.get("oduflow.extra_addons", "{}")),
         )
         result["auto_install_modules"] = labels.get("oduflow.auto_install_modules", "")
+        result["env_vars"] = json.loads(labels.get("oduflow.env_vars", "{}"))
         result["created_at"] = labels.get("oduflow.created_at", "") or odoo_container.attrs.get(
             "Created", ""
         )
@@ -1586,10 +1591,24 @@ def pull_environment(
     }
 
 
-def rebuild_environment(
-    settings: Settings, team: TeamSettings, env_name: str
-) -> dict[str, str]:
-    """Rebuild an environment by re-creating its container while preserving DB, repo and filestore."""
+def update_environment(
+    settings: Settings,
+    team: TeamSettings,
+    env_name: str,
+    *,
+    env_override: dict[str, str] | None = None,
+    image_override: str | None = None,
+) -> dict[str, Any]:
+    """Re-create an environment's container, preserving DB, repo and filestore.
+
+    With no overrides this simply rebuilds the container from its current image
+    and configuration (useful when the container is broken). Optionally pulls a
+    different ``image_override`` and/or fully replaces the user-supplied
+    environment variables with ``env_override`` (an explicit dict; an empty dict
+    clears them). The PostgreSQL connection variables (HOST/USER/PASSWORD) are
+    always re-derived from the environment credentials, and image-baked env
+    comes from the image itself.
+    """
     client = get_client()
     odoo_container_name = get_resource_name(env_name, "odoo", settings.prefix)
 
@@ -1603,21 +1622,28 @@ def rebuild_environment(
             f"Environment '{env_name}' does not exist. Use create_environment first."
         )
 
-    # Image
+    # Image (current → target). Capture the current digest so we can report
+    # whether the running image actually changed after the pull.
     try:
-        odoo_image = container.image.tags[0]
+        current_image = container.image.tags[0]
     except (IndexError, Exception):
-        odoo_image = container.attrs["Config"]["Image"]
+        current_image = container.attrs["Config"]["Image"]
+    odoo_image = image_override or current_image
+    try:
+        old_digest = container.image.id
+    except Exception:
+        old_digest = container.attrs.get("Image", "")
 
     # Labels
     labels = dict(container.labels)
 
-    # Environment – parse "KEY=VALUE" list into a dict
-    raw_env = container.attrs["Config"].get("Env") or []
-    env_dict: dict[str, str] = {}
-    for entry in raw_env:
-        key, _, value = entry.partition("=")
-        env_dict[key] = value
+    # User-supplied environment variables: an explicit override wins (full
+    # replace), otherwise restore from the persisted label. The DB connection
+    # variables are added back from the credentials below.
+    if env_override is not None:
+        user_env = dict(env_override)
+    else:
+        user_env = json.loads(labels.get("oduflow.env_vars", "{}"))
 
     # Volumes / bind mounts – parse "host:container:mode" strings
     raw_binds = container.attrs.get("HostConfig", {}).get("Binds") or []
@@ -1645,7 +1671,7 @@ def rebuild_environment(
                 pass
 
     logger.info(
-        "Rebuilding environment – stopping old container",
+        "Updating environment – stopping old container",
         extra={"env_name": env_name, "container": odoo_container_name},
     )
 
@@ -1702,6 +1728,20 @@ def rebuild_environment(
         except Exception as exc:
             logger.warning("Could not re-create PG role: %s", exc)
 
+    # Build the container environment from fresh credentials + user env, and
+    # keep the persisted labels (image + env vars) in sync with the new config.
+    env_dict = {
+        "HOST": settings.shared_db_container,
+        "USER": creds["pg_user"],
+        "PASSWORD": creds["pg_password"],
+        **user_env,
+    }
+    labels[settings.image_label] = odoo_image
+    if user_env:
+        labels["oduflow.env_vars"] = json.dumps(user_env)
+    else:
+        labels.pop("oduflow.env_vars", None)
+
     # Verify extra addons worktrees are intact
     extra_addons_json = labels.get("oduflow.extra_addons", "")
     if extra_addons_json:
@@ -1733,9 +1773,11 @@ def rebuild_environment(
     if settings.routing_mode == "port" and host_port is not None:
         run_kwargs["ports"] = {"8069/tcp": host_port}
 
+    image_updated = False
     try:
         logger.info("Pulling image %s", odoo_image)
-        client.images.pull(odoo_image)
+        new_image_obj = client.images.pull(odoo_image)
+        image_updated = bool(old_digest) and new_image_obj.id != old_digest
     except Exception as exc:
         logger.warning("Could not pull image %s, using local copy: %s", odoo_image, exc)
 
@@ -1787,7 +1829,7 @@ def rebuild_environment(
     env_db = get_db_name(env_name)
     workspace = get_workspace_path(env_name, team.workspaces_dir)
     logger.info(
-        "Environment rebuilt",
+        "Environment updated",
         extra={"env_name": env_name, "url": url, "container": odoo_container_name},
     )
 
@@ -1796,5 +1838,8 @@ def rebuild_environment(
         "odoo_container": odoo_container_name,
         "database": env_db,
         "workspace": workspace,
+        "image": odoo_image,
+        "image_updated": image_updated,
+        "env_vars": user_env,
         "setup_logs": setup_logs,
     }

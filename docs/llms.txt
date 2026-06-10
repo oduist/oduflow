@@ -126,10 +126,10 @@ Same JSON format in `claude_desktop_config.json` or `.amp/settings.json`.
 
 ## Core MCP Tools
 
-- `create_environment` — provision a new Odoo environment for a branch
+- `create_environment` — provision a new Odoo environment for a branch (optional `env_vars` injects container environment variables)
 - `delete_environment` — tear down an environment
 - `start_environment` / `stop_environment` / `restart_environment` — lifecycle control
-- `rebuild_environment` — re-create the container from the same image, preserving DB and filestore
+- `update_environment` — re-create the container preserving DB and filestore (optional `odoo_image` switches image, `env_vars` replaces container environment variables)
 - `install_odoo_modules` — install Odoo modules
 - `upgrade_odoo_modules` — upgrade Odoo modules
 - `run_odoo_tests` — run Odoo tests for specific modules

@@ -13,7 +13,12 @@ oduflow call create_environment feature-login "" none https://github.com/owner/r
 
 # Create with JSON arguments (more explicit)
 oduflow call create_environment '{"branch":"feature-login","template_name":"myproject","repo_url":"https://github.com/owner/repo.git","odoo_image":"odoo:17.0"}'
+
+# Inject container environment variables (comma-separated KEY=VALUE)
+oduflow call create_environment '{"branch":"feature-login","template_name":"myproject","env_vars":"WORKERS=2,LIMIT_TIME_CPU=600"}'
 ```
+
+`env_vars` are added on top of the database connection variables (`HOST`/`USER`/`PASSWORD`). They are stored on the container and can later be replaced with [`update_environment`](#lifecycle-management).
 
 When creating an environment, Oduflow:
 
@@ -155,8 +160,11 @@ oduflow call start_environment feature-login
 # Restart the Odoo container
 oduflow call restart_environment feature-login
 
-# Rebuild the container from scratch (keeps database and filestore)
-oduflow call rebuild_environment feature-login
+# Re-create the container (keeps database and filestore)
+oduflow call update_environment feature-login
+
+# Switch image and/or replace env vars (keeps database and filestore)
+oduflow call update_environment feature-login "WORKERS=4,LIMIT_TIME_CPU=900" odoo:17.0
 
 # Tear down everything (container, database, filestore, workspace)
 oduflow call delete_environment feature-login

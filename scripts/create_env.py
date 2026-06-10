@@ -28,6 +28,7 @@ def create_environment(
     repo_url: str = "",
     odoo_image: str = "",
     extra_addons: str = "",
+    env_vars: str = "",
 ) -> dict:
     url = f"{server_url.rstrip('/')}/api/environments/create"
     payload = {"branch_name": branch_name}
@@ -39,6 +40,8 @@ def create_environment(
         payload["odoo_image"] = odoo_image
     if extra_addons:
         payload["extra_addons"] = extra_addons
+    if env_vars:
+        payload["env_vars"] = env_vars
 
     data = json.dumps(payload).encode()
     req = urllib.request.Request(url, data=data, method="POST")
@@ -73,6 +76,8 @@ def main() -> None:
                         help="Odoo Docker image (default: from template metadata)")
     parser.add_argument("--extra-addons", default="",
                         help="Extra addons, e.g. 'enterprise:18.0,themes'")
+    parser.add_argument("--env", default="",
+                        help="Environment variables, comma-separated KEY=VALUE (e.g. 'WORKERS=2,LIMIT_TIME_CPU=600')")
     parser.add_argument("--password", default="",
                         help="UI password (default: env ODUFLOW_UI_PASSWORD or interactive prompt)")
     args = parser.parse_args()
@@ -89,6 +94,7 @@ def main() -> None:
         repo_url=args.repo_url,
         odoo_image=args.odoo_image,
         extra_addons=args.extra_addons,
+        env_vars=args.env,
     )
 
     if result.get("ok"):
