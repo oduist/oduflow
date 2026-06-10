@@ -115,6 +115,13 @@ port = 8000                 # HTTP server port
 mode = "port"               # "port" (direct host port) | "traefik" (reverse proxy with auto-HTTPS)
 # acme_email = "admin@example.com"  # required when mode = "traefik"
 
+# ── OAuth (optional) ──────────────────────────────────
+# Set to the public URL of this instance to turn Oduflow into a self-hosted
+# OAuth 2.1 Authorization Server (for Claude.ai and other OAuth MCP clients).
+# Each team's auth_token doubles as client_id, client_secret, and access token.
+[oauth]
+# oauth_base_url = "https://oduflow.example.com"
+
 # ── Database ──────────────────────────────────────────
 [database]
 user = "odoo"               # PostgreSQL user for the shared database container
@@ -152,6 +159,12 @@ port_range = [50000, 50100]          # port range for Odoo containers [start, en
 |---|---|---|
 | `[routing].mode` | `port` | `port` — direct host port mapping; `traefik` — reverse proxy with auto-HTTPS |
 | `[routing].acme_email` | *(empty)* | Let's Encrypt email for TLS certificates. Required when `mode = "traefik"` |
+
+### OAuth settings
+
+| Key | Default | Description |
+|---|---|---|
+| `[oauth].oauth_base_url` | *(empty)* | Public URL of this Oduflow instance. When set, Oduflow runs a self-hosted OAuth 2.1 Authorization Server (exposes `/.well-known/oauth-authorization-server`, `/authorize`, `/token`) so OAuth-based MCP clients like Claude.ai can connect. Each team's `auth_token` doubles as `client_id`, `client_secret`, and the issued access token. Empty = plain Bearer-token auth only. See [Authentication & Security](security.md) |
 
 ### Database settings
 

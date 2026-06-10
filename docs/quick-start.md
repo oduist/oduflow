@@ -81,6 +81,17 @@ ui_password = "my-dashboard-password"    # Basic auth for Web Dashboard (user: a
 
 MCP auth and Web Dashboard auth are independent — they use different tokens and different mechanisms (Bearer vs Basic).
 
+### Self-hosted OAuth (Claude.ai)
+
+Some MCP clients (e.g. Claude.ai Remote MCP) require an OAuth flow instead of a static Bearer token. Oduflow can act as its own OAuth 2.1 Authorization Server — no external identity provider needed. Set the public URL of this instance in `oduflow.toml`:
+
+```toml
+[oauth]
+oauth_base_url = "https://oduflow.example.com"
+```
+
+Each team's `auth_token` then doubles as `client_id`, `client_secret`, and the issued access token. See [Authentication & Security](security.md#self-hosted-oauth-for-claudeai-and-other-mcp-clients) for the full setup and how to connect from Claude.ai.
+
 ### MCP client configuration
 
 Point your MCP client (Cursor, Cline, Amp, etc.) to the server with the Authorization header:
