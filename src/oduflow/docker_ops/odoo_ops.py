@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any
 
 import docker
@@ -12,6 +13,47 @@ from oduflow.naming import get_db_name, get_resource_name
 from oduflow.settings import Settings, TeamSettings
 
 logger = logging.getLogger("oduflow")
+
+
+def _detect_odoo_major(container: Any, image_label: str) -> int | None:
+    """Best-effort major version of the Odoo running in *container*.
+
+    Fast path: parse the version out of the image tag stored in the
+    ``oduflow.image`` label (e.g. ``odoo:15.0`` → 15). For custom-tagged images
+    that carry no version (e.g. ``oduist/customer_odoo``) it falls back to asking
+    the already-running binary via ``odoo --version`` — authoritative and
+    independent of the image name. Returns ``None`` if the version can't be
+    determined.
+    """
+    image = container.labels.get(image_label, "")
+    match = re.search(r"odoo[:/](\d+)", image)
+    if match:
+        return int(match.group(1))
+
+    try:
+        _code, out = container.exec_run("odoo --version")
+        text = out.decode("utf-8") if isinstance(out, bytes) else str(out)
+        match = re.search(r"(\d+)\.\d+", text)
+        if match:
+            return int(match.group(1))
+    except Exception as exc:  # noqa: BLE001 - version detection is best-effort
+        logger.warning("Could not detect Odoo version from container: %s", exc)
+    return None
+
+
+def _longpoll_port_flag(container: Any, image_label: str) -> str:
+    """CLI flag for the test server's long-polling/gevent port, per Odoo version.
+
+    Odoo 16.0 renamed ``--longpolling-port`` to ``--gevent-port``; the new flag
+    does not exist on 15.0 and earlier (Odoo aborts on the unknown option), while
+    the old name still works as a deprecated alias on 16+. Pick the flag the
+    running Odoo actually understands, defaulting to the modern ``--gevent-port``
+    when the version can't be determined.
+    """
+    major = _detect_odoo_major(container, image_label)
+    if major is not None and major < 16:
+        return "--longpolling-port"
+    return "--gevent-port"
 
 
 def run_environment_tests(
@@ -38,9 +80,12 @@ def run_environment_tests(
     # --no-http has no effect under --test-enable (tests need a live HTTP server),
     # so instead of disabling HTTP we move the test server's HTTP and gevent ports
     # off the defaults (8069/8072) already held by the running Odoo container.
+    # Odoo 16.0 renamed --longpolling-port to --gevent-port, so pick the flag the
+    # environment's Odoo version actually understands.
+    port_flag = _longpoll_port_flag(container, settings.image_label)
     cmd = (
         f"odoo --test-enable --stop-after-init --workers 0 "
-        f"--http-port 8089 --gevent-port 8090 -u {modules} "
+        f"--http-port 8089 {port_flag} 8090 -u {modules} "
         f"--db_host={settings.shared_db_container} "
         f"-r {creds['pg_user']} -w {creds['pg_password']} "
         f"--database={env_db}"

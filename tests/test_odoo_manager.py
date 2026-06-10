@@ -665,6 +665,7 @@ class TestRunEnvironmentTests:
     )
     def test_run(self, mock_load_creds, mock_docker_client):
         container = MagicMock()
+        container.labels = {TEST_SETTINGS.image_label: "odoo:17.0"}
         container.exec_run.return_value = (0, b"All tests passed")
         mock_docker_client.containers.get.return_value = container
 
@@ -685,8 +686,53 @@ class TestRunEnvironmentTests:
         # (tests need a live HTTP server), so the test server's ports are moved off
         # the defaults to avoid the bind conflict.
         assert "--http-port 8089" in args
+        # Odoo 17 → modern --gevent-port flag.
         assert "--gevent-port 8090" in args
         assert "--workers 0" in args
+
+    @patch(
+        "oduflow.docker_ops.odoo_ops.load_credentials",
+        return_value={"pg_user": "u_1_main", "pg_password": "test-pw"},
+    )
+    def test_run_odoo_15_uses_longpolling_port(
+        self, mock_load_creds, mock_docker_client
+    ):
+        # Odoo 15.0 has no --gevent-port (introduced in 16.0); it must get the
+        # legacy --longpolling-port instead, parsed from the image tag.
+        container = MagicMock()
+        container.labels = {TEST_SETTINGS.image_label: "odoo:15.0"}
+        container.exec_run.return_value = (0, b"All tests passed")
+        mock_docker_client.containers.get.return_value = container
+
+        odoo_ops.run_environment_tests(TEST_SETTINGS, TEST_TEAM, "main", "base")
+
+        args = container.exec_run.call_args[0][0]
+        assert "--longpolling-port 8090" in args
+        assert "--gevent-port" not in args
+
+    @patch(
+        "oduflow.docker_ops.odoo_ops.load_credentials",
+        return_value={"pg_user": "u_1_main", "pg_password": "test-pw"},
+    )
+    def test_run_custom_image_detects_version_via_binary(
+        self, mock_load_creds, mock_docker_client
+    ):
+        # Custom-tagged image carries no version in the tag, so the major version
+        # is resolved from `odoo --version` on the live container.
+        container = MagicMock()
+        container.labels = {TEST_SETTINGS.image_label: "oduist/customer_odoo"}
+        container.exec_run.side_effect = [
+            (0, b"Odoo Server 15.0\n"),  # odoo --version probe
+            (0, b"All tests passed"),  # actual test run
+        ]
+        mock_docker_client.containers.get.return_value = container
+
+        odoo_ops.run_environment_tests(TEST_SETTINGS, TEST_TEAM, "main", "base")
+
+        assert container.exec_run.call_args_list[0][0][0] == "odoo --version"
+        test_cmd = container.exec_run.call_args_list[1][0][0]
+        assert "--longpolling-port 8090" in test_cmd
+        assert "--gevent-port" not in test_cmd
 
 
 class TestGetLogs:
