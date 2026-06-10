@@ -1,3 +1,5 @@
+import os
+
 import pytest
 import docker
 from unittest.mock import MagicMock, patch
@@ -286,6 +288,146 @@ class TestCreateEnvironment:
         assert "--stop-after-init" in init_cmd
         # Should restart after init
         mock_odoo.restart.assert_called_once()
+
+    @patch(
+        "oduflow.extra_addons.generate_odoo_conf",
+        return_value="/tmp/flow-test/workspaces/feature-local/odoo.conf",
+    )
+    @patch("oduflow.docker_ops.env_ops._copy_file_to_container")
+    @patch("oduflow.docker_ops.env_ops._create_pg_role")
+    @patch(
+        "oduflow.docker_ops.env_ops.create_credentials",
+        return_value={"pg_user": "u_1_feature-local", "pg_password": "test-pw"},
+    )
+    @patch("oduflow.docker_ops.env_ops._ensure_system_ready")
+    @patch("oduflow.docker_ops.env_ops.get_odoo_uid_gid", return_value="100:101")
+    @patch("oduflow.docker_ops.env_ops._exec_sql")
+    @patch("oduflow.docker_ops.env_ops._db_exists", return_value=False)
+    @patch("oduflow.docker_ops.env_ops._mount_filestore")
+    @patch("oduflow.docker_ops.env_ops._get_used_ports", return_value=set())
+    @patch("oduflow.docker_ops.env_ops.allocate_port", return_value=50002)
+    @patch("oduflow.docker_ops.env_ops.subprocess.run")
+    @patch("oduflow.docker_ops.env_ops.os.chmod")
+    @patch("oduflow.docker_ops.env_ops.os.makedirs")
+    @patch("oduflow.docker_ops.env_ops.os.path.exists", return_value=False)
+    def test_create_local_path_skips_clone(
+        self,
+        mock_exists,
+        mock_makedirs,
+        mock_chmod,
+        mock_run,
+        mock_alloc,
+        mock_used,
+        mock_mount,
+        mock_db_exists,
+        mock_sql,
+        mock_uid_gid,
+        mock_ready,
+        mock_creds,
+        mock_role,
+        mock_copy_conf,
+        mock_gen_conf,
+        mock_docker_client,
+        tmp_path,
+    ):
+        mock_odoo = MagicMock()
+        mock_odoo.exec_run.return_value = (0, b"OK")
+        mock_docker_client.containers.run.return_value = mock_odoo
+        mock_docker_client.containers.get.side_effect = docker.errors.NotFound("nf")
+
+        local_dir = str(tmp_path)
+        result = env_ops.create_environment(
+            TEST_SETTINGS,
+            TEST_TEAM,
+            "feature/local",
+            "",  # no repo_url in live-mount mode
+            "odoo:17.0",
+            template_name=None,
+            local_path=local_dir,
+        )
+
+        # No git clone was invoked.
+        for call in mock_run.call_args_list:
+            assert "clone" not in (call.args[0] if call.args else [])
+        # Result and container label point at the live-mount directory.
+        abs_local = os.path.abspath(local_dir)
+        assert result["local_path"] == abs_local
+        run_kwargs = mock_docker_client.containers.run.call_args.kwargs
+        assert run_kwargs["labels"]["oduflow.local_path"] == abs_local
+        # The local dir is bind-mounted to /mnt/extra-addons.
+        assert run_kwargs["volumes"][abs_local]["bind"] == "/mnt/extra-addons"
+
+
+class TestPullEnvironmentLocal:
+    @patch("oduflow.docker_ops.env_ops._apply_actions")
+    @patch("oduflow.docker_ops.env_ops._detect_local_changes")
+    @patch("oduflow.docker_ops.env_ops.os.path.isdir", return_value=True)
+    def test_local_explicit_guardrail_warns(
+        self, mock_isdir, mock_detect, mock_apply, mock_docker_client
+    ):
+        container = MagicMock()
+        container.labels = {"oduflow.local_path": "/some/local"}
+        mock_docker_client.containers.get.return_value = container
+        # A security XML change recommends -u of 'sale'.
+        mock_detect.return_value = ("HEAD", ["sale/security/ir_rule.xml"])
+        mock_apply.return_value = {
+            "action": "restart",
+            "changed_files": ["sale/security/ir_rule.xml"],
+            "message": "Container restarted.",
+        }
+
+        result = env_ops.pull_environment(
+            TEST_SETTINGS, TEST_TEAM, "feature/local", restart=True
+        )
+
+        assert result["action"] == "restart"
+        assert any("sale" in w for w in result.get("warnings", []))
+        mock_apply.assert_called_once()
+        mock_detect.assert_called_once()
+
+    @patch("oduflow.docker_ops.env_ops._apply_actions")
+    @patch("oduflow.docker_ops.env_ops._detect_local_changes")
+    @patch("oduflow.docker_ops.env_ops.os.path.isdir", return_value=True)
+    def test_local_strict_blocks(
+        self, mock_isdir, mock_detect, mock_apply, mock_docker_client
+    ):
+        container = MagicMock()
+        container.labels = {"oduflow.local_path": "/some/local"}
+        mock_docker_client.containers.get.return_value = container
+        mock_detect.return_value = ("HEAD", ["sale/security/ir_rule.xml"])
+
+        result = env_ops.pull_environment(
+            TEST_SETTINGS, TEST_TEAM, "feature/local", restart=True, strict=True
+        )
+
+        assert result["action"] == "blocked"
+        assert any("sale" in w for w in result["warnings"])
+        mock_apply.assert_not_called()
+
+    @patch("oduflow.docker_ops.env_ops._apply_actions")
+    @patch("oduflow.docker_ops.env_ops._detect_local_changes")
+    @patch("oduflow.docker_ops.env_ops.os.path.isdir", return_value=True)
+    def test_local_explicit_correct_no_warn(
+        self, mock_isdir, mock_detect, mock_apply, mock_docker_client
+    ):
+        container = MagicMock()
+        container.labels = {"oduflow.local_path": "/some/local"}
+        mock_docker_client.containers.get.return_value = container
+        mock_detect.return_value = ("HEAD", ["sale/security/ir_rule.xml"])
+        mock_apply.return_value = {
+            "action": "upgrade",
+            "modules_upgraded": ["sale"],
+            "changed_files": ["sale/security/ir_rule.xml"],
+            "message": "Upgraded.",
+        }
+
+        result = env_ops.pull_environment(
+            TEST_SETTINGS, TEST_TEAM, "feature/local", upgrade=["sale"]
+        )
+
+        assert result["action"] == "upgrade"
+        assert not result.get("warnings")
+        mock_apply.assert_called_once()
 
 
 class TestCreateEnvironmentEnvVars:

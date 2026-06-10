@@ -16,6 +16,12 @@ logger = logging.getLogger("oduflow")
 
 TRACE: bool = False
 
+# Active MCP transport for the running server ("stdio" | "http").
+# Set in server.main() before the server starts. Tools use this to gate
+# local-only features (e.g. create_environment(local_path=...)) that must
+# never be exposed over a remote/http transport.
+TRANSPORT: str = "stdio"
+
 
 @dataclass(frozen=True)
 class TeamSettings:

@@ -344,3 +344,126 @@ def _check_manifest_changes(
 
     _trace("_check_manifest(%s) -> no significant changes", module)
     return None
+
+
+def shallow_classify(changed_files: list[str], repo_path: str = "") -> dict:
+    """Path-only classification used when no git *base_ref* is available
+    (a non-git live-mount).
+
+    Coarser than :func:`classify_changes`: with no access to old file content
+    it cannot tell a field change from a method change in a ``.py`` (treated as
+    *restart*), nor a new module from a changed one (a changed
+    ``__manifest__.py`` is treated as *upgrade*). Returns the same dict shape.
+    """
+    if not changed_files:
+        return {
+            "action": "none",
+            "modules_to_upgrade": [],
+            "modules_to_install": [],
+            "details": {},
+        }
+
+    py_changed = False
+    xml_hot: list[str] = []
+    xml_security: list[str] = []
+    js_changed: list[str] = []
+    modules_to_upgrade: set[str] = set()
+
+    for f in changed_files:
+        ext = os.path.splitext(f)[1].lower()
+        module = _get_module_name(f, repo_path)
+
+        if os.path.basename(f) == "__manifest__.py" and module:
+            modules_to_upgrade.add(module)
+            continue
+        if ext == ".py":
+            py_changed = True
+            continue
+        if ext == ".xml":
+            if (_is_security_path(f) or _is_data_path(f)) and module:
+                xml_security.append(f)
+                modules_to_upgrade.add(module)
+            else:
+                xml_hot.append(f)
+            continue
+        if ext == ".js":
+            js_changed.append(f)
+
+    details = {
+        "py_changed": py_changed,
+        "xml_hot": xml_hot,
+        "xml_security": xml_security,
+        "manifest_upgrade": sorted(modules_to_upgrade),
+        "manifest_install": [],
+        "js_changed": js_changed,
+    }
+
+    if modules_to_upgrade:
+        return {
+            "action": "upgrade",
+            "modules_to_install": [],
+            "modules_to_upgrade": sorted(modules_to_upgrade),
+            "details": details,
+        }
+    if py_changed:
+        return {
+            "action": "restart",
+            "modules_to_upgrade": [],
+            "modules_to_install": [],
+            "details": details,
+        }
+    return {
+        "action": "refresh",
+        "modules_to_upgrade": [],
+        "modules_to_install": [],
+        "details": details,
+    }
+
+
+def recommend(changed_files: list[str], repo_path: str, base_ref: str | None) -> dict:
+    """Recommended Odoo action for *changed_files*.
+
+    Full :func:`classify_changes` (git-based deep checks) when a *base_ref* is
+    available, else path-only :func:`shallow_classify`.
+    """
+    if base_ref:
+        return classify_changes(changed_files, repo_path, base_ref=base_ref)
+    return shallow_classify(changed_files, repo_path)
+
+
+def guardrail_warnings(
+    recommended: dict,
+    to_install: list[str],
+    to_upgrade: list[str],
+    do_restart: bool,
+) -> list[str]:
+    """Non-blocking warnings comparing the agent's requested action against
+    what the changed files suggest.
+
+    Flags only likely *under*-actions (a needed install/upgrade/restart that
+    appears to be missing) — the agent stays in charge and may legitimately
+    request more than recommended. Returns an empty list when the request
+    covers everything (e.g. in auto mode, where requested == recommended).
+    """
+    warnings: list[str] = []
+    rec_install = set(recommended.get("modules_to_install", []))
+    rec_upgrade = set(recommended.get("modules_to_upgrade", []))
+    requested = set(to_install) | set(to_upgrade)
+
+    for m in sorted(rec_install - set(to_install)):
+        warnings.append(
+            f"Module '{m}' looks new (manifest added) — consider install='{m}' "
+            "(-i); a restart alone won't pick it up."
+        )
+    for m in sorted(rec_upgrade - requested):
+        warnings.append(
+            f"Module '{m}' has data/schema changes (manifest, security/data XML, or a "
+            f"changed field) — consider upgrade='{m}' (-u); a restart won't load "
+            "them into the database."
+        )
+    if recommended.get("action") == "restart" and not do_restart and not requested:
+        warnings.append(
+            "Python code changed — a restart is recommended; an XML/JS-only refresh "
+            "won't reload it."
+        )
+    return warnings
