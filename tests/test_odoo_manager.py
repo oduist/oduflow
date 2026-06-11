@@ -363,6 +363,41 @@ class TestCreateEnvironment:
         assert run_kwargs["volumes"][abs_local]["bind"] == "/mnt/extra-addons"
 
 
+class TestReloadTemplate:
+    @patch("oduflow.docker_ops.system_ops._update_template_sizes")
+    @patch("oduflow.docker_ops.system_ops._copy_file_to_container")
+    @patch("oduflow.docker_ops.system_ops._is_text_dump", return_value=False)
+    @patch("oduflow.docker_ops.system_ops._db_exists", return_value=False)
+    @patch("oduflow.docker_ops.system_ops._exec_sql", return_value="5")
+    @patch("oduflow.docker_ops.system_ops._wait_pg_ready")
+    @patch("oduflow.docker_ops.system_ops.os.path.isfile", return_value=True)
+    def test_restore_uses_no_owner(
+        self,
+        mock_isfile,
+        mock_wait,
+        mock_sql,
+        mock_db_exists,
+        mock_text,
+        mock_copy,
+        mock_sizes,
+        mock_docker_client,
+    ):
+        # Custom-format dumps must be restored with --no-owner so the template
+        # is not pinned to the source env's per-env role; otherwise deleting the
+        # source env leaves an undroppable orphan role. (--no-owner is honored
+        # only at restore time for -Fc archives, not at pg_dump time.)
+        db_container = MagicMock()
+        db_container.exec_run.return_value = (0, b"")
+        mock_docker_client.containers.get.return_value = db_container
+
+        system_ops.reload_template(TEST_SETTINGS, TEST_TEAM, "mytpl")
+
+        restore_cmd = db_container.exec_run.call_args[0][0]
+        joined = " ".join(restore_cmd)
+        assert "pg_restore" in joined
+        assert "--no-owner" in joined
+
+
 class TestPullEnvironmentLocal:
     @patch("oduflow.docker_ops.env_ops._apply_actions")
     @patch("oduflow.docker_ops.env_ops._detect_local_changes")

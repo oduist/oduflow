@@ -501,6 +501,15 @@ def reload_template(
 
     _copy_file_to_container(db_container, resolved_dump, "/tmp")
 
+    # pg_restore runs with --no-owner so restored objects are owned by the
+    # restoring superuser, not by whatever role the dump recorded. For
+    # env-derived templates that role is the source env's per-env role
+    # (u_<team>_<env>), which is dropped when the env is deleted — keeping it as
+    # owner makes deletion fail with "objects depend on it" and leaks an orphan
+    # role. create_environment re-assigns ownership to the new per-env role when
+    # provisioning from a template. (--no-owner is meaningful only at restore
+    # time for archive formats. The psql path for plain-SQL/external dumps is
+    # left untouched.)
     restore_tool = "psql" if use_psql else "pg_restore"
     if is_gzipped:
         if use_psql:
@@ -510,7 +519,7 @@ def reload_template(
         else:
             pipeline = (
                 f"gunzip -c /tmp/{tmp_name} | "
-                f"pg_restore -U {settings.db_user} -d {tpl_db}"
+                f"pg_restore --no-owner -U {settings.db_user} -d {tpl_db}"
             )
         restore_cmd = ["bash", "-c", f"set -o pipefail; {pipeline}"]
     else:
@@ -527,6 +536,7 @@ def reload_template(
         else:
             restore_cmd = [
                 "pg_restore",
+                "--no-owner",
                 "-U",
                 settings.db_user,
                 "-d",
@@ -866,7 +876,9 @@ def publish_env_as_template(
     _wait_pg_ready(client, settings)
     db_container = client.containers.get(settings.shared_db_container)
 
-    # 1. pg_dump branch DB → new template dump
+    # 1. pg_dump branch DB → new template dump. Ownership is stripped at restore
+    # time (pg_restore --no-owner in reload_template), NOT here: --no-owner is
+    # ignored by pg_dump for the -Fc archive format.
     dump_path = team.get_template_sql_path(template_name)
     os.makedirs(os.path.dirname(dump_path), exist_ok=True)
     dump_file = f"/tmp/{env_db}.dump"
