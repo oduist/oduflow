@@ -434,8 +434,18 @@ def create_environment(
                 effective_repo_url = local_path
         else:
             if not effective_repo_url:
+                sources = [
+                    "repo_url",
+                    "template_name (which supplies repo_url from its metadata)",
+                ]
+                if settings_module.TRANSPORT == "stdio":
+                    sources.append(
+                        "local_path=<abs path> (local live-mount fast-path, stdio only)"
+                    )
                 raise ValueError(
-                    "repo_url is required (not found in template metadata either)."
+                    "No code source for the environment — provide one of: "
+                    + "; ".join(sources)
+                    + "."
                 )
             git_ops.validate_repo_url(effective_repo_url)
 
