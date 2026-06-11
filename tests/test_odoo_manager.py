@@ -164,6 +164,7 @@ class TestCreateEnvironment:
     ):
         mock_odoo = MagicMock()
         mock_odoo.exec_run.return_value = (0, b"OK")
+        mock_odoo.wait.return_value = {"StatusCode": 0}
         mock_docker_client.containers.run.return_value = mock_odoo
         mock_docker_client.containers.get.side_effect = docker.errors.NotFound("nf")
 
@@ -181,7 +182,8 @@ class TestCreateEnvironment:
         assert mock_sql.call_count == 2
         mock_creds.assert_called_once()
         mock_role.assert_called_once()
-        mock_docker_client.containers.run.assert_called_once()
+        # Greenfield: isolated init container + serving container = 2 run calls.
+        assert mock_docker_client.containers.run.call_count == 2
         mock_alloc.assert_called_once()
 
     @patch("oduflow.docker_ops.env_ops._db_exists", return_value=True)
@@ -263,6 +265,7 @@ class TestCreateEnvironment:
     ):
         mock_odoo = MagicMock()
         mock_odoo.exec_run.return_value = (0, b"OK")
+        mock_odoo.wait.return_value = {"StatusCode": 0}
         mock_docker_client.containers.run.return_value = mock_odoo
         mock_docker_client.containers.get.side_effect = docker.errors.NotFound("nf")
 
@@ -282,12 +285,13 @@ class TestCreateEnvironment:
         assert "TEMPLATE" not in create_db_call[0][2]
         # Should NOT mount filestore
         mock_mount.assert_not_called()
-        # Should run -i base --stop-after-init
-        init_cmd = mock_odoo.exec_run.call_args[0][0]
-        assert "-i base" in init_cmd
-        assert "--stop-after-init" in init_cmd
-        # Should restart after init
-        mock_odoo.restart.assert_called_once()
+        # Greenfield init runs `-i base` in a SEPARATE isolated container
+        # (the FIRST containers.run), before the serving container — so the
+        # serving PID1 never races it. containers.run is called twice.
+        assert mock_docker_client.containers.run.call_count == 2
+        init_run = mock_docker_client.containers.run.call_args_list[0]
+        assert "-i base" in init_run.kwargs["command"]
+        assert "--stop-after-init" in init_run.kwargs["command"]
 
     @patch(
         "oduflow.extra_addons.generate_odoo_conf",
@@ -332,6 +336,7 @@ class TestCreateEnvironment:
     ):
         mock_odoo = MagicMock()
         mock_odoo.exec_run.return_value = (0, b"OK")
+        mock_odoo.wait.return_value = {"StatusCode": 0}
         mock_docker_client.containers.run.return_value = mock_odoo
         mock_docker_client.containers.get.side_effect = docker.errors.NotFound("nf")
 

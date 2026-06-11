@@ -573,6 +573,67 @@ def _cleanup_old_environment(
         shutil.rmtree(workspace_path)
 
 
+def _init_empty_database(
+    client: DockerClient,
+    settings: Settings,
+    odoo_image: str,
+    env_db: str,
+    odoo_env: dict,
+    odoo_volumes: dict,
+    env_name: str,
+) -> str:
+    """Initialize a fresh empty database with ``-i base`` in an isolated,
+    short-lived container, then remove it. Returns a setup-log line.
+
+    This runs *before* the long-running serving container exists, so the init
+    is the only Odoo process touching the database. It avoids the registry
+    signaling race that occurs when the serving PID1 (``odoo -d <db> --dev=xml``)
+    and an in-container ``-i base`` exec set up the registry concurrently and
+    collide on ``CREATE TABLE orm_signaling_registry`` (``UniqueViolation`` in
+    the pg catalog). ``-i base`` is explicit, so it works regardless of whether
+    the image build auto-initializes an empty DB on plain ``-d``.
+    """
+    init_name = get_resource_name(env_name, "odoo-init", settings.prefix)
+    try:
+        client.containers.get(init_name).remove(force=True)
+    except docker.errors.NotFound:
+        pass
+
+    init_container = client.containers.run(
+        image=odoo_image,
+        name=init_name,
+        detach=True,
+        network=settings.shared_network,
+        environment=odoo_env,
+        volumes=odoo_volumes,
+        command=f"odoo -d {env_db} -i base --stop-after-init --no-http",
+    )
+    exit_code: int = -1
+    logs = ""
+    try:
+        result = init_container.wait(timeout=600)
+        exit_code = (
+            result.get("StatusCode", -1) if isinstance(result, dict) else int(result)
+        )
+        try:
+            logs = init_container.logs().decode("utf-8", errors="replace")
+        except Exception:
+            logs = ""
+    finally:
+        try:
+            init_container.remove(force=True)
+        except docker.errors.APIError:
+            pass
+
+    if exit_code != 0:
+        logger.error(
+            "Base init failed (exit %s)", exit_code, extra={"env_name": env_name}
+        )
+        return f"[INIT] odoo -i base FAILED (exit {exit_code}):\n{logs[-4000:]}"
+    logger.info("Base init completed", extra={"env_name": env_name})
+    return "[INIT] odoo -i base completed successfully"
+
+
 def create_environment(
     settings: Settings,
     team: TeamSettings,
@@ -936,52 +997,37 @@ def create_environment(
     except Exception as exc:
         logger.warning("Could not pull image %s, using local copy: %s", odoo_image, exc)
 
+    setup_logs: list[str] = []
+
+    # Greenfield (no template): initialize the empty DB with `-i base` in an
+    # isolated, short-lived container BEFORE the serving container exists, so
+    # the init is the only Odoo process touching the DB. This avoids the
+    # registry-signaling race between the serving PID1 and an in-container
+    # `-i base` exec (UniqueViolation on orm_signaling_registry).
+    if template_name is None:
+        logger.info(
+            "No template — initialising Odoo with -i base (isolated container)",
+            extra={"env_name": env_name},
+        )
+        setup_logs.append(
+            _init_empty_database(
+                client, settings, odoo_image, env_db, odoo_env, odoo_volumes, env_name
+            )
+        )
+
     container = client.containers.run(**run_kwargs)
 
     if odoo_conf_to_copy:
         _copy_file_to_container(container, odoo_conf_to_copy, "/etc/odoo")
 
-    setup_logs: list[str] = []
-
-    if template_name is None:
-        logger.info(
-            "No template — initialising Odoo with -i base",
-            extra={"env_name": env_name},
-        )
-        apt_log = _install_apt_packages(container, repo_path)
-        if apt_log:
-            setup_logs.append(apt_log)
-        _, pip_log = _install_pip_requirements(container, repo_path, restart=False)
-        if pip_log:
-            setup_logs.append(pip_log)
-        init_cmd = (
-            f"/entrypoint.sh odoo -d {env_db} -i base --stop-after-init --no-http"
-        )
-        exit_code, output = container.exec_run(init_cmd)
-        output_str = (
-            output.decode("utf-8") if isinstance(output, bytes) else str(output)
-        )
-        if exit_code != 0:
-            logger.error(
-                "Odoo base init failed (exit %d): %s",
-                exit_code,
-                output_str,
-                extra={"env_name": env_name},
-            )
-            setup_logs.append(
-                f"[INIT] odoo -i base FAILED (exit {exit_code}):\n{output_str}"
-            )
-        else:
-            setup_logs.append("[INIT] odoo -i base completed successfully")
-        container.restart()
-        logger.info("Container restarted after base init", extra={"env_name": env_name})
-    else:
-        apt_log = _install_apt_packages(container, repo_path)
-        if apt_log:
-            setup_logs.append(apt_log)
-        _, pip_log = _install_pip_requirements(container, repo_path)
-        if pip_log:
-            setup_logs.append(pip_log)
+    # Install repo apt/pip dependencies onto the serving container (both paths).
+    # base needs no custom deps, so this runs after the DB is ready.
+    apt_log = _install_apt_packages(container, repo_path)
+    if apt_log:
+        setup_logs.append(apt_log)
+    _, pip_log = _install_pip_requirements(container, repo_path)
+    if pip_log:
+        setup_logs.append(pip_log)
 
     # --- Sanitize environment database ---
     if sanitize and template_name is not None:
