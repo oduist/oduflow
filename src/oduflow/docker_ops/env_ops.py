@@ -351,7 +351,7 @@ def remount_template_overlays(
             continue
 
         container_name = get_resource_name(env_name, "odoo", settings.prefix)
-        image = env.get("odoo_image") or "odoo:17.0"
+        image = env.get("odoo_image") or "odoo:19.0"
         was_running = False
         try:
             container = client.containers.get(container_name)

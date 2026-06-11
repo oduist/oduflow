@@ -111,7 +111,7 @@ def _parse_extra_addons(raw: str) -> dict[str, str]:
             result[name.strip()] = branch.strip()
         else:
             raise ValueError(
-                f"Extra addon '{item}' must include a branch (e.g. '{item}:18.0')."
+                f"Extra addon '{item}' must include a branch (e.g. '{item}:19.0')."
             )
     return result
 

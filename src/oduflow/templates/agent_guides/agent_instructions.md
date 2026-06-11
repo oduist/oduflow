@@ -288,7 +288,7 @@ Step 4: get_environment_logs — If something went wrong, check for migration IN
 ```
 Agent: list_environments → no environment for "feature-invoice-pdf"
 
-Agent: create_environment("feature-invoice-pdf", "https://github.com/company/addons.git", "odoo:17.0")
+Agent: create_environment("feature-invoice-pdf", "https://github.com/company/addons.git", "odoo:19.0")
 → Environment created at http://server:50042
 
 Agent: [writes code for the module]

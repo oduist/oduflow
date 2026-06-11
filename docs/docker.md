@@ -66,7 +66,7 @@ To set up a template database:
 
 ```bash
 # From scratch (clean Odoo with specified modules)
-docker exec oduflow oduflow init-template --odoo-image odoo:17.0 --template-name default --modules base,web,contacts
+docker exec oduflow oduflow init-template --odoo-image odoo:19.0 --template-name default --modules base,web,contacts
 
 # Or import from a running Odoo instance
 docker exec oduflow oduflow import-template https://my-odoo.example.com master_password --template-name default

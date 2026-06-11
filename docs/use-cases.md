@@ -6,7 +6,7 @@ The most common workflow — test your changes against real production data:
 
 ```bash
 # Create an environment for your feature branch
-oduflow call create_environment feature-login "" default https://github.com/company/odoo-addons.git odoo:17.0
+oduflow call create_environment feature-login "" default https://github.com/company/odoo-addons.git odoo:19.0
 
 # Make changes, push to remote, then pull into the environment
 oduflow call pull_and_apply feature-login
@@ -22,7 +22,7 @@ Reproduce a production bug with real data:
 
 ```bash
 # Spin up an environment with production data
-oduflow call create_environment bug-12345 "" default https://github.com/company/odoo-addons.git odoo:17.0
+oduflow call create_environment bug-12345 "" default https://github.com/company/odoo-addons.git odoo:19.0
 
 # Debug inside the container
 oduflow call run_odoo_command bug-12345 "python3 -c 'import odoo; ...'"
@@ -36,7 +36,7 @@ oduflow call run_odoo_command bug-12345 "psql -h oduflow-db -U odoo -d oduflow_b
 Run Odoo tests in an isolated environment:
 
 ```bash
-oduflow call create_environment test-suite "" default https://github.com/company/odoo-addons.git odoo:17.0
+oduflow call create_environment test-suite "" default https://github.com/company/odoo-addons.git odoo:19.0
 oduflow call run_odoo_tests test-suite sale_custom,invoice_custom
 oduflow call delete_environment test-suite
 ```
@@ -47,10 +47,10 @@ Start a new Odoo project from scratch:
 
 ```bash
 # Generate a clean template with common modules
-oduflow init-template --odoo-image odoo:17.0 --template-name default --modules base,web,contacts,sale,purchase,stock
+oduflow init-template --odoo-image odoo:19.0 --template-name default --modules base,web,contacts,sale,purchase,stock
 
 # Now create environments that start with your customized setup
-oduflow call create_environment dev "" default https://github.com/company/new-project.git odoo:17.0
+oduflow call create_environment dev "" default https://github.com/company/new-project.git odoo:19.0
 ```
 
 ## 🔄 Multiple Odoo Versions
@@ -60,18 +60,18 @@ Manage environments across different Odoo versions using named templates:
 ```bash
 # Set up templates for different versions
 oduflow init-template --odoo-image odoo:15.0 --template-name v15
-oduflow init-template --odoo-image odoo:17.0 --template-name v17
+oduflow init-template --odoo-image odoo:19.0 --template-name v19
 
 # Create environments targeting specific versions
 oduflow call create_environment legacy-fix "" v15 https://github.com/company/v15-addons.git odoo:15.0
-oduflow call create_environment new-feature "" v17 https://github.com/company/v17-addons.git odoo:17.0
+oduflow call create_environment new-feature "" v19 https://github.com/company/v19-addons.git odoo:19.0
 ```
 
 ## 🤖 AI-Assisted Development
 
 Let your AI coding agent manage Odoo environments. Configure your MCP client (Cursor, Cline, Amp) to connect to `http://<host>:8000/mcp`, then:
 
-> *"Create an Odoo 17 environment for the `feature-payment-gateway` branch from our repo. Install the `sale` and `payment` modules, then run the tests."*
+> *"Create an Odoo 19 environment for the `feature-payment-gateway` branch from our repo. Install the `sale` and `payment` modules, then run the tests."*
 
 The agent will call the appropriate MCP tools in sequence:
 
@@ -143,7 +143,7 @@ Set up a full-stack development environment:
 
 ```bash
 # Create the Odoo environment
-oduflow call create_environment dev "" default https://github.com/company/odoo-addons.git odoo:17.0
+oduflow call create_environment dev "" default https://github.com/company/odoo-addons.git odoo:19.0
 
 # Add Redis for caching
 oduflow call create_service redis redis:7 6379
@@ -162,7 +162,7 @@ Use `oduflow call` in your CI pipeline:
 # .github/workflows/test.yml
 steps:
   - name: Create test environment
-    run: oduflow call create_environment ci-${{ github.sha }} "" default ${{ github.repository }} odoo:17.0
+    run: oduflow call create_environment ci-${{ github.sha }} "" default ${{ github.repository }} odoo:19.0
 
   - name: Install and test
     run: |
@@ -231,7 +231,7 @@ Evolve your template as the project grows:
 
 ```bash
 # 1. Create an environment for template changes
-oduflow call create_environment template-update "" default https://github.com/company/odoo-addons.git odoo:17.0
+oduflow call create_environment template-update "" default https://github.com/company/odoo-addons.git odoo:19.0
 
 # 2. Install new modules
 oduflow call install_odoo_modules template-update accounting,hr,project

@@ -616,7 +616,7 @@ def init_template(
     settings: Settings,
     team: TeamSettings,
     template_name: str,
-    odoo_image: str = "odoo:17.0",
+    odoo_image: str = "odoo:19.0",
     modules: str = "base",
     force: bool = False,
 ) -> dict[str, str]:
@@ -913,10 +913,10 @@ def publish_env_as_template(
     try:
         sc = client.containers.get(source_container)
         source_was_running = sc.status == "running"
-        source_image = sc.image.tags[0] if sc.image.tags else "odoo:17.0"
+        source_image = sc.image.tags[0] if sc.image.tags else "odoo:19.0"
     except (docker.errors.NotFound, IndexError):
         source_was_running = False
-        source_image = "odoo:17.0"
+        source_image = "odoo:19.0"
 
     with env_ops.remount_template_overlays(
         client,

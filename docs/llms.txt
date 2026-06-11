@@ -84,7 +84,7 @@ During upgrade, bundled files are overwritten. Add `# KEEP` as the first line of
 
 ```bash
 # From scratch
-oduflow init-template --odoo-image odoo:17.0 --template-name default
+oduflow init-template --odoo-image odoo:19.0 --template-name default
 
 # From production dump
 # Place dump.sql and filestore/ into {data_dir}/team_1/templates/default/ then:

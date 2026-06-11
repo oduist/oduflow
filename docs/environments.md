@@ -6,13 +6,13 @@
 
 ```bash
 # Create with a named template (env_name, template_name, repo_url, odoo_image)
-oduflow call create_environment feature-login "" myproject https://github.com/owner/repo.git odoo:17.0
+oduflow call create_environment feature-login "" myproject https://github.com/owner/repo.git odoo:19.0
 
 # Create without a template (fresh Odoo with -i base)
-oduflow call create_environment feature-login "" none https://github.com/owner/repo.git odoo:17.0
+oduflow call create_environment feature-login "" none https://github.com/owner/repo.git odoo:19.0
 
 # Create with JSON arguments (more explicit)
-oduflow call create_environment '{"branch":"feature-login","template_name":"myproject","repo_url":"https://github.com/owner/repo.git","odoo_image":"odoo:17.0"}'
+oduflow call create_environment '{"branch":"feature-login","template_name":"myproject","repo_url":"https://github.com/owner/repo.git","odoo_image":"odoo:19.0"}'
 
 # Inject container environment variables (comma-separated KEY=VALUE)
 oduflow call create_environment '{"branch":"feature-login","template_name":"myproject","env_vars":"WORKERS=2,LIMIT_TIME_CPU=600"}'
@@ -136,7 +136,7 @@ Python scripts receive the following environment variables: `ODOO_DB`, `DB_HOST`
 Pass `sanitize=false` when creating an environment to skip all sanitization (both team-level and per-project):
 
 ```bash
-oduflow call create_environment '{"branch":"my-branch","template_name":"mytemplate","repo_url":"https://...","odoo_image":"odoo:17.0","sanitize":false}'
+oduflow call create_environment '{"branch":"my-branch","template_name":"mytemplate","repo_url":"https://...","odoo_image":"odoo:19.0","sanitize":false}'
 ```
 
 !!! note
@@ -164,7 +164,7 @@ oduflow call restart_environment feature-login
 oduflow call update_environment feature-login
 
 # Switch image and/or replace env vars (keeps database and filestore)
-oduflow call update_environment feature-login "WORKERS=4,LIMIT_TIME_CPU=900" odoo:17.0
+oduflow call update_environment feature-login "WORKERS=4,LIMIT_TIME_CPU=900" odoo:19.0
 
 # Tear down everything (container, database, filestore, workspace)
 oduflow call delete_environment feature-login
