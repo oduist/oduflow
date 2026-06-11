@@ -15,7 +15,7 @@ Oduflow supports mounting **extra addon repositories** (e.g. Odoo Enterprise, th
     feature-x/
       repo/              ← main project repo (existing)
       extra/
-        enterprise/      ← git worktree (branch 17.0)
+        enterprise/      ← git worktree (branch 19.0)
         custom-themes/   ← git worktree (branch main)
 ```
 
@@ -37,11 +37,11 @@ oduflow call add_extra_repo enterprise https://github.com/odoo/enterprise.git
 When creating an environment, specify which extra repos to mount:
 
 ```bash
-# Mount enterprise addons on branch 17.0
-oduflow call create_environment feature-x "" default https://github.com/company/addons.git odoo:17.0 "enterprise:17.0"
+# Mount enterprise addons on branch 19.0
+oduflow call create_environment feature-x "" default https://github.com/company/addons.git odoo:19.0 "enterprise:19.0"
 
 # Mount multiple extra repos
-oduflow call create_environment feature-x "" default https://github.com/company/addons.git odoo:17.0 "enterprise:17.0,custom-themes:main"
+oduflow call create_environment feature-x "" default https://github.com/company/addons.git odoo:19.0 "enterprise:19.0,custom-themes:main"
 ```
 
 Oduflow automatically:
@@ -109,7 +109,7 @@ Delete and recreate the environment. The new environment will get a fresh worktr
 
 ```bash
 oduflow call delete_environment feature-x
-oduflow call create_environment feature-x "" default https://github.com/company/addons.git odoo:17.0 "enterprise:17.0"
+oduflow call create_environment feature-x "" default https://github.com/company/addons.git odoo:19.0 "enterprise:19.0"
 ```
 
 !!! tip

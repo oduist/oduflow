@@ -13,13 +13,13 @@ If you don't have a production database dump — for example, you're starting a 
 ### Generate a clean template
 
 ```bash
-oduflow init-template --odoo-image odoo:17.0 --template-name default
+oduflow init-template --odoo-image odoo:19.0 --template-name default
 ```
 
 If a `dump.sql` or filestore already exists, the command will refuse to run. Use `--force` to overwrite:
 
 ```bash
-oduflow init-template --odoo-image odoo:17.0 --template-name default --force
+oduflow init-template --odoo-image odoo:19.0 --template-name default --force
 ```
 
 This will:
@@ -33,13 +33,13 @@ This will:
 ### Install additional modules during generation
 
 ```bash
-oduflow init-template --odoo-image odoo:17.0 --template-name default --modules base,web,contacts,sale
+oduflow init-template --odoo-image odoo:19.0 --template-name default --modules base,web,contacts,sale
 ```
 
 ### Named templates for different projects
 
 ```bash
-oduflow init-template --odoo-image odoo:17.0 --template-name myproject-v17
+oduflow init-template --odoo-image odoo:19.0 --template-name myproject-v19
 oduflow init-template --odoo-image odoo:15.0 --template-name legacy-v15
 ```
 
@@ -143,13 +143,13 @@ Each template profile can contain a `metadata.json` file that stores defaults an
 
 ```json
 {
-  "odoo_image": "odoo:17.0",
+  "odoo_image": "odoo:19.0",
   "repo_url": "https://github.com/company/addons.git",
-  "extra_addons": {"enterprise": "17.0"},
+  "extra_addons": {"enterprise": "19.0"},
   "use_overlay": true,
   "source_url": "https://my-odoo.example.com",
   "source_db": "production",
-  "odoo_version": "17.0+e",
+  "odoo_version": "19.0+e",
   "pg_version": "15.0"
 }
 ```
@@ -162,9 +162,9 @@ The `use_overlay` flag determines whether new environments use fuse-overlayfs (f
 
 | Scenario | Command |
 |---|---|
-| New project, no existing database | `oduflow init-template --odoo-image odoo:17.0 --template-name default` |
-| Regenerate template from scratch | `oduflow init-template --odoo-image odoo:17.0 --template-name default --force` |
-| Named template for a specific project | `oduflow init-template --odoo-image odoo:17.0 --template-name myproject` |
+| New project, no existing database | `oduflow init-template --odoo-image odoo:19.0 --template-name default` |
+| Regenerate template from scratch | `oduflow init-template --odoo-image odoo:19.0 --template-name default --force` |
+| Named template for a specific project | `oduflow init-template --odoo-image odoo:19.0 --template-name myproject` |
 | Have a production dump file | Place dump at `{data_dir}/team_{ID}/templates/default/dump.sql` and run `oduflow reload-template default` |
 | Need to install modules or configure the template | Create an env, configure it, then `oduflow template-from-env my-branch --template-name default` |
 | Update the template from a newer production dump | `oduflow reload-template default --dump-path /path/to/new.dump` |

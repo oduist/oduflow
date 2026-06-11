@@ -210,7 +210,7 @@ def _make_summary(cached: CachedOutput) -> str:
 
 **Что видит агент (пример):**
 ```
-2024-01-15 12:00:00 INFO odoo.service.server: Odoo version 17.0-20240115
+2024-01-15 12:00:00 INFO odoo.service.server: Odoo version 19.0-20240115
 2024-01-15 12:00:00 INFO odoo.service.server: Using configuration file /etc/odoo/odoo.conf
 ... (первые 20 строк) ...
 
@@ -445,7 +445,7 @@ def run_db_query(
 → Ответ (помещается в контекст):
   Error. Modules: supply. Exit code: 1.
 
-  2024-01-15 INFO odoo.service.server: Odoo version 17.0
+  2024-01-15 INFO odoo.service.server: Odoo version 19.0
   ...
 
   --- Errors/Warnings (3 occurrences) ---

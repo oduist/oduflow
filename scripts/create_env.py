@@ -75,7 +75,7 @@ def main() -> None:
     parser.add_argument("--odoo-image", default="",
                         help="Odoo Docker image (default: from template metadata)")
     parser.add_argument("--extra-addons", default="",
-                        help="Extra addons, e.g. 'enterprise:18.0,themes'")
+                        help="Extra addons, e.g. 'enterprise:19.0,themes'")
     parser.add_argument("--env", default="",
                         help="Environment variables, comma-separated KEY=VALUE (e.g. 'WORKERS=2,LIMIT_TIME_CPU=600')")
     parser.add_argument("--password", default="",

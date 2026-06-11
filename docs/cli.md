@@ -41,7 +41,7 @@ All template commands accept `--team` to specify the team ID (default: `1`).
 
 ```bash
 # Generate a clean template from a Docker image
-oduflow init-template --odoo-image odoo:17.0 --template-name myproject [--modules base,web,sale] [--force] [--team 1]
+oduflow init-template --odoo-image odoo:19.0 --template-name myproject [--modules base,web,sale] [--force] [--team 1]
 
 # Save a branch environment as the new template.
 # Other environments on this template keep their filestore changes by default;
@@ -129,7 +129,7 @@ You can invoke any registered MCP tool directly from the terminal using `oduflow
 oduflow call
 
 # Call a tool with positional arguments (mapped to parameters in order)
-oduflow call create_environment dev "" "" https://github.com/owner/repo.git odoo:17.0
+oduflow call create_environment dev "" "" https://github.com/owner/repo.git odoo:19.0
 oduflow call delete_environment dev
 oduflow call list_environments
 oduflow call get_environment_logs main 50
@@ -137,7 +137,7 @@ oduflow call run_odoo_command dev "ls /mnt/extra-addons"
 oduflow call create_service redis redis:7 6379
 
 # Call a tool with JSON-encoded arguments
-oduflow call create_environment '{"branch":"dev","repo_url":"https://github.com/owner/repo.git","odoo_image":"odoo:17.0","template_name":"myproject"}'
+oduflow call create_environment '{"branch":"dev","repo_url":"https://github.com/owner/repo.git","odoo_image":"odoo:19.0","template_name":"myproject"}'
 
 # Service with NET_ADMIN capability (VPN / tun / iptables)
 oduflow call create_service '{"name":"vpn","image":"linuxserver/wireguard","port":51820,"net_admin":true}'

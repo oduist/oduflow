@@ -335,7 +335,7 @@ def _parse_extra_addons(raw: str) -> dict[str, str]:
             result[name.strip()] = branch.strip()
         else:
             raise ValueError(
-                f"Extra addon '{item}' must include a branch (e.g. '{item}:18.0')."
+                f"Extra addon '{item}' must include a branch (e.g. '{item}:19.0')."
             )
     return result
 
@@ -363,12 +363,12 @@ def create_environment(
     Provision a new ephemeral Odoo environment.
 
     Args:
-        branch: The git branch to clone (e.g. "18.0", "feature/my-feature").
-        env_name: Optional environment name. If empty, defaults to the branch name. Use this to create multiple environments from the same branch (e.g. env_name="client-a" with branch="18.0").
+        branch: The git branch to clone (e.g. "19.0", "feature/my-feature").
+        env_name: Optional environment name. If empty, defaults to the branch name. Use this to create multiple environments from the same branch (e.g. env_name="client-a" with branch="19.0").
         template_name: Name of the template profile to use as database template. Pass "none" to skip template and initialise Odoo from scratch with -i base. When a template is specified, repo_url and odoo_image are loaded from template metadata (but can be overridden).
         repo_url: URL of the git repository to clone. Optional when template_name is specified (loaded from template metadata).
-        odoo_image: Full Docker image name with tag (e.g. "odoo:17.0"). Optional when template_name is specified (loaded from template metadata).
-        extra_addons: Comma-separated list of extra addon repo names with branches (e.g. "enterprise:18.0,custom-themes:main"). Each entry must include a branch after a colon.
+        odoo_image: Full Docker image name with tag (e.g. "odoo:19.0"). Optional when template_name is specified (loaded from template metadata).
+        extra_addons: Comma-separated list of extra addon repo names with branches (e.g. "enterprise:19.0,custom-themes:main"). Each entry must include a branch after a colon.
         sanitize: Sanitize the database after provisioning (default: True). Disables incoming/outgoing mail servers and runs custom scripts from the .odoo_sanitize/ folder in the repository.
         auto_install_modules: Comma-separated list of Odoo modules to install automatically after the environment is provisioned (e.g. "sale,purchase,stock"). When a template is specified and this is empty, the value is loaded from template metadata.
         env_vars: Comma-separated KEY=VALUE pairs injected as environment variables into the Odoo container (e.g. "WORKERS=2,LIMIT_TIME_CPU=600"). These are added on top of the database connection variables (HOST/USER/PASSWORD).
@@ -728,7 +728,7 @@ def get_odoo_development_guide(version: str, ctx: Context = None) -> str:
     Get Odoo development standards and constraints guide for a specific Odoo version.
 
     Args:
-        version: Odoo version number (e.g. "17", "17.0", "18", "18.0"). Both "17" and "17.0" formats are accepted.
+        version: Odoo version number (e.g. "18", "18.0", "19", "19.0"). Both "19" and "19.0" formats are accepted.
     """
     import pathlib
 
@@ -946,7 +946,7 @@ def update_environment(
     Args:
         env_name: The name of the environment to update.
         env_vars: Comma-separated KEY=VALUE pairs that fully replace the current user-supplied env vars (e.g. "WORKERS=4,LIMIT_TIME_CPU=900"). Leave empty to keep the current env vars. The database connection variables (HOST/USER/PASSWORD) are always preserved.
-        odoo_image: New Docker image with tag to pull and run (e.g. "odoo:17.0"). Leave empty to keep the current image.
+        odoo_image: New Docker image with tag to pull and run (e.g. "odoo:19.0"). Leave empty to keep the current image.
     """
     settings = _get_settings()
     team = _resolve_team(ctx)
@@ -2875,7 +2875,7 @@ def main() -> None:
         help="Generate template dump and filestore from a clean Odoo image",
     )
     p_init_tpl.add_argument(
-        "--odoo-image", required=True, help="Docker image for Odoo (e.g. odoo:17.0)"
+        "--odoo-image", required=True, help="Docker image for Odoo (e.g. odoo:19.0)"
     )
     p_init_tpl.add_argument(
         "--modules",

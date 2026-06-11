@@ -77,7 +77,7 @@ Containers are labeled with `oduflow.team={team_id}` for filtering.
 CLI template and service commands accept a `--team` flag:
 
 ```bash
-oduflow init-template --odoo-image odoo:17.0 --template-name myproject --team 2
+oduflow init-template --odoo-image odoo:19.0 --template-name myproject --team 2
 oduflow list-templates --team 2
 oduflow cleanup --team 2
 ```
