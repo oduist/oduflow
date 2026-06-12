@@ -21,13 +21,18 @@ always in a dark-themed setup.
 
 Oduflow provisions isolated, ephemeral Odoo environments on Docker (one per
 git branch) and exposes them to AI coding agents via MCP. The web dashboard
-(`src/oduflow/templates/dashboard.html`, served by `web_ui.py`) is the
-operator console for that machinery: environment cards with status and
-per-container stats, lifecycle actions, sync results, log viewers, web
-terminal and SQL consoles, template profiles, services, volumes, extra addon
-repos, credentials, agent guides, and license state. Success: the operator
-understands system state at a glance and performs any lifecycle action in one
-or two clicks, trusting that what they see reflects the real Docker state.
+(`src/oduflow/templates/dashboard.html`, served by `web_ui.py`) is
+**visualization first**: the primary interface to Oduflow is MCP and agents,
+and nobody provisions environments through the UI. The human opens the
+dashboard to see what exists and to intervene occasionally — check status and
+system load, read and copy logs, stop or delete unused environments, rebuild
+one when something is wrong, and create auxiliary services (the one entity
+still made by hand). Both audiences — a freelancer working solo with agents
+and a dev team at an agency deploying many Odoo versions — use it the same
+way. Success: the human understands fleet state at a glance, trusts that it
+reflects the real Docker state, and can perform the occasional manual
+intervention in one or two clicks. Creation-flow ergonomics, bulk operations,
+keyboard accelerators, and deep linking are explicitly non-goals.
 
 ## Brand Personality
 

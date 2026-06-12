@@ -462,8 +462,11 @@ def _build_routes(
             n = int(request.query_params.get("n", "200"))
         except (ValueError, TypeError):
             n = 200
+        container = request.query_params.get("container", "")
         try:
-            logs = get_environment_logs(get_settings(), branch, n_lines=n)
+            logs = get_environment_logs(
+                get_settings(), branch, n_lines=n, container_name=container
+            )
             return JSONResponse({"ok": True, "logs": logs})
         except FlowError as e:
             return _error_response(e)

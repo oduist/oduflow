@@ -107,18 +107,31 @@ def get_environment_logs(
     n_lines: int = 100,
     grep: str = "",
     level: str = "",
+    container_name: str = "",
 ) -> str:
     client = get_client()
-    odoo_container_name = get_resource_name(env_name, "odoo", settings.prefix)
+    if container_name:
+        # Only allow containers that belong to this environment.
+        env_prefix = get_resource_name(env_name, "", settings.prefix)
+        if not container_name.startswith(env_prefix):
+            raise NotFoundError(
+                f"Container '{container_name}' does not belong to "
+                f"environment '{env_name}'."
+            )
+        target_container_name = container_name
+    else:
+        target_container_name = get_resource_name(env_name, "odoo", settings.prefix)
 
     # Fetch more lines when filtering to have meaningful results
     fetch_lines = min(n_lines * 10, 10_000) if (grep or level) else n_lines
 
     try:
-        container = client.containers.get(odoo_container_name)
+        container = client.containers.get(target_container_name)
         logs = container.logs(tail=fetch_lines, stdout=True, stderr=True)
         logs_str = logs.decode("utf-8") if isinstance(logs, bytes) else str(logs)
     except docker.errors.NotFound:
+        if container_name:
+            raise NotFoundError(f"Container '{container_name}' does not exist.")
         raise NotFoundError(
             f"Environment '{env_name}' does not exist. Use create_environment first."
         )
