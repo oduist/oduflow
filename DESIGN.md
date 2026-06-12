@@ -314,6 +314,15 @@ be traced against a dimmed page, it is missing one of the two.
   Console Blue text with a 2px Console Blue underline. Keyboard reachable,
   `aria-selected` carried, overflow scrolls horizontally on narrow screens.
 
+### The Note
+- **Role:** the one human voice on a machine card — a developer's message to
+  whoever looks next ("QA in progress, keep until release").
+- **Set:** amber attention treatment (8% tint, 25% hairline, small NOTE
+  kicker), full-brightness Ink text at body size, placed directly under the
+  card header — above all machine metadata. Click/Enter opens the editor.
+- **Empty:** the quiet ghost affordance ("Add a note...") stays dim, italic
+  and tucked below the metadata; an empty slot must never shout.
+
 ### Bulk Selection Bar
 - **Trigger:** appears (sticky, raised layer) only when at least one
   environment is selected via the card checkboxes; protected environments

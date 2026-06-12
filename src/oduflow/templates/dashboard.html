@@ -241,10 +241,29 @@
     padding: 4px 8px;
     cursor: pointer;
     border: 1px solid transparent;
-    border-radius: 4px;
+    border-radius: var(--radius-sm);
   }
   .env-note:hover { border-color: var(--border); }
   .env-note-empty { font-style: italic; opacity: 0.5; }
+  /* A set note is the one human voice on a machine card: a message from a
+     developer to whoever looks next. Amber = the attention channel. */
+  .env-note-set {
+    font-size: 13px;
+    color: var(--text);
+    background: color-mix(in oklab, var(--yellow) 8%, transparent);
+    border-color: color-mix(in oklab, var(--yellow) 25%, transparent);
+    padding: 8px 12px;
+  }
+  .env-note-set:hover { border-color: color-mix(in oklab, var(--yellow) 50%, transparent); }
+  .note-label {
+    display: inline-block;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--yellow);
+    margin-right: 8px;
+  }
   .copy-db {
     cursor: pointer;
     border-bottom: 1px dashed transparent;
@@ -1577,15 +1596,21 @@ function renderEnvironments(envs, force) {
           '</div>' +
         '</div>' +
       '</div>' +
+      (env.note
+        ? '<div class="env-note env-note-set" role="button" tabindex="0" aria-label="Edit note" ' +
+            'onclick="editNote(\'' + escAttr(env.branch) + '\')" title="Click to edit note">' +
+            '<span class="note-label" aria-hidden="true">Note</span>' + esc(env.note) +
+          '</div>'
+        : '') +
       urlHtml +
       metaHtml +
       extraHtml +
-      '<div class="env-note' + (!env.note ? ' env-note-empty' : '') + '" ' +
-        'role="button" tabindex="0" aria-label="Edit note" ' +
-        'onclick="editNote(\'' + escAttr(env.branch) + '\')" ' +
-        'title="Click to edit note">' +
-        (env.note ? esc(env.note) : 'Add a note...') +
-      '</div>' +
+      (!env.note
+        ? '<div class="env-note env-note-empty" role="button" tabindex="0" aria-label="Add note" ' +
+            'onclick="editNote(\'' + escAttr(env.branch) + '\')" title="Click to add a note">' +
+            'Add a note...' +
+          '</div>'
+        : '') +
       '<div class="containers">' + containerHtml + '</div>' +
     '</div>';
   }).join('');
