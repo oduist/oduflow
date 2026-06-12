@@ -286,6 +286,10 @@ be traced against a dimmed page, it is missing one of the two.
 - **States:** running (emerald), partial (amber), exited (alert red),
   protected (amber), preset/info (Console Blue). Text always names the state;
   color never carries meaning alone.
+- **The transition pulse:** when a status changes between renders, the badge
+  pulses twice in its own signal color (0.9s ease-out rings, disabled under
+  reduced motion). The moment "it came up" is felt, not hunted. This is the
+  only celebratory motion in the system; do not add more.
 
 ### Cards / Containers
 - **Corner Style:** `0.625rem` (the `lg` radius).

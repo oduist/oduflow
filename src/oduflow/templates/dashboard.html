@@ -115,6 +115,16 @@
     padding: 64px 0;
     color: var(--text-dim);
     font-size: 15px;
+    line-height: 2.2;
+  }
+  .empty-hint code {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    color: var(--text);
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 3px 8px;
   }
   .env-card {
     background: var(--surface);
@@ -157,6 +167,11 @@
   }
   .container-down { color: var(--red); font-weight: 600; }
   .badge-neutral { background: color-mix(in oklab, var(--text-dim) 15%, transparent); color: var(--text-dim); }
+  @keyframes badge-pulse {
+    0% { box-shadow: 0 0 0 0 color-mix(in oklab, currentColor 55%, transparent); }
+    100% { box-shadow: 0 0 0 10px transparent; }
+  }
+  .badge-pulse { animation: badge-pulse 0.9s cubic-bezier(0.22, 1, 0.36, 1) 2; }
   .badge-privileged { background: color-mix(in oklab, var(--red) 20%, transparent); color: var(--red); margin-left: 6px; }
   .badge-netadmin { background: color-mix(in oklab, var(--accent) 20%, transparent); color: var(--accent); margin-left: 6px; }
   .env-url { margin-bottom: 10px; }
@@ -682,6 +697,7 @@
   }
   @media (prefers-reduced-motion: reduce) {
     .spinner { animation: none; opacity: 0.7; }
+    .badge-pulse { animation: none; }
     .toast { transition: opacity 0.1s; transform: none; }
     .toast.show { transform: none; }
     .usage-bar-fill { transition: none; }
@@ -1135,6 +1151,7 @@ let refreshTimer = null;
 let containerStatsMap = {};
 let cachedTemplates = [];
 let cachedEnvs = [];
+let _prevStatuses = {};
 // branch -> {op: 'Stopping'|'Updating'|..., started: epoch ms}; consulted by
 // renderEnvironments so busy state survives polling re-renders.
 let busyOps = {};
@@ -1398,7 +1415,9 @@ function renderEnvironments(envs, force) {
   const el = document.getElementById('env-list');
   if (!envs || envs.length === 0) {
     el._lastHtml = '';
-    el.innerHTML = '<div class="empty">No environments yet.<br>Use "+ Create" above or the MCP tools to add one.</div>';
+    el.innerHTML = '<div class="empty">No environments yet.<br>' +
+      '<span class="empty-hint">Agents create them over MCP: <code>create_environment(env_name="feature/...")</code></span><br>' +
+      'or use "+ Create" above.</div>';
     return;
   }
 
@@ -1513,6 +1532,17 @@ function renderEnvironments(envs, force) {
   el._lastHtml = html;
   el.innerHTML = html;
   applyStats();
+
+  // A state change between renders gets one visible pulse in its signal
+  // color: the moment "it came up" (or went down) should be felt, not hunted.
+  envs.forEach(function(env) {
+    var prev = _prevStatuses[env.branch];
+    if (prev && prev !== env.status) {
+      var badge = el.querySelector('.env-card[data-branch="' + env.branch + '"] .badge');
+      if (badge) badge.classList.add('badge-pulse');
+    }
+    _prevStatuses[env.branch] = env.status;
+  });
 }
 
 function toggleMenu(e) {
@@ -3295,6 +3325,7 @@ async function openConsole(branch) {
   term.loadAddon(fitAddon);
   term.open(container);
   fitAddon.fit();
+  term.write('\x1b[90m# oduflow console \u2014 ' + branch + '\x1b[0m\r\n');
 
   var proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
   var ws = new WebSocket(proto + '//' + location.host + '/api/environments/' + encodeURIComponent(branch) + '/terminal');
@@ -3358,6 +3389,7 @@ async function openSqlConsole(branch) {
   term.loadAddon(fitAddon);
   term.open(container);
   fitAddon.fit();
+  term.write('\x1b[90m# oduflow sql \u2014 ' + branch + '\x1b[0m\r\n');
 
   var proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
   var ws = new WebSocket(proto + '//' + location.host + '/api/environments/' + encodeURIComponent(branch) + '/sql');
@@ -3493,6 +3525,12 @@ document.addEventListener('visibilitychange', function() {
     resetTimers();
   }
 });
+
+console.log(
+  '%coduflow%c The Engineer\'s Console \u2014 https://docs.oduflow.dev',
+  'background: oklch(0.6 0.2 260); color: #fff; padding: 2px 8px; border-radius: 4px; font-weight: 700;',
+  'color: #9b9fa5; padding-left: 6px;'
+);
 
 loadLicense();
 loadEnvironments();
