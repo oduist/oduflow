@@ -262,22 +262,16 @@
   .menu button.danger:hover { background: color-mix(in oklab, var(--red) 10%, transparent); }
   .btn:hover { border-color: var(--accent); color: var(--accent); }
   .btn:disabled { opacity: 0.4; cursor: not-allowed; }
-  .btn-start { border-color: var(--green); color: var(--green); }
-  .btn-start:hover { background: color-mix(in oklab, var(--green) 10%, transparent); }
-  .btn-stop { border-color: var(--red); color: var(--red); }
-  .btn-stop:hover { background: color-mix(in oklab, var(--red) 10%, transparent); }
-  .btn-restart { border-color: var(--yellow); color: var(--yellow); }
-  .btn-restart:hover { background: color-mix(in oklab, var(--yellow) 10%, transparent); }
-  .btn-delete { border-color: var(--red); color: var(--red); }
-  .btn-delete:hover { background: color-mix(in oklab, var(--red) 10%, transparent); }
-  .btn-update { border-color: var(--yellow); color: var(--yellow); }
-  .btn-update:hover { background: color-mix(in oklab, var(--yellow) 10%, transparent); }
-  .btn-sync { border-color: var(--accent); color: var(--accent); }
-  .btn-sync:hover { background: color-mix(in oklab, var(--accent) 10%, transparent); }
-  .btn-logs { border-color: var(--accent); color: var(--accent); }
-  .btn-logs:hover { background: color-mix(in oklab, var(--accent) 10%, transparent); }
-  .btn-protect { border-color: var(--yellow); color: var(--yellow); }
-  .btn-protect:hover { background: color-mix(in oklab, var(--yellow) 10%, transparent); }
+  /* Semantic color appears on intent (hover/focus), not at rest:
+     status badges own the resting color story of the screen. */
+  .btn-start:hover, .btn-start:focus-visible { border-color: var(--green); color: var(--green); background: color-mix(in oklab, var(--green) 10%, transparent); }
+  .btn-stop:hover, .btn-stop:focus-visible { border-color: var(--red); color: var(--red); background: color-mix(in oklab, var(--red) 10%, transparent); }
+  .btn-restart:hover, .btn-restart:focus-visible { border-color: var(--yellow); color: var(--yellow); background: color-mix(in oklab, var(--yellow) 10%, transparent); }
+  .btn-delete:hover, .btn-delete:focus-visible { border-color: var(--red); color: var(--red); background: color-mix(in oklab, var(--red) 10%, transparent); }
+  .btn-update:hover, .btn-update:focus-visible { border-color: var(--yellow); color: var(--yellow); background: color-mix(in oklab, var(--yellow) 10%, transparent); }
+  .btn-sync:hover, .btn-sync:focus-visible { border-color: var(--accent); color: var(--accent); background: color-mix(in oklab, var(--accent) 10%, transparent); }
+  .btn-logs:hover, .btn-logs:focus-visible { border-color: var(--accent); color: var(--accent); background: color-mix(in oklab, var(--accent) 10%, transparent); }
+  .btn-protect:hover, .btn-protect:focus-visible { border-color: var(--yellow); color: var(--yellow); background: color-mix(in oklab, var(--yellow) 10%, transparent); }
   .btn-protect.active { background: var(--yellow); color: #000; border-color: var(--yellow); }
   .btn-create {
     background: var(--accent);

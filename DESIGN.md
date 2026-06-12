@@ -263,9 +263,13 @@ be traced against a dimmed page, it is missing one of the two.
   Activate). Hover deepens the fill; no glow at dashboard density.
 - **Outline (default action):** Transparent fill, hairline border, Ink text.
   Hover: border and text shift to the action's semantic color.
-- **Semantic outlines:** Start (emerald), Stop/Delete (alert red),
-  Restart/Update (amber), Sync/Logs (Console Blue) — border + text in the
-  semantic color, tinted fill at 10% on hover. Color marks meaning, not mood.
+- **Semantic on intent:** action buttons are neutral at rest (hairline
+  border, Ink text) and reveal their semantic color on hover/focus —
+  Start (emerald), Stop/Delete (alert red), Restart/Update (amber),
+  Sync/Logs (Console Blue) as border + text + 10% tinted fill. At rest the
+  status badges own the screen's color story; a row of permanently colored
+  buttons makes color stop being a signal. Inside the More menu the danger
+  item stays red (an open menu is already the moment of choice).
 - **The lifecycle toggle:** Start and Stop are one button, not two. The label
   and semantic color follow the rendered container state: nothing running →
   "Start" (emerald); anything running → "Stop" (alert red, disabled on
