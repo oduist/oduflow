@@ -509,6 +509,7 @@ def _build_routes(
             extra_addons = json.loads(extra_addons_raw) or None
             git_user = labels.get("oduflow.git_user", "")
             env_vars = json.loads(labels.get("oduflow.env_vars", "{}")) or None
+            local_path = labels.get("oduflow.local_path", "")
 
             env_ops.delete_environment(settings, team, branch)
             result = env_ops.create_environment(
@@ -521,6 +522,7 @@ def _build_routes(
                 extra_addons=extra_addons,
                 git_user=git_user,
                 env_vars=env_vars,
+                local_path=local_path,
             )
             return JSONResponse({"ok": True, "result": result})
         except FlowError as e:
@@ -593,6 +595,20 @@ def _build_routes(
                             extra_dict = _normalize_extra_addons(raw) or None
                     if not auto_install_raw:
                         auto_install_raw = metadata.get("auto_install_modules", "")
+                    if not repo_url and metadata.get("local_path"):
+                        return JSONResponse(
+                            {
+                                "ok": False,
+                                "error": (
+                                    f"Template '{resolved_template}' was saved "
+                                    "from a live-mounted environment and has no "
+                                    "repo_url. Provide repo_url explicitly, or "
+                                    "create the environment via the local "
+                                    "(stdio) server."
+                                ),
+                            },
+                            status_code=400,
+                        )
 
             if not repo_url or not odoo_image:
                 return JSONResponse(
