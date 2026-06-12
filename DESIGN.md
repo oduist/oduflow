@@ -314,6 +314,16 @@ be traced against a dimmed page, it is missing one of the two.
   Console Blue text with a 2px Console Blue underline. Keyboard reachable,
   `aria-selected` carried, overflow scrolls horizontally on narrow screens.
 
+### Bulk Selection Bar
+- **Trigger:** appears (sticky, raised layer) only when at least one
+  environment is selected via the card checkboxes; protected environments
+  cannot be selected.
+- **Scope:** Stop and Delete only — cleanup actions. No bulk restart or
+  recreate; that scale of mutation belongs to agents.
+- **Anatomy:** count ("3 environments selected") left, actions right
+  (neutral-at-rest Stop selected / Delete selected / Clear). One confirm
+  dialog names every affected branch.
+
 ### Signature Component — The Embedded Terminal
 The web console and SQL console: a Terminal Black (`#060a12`) panel inside the
 modal, Geist Mono, cursor in Console Blue, ANSI palette mapped to the signal

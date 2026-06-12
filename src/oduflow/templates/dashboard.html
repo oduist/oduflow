@@ -156,6 +156,35 @@
   .badge-partial { background: color-mix(in oklab, var(--yellow) 15%, transparent); color: var(--yellow); }
   .badge-exited  { background: color-mix(in oklab, var(--red) 15%, transparent); color: var(--red); }
   .badge-protected { background: color-mix(in oklab, var(--yellow) 15%, transparent); color: var(--yellow); }
+  .bulk-bar {
+    position: sticky;
+    top: 8px;
+    z-index: var(--z-bar);
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    background: var(--surface-raised);
+    border: 1px solid var(--border-raised);
+    border-radius: var(--radius);
+    padding: 8px 16px;
+    margin-bottom: 12px;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+  }
+  .bulk-count { font-weight: 600; font-size: 13px; }
+  .bulk-actions { display: flex; gap: 8px; margin-left: auto; flex-wrap: wrap; }
+  .select-box {
+    display: inline-flex;
+    align-items: center;
+    padding: 4px;
+    cursor: pointer;
+  }
+  .select-box input {
+    width: 16px;
+    height: 16px;
+    accent-color: var(--accent);
+    cursor: pointer;
+  }
+  .select-box input:disabled { cursor: not-allowed; }
   .badge-busy {
     display: inline-flex;
     align-items: center;
@@ -732,6 +761,14 @@
 </div>
 
 <div id="tab-environments" class="tab-content active">
+  <div id="bulk-bar" class="bulk-bar" style="display:none" role="toolbar" aria-label="Bulk actions for selected environments">
+    <span class="bulk-count" id="bulk-count"></span>
+    <div class="bulk-actions">
+      <button class="btn btn-stop" onclick="bulkStop()">Stop selected</button>
+      <button class="btn btn-delete" onclick="bulkDelete()">Delete selected</button>
+      <button class="btn" onclick="clearSelection()">Clear</button>
+    </div>
+  </div>
   <div id="env-list"></div>
 </div>
 
@@ -1152,6 +1189,9 @@ let containerStatsMap = {};
 let cachedTemplates = [];
 let cachedEnvs = [];
 let _prevStatuses = {};
+// Bulk cleanup selection: survives re-renders, supports shift-click ranges.
+let selectedEnvs = new Set();
+let _lastSelectIdx = null;
 // branch -> {op: 'Stopping'|'Updating'|..., started: epoch ms}; consulted by
 // renderEnvironments so busy state survives polling re-renders.
 let busyOps = {};
@@ -1418,10 +1458,11 @@ function renderEnvironments(envs, force) {
     el.innerHTML = '<div class="empty">No environments yet.<br>' +
       '<span class="empty-hint">Agents create them over MCP: <code>create_environment(env_name="feature/...")</code></span><br>' +
       'or use "+ Create" above.</div>';
+    updateBulkBar();
     return;
   }
 
-  const html = envs.map(env => {
+  const html = envs.map((env, idx) => {
     const allStopped = env.containers.every(c => c.status !== 'running');
     const busy = busyOps[env.branch];
     const dis = busy ? 'disabled ' : '';
@@ -1473,6 +1514,11 @@ function renderEnvironments(envs, force) {
     return '<div class="env-card" data-branch="' + esc(env.branch) + '">' +
       '<div class="env-header">' +
         '<div class="left">' +
+          '<label class="select-box"><input type="checkbox" class="env-select"' +
+            (selectedEnvs.has(env.branch) ? ' checked' : '') +
+            (env.protected ? ' disabled title="Protected environments are excluded from bulk actions"' : '') +
+            ' onclick="envSelectClick(event, \'' + escAttr(env.branch) + '\', ' + idx + ')"' +
+            ' aria-label="Select ' + esc(env.branch) + '"></label>' +
           '<span class="branch-name">' + esc(env.branch) + '</span>' +
           (env.git_branch && env.git_branch !== env.branch ? '<span class="git-branch">⎇ ' + esc(env.git_branch) + '</span>' : '') +
           '<span class="badge ' + badgeClass(env.status) + '"' +
@@ -1543,6 +1589,101 @@ function renderEnvironments(envs, force) {
     }
     _prevStatuses[env.branch] = env.status;
   });
+  updateBulkBar();
+}
+
+function envSelectClick(e, branch, idx) {
+  e.stopPropagation();
+  var checked = e.target.checked;
+  if (e.shiftKey && _lastSelectIdx !== null) {
+    var lo = Math.min(_lastSelectIdx, idx);
+    var hi = Math.max(_lastSelectIdx, idx);
+    for (var i = lo; i <= hi; i++) {
+      var env = cachedEnvs[i];
+      if (!env || env.protected) continue;
+      if (checked) selectedEnvs.add(env.branch);
+      else selectedEnvs.delete(env.branch);
+    }
+    renderEnvironments(cachedEnvs, true);
+  } else {
+    if (checked) selectedEnvs.add(branch);
+    else selectedEnvs.delete(branch);
+  }
+  _lastSelectIdx = idx;
+  updateBulkBar();
+}
+
+function updateBulkBar() {
+  // Drop branches that no longer exist
+  var live = new Set(cachedEnvs.map(function(e) { return e.branch; }));
+  selectedEnvs.forEach(function(b) { if (!live.has(b)) selectedEnvs.delete(b); });
+  var bar = document.getElementById('bulk-bar');
+  var n = selectedEnvs.size;
+  bar.style.display = n ? 'flex' : 'none';
+  if (n) {
+    document.getElementById('bulk-count').textContent =
+      n + ' environment' + (n !== 1 ? 's' : '') + ' selected';
+  }
+}
+
+function clearSelection() {
+  selectedEnvs.clear();
+  _lastSelectIdx = null;
+  renderEnvironments(cachedEnvs, true);
+  updateBulkBar();
+}
+
+function _bulkNames() {
+  var names = Array.from(selectedEnvs);
+  if (names.length <= 5) return names.join(', ');
+  return names.slice(0, 5).join(', ') + ' and ' + (names.length - 5) + ' more';
+}
+
+async function _runBulk(branches, action, opLabel, doneLabel) {
+  branches.forEach(function(b) { setBusy(b, opLabel); });
+  var results = await Promise.all(branches.map(async function(b) {
+    try {
+      var r = await fetch(API + '/' + encodeURIComponent(b) + '/' + action, { method: 'POST' });
+      var data = await r.json();
+      return { branch: b, ok: !!data.ok, error: data.error };
+    } catch (e) {
+      return { branch: b, ok: false, error: e.message };
+    }
+  }));
+  branches.forEach(function(b) { clearBusy(b); });
+  var failed = results.filter(function(r) { return !r.ok; });
+  results.forEach(function(r) { if (r.ok) selectedEnvs.delete(r.branch); });
+  if (failed.length) {
+    showToast(doneLabel + ' ' + (results.length - failed.length) + ' of ' + results.length +
+      '. Failed: ' + failed.map(function(f) { return f.branch + ' (' + (f.error || 'unknown error') + ')'; }).join('; '), true);
+  } else {
+    showToast(doneLabel + ' ' + results.length + ' environment' + (results.length !== 1 ? 's' : ''));
+  }
+  await loadEnvironments(true);
+  updateBulkBar();
+}
+
+async function bulkStop() {
+  var branches = Array.from(selectedEnvs);
+  if (!branches.length) return;
+  if (!(await confirmDialog({
+    title: 'Stop ' + branches.length + ' environments',
+    message: 'Stop the containers of: ' + _bulkNames() + '?',
+    confirmLabel: 'Stop ' + branches.length + ' environments'
+  }))) return;
+  await _runBulk(branches, 'stop', 'Stopping', 'Stopped');
+}
+
+async function bulkDelete() {
+  var branches = Array.from(selectedEnvs);
+  if (!branches.length) return;
+  if (!(await confirmDialog({
+    title: 'Delete ' + branches.length + ' environments',
+    message: 'Remove containers, databases and workspaces of: ' + _bulkNames() + '?',
+    confirmLabel: 'Delete ' + branches.length + ' environments',
+    danger: true
+  }))) return;
+  await _runBulk(branches, 'delete', 'Deleting', 'Deleted');
 }
 
 function toggleMenu(e) {

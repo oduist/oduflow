@@ -31,8 +31,11 @@ still made by hand). Both audiences — a freelancer working solo with agents
 and a dev team at an agency deploying many Odoo versions — use it the same
 way. Success: the human understands fleet state at a glance, trusts that it
 reflects the real Docker state, and can perform the occasional manual
-intervention in one or two clicks. Creation-flow ergonomics, bulk operations,
-keyboard accelerators, and deep linking are explicitly non-goals.
+intervention in one or two clicks. Environments accumulate (agents create
+them faster than anyone cleans up), so manual cleanup is a first-class
+intervention: multi-select with bulk Stop and bulk Delete. Other bulk
+actions (restart, recreate), creation-flow ergonomics, keyboard
+accelerators, and deep linking are explicitly non-goals.
 
 ## Brand Personality
 
