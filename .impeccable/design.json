@@ -1,0 +1,306 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-06-12T00:00:00Z",
+  "title": "Design System: Oduflow Dashboard",
+  "extensions": {
+    "colorMeta": {
+      "primary": {
+        "role": "primary",
+        "displayName": "Console Blue",
+        "canonical": "oklch(0.6 0.2 260)",
+        "tonalRamp": [
+          "oklch(0.15 0.2 260)",
+          "oklch(0.25 0.2 260)",
+          "oklch(0.35 0.2 260)",
+          "oklch(0.45 0.2 260)",
+          "oklch(0.6 0.2 260)",
+          "oklch(0.7 0.15 260)",
+          "oklch(0.82 0.1 260)",
+          "oklch(0.92 0.05 260)"
+        ]
+      },
+      "background": {
+        "role": "neutral",
+        "displayName": "Console Field",
+        "canonical": "oklch(0.07 0.01 260)",
+        "tonalRamp": [
+          "oklch(0.07 0.01 260)",
+          "oklch(0.1 0.01 260)",
+          "oklch(0.15 0.01 260)",
+          "oklch(0.2 0.01 260)",
+          "oklch(0.35 0.01 260)",
+          "oklch(0.55 0.01 260)",
+          "oklch(0.7 0.01 260)",
+          "oklch(0.93 0.005 260)"
+        ]
+      },
+      "foreground": {
+        "role": "neutral",
+        "displayName": "Ink",
+        "canonical": "oklch(0.93 0.005 260)",
+        "tonalRamp": [
+          "oklch(0.2 0.005 260)",
+          "oklch(0.35 0.005 260)",
+          "oklch(0.5 0.005 260)",
+          "oklch(0.6 0.005 260)",
+          "oklch(0.7 0.01 260)",
+          "oklch(0.8 0.005 260)",
+          "oklch(0.93 0.005 260)",
+          "oklch(0.98 0 0)"
+        ]
+      },
+      "signal-emerald": {
+        "role": "secondary",
+        "displayName": "Signal Emerald",
+        "canonical": "#34d399",
+        "tonalRamp": [
+          "oklch(0.25 0.1 162)",
+          "oklch(0.35 0.12 162)",
+          "oklch(0.45 0.13 162)",
+          "oklch(0.55 0.14 162)",
+          "oklch(0.65 0.15 162)",
+          "oklch(0.77 0.14 162)",
+          "oklch(0.86 0.1 162)",
+          "oklch(0.94 0.05 162)"
+        ]
+      },
+      "signal-amber": {
+        "role": "secondary",
+        "displayName": "Signal Amber",
+        "canonical": "#fbbf24",
+        "tonalRamp": [
+          "oklch(0.3 0.1 85)",
+          "oklch(0.4 0.12 85)",
+          "oklch(0.5 0.14 85)",
+          "oklch(0.6 0.15 85)",
+          "oklch(0.7 0.16 85)",
+          "oklch(0.83 0.16 85)",
+          "oklch(0.9 0.12 85)",
+          "oklch(0.95 0.06 85)"
+        ]
+      },
+      "destructive": {
+        "role": "secondary",
+        "displayName": "Alert Red",
+        "canonical": "oklch(0.577 0.245 27.325)",
+        "tonalRamp": [
+          "oklch(0.2 0.15 27)",
+          "oklch(0.3 0.18 27)",
+          "oklch(0.4 0.21 27)",
+          "oklch(0.5 0.23 27)",
+          "oklch(0.577 0.245 27.325)",
+          "oklch(0.68 0.2 27)",
+          "oklch(0.8 0.12 27)",
+          "oklch(0.92 0.05 27)"
+        ]
+      },
+      "terminal-bg": {
+        "role": "neutral",
+        "displayName": "Terminal Black",
+        "canonical": "#060a12",
+        "tonalRamp": [
+          "#060a12",
+          "oklch(0.07 0.01 260)",
+          "oklch(0.1 0.01 260)",
+          "oklch(0.15 0.01 260)",
+          "oklch(0.2 0.01 260)",
+          "oklch(0.35 0.01 260)",
+          "oklch(0.55 0.01 260)",
+          "oklch(0.7 0.01 260)"
+        ]
+      },
+      "surface-raised": {
+        "role": "neutral",
+        "displayName": "Raised Surface",
+        "canonical": "oklch(0.16 0.012 260)",
+        "tonalRamp": [
+          "oklch(0.07 0.01 260)",
+          "oklch(0.1 0.01 260)",
+          "oklch(0.16 0.012 260)",
+          "oklch(0.22 0.012 260)",
+          "oklch(0.34 0.015 260)",
+          "oklch(0.5 0.012 260)",
+          "oklch(0.7 0.01 260)",
+          "oklch(0.93 0.005 260)"
+        ]
+      }
+    },
+    "typographyMeta": {
+      "headline": {
+        "displayName": "Headline",
+        "purpose": "Page title in the header; one per page."
+      },
+      "title": {
+        "displayName": "Title",
+        "purpose": "Card titles: branch, service, template, volume names."
+      },
+      "body": {
+        "displayName": "Body",
+        "purpose": "Controls, forms, modal copy."
+      },
+      "label": {
+        "displayName": "Label",
+        "purpose": "Badges, form labels, meta keys, tabs."
+      },
+      "mono": {
+        "displayName": "Mono",
+        "purpose": "Machine artifacts: logs, DB names, images, paths, counts."
+      }
+    },
+    "shadows": [
+      {
+        "name": "modal-lift",
+        "value": "0 24px 64px rgba(0,0,0,0.65)",
+        "purpose": "Open modals, paired with Raised Surface + Raised Hairline."
+      },
+      {
+        "name": "menu-lift",
+        "value": "0 16px 48px rgba(0,0,0,0.5)",
+        "purpose": "Dropdown menus and the toast."
+      },
+      {
+        "name": "focus-ring",
+        "value": "0 0 0 3px oklch(0.6 0.2 260 / 0.5)",
+        "purpose": "Focus-visible treatment on all interactive elements."
+      }
+    ],
+    "motion": [
+      {
+        "name": "ease-state",
+        "value": "cubic-bezier(0.22, 1, 0.36, 1)",
+        "purpose": "150-250ms state transitions (hover, toast, tab underline). No bounce."
+      }
+    ],
+    "breakpoints": [
+      {
+        "name": "compact",
+        "value": "720px"
+      }
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "The single most important action per view (Create, Activate).",
+      "html": "<button class=\"ds-btn-primary\">Create environment</button>",
+      "css": ".ds-btn-primary { background: oklch(0.6 0.2 260); color: oklch(0.98 0 0); border: 1px solid oklch(0.6 0.2 260); border-radius: 0.425rem; padding: 0.375rem 0.875rem; font: 600 0.75rem/1.4 'Outfit', ui-sans-serif, system-ui, sans-serif; letter-spacing: 0.02em; cursor: pointer; transition: background 0.15s cubic-bezier(0.22,1,0.36,1); } .ds-btn-primary:hover { background: oklch(0.52 0.2 260); } .ds-btn-primary:focus-visible { outline: none; box-shadow: 0 0 0 3px oklch(0.6 0.2 260 / 0.5); } .ds-btn-primary:disabled { opacity: 0.4; cursor: not-allowed; }"
+    },
+    {
+      "name": "Outline Button",
+      "kind": "button",
+      "refersTo": "button-outline",
+      "description": "Default secondary action; semantic variants tint border and text.",
+      "html": "<button class=\"ds-btn-outline\">View logs</button>",
+      "css": ".ds-btn-outline { background: transparent; color: oklch(0.93 0.005 260); border: 1px solid oklch(0.2 0.01 260); border-radius: 0.425rem; padding: 0.3125rem 0.875rem; font: 600 0.75rem/1.4 'Outfit', ui-sans-serif, system-ui, sans-serif; letter-spacing: 0.02em; cursor: pointer; transition: border-color 0.15s, color 0.15s; } .ds-btn-outline:hover { border-color: oklch(0.6 0.2 260); color: oklch(0.6 0.2 260); } .ds-btn-outline:focus-visible { outline: none; box-shadow: 0 0 0 3px oklch(0.6 0.2 260 / 0.5); }"
+    },
+    {
+      "name": "Status Badge",
+      "kind": "chip",
+      "refersTo": "badge-status",
+      "description": "Environment/service state; text always names the state.",
+      "html": "<span class=\"ds-badge-running\">RUNNING</span>",
+      "css": ".ds-badge-running { display: inline-block; background: rgba(52, 211, 153, 0.12); color: #34d399; border-radius: 999px; padding: 0.125rem 0.5rem; font: 600 0.6875rem/1.4 'Outfit', ui-sans-serif, system-ui, sans-serif; letter-spacing: 0.04em; text-transform: uppercase; }"
+    },
+    {
+      "name": "Environment Card",
+      "kind": "card",
+      "refersTo": "card",
+      "description": "Resource row: title + badge left, actions right, mono metadata below.",
+      "html": "<div class=\"ds-card\"><div class=\"ds-card-head\"><span class=\"ds-card-title\">feature/my-branch</span><span class=\"ds-card-badge\">RUNNING</span></div><div class=\"ds-card-meta\">DB: <code>odoo_feature_my_branch</code> · Image: <code>odoo:19.0</code></div></div>",
+      "css": ".ds-card { background: oklch(0.1 0.01 260); border: 1px solid oklch(0.2 0.01 260); border-radius: 0.625rem; padding: 1rem 1.25rem; color: oklch(0.93 0.005 260); font-family: 'Outfit', ui-sans-serif, system-ui, sans-serif; } .ds-card-head { display: flex; align-items: center; gap: 0.625rem; margin-bottom: 0.5rem; } .ds-card-title { font-size: 0.9375rem; font-weight: 600; } .ds-card-badge { background: rgba(52,211,153,0.12); color: #34d399; border-radius: 999px; padding: 0.125rem 0.5rem; font-size: 0.6875rem; font-weight: 600; letter-spacing: 0.04em; } .ds-card-meta { font-size: 0.75rem; color: oklch(0.7 0.01 260); } .ds-card-meta code { font-family: 'Geist Mono', ui-monospace, SFMono-Regular, monospace; color: oklch(0.93 0.005 260); }"
+    },
+    {
+      "name": "Text Input",
+      "kind": "input",
+      "refersTo": "input",
+      "description": "Form field on Console Field fill; focus ring is mandatory.",
+      "html": "<input class=\"ds-input\" type=\"text\" placeholder=\"feature/my-branch\">",
+      "css": ".ds-input { background: oklch(0.07 0.01 260); color: oklch(0.93 0.005 260); border: 1px solid oklch(0.2 0.01 260); border-radius: 0.425rem; height: 2.125rem; padding: 0 0.625rem; font: 400 0.8125rem/1.5 'Outfit', ui-sans-serif, system-ui, sans-serif; } .ds-input::placeholder { color: oklch(0.55 0.01 260); } .ds-input:focus { outline: none; border-color: oklch(0.6 0.2 260); box-shadow: 0 0 0 3px oklch(0.6 0.2 260 / 0.5); }"
+    },
+    {
+      "name": "Tab",
+      "kind": "nav",
+      "refersTo": "tab-active",
+      "description": "Section tab; active = Console Blue text + 2px underline.",
+      "html": "<nav class=\"ds-tabs\"><button class=\"ds-tab ds-tab-active\">Environments</button><button class=\"ds-tab\">Services</button><button class=\"ds-tab\">Templates</button></nav>",
+      "css": ".ds-tabs { display: flex; border-bottom: 1px solid oklch(0.2 0.01 260); } .ds-tab { background: none; border: none; border-bottom: 2px solid transparent; color: oklch(0.7 0.01 260); font: 500 0.8125rem/1.5 'Outfit', ui-sans-serif, system-ui, sans-serif; padding: 0.5rem 1.125rem; cursor: pointer; transition: color 0.15s; } .ds-tab:hover { color: oklch(0.93 0.005 260); } .ds-tab:focus-visible { outline: none; box-shadow: 0 0 0 3px oklch(0.6 0.2 260 / 0.5); } .ds-tab-active { color: oklch(0.6 0.2 260); border-bottom-color: oklch(0.6 0.2 260); }"
+    },
+    {
+      "name": "Embedded Terminal",
+      "kind": "custom",
+      "refersTo": "terminal-bg",
+      "description": "Signature component: console/SQL panel one notch darker than the page.",
+      "html": "<div class=\"ds-terminal\"><span class=\"ds-term-line\"><span class=\"ds-term-ok\">INFO</span> odoo: registry loaded in 1.42s</span></div>",
+      "css": ".ds-terminal { background: #060a12; border: 1px solid oklch(0.2 0.01 260); border-radius: 0.625rem; padding: 0.75rem 1rem; font: 400 0.75rem/1.6 'Geist Mono', ui-monospace, SFMono-Regular, monospace; color: oklch(0.93 0.005 260); } .ds-term-ok { color: #34d399; font-weight: 600; margin-right: 0.5rem; }"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Engineer's Console",
+    "overview": "The dashboard is the working instrument behind oduflow.dev: the same deep blue-black console field, the same single confident blue power light, the same categorical signal palette — but tuned for an operator in a task, not a visitor on a tour. Where the site demonstrates the machine, the dashboard is the machine: status badges, container stats, sync output, and live terminals are the content, and the design's job is to keep them scannable at density. Hierarchy comes from weight and tonal steps on the blue-black ramp, never from decoration. This is product register: fixed rem type scale, one sans carrying every role through weight contrast, monospace as the native voice of machine artifacts, motion limited to 150-250ms state feedback.",
+    "keyCharacteristics": [
+      "Blue-black console field with one confident Console Blue accent (≤15% of any screen)",
+      "Signal colors used categorically for state and channels, never decoratively",
+      "One geometric sans (Outfit) + one precise mono (Geist Mono), both self-hosted",
+      "Earned density: compact rows, full data, text contrast ≥4.5:1",
+      "Flat at rest; depth via tonal surface steps, shadows only as state response",
+      "Every asset ships with the package — no CDNs, ever"
+    ],
+    "rules": [
+      {
+        "name": "The One Light Rule",
+        "body": "Console Blue is the only brand accent that carries weight; ≤15% of any screen. Do not introduce a second \"primary\".",
+        "section": "colors"
+      },
+      {
+        "name": "The Channel Rule",
+        "body": "Signal colors are categorical. A color may mark a state or a capability channel; a surface never gets a signal color \"for variety\". If you can't name the channel, use neutral or Console Blue.",
+        "section": "colors"
+      },
+      {
+        "name": "The Defined Token Rule",
+        "body": "Every var(--*) reference must resolve to a token declared in :root. A reference to an undeclared custom property is a bug, not a fallback.",
+        "section": "colors"
+      },
+      {
+        "name": "The Console Voice Rule",
+        "body": "Monospace is reserved for what the machine produces or consumes: names, paths, images, output, counts. Never set UI copy in mono for flavor — and never set machine artifacts in the sans.",
+        "section": "typography"
+      },
+      {
+        "name": "The Weight-Not-Size Rule",
+        "body": "At this density, hierarchy inside a card comes from weight (400 vs 600) and tone (Ink vs Muted Ink), not from adding type sizes. Five sizes total; do not invent a sixth.",
+        "section": "typography"
+      },
+      {
+        "name": "The Flat-At-Rest Rule",
+        "body": "A shadow on a resting element is a bug. Layering at rest is tonal: Field for the page, Surface for cards and bars, Subtle for fills inside cards.",
+        "section": "elevation"
+      },
+      {
+        "name": "The Raised Edge Rule",
+        "body": "Every overlay (modal, menu, toast) gets the Raised Surface background and the Raised Hairline border. If an overlay's edge can't be traced against a dimmed page, it is missing one of the two.",
+        "section": "elevation"
+      }
+    ],
+    "dos": [
+      "Do keep Console Blue at ≤15% of any screen; semantic action colors carry the rest of the meaning.",
+      "Do give every interactive component all five states (default, hover, focus-visible, disabled, loading); the focus ring is never removed.",
+      "Do set machine artifacts (DB names, images, paths, logs, counts) in Geist Mono per The Console Voice Rule.",
+      "Do keep status badges textual; color reinforces, text informs.",
+      "Do ship every asset (fonts, xterm.js, css) inside the package — the dashboard must work air-gapped. A CDN <script> is a bug.",
+      "Do pair any animation (spinner, toast, usage bars) with a prefers-reduced-motion alternative.",
+      "Do declare every CSS custom property you reference (The Defined Token Rule)."
+    ],
+    "donts": [
+      "Don't import glossy SaaS landing grammar: no gradients, no gradient text, no glassmorphism, no marketing tone in UI copy.",
+      "Don't drift toward toy no-code styling: no oversized cards, no cartoon illustration, and no emoji as UI affordances (🔒/🔓 in buttons must become text or an inline SVG).",
+      "Don't keep GitHub-clone anonymity: #0d1117 / #58a6ff / #3fb950 is GitHub's palette, not Oduflow's. Migrate to the Console tokens.",
+      "Don't rebuild overloaded-enterprise clutter: an action row longer than ~5 buttons must split into primary actions + an overflow menu.",
+      "Don't hardcode hex values in JS or inline styles outside the token system (#7a1f1f, #1f4f7a, the ANSI map); promote them to named tokens.",
+      "Don't use native prompt()/confirm() as the long-term affordance for editing and destructive confirmation; replace with inline editing and a consistent confirm pattern when touched.",
+      "Don't animate layout properties; usage-bar fills animate transform: scaleX(), not width."
+    ]
+  }
+}
