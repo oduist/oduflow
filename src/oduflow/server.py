@@ -21,6 +21,7 @@ from oduflow.docker_ops import (
     volume_ops,
 )
 from oduflow import git_ops
+from oduflow import settings as settings_module
 from oduflow.errors import FlowError
 from oduflow.locking import LockManager
 from oduflow.output_cache import OutputCache, CachedOutput
@@ -357,6 +358,7 @@ def create_environment(
     sanitize: bool = True,
     auto_install_modules: str = "",
     env_vars: str = "",
+    local_path: str = "",
     ctx: Context = None,
 ) -> str:
     """
@@ -372,6 +374,7 @@ def create_environment(
         sanitize: Sanitize the database after provisioning (default: True). Disables incoming/outgoing mail servers and runs custom scripts from the .odoo_sanitize/ folder in the repository.
         auto_install_modules: Comma-separated list of Odoo modules to install automatically after the environment is provisioned (e.g. "sale,purchase,stock"). When a template is specified and this is empty, the value is loaded from template metadata.
         env_vars: Comma-separated KEY=VALUE pairs injected as environment variables into the Odoo container (e.g. "WORKERS=2,LIMIT_TIME_CPU=600"). These are added on top of the database connection variables (HOST/USER/PASSWORD).
+        local_path: LOCAL FAST-PATH (stdio transport only). Absolute path to a checkout on THIS host. When set, Oduflow skips git clone and bind-mounts the directory live into the container — your file edits are visible instantly, no git push/pull needed. After editing, call pull_and_apply with explicit install/upgrade/restart to apply. repo_url is not required in this mode. Rejected over http transport.
     """
     import json
 
@@ -414,11 +417,38 @@ def create_environment(
                 if not auto_install_modules:
                     auto_install_modules = metadata.get("auto_install_modules", "")
 
-        if not effective_repo_url:
-            raise ValueError(
-                "repo_url is required (not found in template metadata either)."
-            )
-        git_ops.validate_repo_url(effective_repo_url)
+        local_path = (local_path or "").strip()
+        if local_path:
+            if settings_module.TRANSPORT != "stdio":
+                raise ValueError(
+                    "local_path (live-mount) is only available with the stdio "
+                    "(local) transport, not over http."
+                )
+            local_path = os.path.abspath(os.path.expanduser(local_path))
+            if not os.path.isdir(local_path):
+                raise ValueError(
+                    f"local_path does not exist or is not a directory: {local_path}"
+                )
+            # Live-mount: no remote URL required; label the env with the path.
+            if not effective_repo_url:
+                effective_repo_url = local_path
+        else:
+            if not effective_repo_url:
+                sources = [
+                    "repo_url",
+                    "template_name (which supplies repo_url from its metadata)",
+                ]
+                if settings_module.TRANSPORT == "stdio":
+                    sources.append(
+                        "local_path=<abs path> (local live-mount fast-path, stdio only)"
+                    )
+                raise ValueError(
+                    "No code source for the environment — provide one of: "
+                    + "; ".join(sources)
+                    + "."
+                )
+            git_ops.validate_repo_url(effective_repo_url)
+
         if not effective_odoo_image:
             raise ValueError(
                 "odoo_image is required (not found in template metadata either)."
@@ -448,6 +478,7 @@ def create_environment(
             sanitize=sanitize,
             auto_install_modules=auto_install_list or None,
             env_vars=parsed_env,
+            local_path=local_path,
         )
 
         from oduflow.telemetry import record_env_created
@@ -471,6 +502,11 @@ def create_environment(
         ]
         if resolved_env_name != branch:
             lines.insert(2, f"Git Branch: {branch}")
+        if result.get("local_path"):
+            lines.append(
+                f"Live-mount: {result['local_path']} "
+                "(edit files directly; call pull_and_apply to apply)"
+            )
         if extra_dict:
             extras_display = ", ".join(
                 f"{name} ({b})" for name, b in extra_dict.items()
@@ -1083,25 +1119,74 @@ def start_environment(env_name: str, wait: bool = True, ctx: Context = None) -> 
 @mcp.tool()
 @handle_errors
 @with_env_lock
-def pull_and_apply(env_name: str, ctx: Context = None) -> str:
+def pull_and_apply(
+    env_name: str,
+    install: str = "",
+    upgrade: str = "",
+    restart: bool = False,
+    strict: bool = False,
+    ctx: Context = None,
+) -> str:
     """
-    Pull latest changes from the remote repository for an environment
-    and take appropriate action based on what changed.
+    Sync the latest code into an environment and apply the right Odoo action.
 
-    Pulls both the main repository and any extra addon worktrees.
+    Works for both code-delivery modes (chosen automatically per environment):
+    - git: pulls the branch (and extra-addon worktrees) into the managed clone.
+    - live-mount (stdio/local, from create_environment(local_path=...)): your
+      edits are already live on disk; this just applies them — no git needed.
 
-    Analyzes changed files and automatically:
-    - Upgrades modules if __manifest__.py version/data/assets changed, or security XML changed
-    - Restarts the container if Python files changed
-    - Does nothing if only XML/JS changed (--dev=xml hot-reloads XML; JS assets are reloaded on browser refresh)
+    Two ways to drive it:
+    - EXPLICIT (recommended — you know what you changed): pass `install` /
+      `upgrade` (comma-separated module names) and/or `restart=True`. A guardrail
+      compares your request against the detected changes and appends non-blocking
+      warnings if something looks missing (e.g. you only restarted but a module's
+      data/schema changed and needs -u). With `strict=True` it refuses instead of
+      warning.
+    - AUTO (leave install/upgrade/restart empty): Oduflow analyzes changed files
+      and decides install/upgrade/restart/refresh itself. Best when pulling
+      commits you did not author.
+
+    Decision rules — what to pass explicitly:
+    - Only view/QWeb XML, JS, CSS changed → nothing; refresh the browser.
+    - Python logic/methods changed (no new fields/models) → restart=True.
+    - A field/model, security or data records, ir.cron, mail templates, or
+      manifest data/depends changed → upgrade="module" (-u): these live in the
+      database and a restart won't load them.
+    - A brand-new module was added → install="module" (-i).
+
+    Errors and tracebacks are returned directly in this response — do NOT call
+    get_environment_logs to check for them.
 
     Args:
-        env_name: The name of the environment to pull updates for.
+        env_name: The environment to apply changes to.
+        install: Comma-separated modules to install (-i).
+        upgrade: Comma-separated modules to upgrade (-u).
+        restart: Restart the Odoo container (for Python-only changes).
+        strict: If True, refuse to apply when the guardrail finds a likely
+            missing action (default False: warn but apply anyway).
     """
     settings = _get_settings()
     team = _resolve_team(ctx)
-    result = env_ops.pull_environment(settings, team, env_name)
+    install_list = [m.strip() for m in install.split(",") if m.strip()]
+    upgrade_list = [m.strip() for m in upgrade.split(",") if m.strip()]
+    result = env_ops.pull_environment(
+        settings,
+        team,
+        env_name,
+        install=install_list or None,
+        upgrade=upgrade_list or None,
+        restart=restart,
+        strict=strict,
+    )
     action = result["action"]
+    warnings = result.get("warnings") or []
+
+    if action == "blocked":
+        lines = ["BLOCKED by guardrail (strict mode):"]
+        lines.extend(f"  ⚠ {w}" for w in warnings)
+        lines.append("")
+        lines.append(result["message"])
+        return "\n".join(lines)
 
     if action == "none":
         return result["message"]
@@ -1116,6 +1201,9 @@ def pull_and_apply(env_name: str, ctx: Context = None) -> str:
         header_lines.append(f"  - {f}")
     if len(result.get("changed_files", [])) > 20:
         header_lines.append(f"  ... and {len(result['changed_files']) - 20} more")
+    if warnings:
+        header_lines.append("Guardrail warnings (applied anyway):")
+        header_lines.extend(f"  ⚠ {w}" for w in warnings)
 
     header = "\n".join(header_lines)
     output = result.get("output", "")
@@ -3052,6 +3140,9 @@ def main() -> None:
     if args.command is None:
         # No subcommand → start the MCP server
         _ensure_initialized(_settings)
+        # Record the active transport so tools can gate local-only features
+        # (e.g. create_environment(local_path=...)) to stdio.
+        settings_module.TRANSPORT = args.transport
         if args.transport == "stdio":
             _start_stdio()
         else:

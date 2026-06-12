@@ -573,6 +573,67 @@ def _cleanup_old_environment(
         shutil.rmtree(workspace_path)
 
 
+def _init_empty_database(
+    client: DockerClient,
+    settings: Settings,
+    odoo_image: str,
+    env_db: str,
+    odoo_env: dict,
+    odoo_volumes: dict,
+    env_name: str,
+) -> str:
+    """Initialize a fresh empty database with ``-i base`` in an isolated,
+    short-lived container, then remove it. Returns a setup-log line.
+
+    This runs *before* the long-running serving container exists, so the init
+    is the only Odoo process touching the database. It avoids the registry
+    signaling race that occurs when the serving PID1 (``odoo -d <db> --dev=xml``)
+    and an in-container ``-i base`` exec set up the registry concurrently and
+    collide on ``CREATE TABLE orm_signaling_registry`` (``UniqueViolation`` in
+    the pg catalog). ``-i base`` is explicit, so it works regardless of whether
+    the image build auto-initializes an empty DB on plain ``-d``.
+    """
+    init_name = get_resource_name(env_name, "odoo-init", settings.prefix)
+    try:
+        client.containers.get(init_name).remove(force=True)
+    except docker.errors.NotFound:
+        pass
+
+    init_container = client.containers.run(
+        image=odoo_image,
+        name=init_name,
+        detach=True,
+        network=settings.shared_network,
+        environment=odoo_env,
+        volumes=odoo_volumes,
+        command=f"odoo -d {env_db} -i base --stop-after-init --no-http",
+    )
+    exit_code: int = -1
+    logs = ""
+    try:
+        result = init_container.wait(timeout=600)
+        exit_code = (
+            result.get("StatusCode", -1) if isinstance(result, dict) else int(result)
+        )
+        try:
+            logs = init_container.logs().decode("utf-8", errors="replace")
+        except Exception:
+            logs = ""
+    finally:
+        try:
+            init_container.remove(force=True)
+        except docker.errors.APIError:
+            pass
+
+    if exit_code != 0:
+        logger.error(
+            "Base init failed (exit %s)", exit_code, extra={"env_name": env_name}
+        )
+        return f"[INIT] odoo -i base FAILED (exit {exit_code}):\n{logs[-4000:]}"
+    logger.info("Base init completed", extra={"env_name": env_name})
+    return "[INIT] odoo -i base completed successfully"
+
+
 def create_environment(
     settings: Settings,
     team: TeamSettings,
@@ -586,6 +647,7 @@ def create_environment(
     sanitize: bool = True,
     auto_install_modules: list[str] | None = None,
     env_vars: dict[str, str] | None = None,
+    local_path: str = "",
 ) -> dict[str, str]:
     env_name = env_name or branch
     start_time = time.time()
@@ -629,7 +691,15 @@ def create_environment(
 
     _cleanup_old_environment(client, settings, team, env_name)
     workspace_path = get_workspace_path(env_name, team.workspaces_dir)
-    repo_path = get_repo_path(env_name, team.workspaces_dir)
+    # Live-mount mode (stdio/local): bind-mount the agent's own checkout
+    # directly instead of cloning. The repo lives OUTSIDE the managed
+    # workspace, so it is never touched by cleanup/delete.
+    local_mount = bool(local_path)
+    repo_path = (
+        os.path.abspath(local_path)
+        if local_mount
+        else get_repo_path(env_name, team.workspaces_dir)
+    )
     env_db = get_db_name(env_name, team.team_id)
 
     labels = {
@@ -647,6 +717,8 @@ def create_environment(
         labels["oduflow.extra_addons"] = json.dumps(extra_addons)
     if git_user:
         labels["oduflow.git_user"] = git_user
+    if local_mount:
+        labels["oduflow.local_path"] = repo_path
     if auto_install_modules:
         labels["oduflow.auto_install_modules"] = ",".join(auto_install_modules)
     if env_vars:
@@ -683,52 +755,68 @@ def create_environment(
 
     os.makedirs(workspace_path, exist_ok=True)
 
-    git_env = git_env_for_team(team.git_credentials_file())
-
-    from oduflow.git_ops import inject_credential_user
-
-    clone_url = inject_credential_user(repo_url, git_user)
-
-    auth_keywords = (
-        "Authentication failed",
-        "could not read Username",
-        "Permission denied",
-        "Repository not found",
-        "terminal prompts disabled",
-        "Invalid username or password",
-    )
-
-    try:
-        subprocess.run(
-            [
-                "git",
-                "clone",
-                "--branch",
-                branch,
-                "--depth",
-                "1",
-                clone_url,
-                repo_path,
-            ],
-            check=True,
-            capture_output=True,
-            timeout=60,
-            env=git_env,
-        )
-    except subprocess.CalledProcessError as e:
-        error_msg = e.stderr.decode("utf-8") if e.stderr else str(e)
-        if any(kw.lower() in error_msg.lower() for kw in auth_keywords):
-            raise RepoAuthError(
-                f"Git authentication failed for {sanitize_repo_url(repo_url)}. "
-                f"Call 'setup_repo_auth' first to cache credentials."
+    if local_mount:
+        # No clone: the agent's checkout is bind-mounted live. The directory
+        # must already exist on the host (validated in the tool layer too).
+        if not os.path.isdir(repo_path):
+            raise PrerequisiteNotMetError(
+                f"local_path does not exist or is not a directory: {repo_path}"
             )
-        raise ExternalCommandError("git clone", e.returncode, error_msg)
-    except subprocess.TimeoutExpired:
-        raise ExternalCommandError(
-            "git clone",
-            -1,
-            "Repository clone timed out (60s). Repository may be too large or network is slow.",
+        logger.info("Live-mount mode: using local checkout at %s", repo_path)
+        # Baseline for non-git change detection: first pull_and_apply diffs
+        # against this snapshot. (Git checkouts use working-tree diff instead.)
+        try:
+            with open(_mtime_snapshot_path(env_name, team), "w") as _snap:
+                json.dump(_scan_mtimes(repo_path), _snap)
+        except OSError:
+            pass
+    else:
+        git_env = git_env_for_team(team.git_credentials_file())
+
+        from oduflow.git_ops import inject_credential_user
+
+        clone_url = inject_credential_user(repo_url, git_user)
+
+        auth_keywords = (
+            "Authentication failed",
+            "could not read Username",
+            "Permission denied",
+            "Repository not found",
+            "terminal prompts disabled",
+            "Invalid username or password",
         )
+
+        try:
+            subprocess.run(
+                [
+                    "git",
+                    "clone",
+                    "--branch",
+                    branch,
+                    "--depth",
+                    "1",
+                    clone_url,
+                    repo_path,
+                ],
+                check=True,
+                capture_output=True,
+                timeout=60,
+                env=git_env,
+            )
+        except subprocess.CalledProcessError as e:
+            error_msg = e.stderr.decode("utf-8") if e.stderr else str(e)
+            if any(kw.lower() in error_msg.lower() for kw in auth_keywords):
+                raise RepoAuthError(
+                    f"Git authentication failed for {sanitize_repo_url(repo_url)}. "
+                    f"Call 'setup_repo_auth' first to cache credentials."
+                )
+            raise ExternalCommandError("git clone", e.returncode, error_msg)
+        except subprocess.TimeoutExpired:
+            raise ExternalCommandError(
+                "git clone",
+                -1,
+                "Repository clone timed out (60s). Repository may be too large or network is slow.",
+            )
 
     # --- Extra addons worktrees ---
     extra_mount_paths = []
@@ -909,52 +997,37 @@ def create_environment(
     except Exception as exc:
         logger.warning("Could not pull image %s, using local copy: %s", odoo_image, exc)
 
+    setup_logs: list[str] = []
+
+    # Greenfield (no template): initialize the empty DB with `-i base` in an
+    # isolated, short-lived container BEFORE the serving container exists, so
+    # the init is the only Odoo process touching the DB. This avoids the
+    # registry-signaling race between the serving PID1 and an in-container
+    # `-i base` exec (UniqueViolation on orm_signaling_registry).
+    if template_name is None:
+        logger.info(
+            "No template — initialising Odoo with -i base (isolated container)",
+            extra={"env_name": env_name},
+        )
+        setup_logs.append(
+            _init_empty_database(
+                client, settings, odoo_image, env_db, odoo_env, odoo_volumes, env_name
+            )
+        )
+
     container = client.containers.run(**run_kwargs)
 
     if odoo_conf_to_copy:
         _copy_file_to_container(container, odoo_conf_to_copy, "/etc/odoo")
 
-    setup_logs: list[str] = []
-
-    if template_name is None:
-        logger.info(
-            "No template — initialising Odoo with -i base",
-            extra={"env_name": env_name},
-        )
-        apt_log = _install_apt_packages(container, repo_path)
-        if apt_log:
-            setup_logs.append(apt_log)
-        _, pip_log = _install_pip_requirements(container, repo_path, restart=False)
-        if pip_log:
-            setup_logs.append(pip_log)
-        init_cmd = (
-            f"/entrypoint.sh odoo -d {env_db} -i base --stop-after-init --no-http"
-        )
-        exit_code, output = container.exec_run(init_cmd)
-        output_str = (
-            output.decode("utf-8") if isinstance(output, bytes) else str(output)
-        )
-        if exit_code != 0:
-            logger.error(
-                "Odoo base init failed (exit %d): %s",
-                exit_code,
-                output_str,
-                extra={"env_name": env_name},
-            )
-            setup_logs.append(
-                f"[INIT] odoo -i base FAILED (exit {exit_code}):\n{output_str}"
-            )
-        else:
-            setup_logs.append("[INIT] odoo -i base completed successfully")
-        container.restart()
-        logger.info("Container restarted after base init", extra={"env_name": env_name})
-    else:
-        apt_log = _install_apt_packages(container, repo_path)
-        if apt_log:
-            setup_logs.append(apt_log)
-        _, pip_log = _install_pip_requirements(container, repo_path)
-        if pip_log:
-            setup_logs.append(pip_log)
+    # Install repo apt/pip dependencies onto the serving container (both paths).
+    # base needs no custom deps, so this runs after the DB is ready.
+    apt_log = _install_apt_packages(container, repo_path)
+    if apt_log:
+        setup_logs.append(apt_log)
+    _, pip_log = _install_pip_requirements(container, repo_path)
+    if pip_log:
+        setup_logs.append(pip_log)
 
     # --- Sanitize environment database ---
     if sanitize and template_name is not None:
@@ -1012,6 +1085,7 @@ def create_environment(
         "setup_logs": setup_logs,
     }
     result["extra_addons"] = extra_addons or {}
+    result["local_path"] = repo_path if local_mount else ""
     result["elapsed_seconds"] = round(time.time() - start_time, 1)
     return result
 
@@ -1424,20 +1498,210 @@ def get_environment_info(
     return result
 
 
-def pull_environment(
-    settings: Settings, team: TeamSettings, env_name: str
+def _is_git_repo(path: str) -> bool:
+    try:
+        r = subprocess.run(
+            ["git", "-C", path, "rev-parse", "--is-inside-work-tree"],
+            capture_output=True,
+            text=True,
+        )
+        return r.returncode == 0 and r.stdout.strip() == "true"
+    except OSError:
+        return False
+
+
+def _git_working_changes(repo_path: str) -> list[str]:
+    """Paths changed in the working tree vs HEAD plus untracked files.
+
+    Returned relative to *repo_path* — suitable for ``classify_changes``. This
+    is "since the last commit", so committing after applying gives the cleanest
+    signal; otherwise cumulative uncommitted edits are re-evaluated each call.
+    """
+    changed: list[str] = []
+    try:
+        tracked = subprocess.run(
+            ["git", "-C", repo_path, "diff", "--name-only", "HEAD"],
+            capture_output=True,
+            text=True,
+        )
+        if tracked.returncode == 0:
+            changed.extend(tracked.stdout.splitlines())
+    except OSError:
+        pass
+    try:
+        untracked = subprocess.run(
+            ["git", "-C", repo_path, "ls-files", "--others", "--exclude-standard"],
+            capture_output=True,
+            text=True,
+        )
+        if untracked.returncode == 0:
+            changed.extend(untracked.stdout.splitlines())
+    except OSError:
+        pass
+    return [f for f in changed if f]
+
+
+_MTIME_SKIP_DIRS = {".git", "__pycache__", ".idea", ".vscode", "node_modules"}
+
+
+def _scan_mtimes(root: str) -> dict[str, float]:
+    """Map of relative-path -> mtime for files under *root* (cheap: stat only)."""
+    out: dict[str, float] = {}
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames if d not in _MTIME_SKIP_DIRS]
+        for f in filenames:
+            if f.endswith((".pyc", ".pyo")):
+                continue
+            fp = os.path.join(dirpath, f)
+            try:
+                out[os.path.relpath(fp, root)] = os.path.getmtime(fp)
+            except OSError:
+                pass
+    return out
+
+
+def _mtime_snapshot_path(env_name: str, team: TeamSettings) -> str:
+    return os.path.join(
+        get_workspace_path(env_name, team.workspaces_dir), ".oduflow_mtimes.json"
+    )
+
+
+def _detect_local_changes(
+    repo_path: str, env_name: str, team: TeamSettings
+) -> tuple[str | None, list[str]]:
+    """Return ``(base_ref, changed_files)`` for a live-mounted checkout.
+
+    Git checkout → working-tree diff vs HEAD + untracked, ``base_ref="HEAD"``
+    (enables deep field/manifest guardrail checks). Non-git → mtime snapshot
+    diff, ``base_ref=None`` (path-only guardrail). The snapshot is refreshed
+    every call so each apply reports changes since the previous one.
+    """
+    if _is_git_repo(repo_path):
+        return "HEAD", _git_working_changes(repo_path)
+
+    snap_path = _mtime_snapshot_path(env_name, team)
+    current = _scan_mtimes(repo_path)
+    old: dict[str, float] = {}
+    if os.path.isfile(snap_path):
+        try:
+            with open(snap_path) as f:
+                old = json.load(f)
+        except (json.JSONDecodeError, OSError):
+            old = {}
+    changed = [p for p, m in current.items() if old.get(p) != m]
+    try:
+        with open(snap_path, "w") as f:
+            json.dump(current, f)
+    except OSError:
+        pass
+    return None, changed
+
+
+def _apply_actions(
+    client: DockerClient,
+    settings: Settings,
+    team: TeamSettings,
+    env_name: str,
+    odoo_container_name: str,
+    *,
+    to_install: list[str],
+    to_upgrade: list[str],
+    do_restart: bool,
+    changed_files: list[str],
 ) -> dict[str, Any]:
-    from oduflow.git_analysis import classify_changes
+    """Run install/upgrade/restart and build the result dict (shared by the
+    explicit and auto paths of :func:`pull_environment`)."""
+    from oduflow.docker_ops.odoo_ops import (
+        install_odoo_modules,
+        upgrade_odoo_modules,
+    )
+
+    if to_install or to_upgrade:
+        messages: list[str] = []
+        odoo_output_parts: list[str] = []
+        last_exit_code = 0
+        if to_install:
+            res = install_odoo_modules(settings, team, env_name, *to_install)
+            last_exit_code = res["exit_code"]
+            messages.append(f"Installed modules: {','.join(to_install)}")
+            if res.get("output"):
+                odoo_output_parts.append(res["output"])
+        if to_upgrade:
+            res = upgrade_odoo_modules(settings, team, env_name, *to_upgrade)
+            last_exit_code = res["exit_code"]
+            messages.append(f"Upgraded modules: {','.join(to_upgrade)}")
+            if res.get("output"):
+                odoo_output_parts.append(res["output"])
+        client.containers.get(odoo_container_name).restart()
+        messages.append("Container restarted.")
+        logger.info(
+            "Container restarted after module update", extra={"env_name": env_name}
+        )
+        return {
+            "action": "install" if to_install else "upgrade",
+            "modules_installed": to_install,
+            "modules_upgraded": to_upgrade,
+            "exit_code": last_exit_code,
+            "changed_files": changed_files,
+            "message": " ".join(messages),
+            "output": "\n".join(odoo_output_parts),
+        }
+
+    if do_restart:
+        client.containers.get(odoo_container_name).restart()
+        logger.info("Container restarted", extra={"env_name": env_name})
+        return {
+            "action": "restart",
+            "changed_files": changed_files,
+            "message": "Container restarted.",
+        }
+
+    if changed_files:
+        return {
+            "action": "refresh",
+            "changed_files": changed_files,
+            "message": (
+                "Only XML/JS changes detected. Refresh your browser "
+                "(--dev=xml is active)."
+            ),
+        }
+    return {"action": "none", "message": "No changes detected."}
+
+
+def pull_environment(
+    settings: Settings,
+    team: TeamSettings,
+    env_name: str,
+    *,
+    install: list[str] | None = None,
+    upgrade: list[str] | None = None,
+    restart: bool = False,
+    strict: bool = False,
+) -> dict[str, Any]:
+    """Sync code into an environment and apply the right Odoo action.
+
+    Code-delivery mode is chosen from the env's labels:
+
+    * **git** (default) — ``git pull`` the branch (and extra-addon worktrees)
+      into the managed clone, which is bind-mounted into the container.
+    * **live-mount** (``oduflow.local_path`` label, stdio/local only) — the
+      agent's checkout is already bind-mounted, so there is nothing to pull;
+      changes are detected straight from the working tree.
+
+    Action selection:
+
+    * **explicit** — when any of ``install`` / ``upgrade`` / ``restart`` is
+      given, do exactly that. A guardrail compares the request against what the
+      changed files suggest and returns non-blocking ``warnings`` (or, with
+      ``strict=True``, refuses with ``action="blocked"``).
+    * **auto** — otherwise fall back to ``classify_changes`` (unchanged legacy
+      behavior), useful for pulling commits you did not author.
+    """
+    from oduflow.git_analysis import guardrail_warnings, recommend
     from oduflow.git_ops import pull_repo
 
     client = get_client()
     odoo_container_name = get_resource_name(env_name, "odoo", settings.prefix)
-    repo_path = get_repo_path(env_name, team.workspaces_dir)
-
-    if not os.path.isdir(repo_path):
-        raise NotFoundError(
-            f"Repository for branch '{env_name}' not found at {repo_path}"
-        )
 
     try:
         container_obj = client.containers.get(odoo_container_name)
@@ -1446,149 +1710,112 @@ def pull_environment(
             f"Environment '{env_name}' does not exist. Use create_environment first."
         )
 
-    _trace("pull_environment(%s): git pull started", env_name)
-    git_branch = container_obj.labels.get("oduflow.git_branch", env_name)
-    old_head, changed_files = pull_repo(
-        repo_path, git_branch, cred_file=team.git_credentials_file()
-    )
+    local_path = container_obj.labels.get("oduflow.local_path", "")
+    is_local = bool(local_path)
+    repo_path = local_path or get_repo_path(env_name, team.workspaces_dir)
 
-    # --- Pull extra addon worktrees ---
-    extra_changed_files: list[str] = []
-    extra_addons_raw = container_obj.labels.get("oduflow.extra_addons", "{}")
-    try:
-        extra_addons = json.loads(extra_addons_raw)
-    except (json.JSONDecodeError, TypeError):
-        extra_addons = {}
+    if not os.path.isdir(repo_path):
+        raise NotFoundError(
+            f"Repository for environment '{env_name}' not found at {repo_path}"
+        )
 
-    if extra_addons:
-        from oduflow.extra_addons import pull_extra_worktree
+    # --- 1. Sync code + detect changed files and a diff base ---
+    if is_local:
+        _trace("pull_environment(%s): live-mount, detecting local changes", env_name)
+        base_ref, all_changed = _detect_local_changes(repo_path, env_name, team)
+    else:
+        _trace("pull_environment(%s): git pull started", env_name)
+        git_branch = container_obj.labels.get("oduflow.git_branch", env_name)
+        old_head, changed_files = pull_repo(
+            repo_path, git_branch, cred_file=team.git_credentials_file()
+        )
+        base_ref = old_head
 
-        workspace_path = get_workspace_path(env_name, team.workspaces_dir)
-        extra_dir = os.path.join(workspace_path, "extra")
-        for repo_name, branch in extra_addons.items():
-            wt_path = os.path.join(extra_dir, repo_name)
-            if not os.path.isdir(wt_path):
-                _trace(
-                    "pull_environment(%s): extra worktree %s not found, skipping",
-                    env_name,
-                    wt_path,
-                )
-                continue
-            _trace(
-                "pull_environment(%s): pulling extra addon %s@%s",
-                env_name,
-                repo_name,
-                branch,
+        extra_changed_files: list[str] = []
+        try:
+            extra_addons = json.loads(
+                container_obj.labels.get("oduflow.extra_addons", "{}")
             )
-            _extra_old, extra_files = pull_extra_worktree(
-                team, repo_name, branch, wt_path
-            )
-            extra_changed_files.extend(extra_files)
-            if extra_files:
-                _trace(
-                    "pull_environment(%s): extra addon %s: %d files changed",
-                    env_name,
-                    repo_name,
-                    len(extra_files),
-                )
+        except (json.JSONDecodeError, TypeError):
+            extra_addons = {}
+        if extra_addons:
+            from oduflow.extra_addons import pull_extra_worktree
 
-    all_changed = changed_files + extra_changed_files
-    if not all_changed:
-        _trace("pull_environment(%s): no changes, already up to date", env_name)
-        return {"action": "none", "message": "Already up to date."}
+            extra_dir = os.path.join(
+                get_workspace_path(env_name, team.workspaces_dir), "extra"
+            )
+            for repo_name, branch in extra_addons.items():
+                wt_path = os.path.join(extra_dir, repo_name)
+                if not os.path.isdir(wt_path):
+                    continue
+                _extra_old, extra_files = pull_extra_worktree(
+                    team, repo_name, branch, wt_path
+                )
+                extra_changed_files.extend(extra_files)
+        all_changed = changed_files + extra_changed_files
 
     _trace(
-        "pull_environment(%s): %d files changed: %s",
+        "pull_environment(%s): %d changed files: %s",
         env_name,
         len(all_changed),
         all_changed,
     )
 
-    analysis = classify_changes(all_changed, repo_path, base_ref=old_head)
-    action = analysis["action"]
-    _trace("pull_environment(%s): classify result action=%s", env_name, action)
-
-    if action in ("install", "upgrade"):
-        from oduflow.docker_ops.odoo_ops import (
-            install_odoo_modules,
-            upgrade_odoo_modules,
-        )
-
-        to_install = analysis["modules_to_install"]
-        to_upgrade = analysis["modules_to_upgrade"]
-        messages = []
-        last_exit_code = 0
-        odoo_output_parts: list[str] = []
-
-        if to_install:
-            _trace("pull_environment(%s): installing modules %s", env_name, to_install)
-            res = install_odoo_modules(settings, team, env_name, *to_install)
-            last_exit_code = res["exit_code"]
-            _trace(
-                "pull_environment(%s): install exit_code=%d",
-                env_name,
-                last_exit_code,
-            )
-            messages.append(f"Installed modules: {','.join(to_install)}")
-            if res.get("output"):
-                odoo_output_parts.append(res["output"])
-
-        if to_upgrade:
-            _trace("pull_environment(%s): upgrading modules %s", env_name, to_upgrade)
-            res = upgrade_odoo_modules(settings, team, env_name, *to_upgrade)
-            last_exit_code = res["exit_code"]
-            _trace(
-                "pull_environment(%s): upgrade exit_code=%d",
-                env_name,
-                last_exit_code,
-            )
-            messages.append(f"Upgraded modules: {','.join(to_upgrade)}")
-            if res.get("output"):
-                odoo_output_parts.append(res["output"])
-
-        container = client.containers.get(odoo_container_name)
-        container.restart()
-        _trace(
-            "pull_environment(%s): container RESTARTED after install/upgrade",
-            env_name,
-        )
-        logger.info(
-            "Container restarted after module update", extra={"env_name": env_name}
-        )
-        messages.append("Container restarted.")
-        return {
-            "action": action,
-            "modules_installed": to_install,
-            "modules_upgraded": to_upgrade,
-            "exit_code": last_exit_code,
-            "changed_files": all_changed,
-            "message": " ".join(messages),
-            "output": "\n".join(odoo_output_parts),
-        }
-
-    if action == "restart":
-        container = client.containers.get(odoo_container_name)
-        container.restart()
-        _trace(
-            "pull_environment(%s): container RESTARTED (Python files changed)",
-            env_name,
-        )
-        logger.info("Container restarted after pull", extra={"env_name": env_name})
-        return {
-            "action": "restart",
-            "changed_files": all_changed,
-            "message": "Container restarted (Python files changed).",
-        }
-
-    _trace(
-        "pull_environment(%s): NO restart, action=refresh (hot-reload only)",
-        env_name,
+    # --- 2. Determine actions: explicit (agent-driven) vs auto (classify) ---
+    explicit = bool(install) or bool(upgrade) or restart
+    recommended = (
+        recommend(all_changed, repo_path, base_ref)
+        if all_changed
+        else {"action": "none", "modules_to_install": [], "modules_to_upgrade": []}
     )
-    return {
-        "action": "refresh",
-        "changed_files": all_changed,
-        "message": "Only XML/JS changes detected. Refresh your browser (--dev=xml is active).",
-    }
+
+    warnings: list[str] = []
+    if explicit:
+        to_install = list(install or [])
+        to_upgrade = list(upgrade or [])
+        do_restart = bool(restart)
+        if all_changed:
+            warnings = guardrail_warnings(
+                recommended, to_install, to_upgrade, do_restart
+            )
+        if strict and warnings:
+            return {
+                "action": "blocked",
+                "warnings": warnings,
+                "changed_files": all_changed,
+                "message": (
+                    "Guardrail (strict) blocked apply: the requested action looks "
+                    "incomplete for the detected changes. Re-call with the suggested "
+                    "install/upgrade, or pass strict=False to apply anyway."
+                ),
+            }
+    else:
+        if not all_changed:
+            return {
+                "action": "none",
+                "message": (
+                    "No local changes detected." if is_local else "Already up to date."
+                ),
+            }
+        to_install = list(recommended.get("modules_to_install", []))
+        to_upgrade = list(recommended.get("modules_to_upgrade", []))
+        do_restart = recommended.get("action") == "restart"
+
+    # --- 3. Execute ---
+    result = _apply_actions(
+        client,
+        settings,
+        team,
+        env_name,
+        odoo_container_name,
+        to_install=to_install,
+        to_upgrade=to_upgrade,
+        do_restart=do_restart,
+        changed_files=all_changed,
+    )
+    if warnings:
+        result["warnings"] = warnings
+    return result
 
 
 def update_environment(

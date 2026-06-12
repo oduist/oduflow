@@ -31,7 +31,7 @@ MCP endpoint: `http://<host>:8000/mcp`
 | Tool | When to use |
 |---|---|
 | `list_environments` | Check existing environments before creating a new one |
-| `create_environment(branch, env_name?, repo_url, odoo_image, template_name?, env_vars?)` | Provision an environment. `branch` is the git branch; `env_name` defaults to the branch name. Use the correct Odoo Docker image. Pass `template_name="none"` for greenfield projects. `env_vars` is a comma-separated `KEY=VALUE` list injected into the Odoo container |
+| `create_environment(branch, env_name?, repo_url, odoo_image, template_name?, env_vars?, local_path?)` | Provision an environment. `branch` is the git branch; `env_name` defaults to the branch name. Use the correct Odoo Docker image. Pass `template_name="none"` for greenfield projects. `env_vars` is a comma-separated `KEY=VALUE` list injected into the Odoo container. **Local fast-path (stdio only):** pass `local_path="/abs/path/to/checkout"` to bind-mount your local working copy live instead of cloning — edits apply with no git push (see "Local Fast-Path" below). |
 | `get_environment_info(env_name)` | Get full environment details: database name, URL, repo, image, template, extra addons, workspace, container status, CPU/RAM stats |
 | `delete_environment(env_name)` | Tear down when the task is complete or cancelled |
 | `start_environment` / `stop_environment` | Resume or pause a stopped environment |
@@ -42,7 +42,7 @@ MCP endpoint: `http://<host>:8000/mcp`
 
 | Tool | When to use |
 |---|---|
-| `pull_and_apply(env_name)` | **Always call after every `git push`**. Oduflow analyzes changed files and automatically decides: install new modules, upgrade changed modules, restart for Python changes, or do nothing for XML/JS (hot-reloaded). You do NOT need to call `restart` or `upgrade` manually. **Errors and tracebacks are returned directly in the tool response** — do NOT call `get_environment_logs` to check for errors after this tool. |
+| `pull_and_apply(env_name, install?, upgrade?, restart?, strict?)` | Sync code and apply the right action. **git mode:** call after every `git push`. **live-mount mode:** call after editing files (no push needed). **Auto** (no args): Oduflow analyzes the diff and decides install/upgrade/restart/refresh — best when pulling commits you did not author. **Explicit** (recommended when you authored the edits): pass `install`/`upgrade` (comma-separated modules) and/or `restart=True` per the decision rules below; a guardrail warns if your action looks incomplete (`strict=True` refuses instead). **Errors and tracebacks are returned directly in the tool response** — do NOT call `get_environment_logs` after this tool. |
 
 ### Odoo Module Operations
 
@@ -184,9 +184,10 @@ The summary footer looks like:
 4. **Show the URL**: Always display the environment URL to the user after creation.
 
 ### Sync & Work Cycle
-1. After every `git push`, **always** call `pull_and_apply`. It handles install/upgrade/restart automatically.
-2. Do **not** call `restart_environment` or `upgrade_odoo_modules` manually unless debugging a specific issue — `pull_and_apply` already does the right thing.
-3. After `pull_and_apply`, **read the tool response** for errors. Do NOT call `get_environment_logs` — install/upgrade output is returned directly and does not appear in container logs.
+1. After every `git push` (git mode) — or after editing files directly (live-mount mode) — call `pull_and_apply`.
+2. When **you** authored the edits, pass the action explicitly (`install` / `upgrade` / `restart`) per the decision rules below — you know what you changed, so don't make Oduflow guess. Leave them empty (auto mode) only when pulling commits you did not author.
+3. Do **not** call `restart_environment` or `upgrade_odoo_modules` separately for a normal sync — `pull_and_apply` does it in one call.
+4. After `pull_and_apply`, **read the tool response** for errors and any guardrail ⚠ warnings. Do NOT call `get_environment_logs` — install/upgrade output is returned directly and does not appear in container logs.
 
 ### Debugging Loop
 ```
@@ -213,7 +214,7 @@ The environment container runs **remotely** and has access only to the git repos
 - Run any git commands (`git rebase`, `git pull`, `git checkout`, `git stash`, etc.)
 - Modify module files in any way
 
-**If you need to change code** — always do it locally, then `git commit` → `git push` → `pull_and_apply`. This is the only correct way to deliver code changes to the environment.
+**If you need to change code** — in **git mode**, do it locally, then `git commit` → `git push` → `pull_and_apply`. In **live-mount mode** (env created with `local_path`), edit the files in that local directory directly and call `pull_and_apply` — no commit/push required (the directory is bind-mounted live into the container). Either way, never edit code *inside* the container.
 
 **Non-standard operations** (e.g., `apt install`, `pip install`, modifying system configs) are possible but **require explicit user confirmation** before proceeding — explain what you want to do and why.
 
@@ -243,6 +244,40 @@ When you call `pull_and_apply`, Oduflow analyzes every changed file:
 | `*.xml` (views) / `*.js` / `*.css` / `*.scss` | **Nothing** — hot-reloaded via `--dev=xml` (refresh browser) |
 
 Priority: install > upgrade > restart > refresh (no action).
+
+This auto-classification runs when you call `pull_and_apply` **without** `install`/`upgrade`/`restart`. Use it for pulling commits you did not author. When you authored the edits, prefer the explicit form (next section).
+
+---
+
+## Apply Decision Rules (explicit mode)
+
+When you changed the code yourself, you already know what to do — tell `pull_and_apply` directly. Pick by **where the changed thing lives**:
+
+| You changed… | It lives in… | Pass |
+|---|---|---|
+| view/QWeb XML, JS, CSS, static assets | the browser / read from file | nothing — just refresh the browser (`--dev=xml` is active) |
+| Python logic/methods only (no new/changed fields or models) | the worker process | `restart=True` |
+| a **field** or model (`fields.*`, new model, `_inherit`/`_name`), security/data records, `ir.cron`, mail templates, `ir.model.access`, or manifest `data`/`depends` | the **database** (loaded only on install/upgrade) | `upgrade="module"` (-u) |
+| a brand-new, not-yet-installed module | — | `install="module"` (-i) |
+
+⚠️ **Sharp edge:** editing a `.py` to add/change a **field** needs `upgrade` (-u), not `restart` — even though it feels like a code change. A restart reloads code but won't touch the DB schema/registry.
+
+### Guardrail
+In explicit mode, Oduflow cross-checks your action against the detected diff and appends non-blocking ⚠ warnings if something looks missing (e.g. you restarted but a module's data/schema changed and needs `-u`). It still applies what you asked — read the warnings and re-call with the correction if it's right. Pass `strict=True` to make it refuse instead of warn.
+
+---
+
+## Local Fast-Path (stdio transport)
+
+When Oduflow runs locally (stdio) on the same machine as you, skip the GitHub round-trip entirely:
+
+1. `create_environment(branch=..., odoo_image=..., template_name=..., local_path="/abs/path/to/your/checkout")` — bind-mounts your working copy live into the container instead of cloning. `repo_url` is not needed.
+2. Edit files in that directory with your normal tools. Changes are visible inside the container **instantly** (no commit, no push, no clone).
+3. `pull_and_apply(env_name, upgrade="my_module")` (or `restart=True`, or `install=...`) to apply — per the decision rules above. XML view edits need no call at all: just refresh the browser.
+
+Notes:
+- `local_path` is **rejected over http transport** (a remote server must not mount client paths).
+- Change detection uses your checkout's git working tree (uncommitted edits included), so committing after applying gives the cleanest signal. A non-git directory falls back to file-mtime detection with a coarser guardrail.
 
 ---
 

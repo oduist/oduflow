@@ -1,3 +1,5 @@
+import os
+
 import pytest
 import docker
 from unittest.mock import MagicMock, patch
@@ -162,6 +164,7 @@ class TestCreateEnvironment:
     ):
         mock_odoo = MagicMock()
         mock_odoo.exec_run.return_value = (0, b"OK")
+        mock_odoo.wait.return_value = {"StatusCode": 0}
         mock_docker_client.containers.run.return_value = mock_odoo
         mock_docker_client.containers.get.side_effect = docker.errors.NotFound("nf")
 
@@ -179,7 +182,8 @@ class TestCreateEnvironment:
         assert mock_sql.call_count == 2
         mock_creds.assert_called_once()
         mock_role.assert_called_once()
-        mock_docker_client.containers.run.assert_called_once()
+        # Greenfield: isolated init container + serving container = 2 run calls.
+        assert mock_docker_client.containers.run.call_count == 2
         mock_alloc.assert_called_once()
 
     @patch("oduflow.docker_ops.env_ops._db_exists", return_value=True)
@@ -261,6 +265,7 @@ class TestCreateEnvironment:
     ):
         mock_odoo = MagicMock()
         mock_odoo.exec_run.return_value = (0, b"OK")
+        mock_odoo.wait.return_value = {"StatusCode": 0}
         mock_docker_client.containers.run.return_value = mock_odoo
         mock_docker_client.containers.get.side_effect = docker.errors.NotFound("nf")
 
@@ -280,12 +285,189 @@ class TestCreateEnvironment:
         assert "TEMPLATE" not in create_db_call[0][2]
         # Should NOT mount filestore
         mock_mount.assert_not_called()
-        # Should run -i base --stop-after-init
-        init_cmd = mock_odoo.exec_run.call_args[0][0]
-        assert "-i base" in init_cmd
-        assert "--stop-after-init" in init_cmd
-        # Should restart after init
-        mock_odoo.restart.assert_called_once()
+        # Greenfield init runs `-i base` in a SEPARATE isolated container
+        # (the FIRST containers.run), before the serving container — so the
+        # serving PID1 never races it. containers.run is called twice.
+        assert mock_docker_client.containers.run.call_count == 2
+        init_run = mock_docker_client.containers.run.call_args_list[0]
+        assert "-i base" in init_run.kwargs["command"]
+        assert "--stop-after-init" in init_run.kwargs["command"]
+
+    @patch(
+        "oduflow.extra_addons.generate_odoo_conf",
+        return_value="/tmp/flow-test/workspaces/feature-local/odoo.conf",
+    )
+    @patch("oduflow.docker_ops.env_ops._copy_file_to_container")
+    @patch("oduflow.docker_ops.env_ops._create_pg_role")
+    @patch(
+        "oduflow.docker_ops.env_ops.create_credentials",
+        return_value={"pg_user": "u_1_feature-local", "pg_password": "test-pw"},
+    )
+    @patch("oduflow.docker_ops.env_ops._ensure_system_ready")
+    @patch("oduflow.docker_ops.env_ops.get_odoo_uid_gid", return_value="100:101")
+    @patch("oduflow.docker_ops.env_ops._exec_sql")
+    @patch("oduflow.docker_ops.env_ops._db_exists", return_value=False)
+    @patch("oduflow.docker_ops.env_ops._mount_filestore")
+    @patch("oduflow.docker_ops.env_ops._get_used_ports", return_value=set())
+    @patch("oduflow.docker_ops.env_ops.allocate_port", return_value=50002)
+    @patch("oduflow.docker_ops.env_ops.subprocess.run")
+    @patch("oduflow.docker_ops.env_ops.os.chmod")
+    @patch("oduflow.docker_ops.env_ops.os.makedirs")
+    @patch("oduflow.docker_ops.env_ops.os.path.exists", return_value=False)
+    def test_create_local_path_skips_clone(
+        self,
+        mock_exists,
+        mock_makedirs,
+        mock_chmod,
+        mock_run,
+        mock_alloc,
+        mock_used,
+        mock_mount,
+        mock_db_exists,
+        mock_sql,
+        mock_uid_gid,
+        mock_ready,
+        mock_creds,
+        mock_role,
+        mock_copy_conf,
+        mock_gen_conf,
+        mock_docker_client,
+        tmp_path,
+    ):
+        mock_odoo = MagicMock()
+        mock_odoo.exec_run.return_value = (0, b"OK")
+        mock_odoo.wait.return_value = {"StatusCode": 0}
+        mock_docker_client.containers.run.return_value = mock_odoo
+        mock_docker_client.containers.get.side_effect = docker.errors.NotFound("nf")
+
+        local_dir = str(tmp_path)
+        result = env_ops.create_environment(
+            TEST_SETTINGS,
+            TEST_TEAM,
+            "feature/local",
+            "",  # no repo_url in live-mount mode
+            "odoo:17.0",
+            template_name=None,
+            local_path=local_dir,
+        )
+
+        # No git clone was invoked.
+        for call in mock_run.call_args_list:
+            assert "clone" not in (call.args[0] if call.args else [])
+        # Result and container label point at the live-mount directory.
+        abs_local = os.path.abspath(local_dir)
+        assert result["local_path"] == abs_local
+        run_kwargs = mock_docker_client.containers.run.call_args.kwargs
+        assert run_kwargs["labels"]["oduflow.local_path"] == abs_local
+        # The local dir is bind-mounted to /mnt/extra-addons.
+        assert run_kwargs["volumes"][abs_local]["bind"] == "/mnt/extra-addons"
+
+
+class TestReloadTemplate:
+    @patch("oduflow.docker_ops.system_ops._update_template_sizes")
+    @patch("oduflow.docker_ops.system_ops._copy_file_to_container")
+    @patch("oduflow.docker_ops.system_ops._is_text_dump", return_value=False)
+    @patch("oduflow.docker_ops.system_ops._db_exists", return_value=False)
+    @patch("oduflow.docker_ops.system_ops._exec_sql", return_value="5")
+    @patch("oduflow.docker_ops.system_ops._wait_pg_ready")
+    @patch("oduflow.docker_ops.system_ops.os.path.isfile", return_value=True)
+    def test_restore_uses_no_owner(
+        self,
+        mock_isfile,
+        mock_wait,
+        mock_sql,
+        mock_db_exists,
+        mock_text,
+        mock_copy,
+        mock_sizes,
+        mock_docker_client,
+    ):
+        # Custom-format dumps must be restored with --no-owner so the template
+        # is not pinned to the source env's per-env role; otherwise deleting the
+        # source env leaves an undroppable orphan role. (--no-owner is honored
+        # only at restore time for -Fc archives, not at pg_dump time.)
+        db_container = MagicMock()
+        db_container.exec_run.return_value = (0, b"")
+        mock_docker_client.containers.get.return_value = db_container
+
+        system_ops.reload_template(TEST_SETTINGS, TEST_TEAM, "mytpl")
+
+        restore_cmd = db_container.exec_run.call_args[0][0]
+        joined = " ".join(restore_cmd)
+        assert "pg_restore" in joined
+        assert "--no-owner" in joined
+
+
+class TestPullEnvironmentLocal:
+    @patch("oduflow.docker_ops.env_ops._apply_actions")
+    @patch("oduflow.docker_ops.env_ops._detect_local_changes")
+    @patch("oduflow.docker_ops.env_ops.os.path.isdir", return_value=True)
+    def test_local_explicit_guardrail_warns(
+        self, mock_isdir, mock_detect, mock_apply, mock_docker_client
+    ):
+        container = MagicMock()
+        container.labels = {"oduflow.local_path": "/some/local"}
+        mock_docker_client.containers.get.return_value = container
+        # A security XML change recommends -u of 'sale'.
+        mock_detect.return_value = ("HEAD", ["sale/security/ir_rule.xml"])
+        mock_apply.return_value = {
+            "action": "restart",
+            "changed_files": ["sale/security/ir_rule.xml"],
+            "message": "Container restarted.",
+        }
+
+        result = env_ops.pull_environment(
+            TEST_SETTINGS, TEST_TEAM, "feature/local", restart=True
+        )
+
+        assert result["action"] == "restart"
+        assert any("sale" in w for w in result.get("warnings", []))
+        mock_apply.assert_called_once()
+        mock_detect.assert_called_once()
+
+    @patch("oduflow.docker_ops.env_ops._apply_actions")
+    @patch("oduflow.docker_ops.env_ops._detect_local_changes")
+    @patch("oduflow.docker_ops.env_ops.os.path.isdir", return_value=True)
+    def test_local_strict_blocks(
+        self, mock_isdir, mock_detect, mock_apply, mock_docker_client
+    ):
+        container = MagicMock()
+        container.labels = {"oduflow.local_path": "/some/local"}
+        mock_docker_client.containers.get.return_value = container
+        mock_detect.return_value = ("HEAD", ["sale/security/ir_rule.xml"])
+
+        result = env_ops.pull_environment(
+            TEST_SETTINGS, TEST_TEAM, "feature/local", restart=True, strict=True
+        )
+
+        assert result["action"] == "blocked"
+        assert any("sale" in w for w in result["warnings"])
+        mock_apply.assert_not_called()
+
+    @patch("oduflow.docker_ops.env_ops._apply_actions")
+    @patch("oduflow.docker_ops.env_ops._detect_local_changes")
+    @patch("oduflow.docker_ops.env_ops.os.path.isdir", return_value=True)
+    def test_local_explicit_correct_no_warn(
+        self, mock_isdir, mock_detect, mock_apply, mock_docker_client
+    ):
+        container = MagicMock()
+        container.labels = {"oduflow.local_path": "/some/local"}
+        mock_docker_client.containers.get.return_value = container
+        mock_detect.return_value = ("HEAD", ["sale/security/ir_rule.xml"])
+        mock_apply.return_value = {
+            "action": "upgrade",
+            "modules_upgraded": ["sale"],
+            "changed_files": ["sale/security/ir_rule.xml"],
+            "message": "Upgraded.",
+        }
+
+        result = env_ops.pull_environment(
+            TEST_SETTINGS, TEST_TEAM, "feature/local", upgrade=["sale"]
+        )
+
+        assert result["action"] == "upgrade"
+        assert not result.get("warnings")
+        mock_apply.assert_called_once()
 
 
 class TestCreateEnvironmentEnvVars:
