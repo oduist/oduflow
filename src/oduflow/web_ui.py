@@ -29,6 +29,7 @@ from oduflow.docker_ops import (
     system_ops,
     volume_ops,
 )
+from oduflow import activity
 from oduflow.docker_ops.odoo_ops import get_environment_logs
 from oduflow.docker_ops.stats import get_container_stats, get_system_stats
 from oduflow.errors import BusyError, FlowError, NotFoundError
@@ -41,8 +42,10 @@ logger = logging.getLogger("oduflow")
 _AUTH_USER = "admin"
 _AUTH_COOKIE = "oduflow_ui_auth"
 # Reachable without authentication: the login flow and static brand assets
-# (so the login page can render its logo/favicon).
+# (so the login page can render its logo/favicon/fonts). /static/ serves only
+# vetted extensions from the packaged assets dir (fonts, icons, xterm).
 _PUBLIC_PATHS = frozenset({"/login", "/logout", "/favicon.ico", "/logo.png"})
+_PUBLIC_PREFIXES = ("/static/",)
 _SESSION_SALT = "oduflow.ui-auth.v1"
 _SESSION_MAX_AGE = 7 * 24 * 3600  # 7 days
 _SECRET_FILENAME = ".ui_session_secret"
@@ -154,7 +157,9 @@ class BasicAuthMiddleware:
             return
 
         path = scope.get("path", "")
-        if scope["type"] == "http" and path in _PUBLIC_PATHS:
+        if scope["type"] == "http" and (
+            path in _PUBLIC_PATHS or path.startswith(_PUBLIC_PREFIXES)
+        ):
             await self._app(scope, receive, send)
             return
 
@@ -341,6 +346,30 @@ def _build_routes(
         logo_path = _TEMPLATE_DIR / "logo.png"
         return Response(logo_path.read_bytes(), media_type="image/png")
 
+    _STATIC_MEDIA_TYPES = {
+        ".css": "text/css",
+        ".js": "application/javascript",
+        ".woff2": "font/woff2",
+        ".png": "image/png",
+    }
+
+    def static_file(request: Request) -> Response:
+        filename = request.path_params["filename"]
+        static_dir = (_TEMPLATE_DIR / "static").resolve()
+        file_path = (static_dir / filename).resolve()
+        media_type = _STATIC_MEDIA_TYPES.get(file_path.suffix)
+        if (
+            not file_path.is_relative_to(static_dir)
+            or media_type is None
+            or not file_path.is_file()
+        ):
+            return Response("Not found", status_code=404)
+        return Response(
+            file_path.read_bytes(),
+            media_type=media_type,
+            headers={"Cache-Control": "public, max-age=86400"},
+        )
+
     def _get_ui_team(request: Request) -> TeamSettings:
         """Get the team from request state (set by auth middleware) or fallback."""
         if hasattr(request.state, "team"):
@@ -366,6 +395,7 @@ def _build_routes(
         branch = request.path_params["branch"]
         try:
             result = env_ops.start_environment(get_settings(), branch)
+            activity.mark_started(_get_ui_team(request), branch)
             return JSONResponse({"ok": True, "result": result})
         except FlowError as e:
             return _error_response(e)
@@ -390,6 +420,7 @@ def _build_routes(
         branch = request.path_params["branch"]
         try:
             result = env_ops.restart_environment(get_settings(), branch)
+            activity.mark_started(_get_ui_team(request), branch)
             return JSONResponse({"ok": True, "result": result})
         except FlowError as e:
             return _error_response(e)
@@ -406,6 +437,7 @@ def _build_routes(
         try:
             settings = get_settings()
             team = _get_ui_team(request)
+            activity.touch(team, branch)
             result = env_ops.pull_environment(settings, team, branch)
             return JSONResponse({"ok": True, "result": result})
         except FlowError as e:
@@ -459,6 +491,7 @@ def _build_routes(
         try:
             settings = get_settings()
             team = _get_ui_team(request)
+            activity.touch(team, branch)
             result = env_ops.update_environment(
                 settings,
                 team,
@@ -487,6 +520,7 @@ def _build_routes(
 
             settings = get_settings()
             team = _get_ui_team(request)
+            activity.touch(team, branch)
             client = _get_client()
             odoo_container_name = env_ops.get_resource_name(
                 branch, "odoo", settings.prefix
@@ -650,8 +684,11 @@ def _build_routes(
             n = int(request.query_params.get("n", "200"))
         except (ValueError, TypeError):
             n = 200
+        container = request.query_params.get("container", "")
         try:
-            logs = get_environment_logs(get_settings(), branch, n_lines=n)
+            logs = get_environment_logs(
+                get_settings(), branch, n_lines=n, container_name=container
+            )
             return JSONResponse({"ok": True, "logs": logs})
         except FlowError as e:
             return _error_response(e)
@@ -1519,6 +1556,7 @@ def _build_routes(
         Route("/logout", logout, methods=["POST"]),
         Route("/favicon.ico", favicon, methods=["GET"]),
         Route("/logo.png", logo, methods=["GET"]),
+        Route("/static/{filename}", static_file, methods=["GET"]),
         Route("/api/license", api_license, methods=["GET"]),
         Route("/api/license/activate", api_license_activate, methods=["POST"]),
         Route("/api/templates", api_templates, methods=["GET"]),

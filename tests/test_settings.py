@@ -3,6 +3,21 @@ from oduflow.settings import Settings, TeamSettings
 
 
 class TestSettings:
+    def test_lifecycle_defaults(self):
+        s = Settings(teams={"1": TeamSettings(team_id="1")})
+        assert s.auto_stop_hours == 48
+        assert s.auto_delete_hours == 72
+
+    def test_lifecycle_from_toml(self, tmp_path):
+        toml = tmp_path / "oduflow.toml"
+        toml.write_text(
+            '[lifecycle]\nauto_stop_hours = 12\nauto_delete_hours = 0\n'
+            '[team.1]\nhostname = "localhost"\n'
+        )
+        s = Settings.from_toml(str(toml))
+        assert s.auto_stop_hours == 12
+        assert s.auto_delete_hours == 0
+
     def test_defaults(self):
         s = Settings()
         assert s.db_user == "odoo"

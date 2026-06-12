@@ -98,6 +98,12 @@ class Settings:
     base_data_dir: str = ""
     overlay_threshold_mb: int = 50
 
+    # Lifecycle: automatic stop of idle environments and cleanup of stopped
+    # ones (see oduflow.reaper). 0 disables either behavior. Protected
+    # environments are always exempt.
+    auto_stop_hours: int = 48
+    auto_delete_hours: int = 72
+
     # Shared Docker resource names
     shared_network: str = "oduflow-net"
     shared_db_container: str = "oduflow-db"
@@ -217,6 +223,7 @@ class Settings:
         routing = raw.get("routing", {})
         database = raw.get("database", {})
         storage = raw.get("storage", {})
+        lifecycle = raw.get("lifecycle", {})
         oauth = raw.get("oauth", server)  # [oauth] section or fall back to [server]
 
         etc_dir = _resolve_etc_dir()
@@ -274,6 +281,8 @@ class Settings:
             postgres_image=str(database.get("image", "postgres:15")),
             base_data_dir=base_data_dir,
             overlay_threshold_mb=int(storage.get("overlay_threshold_mb", 50)),
+            auto_stop_hours=int(lifecycle.get("auto_stop_hours", 48)),
+            auto_delete_hours=int(lifecycle.get("auto_delete_hours", 72)),
             oauth_base_url=str(oauth.get("oauth_base_url", "")).strip(),
             etc_dir=etc_dir,
             toml_path=path,

@@ -6,6 +6,15 @@ This file provides guidance to Claude Code (claude.ai/code) and other AI coding 
 
 AI-first Odoo development and CI tool. Provisions isolated, ephemeral Odoo environments on Docker (one per git branch) and exposes them to AI coding agents via MCP. Python 3.10+, built on FastMCP.
 
+## Design Context
+
+Any change to the web dashboard (`src/oduflow/templates/dashboard.html`, served by `web_ui.py`) must follow the project's design docs:
+
+- `PRODUCT.md` — register (product), users, brand personality, anti-references, design principles.
+- `DESIGN.md` — normative visual system ("The Engineer's Console", shared with oduflow.dev): color tokens, typography, components, do's and don'ts.
+
+Read both before touching dashboard UI. Key hard rules: no external CDNs (all assets ship with the package), every `var(--*)` must be declared in `:root`, status is never conveyed by color alone, no emoji as UI affordances.
+
 ## Commands
 
 ```bash

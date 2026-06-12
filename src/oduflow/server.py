@@ -20,7 +20,7 @@ from oduflow.docker_ops import (
     volume_file_ops,
     volume_ops,
 )
-from oduflow import git_ops
+from oduflow import activity, git_ops, reaper
 from oduflow import settings as settings_module
 from oduflow.errors import FlowError
 from oduflow.locking import LockManager
@@ -176,11 +176,30 @@ def with_env_lock(fn):
             raise ToolError("env_name is required")
         _locks.acquire_env(env_name)
         try:
+            try:
+                activity.touch(_resolve_team(kwargs.get("ctx")), env_name)
+            except Exception:
+                pass  # activity tracking is best-effort
             return fn(*args, **kwargs)
         finally:
             _locks.release_env(env_name)
 
     return wrapper
+
+
+def _wake_for_work(
+    settings: Settings,
+    team: TeamSettings,
+    env_name: str,
+    purpose: str = "for this call",
+) -> str:
+    """Container-level tools start a stopped environment instead of failing:
+    with auto-stop, 'stopped' is a routine state, not an error. Returns the
+    one-line note to prepend to the tool response ('' if already running)."""
+    if env_ops.ensure_running(settings, env_name):
+        activity.mark_started(team, env_name)
+        return f"Note: environment was stopped; started it {purpose}.\n"
+    return ""
 
 
 def with_team_lock(fn):
@@ -915,8 +934,9 @@ def run_odoo_tests(env_name: str, modules: str, ctx: Context = None) -> str:
     """
     settings = _get_settings()
     team = _resolve_team(ctx)
+    woke = _wake_for_work(settings, team, env_name)
     output = odoo_ops.run_environment_tests(settings, team, env_name, modules)
-    header = f"Test Results for {env_name}:"
+    header = woke + f"Test Results for {env_name}:"
     return _maybe_cache(
         output, header, "run_odoo_tests", f"env={env_name}, modules={modules}"
     )
@@ -958,6 +978,7 @@ def restart_environment(env_name: str, wait: bool = True, ctx: Context = None) -
     """
     settings = _get_settings()
     result = env_ops.restart_environment(settings, env_name)
+    activity.mark_started(_resolve_team(ctx), env_name)
     lines = [
         "Environment restarted successfully!",
         f"Odoo Container: {result['odoo_container']}",
@@ -1097,6 +1118,7 @@ def stop_environment(env_name: str, ctx: Context = None) -> str:
     """
     settings = _get_settings()
     team = _resolve_team(ctx)
+    activity.touch(team, env_name)
     result = env_ops.stop_environment(settings, team, env_name)
     return (
         f"Environment stopped successfully!\n"
@@ -1115,13 +1137,14 @@ def start_environment(env_name: str, wait: bool = True, ctx: Context = None) -> 
         wait: Wait for Odoo to become ready after start (default True). Polls /web/health every 2 seconds for up to 120 seconds.
     """
     settings = _get_settings()
+    team = _resolve_team(ctx)
     result = env_ops.start_environment(settings, env_name)
+    activity.mark_started(team, env_name)
     lines = [
         "Environment started successfully!",
         f"Started containers: {', '.join(result['started'])}",
     ]
     if wait:
-        team = _resolve_team(ctx)
         ready = env_ops.wait_for_odoo_ready(settings, team, env_name)
         if ready:
             lines.append("Odoo is ready.")
@@ -1183,6 +1206,7 @@ def pull_and_apply(
     """
     settings = _get_settings()
     team = _resolve_team(ctx)
+    woke_note = _wake_for_work(settings, team, env_name, "to apply the changes")
     install_list = [m.strip() for m in install.split(",") if m.strip()]
     upgrade_list = [m.strip() for m in upgrade.split(",") if m.strip()]
     result = env_ops.pull_environment(
@@ -1198,16 +1222,16 @@ def pull_and_apply(
     warnings = result.get("warnings") or []
 
     if action == "blocked":
-        lines = ["BLOCKED by guardrail (strict mode):"]
+        lines = [woke_note + "BLOCKED by guardrail (strict mode):"]
         lines.extend(f"  ⚠ {w}" for w in warnings)
         lines.append("")
         lines.append(result["message"])
         return "\n".join(lines)
 
     if action == "none":
-        return result["message"]
+        return woke_note + result["message"]
 
-    header_lines = [result["message"]]
+    header_lines = [woke_note + result["message"]]
     if result.get("modules_installed"):
         header_lines.append(f"Installed: {', '.join(result['modules_installed'])}")
     if result.get("modules_upgraded"):
@@ -1355,15 +1379,16 @@ def install_odoo_modules(env_name: str, modules: str, ctx: Context = None) -> st
 
     settings = _get_settings()
     team = _resolve_team(ctx)
+    woke = _wake_for_work(settings, team, env_name)
     result = odoo_ops.install_odoo_modules(settings, team, env_name, *modules_list)
     exit_code = result["exit_code"]
     modules_str = ", ".join(result["modules"])
     output = result.get("output", "")
     if exit_code == 0:
         env_ops.restart_environment(settings, env_name)
-        header = f"Success. Modules installed: {modules_str}. Container restarted. Exit code: 0."
+        header = f"{woke}Success. Modules installed: {modules_str}. Container restarted. Exit code: 0."
     else:
-        header = f"Error. Modules: {modules_str}. Exit code: {exit_code}."
+        header = f"{woke}Error. Modules: {modules_str}. Exit code: {exit_code}."
     return _maybe_cache(
         output,
         header,
@@ -1389,12 +1414,13 @@ def upgrade_odoo_modules(env_name: str, modules: str, ctx: Context = None) -> st
 
     settings = _get_settings()
     team = _resolve_team(ctx)
+    woke = _wake_for_work(settings, team, env_name)
     result = odoo_ops.upgrade_odoo_modules(settings, team, env_name, *modules_list)
     exit_code = result["exit_code"]
     modules_str = ", ".join(result["modules"])
     output = result.get("output", "")
     status = "Success" if exit_code == 0 else "Error"
-    header = f"{status}. Modules: {modules_str}. Exit code: {exit_code}."
+    header = f"{woke}{status}. Modules: {modules_str}. Exit code: {exit_code}."
     return _maybe_cache(
         output,
         header,
@@ -1430,12 +1456,12 @@ def read_file_in_odoo(
         read_range: Optional line range in format "START:END" (e.g. "1:50", "100:200").
                     If omitted, returns the entire file (up to 100KB).
     """
-    result = odoo_ops.read_file_in_environment(
-        _get_settings(), env_name, path, read_range
-    )
+    settings = _get_settings()
+    woke = _wake_for_work(settings, _resolve_team(ctx), env_name)
+    result = odoo_ops.read_file_in_environment(settings, env_name, path, read_range)
     if "error" in result:
-        return f"Error: {result['error']}"
-    return result["output"]
+        return f"{woke}Error: {result['error']}"
+    return woke + result["output"]
 
 
 @mcp.tool()
@@ -1470,10 +1496,10 @@ def write_file_in_odoo(
         content: Text content to write to the file.
         user: OS user to own the file (default "odoo"). Use "root" for system paths.
     """
-    result = odoo_ops.write_file_in_environment(
-        _get_settings(), env_name, path, content, user
-    )
-    return f"File written: {result['path']} ({result['size']} bytes)"
+    settings = _get_settings()
+    woke = _wake_for_work(settings, _resolve_team(ctx), env_name)
+    result = odoo_ops.write_file_in_environment(settings, env_name, path, content, user)
+    return f"{woke}File written: {result['path']} ({result['size']} bytes)"
 
 
 @mcp.tool()
@@ -1508,11 +1534,12 @@ def run_odoo_shell(
     """
     settings = _get_settings()
     team = _resolve_team(ctx)
+    woke = _wake_for_work(settings, team, env_name)
     result = odoo_ops.run_odoo_shell(settings, team, env_name, python_code)
     exit_code = result["exit_code"]
     output = result.get("output", "")
     status = "Success" if exit_code == 0 else "Error"
-    header = f"{status}. Exit code: {exit_code}."
+    header = f"{woke}{status}. Exit code: {exit_code}."
     return _maybe_cache(output, header, "run_odoo_shell", f"env={env_name}")
 
 
@@ -1553,6 +1580,7 @@ def http_request_to_odoo(
 
     settings = _get_settings()
     team = _resolve_team(ctx)
+    woke = _wake_for_work(settings, team, env_name)
     parsed_headers = None
     if headers:
         parsed_headers = dict(
@@ -1565,7 +1593,7 @@ def http_request_to_odoo(
     resp_headers = result.get("headers", {})
     resp_body = result.get("body", "")
 
-    lines = [f"HTTP {status_code}"]
+    lines = [woke + f"HTTP {status_code}"]
     header_items = list(resp_headers.items())[:20]
     if header_items:
         lines.append(f"Headers: {json.dumps(dict(header_items), indent=2)}")
@@ -1604,13 +1632,15 @@ def search_in_odoo(
         glob: File glob pattern (default "*.py"). Use "*.xml" for views/data, "*.js" for frontend, "*" for all files.
         max_results: Maximum number of matching lines to return (default 50).
     """
+    settings = _get_settings()
+    woke = _wake_for_work(settings, _resolve_team(ctx), env_name)
     result = odoo_ops.search_in_environment(
-        _get_settings(), env_name, pattern, path, glob, max_results
+        settings, env_name, pattern, path, glob, max_results
     )
     output = result["output"]
     if not output:
-        return f"No matches for '{pattern}' in {path} ({glob})."
-    header = f"Matches: {result['matches']}"
+        return f"{woke}No matches for '{pattern}' in {path} ({glob})."
+    header = f"{woke}Matches: {result['matches']}"
     if result["truncated"]:
         header += f" (truncated to {max_results})"
     return f"{header}\n\n{output}"
@@ -1674,13 +1704,13 @@ def run_odoo_command(
         command: The shell command to execute (e.g. "ls /mnt/extra-addons", "python3 -c 'print(1)'").
         user: The OS user to run the command as (default "odoo"). Use "root" for privileged operations.
     """
-    result = odoo_ops.run_command_in_environment(
-        _get_settings(), env_name, command, user
-    )
+    settings = _get_settings()
+    woke = _wake_for_work(settings, _resolve_team(ctx), env_name)
+    result = odoo_ops.run_command_in_environment(settings, env_name, command, user)
     exit_code = result["exit_code"]
     output = result.get("output", "")
     status = "Success" if exit_code == 0 else "Error"
-    header = f"{status}. Exit code: {exit_code}."
+    header = f"{woke}{status}. Exit code: {exit_code}."
     return _maybe_cache(
         output,
         header,
@@ -1707,8 +1737,9 @@ def reset_admin_password(
     """
     settings = _get_settings()
     team = _resolve_team(ctx)
+    woke = _wake_for_work(settings, team, env_name)
     result = odoo_ops.reset_admin_password(settings, team, env_name, new_password)
-    return f"Admin password has been reset successfully.\nLogin: {result['login']}\nNew password: {new_password}"
+    return f"{woke}Admin password has been reset successfully.\nLogin: {result['login']}\nNew password: {new_password}"
 
 
 @mcp.tool()
@@ -3260,6 +3291,7 @@ def _start_stdio() -> None:
     """Start the MCP server (stdio transport)."""
     import asyncio
 
+    reaper.start_reaper(_get_settings, _locks)
     try:
         asyncio.run(mcp.run_stdio_async())
     except KeyboardInterrupt:
@@ -3277,6 +3309,8 @@ def _start_http() -> None:
     auth = _build_auth(settings)
 
     app = create_streamable_http_app(mcp, "/mcp", auth=auth, stateless_http=True)
+
+    reaper.start_reaper(_get_settings, _locks)
 
     from oduflow.web_ui import mount_web_ui
 

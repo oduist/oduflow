@@ -35,6 +35,7 @@ MCP endpoint: `http://<host>:8000/mcp`
 | `get_environment_info(env_name)` | Get full environment details: database name, URL, repo, image, template, extra addons, workspace, container status, CPU/RAM stats |
 | `delete_environment(env_name)` | Tear down when the task is complete or cancelled |
 | `start_environment` / `stop_environment` | Resume or pause a stopped environment |
+| *(automatic)* | Environments **auto-stop** after 48h without tool calls and **auto-delete** 72h after stopping (configurable). Container-level tools (`pull_and_apply`, shell, tests, installs, file ops) wake a stopped environment automatically — a `Note:` line in the response tells you when that happened. `protect_environment` exempts an environment from both |
 | `restart_environment(env_name)` | Restart the Odoo container (rarely needed — `pull_and_apply` handles this) |
 | `update_environment(env_name, env_vars, odoo_image)` | Recreate the container without losing DB or filestore — to fix a broken container, switch image, or change env vars |
 
@@ -182,6 +183,11 @@ The summary footer looks like:
 2. **Create if needed**: Call `create_environment` with the current branch name, repository HTTPS URL, and the correct Odoo Docker image.
 3. **Auth errors**: On 401/403 from `create_environment`, suggest `setup_repo_auth` to the user.
 4. **Show the URL**: Always display the environment URL to the user after creation.
+
+### Environment Lifecycle (automatic)
+1. Idle environments **auto-stop** after 48 hours without any env-scoped tool call; stopped environments **auto-delete** after another 72 hours (both configurable, both skip protected environments).
+2. You do not need to start a stopped environment yourself: container-level tools (`pull_and_apply`, `run_odoo_shell`, `run_odoo_tests`, installs/upgrades, file and command tools) start it automatically and prepend `Note: environment was stopped; started it ...` to the response. Treat that note as normal, not as an error.
+3. If an environment must survive idle periods (e.g. handed to a customer for testing), call `protect_environment` — protection disables stop and delete entirely.
 
 ### Sync & Work Cycle
 1. After every `git push` (git mode) — or after editing files directly (live-mount mode) — call `pull_and_apply`.

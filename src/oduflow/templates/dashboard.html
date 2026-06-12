@@ -3,29 +3,69 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<link rel="icon" href="/favicon.ico" type="image/x-icon">
+<link rel="preload" href="/static/outfit-latin.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="/static/geist-mono-latin.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="icon" href="/favicon.ico" sizes="16x16 32x32">
+<link rel="icon" href="/static/icon.png" type="image/png" sizes="32x32">
+<link rel="apple-touch-icon" href="/static/apple-icon.png">
 <title>Oduflow</title>
 <style>
+  @font-face {
+    font-family: "Outfit";
+    font-style: normal;
+    font-weight: 400 700;
+    font-display: swap;
+    src: url("/static/outfit-latin.woff2") format("woff2");
+    unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+  }
+  @font-face {
+    font-family: "Geist Mono";
+    font-style: normal;
+    font-weight: 400 600;
+    font-display: swap;
+    src: url("/static/geist-mono-latin.woff2") format("woff2");
+    unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+  }
   :root {
-    --bg: #0d1117;
-    --surface: #161b22;
-    --border: #30363d;
-    --text: #e6edf3;
-    --text-dim: #8b949e;
-    --accent: #58a6ff;
-    --green: #3fb950;
-    --red: #f85149;
-    --yellow: #d29922;
-    --radius: 8px;
+    /* "The Engineer's Console" tokens — shared with oduflow.dev (see DESIGN.md) */
+    --bg: oklch(0.07 0.01 260);
+    --surface: oklch(0.1 0.01 260);
+    --subtle: oklch(0.15 0.01 260);
+    --border: oklch(0.3 0.013 260);
+    --surface-raised: oklch(0.16 0.012 260);
+    --border-raised: oklch(0.34 0.015 260);
+    --text: oklch(0.93 0.005 260);
+    --text-dim: oklch(0.7 0.01 260);
+    --accent: oklch(0.6 0.2 260);
+    --green: #34d399;
+    --red: oklch(0.65 0.22 25);
+    --yellow: #fbbf24;
+    --cyan: #22d3ee;
+    --violet: #a78bfa;
+    --rose: #fb7185;
+    --terminal-bg: #060a12;
+    --font-sans: "Outfit", -apple-system, BlinkMacSystemFont, "Segoe UI", ui-sans-serif, system-ui, sans-serif;
+    --font-mono: "Geist Mono", ui-monospace, SFMono-Regular, Consolas, monospace;
+    --radius: 0.625rem;
+    --radius-sm: 0.425rem;
+    --focus-ring: 0 0 0 3px color-mix(in oklab, var(--accent) 50%, transparent);
+    --z-bar: 50;
+    --z-dropdown: 100;
+    --z-modal: 200;
+    --z-toast: 300;
   }
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body {
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    font-family: var(--font-sans);
     background: var(--bg);
     color: var(--text);
     padding: 24px;
     padding-bottom: 56px;
     min-height: 100vh;
+  }
+  :is(button, a, input, select, textarea, [role="button"]):focus-visible {
+    outline: none;
+    box-shadow: var(--focus-ring);
   }
   header {
     display: flex;
@@ -39,14 +79,35 @@
   header h1 img { height: 28px; }
   header .actions { display: flex; gap: 8px; align-items: center; }
   .auto-label { font-size: 12px; color: var(--text-dim); }
+  .docs-link {
+    color: var(--text-dim);
+    text-decoration: none;
+    font-size: 13px;
+    font-weight: 500;
+    padding: 6px 8px;
+    border-radius: var(--radius-sm);
+  }
+  .docs-link:hover { color: var(--accent); }
   #refresh-btn {
     background: var(--surface);
     color: var(--text);
     border: 1px solid var(--border);
     padding: 6px 14px;
-    border-radius: var(--radius);
+    border-radius: var(--radius-sm);
     cursor: pointer;
+    font-family: inherit;
     font-size: 13px;
+  }
+  .interval-input {
+    width: 48px;
+    background: var(--surface);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 2px 4px;
+    font-family: inherit;
+    font-size: 12px;
+    text-align: center;
   }
   #refresh-btn:hover { border-color: var(--accent); }
   .empty {
@@ -54,6 +115,16 @@
     padding: 64px 0;
     color: var(--text-dim);
     font-size: 15px;
+    line-height: 2.2;
+  }
+  .empty-hint code {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    color: var(--text);
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 3px 8px;
   }
   .env-card {
     background: var(--surface);
@@ -79,10 +150,59 @@
     font-weight: 600;
     text-transform: uppercase;
     letter-spacing: 0.5px;
+    white-space: nowrap;
   }
-  .badge-running { background: rgba(63,185,80,0.15); color: var(--green); }
-  .badge-partial { background: rgba(210,153,34,0.15); color: var(--yellow); }
-  .badge-exited  { background: rgba(248,81,73,0.15); color: var(--red); }
+  .badge-running { background: color-mix(in oklab, var(--green) 15%, transparent); color: var(--green); }
+  .badge-partial { background: color-mix(in oklab, var(--yellow) 15%, transparent); color: var(--yellow); }
+  .badge-exited  { background: color-mix(in oklab, var(--red) 15%, transparent); color: var(--red); }
+  .badge-protected { background: color-mix(in oklab, var(--yellow) 15%, transparent); color: var(--yellow); }
+  .bulk-bar {
+    position: sticky;
+    top: 8px;
+    z-index: var(--z-bar);
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    background: var(--surface-raised);
+    border: 1px solid var(--border-raised);
+    border-radius: var(--radius);
+    padding: 8px 16px;
+    margin-bottom: 12px;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+  }
+  .bulk-count { font-weight: 600; font-size: 13px; }
+  .bulk-actions { display: flex; gap: 8px; margin-left: auto; flex-wrap: wrap; }
+  .select-box {
+    display: inline-flex;
+    align-items: center;
+    padding: 4px;
+    cursor: pointer;
+  }
+  .select-box input {
+    width: 16px;
+    height: 16px;
+    accent-color: var(--accent);
+    cursor: pointer;
+  }
+  .select-box input:disabled { cursor: not-allowed; }
+  .badge-busy {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    background: color-mix(in oklab, var(--accent) 15%, transparent);
+    color: var(--accent);
+    text-transform: none;
+    letter-spacing: normal;
+  }
+  .container-down { color: var(--red); font-weight: 600; }
+  .badge-neutral { background: color-mix(in oklab, var(--text-dim) 15%, transparent); color: var(--text-dim); }
+  @keyframes badge-pulse {
+    0% { box-shadow: 0 0 0 0 color-mix(in oklab, currentColor 55%, transparent); }
+    100% { box-shadow: 0 0 0 10px transparent; }
+  }
+  .badge-pulse { animation: badge-pulse 0.9s cubic-bezier(0.22, 1, 0.36, 1) 2; }
+  .badge-privileged { background: color-mix(in oklab, var(--red) 20%, transparent); color: var(--red); margin-left: 6px; }
+  .badge-netadmin { background: color-mix(in oklab, var(--accent) 20%, transparent); color: var(--accent); margin-left: 6px; }
   .env-url { margin-bottom: 10px; }
   .env-url a {
     color: var(--accent);
@@ -97,7 +217,7 @@
     color: var(--text-dim);
     margin-bottom: 10px;
   }
-  .env-meta strong { color: var(--text); font-weight: 500; }
+  .env-meta strong { color: var(--text); font-weight: 500; font-family: var(--font-mono); font-size: 11.5px; }
   .repo-link {
     display: inline-flex;
     align-items: center;
@@ -111,19 +231,39 @@
     vertical-align: middle;
     margin-left: 4px;
   }
-  .repo-link:hover { background: var(--card-hover); color: var(--accent); }
+  .repo-link:hover { background: var(--subtle); color: var(--accent); }
   .repo-link svg { width: 14px; height: 14px; }
   .env-note {
+    white-space: pre-line;
     font-size: 12px;
     color: var(--text-dim);
     margin-bottom: 10px;
     padding: 4px 8px;
     cursor: pointer;
     border: 1px solid transparent;
-    border-radius: 4px;
+    border-radius: var(--radius-sm);
   }
   .env-note:hover { border-color: var(--border); }
   .env-note-empty { font-style: italic; opacity: 0.5; }
+  /* A set note is the one human voice on a machine card: a message from a
+     developer to whoever looks next. Amber = the attention channel. */
+  .env-note-set {
+    font-size: 13px;
+    color: var(--text);
+    background: color-mix(in oklab, var(--yellow) 8%, transparent);
+    border-color: color-mix(in oklab, var(--yellow) 25%, transparent);
+    padding: 8px 12px;
+  }
+  .env-note-set:hover { border-color: color-mix(in oklab, var(--yellow) 50%, transparent); }
+  .note-label {
+    display: inline-block;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--yellow);
+    margin-right: 8px;
+  }
   .copy-db {
     cursor: pointer;
     border-bottom: 1px dashed transparent;
@@ -131,42 +271,70 @@
   }
   .copy-db:hover { border-bottom-color: var(--accent); color: var(--accent); }
   .containers {
-    font-size: 12px;
+    font-family: var(--font-mono);
+    font-size: 11.5px;
     color: var(--text-dim);
     margin-bottom: 12px;
   }
   .containers span { margin-right: 16px; }
-  .env-actions { display: flex; gap: 8px; }
+  .env-actions { display: flex; gap: 8px; flex-wrap: wrap; }
   .btn {
-    padding: 5px 14px;
-    border-radius: var(--radius);
+    padding: 6px 14px;
+    border-radius: var(--radius-sm);
     border: 1px solid var(--border);
     background: var(--surface);
     color: var(--text);
+    font-family: inherit;
     font-size: 12px;
     font-weight: 500;
     cursor: pointer;
-    transition: all 0.15s;
+    transition: border-color 0.15s, color 0.15s, background 0.15s;
   }
+  .btn-sm { font-size: 12px; padding: 3px 10px; }
+  .menu-wrap { position: relative; }
+  .menu {
+    position: absolute;
+    right: 0;
+    top: calc(100% + 4px);
+    background: var(--surface-raised);
+    border: 1px solid var(--border-raised);
+    border-radius: var(--radius-sm);
+    box-shadow: 0 16px 48px rgba(0,0,0,0.5);
+    display: none;
+    flex-direction: column;
+    min-width: 150px;
+    padding: 4px;
+    z-index: var(--z-dropdown);
+  }
+  .menu-wrap.open .menu { display: flex; }
+  .menu button {
+    background: none;
+    border: none;
+    color: var(--text);
+    font-family: inherit;
+    font-size: 12px;
+    font-weight: 500;
+    text-align: left;
+    padding: 7px 10px;
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+  }
+  .menu button:hover { background: color-mix(in oklab, var(--text) 9%, transparent); }
+  .menu button:disabled { opacity: 0.4; cursor: not-allowed; }
+  .menu button.danger { color: var(--red); }
+  .menu button.danger:hover { background: color-mix(in oklab, var(--red) 10%, transparent); }
   .btn:hover { border-color: var(--accent); color: var(--accent); }
   .btn:disabled { opacity: 0.4; cursor: not-allowed; }
-  .btn-start { border-color: var(--green); color: var(--green); }
-  .btn-start:hover { background: rgba(63,185,80,0.1); }
-  .btn-stop { border-color: var(--red); color: var(--red); }
-  .btn-stop:hover { background: rgba(248,81,73,0.1); }
-  .btn-restart { border-color: var(--yellow); color: var(--yellow); }
-  .btn-restart:hover { background: rgba(210,153,34,0.1); }
-  .btn-delete { border-color: var(--red); color: var(--red); }
-  .btn-delete:hover { background: rgba(248,81,73,0.1); }
-  .btn-update { border-color: var(--yellow); color: var(--yellow); }
-  .btn-update:hover { background: rgba(210,153,34,0.1); }
-  .btn-sync { border-color: var(--accent); color: var(--accent); }
-  .btn-sync:hover { background: rgba(88,166,255,0.1); }
-  .btn-logs { border-color: var(--accent); color: var(--accent); }
-  .btn-logs:hover { background: rgba(88,166,255,0.1); }
-  .btn-protect { border-color: var(--yellow); color: var(--yellow); }
-  .btn-protect:hover { background: rgba(210,153,34,0.1); }
-  .btn-protect.active { background: var(--yellow); color: #000; border-color: var(--yellow); }
+  /* Semantic color appears on intent (hover/focus), not at rest:
+     status badges own the resting color story of the screen. */
+  .btn-start:hover, .btn-start:focus-visible { border-color: var(--green); color: var(--green); background: color-mix(in oklab, var(--green) 10%, transparent); }
+  .btn-stop:hover, .btn-stop:focus-visible { border-color: var(--red); color: var(--red); background: color-mix(in oklab, var(--red) 10%, transparent); }
+  .btn-restart:hover, .btn-restart:focus-visible { border-color: var(--yellow); color: var(--yellow); background: color-mix(in oklab, var(--yellow) 10%, transparent); }
+  .btn-delete:hover, .btn-delete:focus-visible { border-color: var(--red); color: var(--red); background: color-mix(in oklab, var(--red) 10%, transparent); }
+  .btn-update:hover, .btn-update:focus-visible { border-color: var(--yellow); color: var(--yellow); background: color-mix(in oklab, var(--yellow) 10%, transparent); }
+  .btn-sync:hover, .btn-sync:focus-visible { border-color: var(--accent); color: var(--accent); background: color-mix(in oklab, var(--accent) 10%, transparent); }
+  .btn-logs:hover, .btn-logs:focus-visible { border-color: var(--accent); color: var(--accent); background: color-mix(in oklab, var(--accent) 10%, transparent); }
+  .btn-protect:hover, .btn-protect:focus-visible { border-color: var(--yellow); color: var(--yellow); background: color-mix(in oklab, var(--yellow) 10%, transparent); }
   .btn-create {
     background: var(--accent);
     color: #fff;
@@ -177,6 +345,7 @@
     font-size: 13px;
     font-weight: 600;
   }
+  .btn-create.danger { background: var(--red); border-color: var(--red); }
   .btn-create:hover { opacity: 0.85; }
   .btn-create:disabled { opacity: 0.4; cursor: not-allowed; }
   .form-group { margin-bottom: 14px; }
@@ -195,25 +364,39 @@
     background: var(--bg);
     color: var(--text);
     border: 1px solid var(--border);
-    border-radius: var(--radius);
-    outline: none;
+    border-radius: var(--radius-sm);
     box-sizing: border-box;
   }
   .form-group textarea { resize: vertical; }
   .form-group input:not([type="checkbox"]):focus, .form-group textarea:focus { border-color: var(--accent); }
   .form-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 18px; }
+  .modal-body .form-actions {
+    position: sticky;
+    bottom: -16px;
+    margin: 18px -20px -16px;
+    padding: 12px 20px 16px;
+    background: var(--surface-raised);
+    border-top: 1px solid var(--border);
+  }
   .form-error { color: var(--red); font-size: 12px; margin-bottom: 10px; display: none; }
   .modal-overlay {
     position: fixed; top: 0; left: 0; right: 0; bottom: 0;
-    background: rgba(0,0,0,0.6); z-index: 200;
+    background: rgba(0,0,0,0.72);
+    -webkit-backdrop-filter: blur(3px);
+    backdrop-filter: blur(3px);
+    z-index: var(--z-modal);
     display: none; align-items: center; justify-content: center;
   }
   .modal-overlay.show { display: flex; }
   .modal {
-    background: var(--surface); border: 1px solid var(--border);
-    border-radius: var(--radius); width: 80%; max-width: 900px;
+    background: var(--surface-raised); border: 1px solid var(--border-raised);
+    border-radius: var(--radius); width: min(900px, calc(100vw - 32px));
     max-height: 80vh; display: flex; flex-direction: column;
+    box-shadow: 0 24px 64px rgba(0,0,0,0.65);
   }
+  .modal-sm { max-width: 460px; }
+  .modal-md { max-width: 520px; }
+  .modal-terminal { max-width: 1000px; height: 80vh; }
   .modal-header {
     display: flex; align-items: center; justify-content: space-between;
     padding: 12px 20px; border-bottom: 1px solid var(--border);
@@ -230,7 +413,7 @@
   .modal-body pre {
     margin: 0; font-size: 12px; line-height: 1.5;
     white-space: pre-wrap; word-break: break-all;
-    color: var(--text-dim); font-family: "SFMono-Regular", Consolas, monospace;
+    color: var(--text-dim); font-family: var(--font-mono);
   }
   #logs-modal .modal { max-width: 80vw; }
   #logs-modal .modal-body { overflow: auto; }
@@ -245,22 +428,22 @@
   .logs-toolbar input[type="text"] {
     flex: 1; max-width: 260px; padding: 5px 8px; font-size: 12px;
     background: var(--bg); color: var(--text); border: 1px solid var(--border);
-    border-radius: var(--radius); outline: none; font-family: inherit;
+    border-radius: var(--radius-sm); font-family: inherit;
   }
   .logs-toolbar input[type="text"]:focus { border-color: var(--accent); }
   .logs-toolbar select {
     padding: 5px 6px; font-size: 12px; background: var(--bg); color: var(--text);
-    border: 1px solid var(--border); border-radius: var(--radius); outline: none;
+    border: 1px solid var(--border); border-radius: var(--radius-sm);
     font-family: inherit; cursor: pointer;
   }
   .logs-toolbar .logs-btn {
     padding: 4px 10px; font-size: 12px; border: 1px solid var(--border);
-    border-radius: var(--radius); background: var(--bg); color: var(--text-dim);
+    border-radius: var(--radius-sm); background: var(--bg); color: var(--text-dim);
     cursor: pointer; white-space: nowrap; font-family: inherit;
   }
   .logs-toolbar .logs-btn:hover { border-color: var(--accent); color: var(--text); }
   .logs-toolbar .logs-btn.active { border-color: var(--green); color: var(--green); }
-  .logs-match-count { font-size: 11px; color: var(--text-dim); white-space: nowrap; }
+  .logs-match-count { font-size: 12px; color: var(--text-dim); white-space: nowrap; }
   .sync-result-action {
     display: inline-block;
     padding: 3px 10px;
@@ -271,18 +454,18 @@
     letter-spacing: 0.5px;
     margin-bottom: 8px;
   }
-  .sync-action-none { background: rgba(139,148,158,0.15); color: var(--text-dim); }
-  .sync-action-refresh { background: rgba(88,166,255,0.15); color: var(--accent); }
-  .sync-action-restart { background: rgba(210,153,34,0.15); color: var(--yellow); }
-  .sync-action-install, .sync-action-upgrade { background: rgba(63,185,80,0.15); color: var(--green); }
+  .sync-action-none { background: color-mix(in oklab, var(--text-dim) 15%, transparent); color: var(--text-dim); }
+  .sync-action-refresh { background: color-mix(in oklab, var(--accent) 15%, transparent); color: var(--accent); }
+  .sync-action-restart { background: color-mix(in oklab, var(--yellow) 15%, transparent); color: var(--yellow); }
+  .sync-action-install, .sync-action-upgrade { background: color-mix(in oklab, var(--green) 15%, transparent); color: var(--green); }
   .sync-message { font-size: 14px; margin-bottom: 12px; }
   .sync-section { margin-bottom: 12px; }
   .sync-section-title { font-size: 12px; font-weight: 600; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px; }
   .sync-modules { display: flex; flex-wrap: wrap; gap: 6px; }
-  .sync-module-tag { background: rgba(88,166,255,0.1); border: 1px solid rgba(88,166,255,0.3); color: var(--accent); padding: 2px 8px; border-radius: 4px; font-size: 12px; font-family: "SFMono-Regular", Consolas, monospace; }
+  .sync-module-tag { background: color-mix(in oklab, var(--accent) 10%, transparent); border: 1px solid color-mix(in oklab, var(--accent) 30%, transparent); color: var(--accent); padding: 2px 8px; border-radius: 4px; font-size: 12px; font-family: var(--font-mono); }
   .sync-files { max-height: 200px; overflow-y: auto; }
-  .sync-files code { display: block; font-size: 12px; line-height: 1.8; color: var(--text-dim); font-family: "SFMono-Regular", Consolas, monospace; }
-  .sync-output { background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius); padding: 10px; max-height: 200px; overflow-y: auto; font-size: 12px; line-height: 1.5; font-family: "SFMono-Regular", Consolas, monospace; color: var(--text-dim); white-space: pre-wrap; word-break: break-all; }
+  .sync-files code { display: block; font-size: 12px; line-height: 1.8; color: var(--text-dim); font-family: var(--font-mono); }
+  .sync-output { background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius); padding: 10px; max-height: 200px; overflow-y: auto; font-size: 12px; line-height: 1.5; font-family: var(--font-mono); color: var(--text-dim); white-space: pre-wrap; word-break: break-all; }
   .sync-exit-code { font-size: 12px; margin-top: 6px; }
   .sync-exit-ok { color: var(--green); }
   .sync-exit-err { color: var(--red); }
@@ -290,20 +473,33 @@
     position: fixed;
     bottom: 24px;
     right: 24px;
-    background: var(--surface);
-    border: 1px solid var(--border);
+    background: var(--surface-raised);
+    border: 1px solid var(--border-raised);
     border-radius: var(--radius);
     padding: 12px 20px;
     font-size: 13px;
     max-width: 400px;
     opacity: 0;
     transform: translateY(10px);
-    transition: all 0.25s;
+    transition: opacity 0.25s, transform 0.25s;
     pointer-events: none;
-    z-index: 100;
+    z-index: var(--z-toast);
   }
   .toast.show { opacity: 1; transform: translateY(0); pointer-events: auto; }
-  .toast.error { border-color: var(--red); color: var(--red); }
+  .toast.error { border-color: var(--red); color: var(--red); display: flex; align-items: flex-start; gap: 12px; max-width: 480px; }
+  .toast-msg { word-break: break-word; min-width: 0; }
+  .toast-actions { display: flex; gap: 6px; margin-left: auto; flex-shrink: 0; }
+  .toast-actions button {
+    background: none;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    color: var(--text);
+    font-family: inherit;
+    font-size: 12px;
+    padding: 2px 8px;
+    cursor: pointer;
+  }
+  .toast-actions button:hover { border-color: var(--accent); color: var(--accent); }
   .spinner {
     display: inline-block;
     width: 12px; height: 12px;
@@ -319,7 +515,7 @@
     display: inline-flex;
     gap: 12px;
     margin-left: 8px;
-    font-size: 11px;
+    font-size: 11.5px;
     color: var(--text-dim);
   }
   .container-stats .stat-val { color: var(--text); font-weight: 500; }
@@ -336,7 +532,7 @@
     gap: 24px;
     font-size: 12px;
     color: var(--text-dim);
-    z-index: 50;
+    z-index: var(--z-bar);
   }
   .system-bar .sys-label { font-weight: 600; color: var(--text); margin-right: 4px; }
   .system-bar .sys-val { color: var(--text); font-weight: 500; }
@@ -352,27 +548,35 @@
     border: 1px solid rgba(255,255,255,0.08);
   }
   .usage-bar-fill {
+    display: block;
     height: 100%;
+    width: 100%;
     border-radius: 4px;
-    transition: width 0.4s ease, background 0.4s ease;
-    min-width: 2px;
+    transform-origin: left;
+    transition: transform 0.4s ease, background 0.4s ease;
   }
   .tabs {
     display: flex;
     gap: 0;
     margin-bottom: 20px;
     border-bottom: 1px solid var(--border);
+    overflow-x: auto;
+    scrollbar-width: thin;
+    scrollbar-color: var(--border) transparent;
   }
   .tab-btn {
     background: none;
     border: none;
     color: var(--text-dim);
+    font-family: inherit;
     font-size: 14px;
     font-weight: 500;
     padding: 8px 18px;
     cursor: pointer;
     border-bottom: 2px solid transparent;
-    transition: all 0.15s;
+    transition: color 0.15s, border-color 0.15s;
+    white-space: nowrap;
+    flex-shrink: 0;
   }
   .tab-btn:hover { color: var(--text); }
   .tab-btn.active {
@@ -406,18 +610,19 @@
     font-weight: 600;
     text-transform: uppercase;
     letter-spacing: 0.5px;
+    white-space: nowrap;
   }
-  .tag-ok { background: rgba(63,185,80,0.15); color: var(--green); }
-  .tag-missing { background: rgba(248,81,73,0.15); color: var(--red); }
+  .tag-ok { background: color-mix(in oklab, var(--green) 15%, transparent); color: var(--green); }
+  .tag-missing { background: color-mix(in oklab, var(--red) 15%, transparent); color: var(--red); }
   .form-group select {
     width: 100%;
     padding: 8px 10px;
     font-size: 13px;
+    font-family: inherit;
     background: var(--bg);
     color: var(--text);
     border: 1px solid var(--border);
-    border-radius: var(--radius);
-    outline: none;
+    border-radius: var(--radius-sm);
   }
   .form-group select:focus { border-color: var(--accent); }
   .svc-card {
@@ -442,9 +647,14 @@
     color: var(--text-dim);
     margin-bottom: 6px;
   }
-  .svc-meta strong { color: var(--text); font-weight: 500; }
-  .svc-actions { display: flex; gap: 8px; }
+  .svc-meta strong { color: var(--text); font-weight: 500; font-family: var(--font-mono); font-size: 11.5px; }
+  .svc-meta a { color: var(--accent); text-decoration: none; }
+  .svc-meta a:hover { text-decoration: underline; }
+  .svc-actions { display: flex; gap: 8px; flex-wrap: wrap; }
   .license-badge {
+    border: 0;
+    background: none;
+    font-family: inherit;
     display: inline-flex;
     align-items: center;
     gap: 8px;
@@ -455,24 +665,104 @@
     letter-spacing: 0.3px;
     white-space: nowrap;
   }
-  .license-unlicensed { background: rgba(248,81,73,0.12); color: var(--red); border: 1px solid rgba(248,81,73,0.3); }
-  .license-individual { background: rgba(63,185,80,0.10); color: var(--green); border: 1px solid rgba(63,185,80,0.25); }
-  .license-business { background: rgba(63,185,80,0.10); color: var(--green); border: 1px solid rgba(63,185,80,0.25); }
-  .license-integrator { background: rgba(88,166,255,0.10); color: var(--accent); border: 1px solid rgba(88,166,255,0.25); }
+  .license-unlicensed { background: color-mix(in oklab, var(--red) 12%, transparent); color: var(--red); border: 1px solid color-mix(in oklab, var(--red) 30%, transparent); }
+  .license-individual { background: color-mix(in oklab, var(--green) 10%, transparent); color: var(--green); border: 1px solid color-mix(in oklab, var(--green) 25%, transparent); }
+  .license-business { background: color-mix(in oklab, var(--green) 10%, transparent); color: var(--green); border: 1px solid color-mix(in oklab, var(--green) 25%, transparent); }
+  .license-integrator { background: color-mix(in oklab, var(--accent) 10%, transparent); color: var(--accent); border: 1px solid color-mix(in oklab, var(--accent) 25%, transparent); }
+  .tab-toolbar { display: flex; justify-content: flex-end; gap: 8px; margin-bottom: 12px; }
+  .hint { font-size: 12px; color: var(--text-dim); margin-top: 4px; }
+  .label-hint { color: var(--text-dim); font-weight: 400; }
+  .check-row { display: flex; align-items: center; gap: 8px; }
+  .check-row label { margin-bottom: 0; cursor: pointer; }
+  .check-list { max-height: 120px; overflow-y: auto; padding: 4px 0; }
+  .check-item { display: flex; align-items: center; gap: 8px; padding: 3px 0; font-size: 13px; cursor: pointer; }
+  .branch-input { width: 100px; font-size: 12px; padding: 2px 6px; margin-left: auto; }
+  .section-subtitle { font-size: 14px; font-weight: 600; margin-bottom: 10px; color: var(--text-dim); }
+  .modal-note { font-size: 13px; color: var(--text-dim); margin-bottom: 16px; }
+  .modal-note a { color: var(--accent); }
+  .mono-input { font-family: var(--font-mono); font-size: 12px; }
+  .guide-viewer-head { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
+  .guide-viewer-title { font-size: 14px; font-weight: 600; color: var(--text); }
+  .guide-file { font-size: 12px; color: var(--text-dim); }
+  .guide-card { cursor: pointer; }
+  .guide-card:hover { border-color: var(--accent); }
+  .guide-editor {
+    width: 100%;
+    min-height: 600px;
+    padding: 16px;
+    font-family: var(--font-mono);
+    font-size: 13px;
+    line-height: 1.6;
+    background: var(--surface);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    resize: vertical;
+    tab-size: 2;
+    opacity: 0.85;
+  }
+  .preset-card { padding: 10px 16px; }
+  .preset-head { display: flex; align-items: center; justify-content: space-between; }
+  .preset-head .left { display: flex; align-items: center; gap: 10px; }
+  .preset-name { font-weight: 600; font-size: 13px; }
+  .preset-actions { display: flex; gap: 6px; }
+  .preset-meta { font-size: 12px; color: var(--text-dim); margin-top: 4px; }
+  .preset-meta span + span { margin-left: 12px; }
+  .preset-meta strong { font-family: var(--font-mono); font-size: 11.5px; }
+  .badge-preset { background: color-mix(in oklab, var(--accent) 12%, transparent); color: var(--accent); }
+  .tpl-card-stacked { flex-direction: column; align-items: stretch; }
+  .tpl-head { display: flex; align-items: center; justify-content: space-between; }
+  .tpl-head-right { display: flex; align-items: center; gap: 8px; }
+  .tpl-meta strong { font-family: var(--font-mono); font-size: 11.5px; color: var(--text); font-weight: 500; }
+  .tag-plain { font-weight: 400 !important; text-transform: none !important; letter-spacing: normal !important; }
+  @media (max-width: 880px) {
+    body { padding: 16px; padding-bottom: 96px; }
+    header { flex-wrap: wrap; gap: 12px; }
+    .env-header { flex-wrap: wrap; gap: 10px; }
+    .env-header .left { flex-wrap: wrap; }
+    .env-meta { flex-wrap: wrap; gap: 6px 16px; }
+    .btn { padding: 14px 16px; }
+    .menu button { padding: 15px 14px; }
+    .tab-btn { padding: 13px 18px; }
+    .logs-toolbar .logs-btn { padding: 14px 14px; }
+    .logs-toolbar input[type="text"], .logs-toolbar select { padding: 14px 8px; }
+    .modal-close { padding: 12px 14px; }
+    .btn-create { padding: 14px 16px; }
+    .interval-input { padding: 12px 4px; }
+    .env-note { padding: 12px 8px; }
+    .svc-header { flex-wrap: wrap; gap: 10px; }
+    .svc-meta { flex-wrap: wrap; gap: 4px 16px; }
+    .tpl-card { flex-wrap: wrap; gap: 10px; }
+    .tpl-head { flex-wrap: wrap; gap: 10px; }
+    .tpl-head-right { flex-wrap: wrap; }
+    .tpl-meta { flex-wrap: wrap; gap: 6px; }
+    .env-meta strong, .svc-meta strong, .tpl-meta strong, .preset-meta strong { word-break: break-all; }
+    .system-bar { flex-wrap: wrap; gap: 6px 16px; padding: 8px 16px; }
+    .modal { width: calc(100vw - 24px); max-height: 88vh; }
+    #logs-modal .modal { max-width: none; }
+    .logs-toolbar { flex-wrap: wrap; }
+    .toast { left: 16px; right: 16px; max-width: none; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .spinner { animation: none; opacity: 0.7; }
+    .badge-pulse { animation: none; }
+    .toast { transition: opacity 0.1s; transform: none; }
+    .toast.show { transform: none; }
+    .usage-bar-fill { transition: none; }
+    .btn, .tab-btn, .repo-link, .copy-db { transition: none; }
+  }
 </style>
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.css">
-<script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.js"></script>
 </head>
 <body>
 
 <header>
   <h1><img src="/logo.png" alt="Oduflow logo">Oduflow</h1>
-  <span id="license-badge" class="license-badge" style="display:none"></span>
+  <button id="license-badge" class="license-badge" style="display:none"></button>
   <div class="actions">
-    <label class="auto-label" for="refresh-interval">Refresh
+    <a class="docs-link" href="https://docs.oduflow.dev" target="_blank" rel="noopener" title="Open the Oduflow documentation">Docs &#8599;</a>
+    <label class="auto-label" for="refresh-interval">Auto-refresh
       <input type="number" id="refresh-interval" value="60" min="5" step="5"
-             style="width:48px;background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:2px 4px;font-size:12px;text-align:center;">s
+             aria-label="Auto-refresh interval, seconds" class="interval-input">s
     </label>
     <button id="refresh-btn" onclick="loadEnvironments()">Refresh</button>
     <button class="btn-create" onclick="openCreateModal()">+ Create</button>
@@ -491,6 +781,14 @@
 </div>
 
 <div id="tab-environments" class="tab-content active">
+  <div id="bulk-bar" class="bulk-bar" style="display:none" role="toolbar" aria-label="Bulk actions for selected environments">
+    <span class="bulk-count" id="bulk-count"></span>
+    <div class="bulk-actions">
+      <button class="btn btn-stop" onclick="bulkStop()">Stop selected</button>
+      <button class="btn btn-delete" onclick="bulkDelete()">Delete selected</button>
+      <button class="btn" onclick="clearSelection()">Clear</button>
+    </div>
+  </div>
   <div id="env-list"></div>
 </div>
 
@@ -499,33 +797,33 @@
 </div>
 
 <div id="tab-services" class="tab-content">
-  <div style="display:flex;justify-content:flex-end;gap:8px;margin-bottom:12px;">
-    <button class="btn" style="border-color:var(--green);color:var(--green);" onclick="openRestoreServiceModal()">↻ Restore Service</button>
+  <div class="tab-toolbar">
+    <button class="btn btn-start" onclick="openRestoreServiceModal()">↻ Restore Service</button>
     <button class="btn-create" onclick="openCreateServiceModal()">+ Create Service</button>
   </div>
   <div id="svc-list"></div>
-  <div id="svc-presets-section" style="margin-top:24px;display:none;">
-    <h3 style="font-size:14px;font-weight:600;margin-bottom:10px;color:var(--text-dim);">Saved Presets</h3>
+  <div id="svc-presets-section" style="display:none;margin-top:24px;">
+    <h2 class="section-subtitle">Saved Presets</h2>
     <div id="svc-presets-list"></div>
   </div>
 </div>
 
 <div id="tab-volumes" class="tab-content">
-  <div style="display:flex;justify-content:flex-end;margin-bottom:12px;">
+  <div class="tab-toolbar">
     <button class="btn-create" onclick="openCreateVolumeModal()">+ Create Volume</button>
   </div>
   <div id="vol-list"></div>
 </div>
 
 <div id="tab-extra-addons" class="tab-content">
-  <div style="display:flex;justify-content:flex-end;margin-bottom:12px;">
+  <div class="tab-toolbar">
     <button class="btn-create" onclick="openAddExtraRepoModal()">+ Add Repo</button>
   </div>
   <div id="extra-repos-list"></div>
 </div>
 
 <div id="tab-credentials" class="tab-content">
-  <div style="display:flex;justify-content:flex-end;margin-bottom:12px;">
+  <div class="tab-toolbar">
     <button class="btn-create" onclick="openAddCredentialModal()">+ Add Credential</button>
   </div>
   <div id="credentials-list"></div>
@@ -534,21 +832,21 @@
 <div id="tab-agent-guides" class="tab-content">
   <div id="agent-guides-list"></div>
   <div id="agent-guide-viewer" style="display:none;margin-top:16px;">
-    <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;">
-      <button class="btn" onclick="closeGuideViewer()" style="border-color:var(--text-dim);color:var(--text-dim);font-size:12px;">← Back</button>
-      <span id="guide-viewer-title" style="font-size:14px;font-weight:600;color:var(--text);"></span>
+    <div class="guide-viewer-head">
+      <button class="btn" onclick="closeGuideViewer()">← Back</button>
+      <span id="guide-viewer-title" class="guide-viewer-title"></span>
     </div>
     <textarea id="guide-editor"
-      style="width:100%;min-height:600px;padding:16px;font-size:13px;font-family:'SFMono-Regular',Consolas,monospace;line-height:1.6;background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:var(--radius);resize:vertical;outline:none;tab-size:2;opacity:0.85;"
+      class="guide-editor"
       spellcheck="false"
       readonly
       placeholder="Loading guide..."></textarea>
   </div>
 </div>
 
-<div class="toast" id="toast"></div>
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
 <div class="modal-overlay" id="sync-result-modal" onclick="closeSyncResult(event)">
-  <div class="modal" style="max-width:520px;">
+  <div class="modal modal-md">
     <div class="modal-header">
       <h2 id="sync-result-title">Sync Result</h2>
       <button class="modal-close" onclick="closeSyncResult()">&times;</button>
@@ -557,7 +855,7 @@
   </div>
 </div>
 <div class="modal-overlay" id="create-modal" onclick="closeCreateModal(event)">
-  <div class="modal" style="max-width:500px;">
+  <div class="modal modal-md">
     <div class="modal-header">
       <h2>Create Environment</h2>
       <button class="modal-close" onclick="closeCreateModal()">&times;</button>
@@ -589,18 +887,18 @@
       </div>
       <div class="form-group">
         <label>Extra Addons Repos</label>
-        <div id="cr-extra-addons-checkboxes" style="max-height:120px;overflow-y:auto;padding:4px 0;"></div>
-        <div style="font-size:11px;color:var(--text-dim);margin-top:4px;">Select repos to mount in this environment</div>
+        <div id="cr-extra-addons-checkboxes" class="check-list"></div>
+        <div class="hint">Select repos to mount in this environment</div>
       </div>
       <div class="form-group">
         <label for="cr-auto-install">Auto-install modules</label>
         <input type="text" id="cr-auto-install" placeholder="e.g. sale,purchase,stock">
-        <div style="font-size:11px;color:var(--text-dim);margin-top:4px;">Comma-separated list of modules to install after provisioning</div>
+        <div class="hint">Comma-separated list of modules to install after provisioning</div>
       </div>
       <div class="form-group">
         <label for="cr-env-vars">Environment variables</label>
         <input type="text" id="cr-env-vars" placeholder="e.g. WORKERS=2,LIMIT_TIME_CPU=600">
-        <div style="font-size:11px;color:var(--text-dim);margin-top:4px;">Comma-separated KEY=VALUE pairs injected into the Odoo container</div>
+        <div class="hint">Comma-separated KEY=VALUE pairs injected into the Odoo container</div>
       </div>
 
       <div class="form-actions">
@@ -617,21 +915,23 @@
       <button class="modal-close" onclick="closeLogsModal()">&times;</button>
     </div>
     <div class="logs-toolbar">
-      <input type="text" id="logs-search" placeholder="Filter logs..." oninput="filterLogs()">
+      <input type="text" id="logs-search" placeholder="Filter logs..." aria-label="Filter log lines" oninput="filterLogs()">
       <span class="logs-match-count" id="logs-match-count"></span>
-      <select id="logs-lines" onchange="changeLogLines()">
+      <select id="logs-container" aria-label="Container" style="display:none;max-width:220px;" onchange="fetchLogs()"></select>
+      <select id="logs-lines" aria-label="Number of log lines to load" onchange="changeLogLines()">
         <option value="100">100 lines</option>
         <option value="300" selected>300 lines</option>
         <option value="500">500 lines</option>
         <option value="1000">1000 lines</option>
       </select>
       <button class="logs-btn" onclick="fetchLogs()" title="Refresh logs">↻ Refresh</button>
+      <button class="logs-btn" onclick="copyLogs()" title="Copy displayed log lines to clipboard">⧉ Copy</button>
     </div>
     <div class="modal-body"><pre id="logs-content">Loading...</pre></div>
   </div>
 </div>
 <div class="modal-overlay" id="console-modal" onclick="closeConsole(event)">
-  <div class="modal" style="max-width:1000px; height:80vh;">
+  <div class="modal modal-terminal">
     <div class="modal-header">
       <h2 id="console-title">Console</h2>
       <button class="modal-close" onclick="closeConsole()">&times;</button>
@@ -642,7 +942,7 @@
   </div>
 </div>
 <div class="modal-overlay" id="sql-modal" onclick="closeSqlConsole(event)">
-  <div class="modal" style="max-width:1000px; height:80vh;">
+  <div class="modal modal-terminal">
     <div class="modal-header">
       <h2 id="sql-title">SQL Console</h2>
       <button class="modal-close" onclick="closeSqlConsole()">&times;</button>
@@ -653,7 +953,7 @@
   </div>
 </div>
 <div class="modal-overlay" id="create-svc-modal" onclick="closeCreateServiceModal(event)">
-  <div class="modal" style="max-width:500px;">
+  <div class="modal modal-md">
     <div class="modal-header">
       <h2>Create Service</h2>
       <button class="modal-close" onclick="closeCreateServiceModal()">&times;</button>
@@ -680,9 +980,9 @@
         <label for="svc-envvars">Environment variables (optional)</label>
         <textarea id="svc-envvars" rows="5" placeholder="KEY1=val1&#10;KEY2=val2"></textarea>
       </div>
-      <div class="form-group" style="display:flex;align-items:center;gap:8px;">
+      <div class="form-group check-row">
         <input type="checkbox" id="svc-host-mode">
-        <label for="svc-host-mode" style="margin-bottom:0;cursor:pointer;">Host network mode</label>
+        <label for="svc-host-mode" >Host network mode</label>
       </div>
       <div class="form-group">
         <label for="svc-volumes">Volumes (optional)</label>
@@ -690,13 +990,13 @@
       </div>
       <div class="form-group">
         <label>Capabilities</label>
-        <div style="display:flex;align-items:center;gap:8px;margin-top:4px;">
+        <div class="check-row" style="margin-top:4px;">
           <input type="checkbox" id="svc-privileged">
-          <label for="svc-privileged" style="margin-bottom:0;cursor:pointer;">Privileged <span style="color:var(--muted);font-weight:normal;">— full host access (use with care)</span></label>
+          <label for="svc-privileged" >Privileged <span class="label-hint">— full host access (use with care)</span></label>
         </div>
-        <div style="display:flex;align-items:center;gap:8px;margin-top:6px;">
+        <div class="check-row" style="margin-top:6px;">
           <input type="checkbox" id="svc-net-admin">
-          <label for="svc-net-admin" style="margin-bottom:0;cursor:pointer;">NET_ADMIN <span style="color:var(--muted);font-weight:normal;">— VPN / tun / iptables</span></label>
+          <label for="svc-net-admin" >NET_ADMIN <span class="label-hint">— VPN / tun / iptables</span></label>
         </div>
       </div>
       <div class="form-actions">
@@ -707,7 +1007,7 @@
   </div>
 </div>
 <div class="modal-overlay" id="restore-svc-modal" onclick="closeRestoreServiceModal(event)">
-  <div class="modal" style="max-width:500px;">
+  <div class="modal modal-md">
     <div class="modal-header">
       <h2>Restore Service</h2>
       <button class="modal-close" onclick="closeRestoreServiceModal()">&times;</button>
@@ -740,9 +1040,9 @@
         <label for="restore-svc-envvars">Environment variables (optional)</label>
         <textarea id="restore-svc-envvars" rows="4" placeholder="KEY1=val1&#10;KEY2=val2"></textarea>
       </div>
-      <div class="form-group" style="display:flex;align-items:center;gap:8px;">
+      <div class="form-group check-row">
         <input type="checkbox" id="restore-svc-host-mode">
-        <label for="restore-svc-host-mode" style="margin-bottom:0;cursor:pointer;">Host network mode</label>
+        <label for="restore-svc-host-mode" >Host network mode</label>
       </div>
       <div class="form-group">
         <label for="restore-svc-volumes">Volumes (optional)</label>
@@ -750,24 +1050,24 @@
       </div>
       <div class="form-group">
         <label>Capabilities</label>
-        <div style="display:flex;align-items:center;gap:8px;margin-top:4px;">
+        <div class="check-row" style="margin-top:4px;">
           <input type="checkbox" id="restore-svc-privileged">
-          <label for="restore-svc-privileged" style="margin-bottom:0;cursor:pointer;">Privileged <span style="color:var(--muted);font-weight:normal;">— full host access (use with care)</span></label>
+          <label for="restore-svc-privileged" >Privileged <span class="label-hint">— full host access (use with care)</span></label>
         </div>
-        <div style="display:flex;align-items:center;gap:8px;margin-top:6px;">
+        <div class="check-row" style="margin-top:6px;">
           <input type="checkbox" id="restore-svc-net-admin">
-          <label for="restore-svc-net-admin" style="margin-bottom:0;cursor:pointer;">NET_ADMIN <span style="color:var(--muted);font-weight:normal;">— VPN / tun / iptables</span></label>
+          <label for="restore-svc-net-admin" >NET_ADMIN <span class="label-hint">— VPN / tun / iptables</span></label>
         </div>
       </div>
       <div class="form-actions">
         <button class="btn" onclick="closeRestoreServiceModal()">Cancel</button>
-        <button class="btn-create" id="restore-svc-submit" onclick="submitRestoreService()" style="background:var(--green);border-color:var(--green);">Restore</button>
+        <button class="btn-create" id="restore-svc-submit" onclick="submitRestoreService()">Restore service</button>
       </div>
     </div>
   </div>
 </div>
 <div class="modal-overlay" id="create-vol-modal" onclick="closeCreateVolumeModal(event)">
-  <div class="modal" style="max-width:440px;">
+  <div class="modal modal-sm">
     <div class="modal-header">
       <h2>Create Volume</h2>
       <button class="modal-close" onclick="closeCreateVolumeModal()">&times;</button>
@@ -796,20 +1096,53 @@
   <span>Load: <span class="sys-val" id="sys-load">—</span></span>
 </div>
 
+<div class="modal-overlay" id="confirm-modal" onclick="cancelConfirm(event)">
+  <div class="modal modal-sm">
+    <div class="modal-header">
+      <h2 id="confirm-title">Confirm</h2>
+      <button class="modal-close" onclick="cancelConfirm()">&times;</button>
+    </div>
+    <div class="modal-body">
+      <p class="modal-note" id="confirm-message"></p>
+      <div class="form-actions">
+        <button class="btn" id="confirm-cancel" onclick="cancelConfirm()">Cancel</button>
+        <button class="btn-create" id="confirm-ok" onclick="acceptConfirm()">Confirm</button>
+      </div>
+    </div>
+  </div>
+</div>
+<div class="modal-overlay" id="note-modal" onclick="closeNoteModal(event)">
+  <div class="modal modal-sm">
+    <div class="modal-header">
+      <h2 id="note-modal-title">Edit note</h2>
+      <button class="modal-close" onclick="closeNoteModal()">&times;</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-group">
+        <label for="note-text">Note</label>
+        <textarea id="note-text" rows="4" placeholder="What is this environment for?"></textarea>
+      </div>
+      <div class="form-actions">
+        <button class="btn" onclick="closeNoteModal()">Cancel</button>
+        <button class="btn-create" onclick="saveNote()">Save note</button>
+      </div>
+    </div>
+  </div>
+</div>
 <div class="modal-overlay" id="license-modal" onclick="closeLicenseModal(event)">
-  <div class="modal" style="max-width:460px;">
+  <div class="modal modal-sm">
     <div class="modal-header">
       <h2>Activate License</h2>
       <button class="modal-close" onclick="closeLicenseModal()">&times;</button>
     </div>
     <div class="modal-body">
-      <p style="font-size:13px;color:var(--text-dim);margin-bottom:16px;">
-        Paste your license key below. Purchase a key at <a href="https://oduflow.dev/#pricing" target="_blank" style="color:var(--accent);">oduflow.dev</a>
+      <p class="modal-note">
+        Paste your license key below. Purchase a key at <a href="https://oduflow.dev/#pricing" target="_blank">oduflow.dev</a>
       </p>
       <div class="form-error" id="license-error"></div>
       <div class="form-group">
         <label for="lic-key">License key</label>
-        <textarea id="lic-key" rows="4" placeholder="Paste your license key here..." style="font-family:SFMono-Regular,Consolas,monospace;font-size:12px;"></textarea>
+        <textarea id="lic-key" rows="4" placeholder="Paste your license key here..." class="mono-input"></textarea>
       </div>
       <div class="form-actions">
         <button class="btn" onclick="closeLicenseModal()">Cancel</button>
@@ -819,7 +1152,7 @@
   </div>
 </div>
 <div class="modal-overlay" id="add-extra-repo-modal" onclick="closeAddExtraRepoModal(event)">
-  <div class="modal" style="max-width:500px;">
+  <div class="modal modal-md">
     <div class="modal-header">
       <h2>Add Extra Addons Repository</h2>
       <button class="modal-close" onclick="closeAddExtraRepoModal()">&times;</button>
@@ -848,7 +1181,7 @@
   </div>
 </div>
 <div class="modal-overlay" id="add-credential-modal" onclick="closeAddCredentialModal(event)">
-  <div class="modal" style="max-width:500px;">
+  <div class="modal modal-md">
     <div class="modal-header">
       <h2>Add Git Credential</h2>
       <button class="modal-close" onclick="closeAddCredentialModal()">&times;</button>
@@ -892,42 +1225,170 @@ const API_TEMPLATES = '/api/templates';
 const MIN_INTERVAL = 5;
 let refreshInterval = 60;
 let refreshTimer = null;
-let statsTimer = null;
 let containerStatsMap = {};
 let cachedTemplates = [];
+let cachedEnvs = [];
+let _prevStatuses = {};
+// Bulk cleanup selection: survives re-renders, supports shift-click ranges.
+let selectedEnvs = new Set();
+let _lastSelectIdx = null;
+// branch -> {op: 'Stopping'|'Updating'|..., started: epoch ms}; consulted by
+// renderEnvironments so busy state survives polling re-renders.
+let busyOps = {};
 
 function showToast(msg, isError) {
   const t = document.getElementById('toast');
-  t.textContent = msg;
-  t.className = 'toast show' + (isError ? ' error' : '');
   clearTimeout(t._tid);
-  t._tid = setTimeout(() => t.className = 'toast', 3000);
-}
-
-function copyToClipboard(text) {
-  const onErr = () => showToast('Copy failed', true);
-  if (navigator.clipboard && window.isSecureContext) {
-    navigator.clipboard.writeText(text)
-      .then(() => showToast('Copied: ' + text))
-      .catch(onErr);
+  if (!isError) {
+    t.textContent = msg;
+    t.className = 'toast show';
+    t._tid = setTimeout(() => t.className = 'toast', 3000);
     return;
   }
-  try {
-    const ta = document.createElement('textarea');
-    ta.value = text;
-    ta.style.position = 'fixed';
-    ta.style.opacity = '0';
-    document.body.appendChild(ta);
-    ta.select();
-    const ok = document.execCommand('copy');
-    document.body.removeChild(ta);
-    ok ? showToast('Copied: ' + text) : onErr();
-  } catch (e) { onErr(); }
+  // Errors persist until dismissed and can be copied: failure is exactly
+  // when the operator needs to read carefully and hand the text to an agent.
+  t.innerHTML = '';
+  var span = document.createElement('span');
+  span.className = 'toast-msg';
+  span.textContent = msg;
+  var actions = document.createElement('span');
+  actions.className = 'toast-actions';
+  var copyBtn = document.createElement('button');
+  copyBtn.textContent = 'Copy';
+  copyBtn.onclick = function() { copyToClipboard(msg, 'Error text copied'); };
+  var closeBtn = document.createElement('button');
+  closeBtn.setAttribute('aria-label', 'Dismiss');
+  closeBtn.innerHTML = '&times;';
+  closeBtn.onclick = function() { t.className = 'toast'; };
+  actions.append(copyBtn, closeBtn);
+  t.append(span, actions);
+  t.className = 'toast show error';
+}
+
+// --- Modal helpers: focus return + Escape + dialog semantics ---
+var _modalReturnFocus = {};
+
+function showModal(id) {
+  var overlay = document.getElementById(id);
+  if (!overlay.classList.contains('show')) {
+    _modalReturnFocus[id] = document.activeElement;
+  }
+  overlay.classList.add('show');
+}
+
+function hideModal(id) {
+  var overlay = document.getElementById(id);
+  if (!overlay.classList.contains('show')) return;
+  overlay.classList.remove('show');
+  var prev = _modalReturnFocus[id];
+  delete _modalReturnFocus[id];
+  if (prev && document.contains(prev)) prev.focus();
+}
+
+document.querySelectorAll('.modal-overlay').forEach(function(overlay) {
+  var modal = overlay.querySelector('.modal');
+  if (!modal) return;
+  modal.setAttribute('role', 'dialog');
+  modal.setAttribute('aria-modal', 'true');
+  var title = overlay.querySelector('.modal-header h2');
+  if (title) {
+    if (!title.id) title.id = overlay.id + '-title-label';
+    modal.setAttribute('aria-labelledby', title.id);
+  }
+});
+
+// --- Confirm dialog: in-system replacement for window.confirm() ---
+var _confirmResolve = null;
+
+function confirmDialog(opts) {
+  return new Promise(function(resolve) {
+    _confirmResolve = resolve;
+    document.getElementById('confirm-title').textContent = opts.title || 'Confirm';
+    document.getElementById('confirm-message').textContent = opts.message || '';
+    var ok = document.getElementById('confirm-ok');
+    ok.textContent = opts.confirmLabel || 'Confirm';
+    ok.classList.toggle('danger', !!opts.danger);
+    showModal('confirm-modal');
+    // Destructive confirms focus Cancel so a buffered Enter cannot delete.
+    if (opts.danger) document.getElementById('confirm-cancel').focus();
+    else ok.focus();
+  });
+}
+
+function _settleConfirm(value) {
+  if (!_confirmResolve) return;
+  var resolve = _confirmResolve;
+  _confirmResolve = null;
+  hideModal('confirm-modal');
+  resolve(value);
+}
+
+function cancelConfirm(event) {
+  if (event && event.target !== event.currentTarget) return;
+  _settleConfirm(false);
+}
+
+function acceptConfirm() { _settleConfirm(true); }
+
+// --- Tabs: tablist semantics + arrow-key navigation ---
+(function initTabs() {
+  var tablist = document.querySelector('.tabs');
+  if (!tablist) return;
+  tablist.setAttribute('role', 'tablist');
+  document.querySelectorAll('.tab-btn').forEach(function(b) {
+    var name = b.getAttribute('data-tab');
+    var active = b.classList.contains('active');
+    b.setAttribute('role', 'tab');
+    b.setAttribute('aria-selected', active ? 'true' : 'false');
+    b.tabIndex = active ? 0 : -1;
+    b.id = 'tab-btn-' + name;
+    var panel = document.getElementById('tab-' + name);
+    if (panel) {
+      panel.setAttribute('role', 'tabpanel');
+      panel.setAttribute('aria-labelledby', b.id);
+    }
+  });
+  tablist.addEventListener('keydown', function(e) {
+    if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+    var tabs = Array.from(document.querySelectorAll('.tab-btn'));
+    var i = tabs.indexOf(document.activeElement);
+    if (i === -1) return;
+    e.preventDefault();
+    var next = tabs[(i + (e.key === 'ArrowRight' ? 1 : tabs.length - 1)) % tabs.length];
+    switchTab(next.getAttribute('data-tab'));
+    next.focus();
+  });
+})();
+
+function copyToClipboard(text, label) {
+  const done = label || ('Copied: ' + text);
+  // Legacy path doubles as the fallback when the async clipboard API rejects
+  // (unfocused document, denied permission).
+  const legacy = () => {
+    try {
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      const ok = document.execCommand('copy');
+      document.body.removeChild(ta);
+      ok ? showToast(done) : showToast('Copy failed', true);
+    } catch (e) { showToast('Copy failed', true); }
+  };
+  if (navigator.clipboard && window.isSecureContext) {
+    navigator.clipboard.writeText(text)
+      .then(() => showToast(done))
+      .catch(legacy);
+    return;
+  }
+  legacy();
 }
 
 function closeSyncResult(event) {
   if (event && event.target !== event.currentTarget) return;
-  document.getElementById('sync-result-modal').classList.remove('show');
+  hideModal('sync-result-modal');
 }
 
 function showSyncResult(branch, result) {
@@ -963,7 +1424,7 @@ function showSyncResult(branch, result) {
 
   document.getElementById('sync-result-title').textContent = 'Sync — ' + branch;
   document.getElementById('sync-result-body').innerHTML = html;
-  document.getElementById('sync-result-modal').classList.add('show');
+  showModal('sync-result-modal');
 }
 
 function badgeClass(status) {
@@ -981,35 +1442,77 @@ function usageColor(pct) {
 }
 
 function usageBar(pct) {
-  var w = Math.min(pct, 100);
+  var w = Math.min(Math.max(pct, 2), 100);
   var color = usageColor(pct);
-  return '<span class="usage-bar"><span class="usage-bar-fill" style="' +
-    'width:' + Math.max(w, 2) + '%;background:' + color + '"></span></span>';
+  return '<span class="usage-bar" aria-hidden="true"><span class="usage-bar-fill" style="' +
+    'transform:scaleX(' + (w / 100) + ');background:' + color + '"></span></span>';
 }
 
 function containerStatsHtml(name) {
-  const s = containerStatsMap[name];
-  if (!s) return '';
-  return '<span class="container-stats">' +
-    '<span>CPU <span class="stat-val">' + s.cpu_percent + '%</span></span>' +
-    '<span>RAM <span class="stat-val">' + s.mem_usage_mb + ' MB</span> ' +
-      usageBar(s.mem_percent) + '</span>' +
-  '</span>';
+  return '<span class="container-stats" data-stats-for="' + esc(name) + '"></span>';
 }
 
-function renderEnvironments(envs) {
+var _busyTicker = null;
+
+function _fmtElapsed(ms) {
+  var sec = Math.floor(ms / 1000);
+  return sec >= 60 ? Math.floor(sec / 60) + 'm ' + (sec % 60) + 's' : sec + 's';
+}
+
+function setBusy(branch, op) {
+  busyOps[branch] = { op: op, started: Date.now() };
+  renderEnvironments(cachedEnvs, true);
+  if (!_busyTicker) _busyTicker = setInterval(_tickBusy, 1000);
+}
+
+function clearBusy(branch) {
+  delete busyOps[branch];
+  if (!Object.keys(busyOps).length && _busyTicker) {
+    clearInterval(_busyTicker);
+    _busyTicker = null;
+  }
+}
+
+function _tickBusy() {
+  Object.keys(busyOps).forEach(function(branch) {
+    var el = document.querySelector('[data-busy-for="' + branch + '"]');
+    if (el) el.textContent = _fmtElapsed(Date.now() - busyOps[branch].started);
+  });
+}
+
+function applyStats() {
+  document.querySelectorAll('[data-stats-for]').forEach(function(el) {
+    var s = containerStatsMap[el.getAttribute('data-stats-for')];
+    if (!s) { el.innerHTML = ''; return; }
+    el.innerHTML =
+      '<span>CPU <span class="stat-val">' + s.cpu_percent + '%</span></span>' +
+      '<span>RAM <span class="stat-val">' + s.mem_usage_mb + ' MB</span> ' +
+        usageBar(s.mem_percent) + '</span>';
+  });
+}
+
+function renderEnvironments(envs, force) {
   const el = document.getElementById('env-list');
   if (!envs || envs.length === 0) {
-    el.innerHTML = '<div class="empty">No environments found.<br>Create one via MCP tools.</div>';
+    el._lastHtml = '';
+    el.innerHTML = '<div class="empty">No environments yet.<br>' +
+      '<span class="empty-hint">Agents create them over MCP: <code>create_environment(env_name="feature/...")</code></span><br>' +
+      'or use "+ Create" above.</div>';
+    updateBulkBar();
     return;
   }
 
-  el.innerHTML = envs.map(env => {
-    const allRunning = env.status === 'running';
+  const html = envs.map((env, idx) => {
     const allStopped = env.containers.every(c => c.status !== 'running');
+    const busy = busyOps[env.branch];
+    const dis = busy ? 'disabled ' : '';
 
     const containerHtml = env.containers.map(c =>
-      '<span>' + esc(c.name) + ' [' + esc(c.status) + ']' + containerStatsHtml(c.name) + '</span>'
+      '<span>' + esc(c.name) + ' ' +
+      (c.status === 'running'
+        ? '[' + esc(c.status) + ']'
+        : '<span class="container-down">[' + esc(c.status) + ']</span>') +
+      containerStatsHtml(c.name) + '</span>'
     ).join('');
 
     const urlHtml = env.url
@@ -1018,7 +1521,7 @@ function renderEnvironments(envs) {
 
     const metaHtml = (env.odoo_image || env.repo_url || env.db_name || env.template_name)
       ? '<div class="env-meta">' +
-          (env.db_name ? '<span>DB: <strong class="copy-db" title="Click to copy" onclick="copyToClipboard(\'' + esc(env.db_name).replace(/'/g, "\\'") + '\')">' + esc(env.db_name) + '</strong></span>' : '') +
+          (env.db_name ? '<span>DB: <strong class="copy-db" role="button" tabindex="0" title="Copy database name" aria-label="Copy database name" onclick="copyToClipboard(\'' + esc(env.db_name).replace(/'/g, "\\'") + '\')">' + esc(env.db_name) + '</strong></span>' : '') +
           (env.template_name && env.template_name !== 'none' ? '<span>Template: <strong>' + esc(env.template_name) + '</strong></span>' : '') +
           (env.odoo_image ? '<span>Image: <strong>' + esc(env.odoo_image) + '</strong></span>' : '') +
           (env.repo_url ? '<span>Repo: <strong>' + esc(env.repo_url) + '</strong>' +
@@ -1037,6 +1540,8 @@ function renderEnvironments(envs) {
             })() +
           '</span>' : '') +
           (env.created_at ? '<span>Created: <strong>' + formatDate(env.created_at) + '</strong></span>' : '') +
+          (env.last_activity ? '<span title="Last MCP call or dashboard action for this environment">Active: <strong>' + formatDate(env.last_activity) + '</strong></span>' : '') +
+          (env.stopped_at ? '<span>Stopped: <strong>' + formatDate(env.stopped_at) + (env.auto_stopped ? ' (auto)' : '') + '</strong></span>' : '') +
         '</div>'
       : '';
 
@@ -1051,52 +1556,208 @@ function renderEnvironments(envs) {
     return '<div class="env-card" data-branch="' + esc(env.branch) + '">' +
       '<div class="env-header">' +
         '<div class="left">' +
+          '<label class="select-box"><input type="checkbox" class="env-select"' +
+            (selectedEnvs.has(env.branch) ? ' checked' : '') +
+            (env.protected ? ' disabled title="Protected environments are excluded from bulk actions"' : '') +
+            ' onclick="envSelectClick(event, \'' + escAttr(env.branch) + '\', ' + idx + ')"' +
+            ' aria-label="Select ' + esc(env.branch) + '"></label>' +
           '<span class="branch-name">' + esc(env.branch) + '</span>' +
           (env.git_branch && env.git_branch !== env.branch ? '<span class="git-branch">⎇ ' + esc(env.git_branch) + '</span>' : '') +
-          '<span class="badge ' + badgeClass(env.status) + '">' + esc(env.status) + '</span>' +
+          '<span class="badge ' + badgeClass(env.status) + '"' +
+            (env.status === 'partial' ? ' title="' + env.containers.filter(function(c) { return c.status === 'running'; }).length + ' of ' + env.containers.length + ' containers running"' : '') +
+            '>' + esc(env.status) + '</span>' +
+          (env.protected ? '<span class="badge badge-protected" title="Stop, Update, Recreate and Delete are disabled">protected</span>' : '') +
+          (busy ? '<span class="badge badge-busy"><span class="spinner" aria-hidden="true"></span>' + esc(busy.op) + '&hellip; <span data-busy-for="' + esc(env.branch) + '">' + _fmtElapsed(Date.now() - busy.started) + '</span></span>' : '') +
         '</div>' +
         '<div class="env-actions">' +
-          '<button class="btn btn-start" onclick="doAction(\'' + escAttr(env.branch) + '\',\'start\')" ' +
-            (allRunning ? 'disabled' : '') + '>Start</button>' +
-          '<button class="btn btn-stop" onclick="doAction(\'' + escAttr(env.branch) + '\',\'stop\')" ' +
-            (allStopped || env.protected ? 'disabled title="Environment is protected"' : '') + '>Stop</button>' +
-          '<button class="btn btn-restart" onclick="doAction(\'' + escAttr(env.branch) + '\',\'restart\')" ' +
+          (allStopped
+            ? '<button class="btn btn-start" onclick="doAction(\'' + escAttr(env.branch) + '\',\'start\')" ' + dis + '>Start</button>'
+            : '<button class="btn btn-stop" onclick="doAction(\'' + escAttr(env.branch) + '\',\'stop\')" ' + dis +
+                (env.protected ? 'disabled title="Environment is protected"' : '') + '>Stop</button>') +
+          '<button class="btn btn-restart" title="Restart the containers" onclick="doAction(\'' + escAttr(env.branch) + '\',\'restart\')" ' + dis +
             (allStopped ? 'disabled' : '') + '>Restart</button>' +
-          '<button class="btn btn-sync" onclick="doAction(\'' + escAttr(env.branch) + '\',\'sync\')" ' +
+          '<button class="btn btn-sync" title="Pull code changes and apply: install, upgrade or restart as needed" onclick="doAction(\'' + escAttr(env.branch) + '\',\'sync\')" ' + dis +
             (allStopped ? 'disabled' : '') + '>Sync</button>' +
           '<button class="btn btn-logs" onclick="showLogs(\'' + escAttr(env.branch) + '\')">Logs</button>' +
-          '<button class="btn btn-logs" onclick="openConsole(\'' + escAttr(env.branch) + '\')" ' +
-            (allStopped ? 'disabled' : '') + '>Console</button>' +
-          '<button class="btn btn-logs" onclick="openSqlConsole(\'' + escAttr(env.branch) + '\')" ' +
-            (allStopped ? 'disabled' : '') + '>SQL</button>' +
-          '<button class="btn btn-protect' + (env.protected ? ' active' : '') + '" ' +
-            'onclick="doProtect(\'' + escAttr(env.branch) + '\',' + (env.protected ? 'true' : 'false') + ')">' +
-            (env.protected ? '🔒 Protected' : '🔓 Protect') + '</button>' +
-          '<button class="btn btn-restart" onclick="doUpdate(\'' + escAttr(env.branch) + '\')" ' +
-            (env.protected ? 'disabled title="Environment is protected"' : '') + '>Update</button>' +
-          '<button class="btn btn-restart" onclick="doRecreate(\'' + escAttr(env.branch) + '\')" ' +
-            (env.protected ? 'disabled title="Environment is protected"' : '') + '>Recreate</button>' +
-          '<button class="btn btn-delete" onclick="doDelete(\'' + escAttr(env.branch) + '\')" ' +
-            (env.protected ? 'disabled title="Environment is protected"' : '') + '>Delete</button>' +
+          '<div class="menu-wrap">' +
+            '<button class="btn btn-more" onclick="toggleMenu(event)" aria-haspopup="menu" aria-expanded="false">More &#9662;</button>' +
+            '<div class="menu" role="menu">' +
+              '<button role="menuitem" title="Shell inside the Odoo container" onclick="openConsole(\'' + escAttr(env.branch) + '\')" ' +
+                (allStopped ? 'disabled' : '') + '>Open console</button>' +
+              '<button role="menuitem" title="psql session on the environment database" onclick="openSqlConsole(\'' + escAttr(env.branch) + '\')" ' +
+                (allStopped ? 'disabled' : '') + '>Open SQL console</button>' +
+              '<button role="menuitem" title="' + (env.protected ? 'Allow Stop, Update, Recreate and Delete again' : 'Disable Stop, Update, Recreate and Delete') + '" onclick="doProtect(\'' + escAttr(env.branch) + '\',' + (env.protected ? 'true' : 'false') + ')" ' + dis + '>' +
+                (env.protected ? 'Unprotect' : 'Protect') + '</button>' +
+              '<button role="menuitem" onclick="doUpdate(\'' + escAttr(env.branch) + '\')" ' + dis +
+                (env.protected ? 'disabled title="Environment is protected"' : 'title="Recreate the container, keep the database and filestore"') + '>Update</button>' +
+              '<button role="menuitem" onclick="doRecreate(\'' + escAttr(env.branch) + '\')" ' + dis +
+                (env.protected ? 'disabled title="Environment is protected"' : 'title="Delete and rebuild from template: replaces the current database"') + '>Recreate</button>' +
+              '<button role="menuitem" class="danger" onclick="doDelete(\'' + escAttr(env.branch) + '\')" ' + dis +
+                (env.protected ? 'disabled title="Environment is protected"' : '') + '>Delete</button>' +
+            '</div>' +
+          '</div>' +
         '</div>' +
       '</div>' +
+      (env.note
+        ? '<div class="env-note env-note-set" role="button" tabindex="0" aria-label="Edit note" ' +
+            'onclick="editNote(\'' + escAttr(env.branch) + '\')" title="Click to edit note">' +
+            '<span class="note-label" aria-hidden="true">Note</span>' + esc(env.note) +
+          '</div>'
+        : '') +
       urlHtml +
       metaHtml +
       extraHtml +
-      '<div class="env-note' + (!env.note ? ' env-note-empty' : '') + '" ' +
-        'onclick="editNote(\'' + escAttr(env.branch) + '\')" ' +
-        'title="Click to edit note">' +
-        (env.note ? esc(env.note) : 'Add a note...') +
-      '</div>' +
+      (!env.note
+        ? '<div class="env-note env-note-empty" role="button" tabindex="0" aria-label="Add note" ' +
+            'onclick="editNote(\'' + escAttr(env.branch) + '\')" title="Click to add a note">' +
+            'Add a note...' +
+          '</div>'
+        : '') +
       '<div class="containers">' + containerHtml + '</div>' +
     '</div>';
   }).join('');
+
+  // Skip the DOM swap when nothing changed (stats update in place via applyStats),
+  // so hover, text selection, and open menus survive the refresh tick.
+  if (!force && el._lastHtml === html) {
+    applyStats();
+    return;
+  }
+  el._lastHtml = html;
+  el.innerHTML = html;
+  applyStats();
+
+  // A state change between renders gets one visible pulse in its signal
+  // color: the moment "it came up" (or went down) should be felt, not hunted.
+  envs.forEach(function(env) {
+    var prev = _prevStatuses[env.branch];
+    if (prev && prev !== env.status) {
+      var badge = el.querySelector('.env-card[data-branch="' + env.branch + '"] .badge');
+      if (badge) badge.classList.add('badge-pulse');
+    }
+    _prevStatuses[env.branch] = env.status;
+  });
+  updateBulkBar();
 }
+
+function envSelectClick(e, branch, idx) {
+  e.stopPropagation();
+  var checked = e.target.checked;
+  if (e.shiftKey && _lastSelectIdx !== null) {
+    var lo = Math.min(_lastSelectIdx, idx);
+    var hi = Math.max(_lastSelectIdx, idx);
+    for (var i = lo; i <= hi; i++) {
+      var env = cachedEnvs[i];
+      if (!env || env.protected) continue;
+      if (checked) selectedEnvs.add(env.branch);
+      else selectedEnvs.delete(env.branch);
+    }
+    renderEnvironments(cachedEnvs, true);
+  } else {
+    if (checked) selectedEnvs.add(branch);
+    else selectedEnvs.delete(branch);
+  }
+  _lastSelectIdx = idx;
+  updateBulkBar();
+}
+
+function updateBulkBar() {
+  // Drop branches that no longer exist
+  var live = new Set(cachedEnvs.map(function(e) { return e.branch; }));
+  selectedEnvs.forEach(function(b) { if (!live.has(b)) selectedEnvs.delete(b); });
+  var bar = document.getElementById('bulk-bar');
+  var n = selectedEnvs.size;
+  bar.style.display = n ? 'flex' : 'none';
+  if (n) {
+    document.getElementById('bulk-count').textContent =
+      n + ' environment' + (n !== 1 ? 's' : '') + ' selected';
+  }
+}
+
+function clearSelection() {
+  selectedEnvs.clear();
+  _lastSelectIdx = null;
+  renderEnvironments(cachedEnvs, true);
+  updateBulkBar();
+}
+
+function _bulkNames() {
+  var names = Array.from(selectedEnvs);
+  if (names.length <= 5) return names.join(', ');
+  return names.slice(0, 5).join(', ') + ' and ' + (names.length - 5) + ' more';
+}
+
+async function _runBulk(branches, action, opLabel, doneLabel) {
+  branches.forEach(function(b) { setBusy(b, opLabel); });
+  var results = await Promise.all(branches.map(async function(b) {
+    try {
+      var r = await fetch(API + '/' + encodeURIComponent(b) + '/' + action, { method: 'POST' });
+      var data = await r.json();
+      return { branch: b, ok: !!data.ok, error: data.error };
+    } catch (e) {
+      return { branch: b, ok: false, error: e.message };
+    }
+  }));
+  branches.forEach(function(b) { clearBusy(b); });
+  var failed = results.filter(function(r) { return !r.ok; });
+  results.forEach(function(r) { if (r.ok) selectedEnvs.delete(r.branch); });
+  if (failed.length) {
+    showToast(doneLabel + ' ' + (results.length - failed.length) + ' of ' + results.length +
+      '. Failed: ' + failed.map(function(f) { return f.branch + ' (' + (f.error || 'unknown error') + ')'; }).join('; '), true);
+  } else {
+    showToast(doneLabel + ' ' + results.length + ' environment' + (results.length !== 1 ? 's' : ''));
+  }
+  await loadEnvironments(true);
+  updateBulkBar();
+}
+
+async function bulkStop() {
+  var branches = Array.from(selectedEnvs);
+  if (!branches.length) return;
+  if (!(await confirmDialog({
+    title: 'Stop ' + branches.length + ' environments',
+    message: 'Stop the containers of: ' + _bulkNames() + '?',
+    confirmLabel: 'Stop ' + branches.length + ' environments'
+  }))) return;
+  await _runBulk(branches, 'stop', 'Stopping', 'Stopped');
+}
+
+async function bulkDelete() {
+  var branches = Array.from(selectedEnvs);
+  if (!branches.length) return;
+  if (!(await confirmDialog({
+    title: 'Delete ' + branches.length + ' environments',
+    message: 'Remove containers, databases and workspaces of: ' + _bulkNames() + '?',
+    confirmLabel: 'Delete ' + branches.length + ' environments',
+    danger: true
+  }))) return;
+  await _runBulk(branches, 'delete', 'Deleting', 'Deleted');
+}
+
+function toggleMenu(e) {
+  e.stopPropagation();
+  var wrap = e.currentTarget.parentElement;
+  var wasOpen = wrap.classList.contains('open');
+  closeMenus();
+  if (!wasOpen) {
+    wrap.classList.add('open');
+    e.currentTarget.setAttribute('aria-expanded', 'true');
+  }
+}
+
+function closeMenus() {
+  document.querySelectorAll('.menu-wrap.open').forEach(function(w) {
+    w.classList.remove('open');
+    var btn = w.querySelector('[aria-expanded]');
+    if (btn) btn.setAttribute('aria-expanded', 'false');
+  });
+}
+document.addEventListener('click', closeMenus);
 
 function esc(s) {
   const d = document.createElement('div');
   d.textContent = s || '';
-  return d.innerHTML;
+  return d.innerHTML.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
 function escAttr(s) {
@@ -1105,7 +1766,18 @@ function escAttr(s) {
 
 function formatDate(iso) {
   if (!iso) return '';
-  try { return new Date(iso).toLocaleString(); }
+  try {
+    var d = new Date(iso);
+    var full = d.toLocaleString();
+    var diff = Date.now() - d.getTime();
+    var rel;
+    if (diff < 0 || diff < 60000) rel = 'just now';
+    else if (diff < 3600000) rel = Math.floor(diff / 60000) + 'm ago';
+    else if (diff < 86400000) rel = Math.floor(diff / 3600000) + 'h ago';
+    else if (diff < 30 * 86400000) rel = Math.floor(diff / 86400000) + 'd ago';
+    else rel = d.toLocaleDateString();
+    return '<span title="' + esc(full) + '">' + esc(rel) + '</span>';
+  }
   catch(e) { return esc(iso); }
 }
 
@@ -1129,11 +1801,26 @@ function isGitlab(url) {
   return url.indexOf('gitlab') !== -1;
 }
 
-async function editNote(branch) {
+var _noteBranch = '';
+
+function editNote(branch) {
+  _noteBranch = branch;
   var el = document.querySelector('.env-card[data-branch="' + branch + '"] .env-note');
   var current = el && el.classList.contains('env-note-empty') ? '' : (el ? el.textContent : '');
-  var note = prompt('Note for "' + branch + '":', current);
-  if (note === null) return;
+  document.getElementById('note-modal-title').textContent = 'Note — ' + branch;
+  document.getElementById('note-text').value = current;
+  showModal('note-modal');
+  document.getElementById('note-text').focus();
+}
+
+function closeNoteModal(event) {
+  if (event && event.target !== event.currentTarget) return;
+  hideModal('note-modal');
+}
+
+async function saveNote() {
+  var branch = _noteBranch;
+  var note = document.getElementById('note-text').value.trim();
   try {
     var r = await fetch(API + '/' + encodeURIComponent(branch) + '/note', {
       method: 'POST',
@@ -1141,18 +1828,19 @@ async function editNote(branch) {
       body: JSON.stringify({note: note})
     });
     var data = await r.json();
-    if (data.ok) { showToast('Note updated'); }
+    if (data.ok) { showToast('Note updated'); closeNoteModal(); }
     else { showToast(data.error || 'Failed to update note', true); }
   } catch(e) { showToast('Connection error: ' + e.message, true); }
-  await loadEnvironments();
+  await loadEnvironments(true);
 }
 
-async function loadEnvironments() {
+async function loadEnvironments(force) {
   try {
     const r = await fetch(API);
     const data = await r.json();
     if (data.ok) {
-      renderEnvironments(data.environments);
+      cachedEnvs = data.environments || [];
+      renderEnvironments(cachedEnvs, force);
     } else {
       showToast(data.error || 'Failed to load', true);
     }
@@ -1178,16 +1866,19 @@ async function loadStats() {
     document.getElementById('sys-load').textContent =
       sys.load_avg.join(' / ');
 
-    loadEnvironments();
+    applyStats();
   } catch (e) {
     // stats are optional, don't show errors
   }
 }
 
 async function doUpdate(branch) {
-  if (!confirm('Update environment "' + branch + '"? This will recreate the container but keep the database and filestore.')) return;
-  const card = document.querySelector('[data-branch="' + branch + '"]');
-  if (card) card.querySelectorAll('.btn').forEach(b => b.disabled = true);
+  if (!(await confirmDialog({
+    title: 'Update environment',
+    message: 'Recreate the container for "' + branch + '"? The database and filestore are kept.',
+    confirmLabel: 'Update environment'
+  }))) return;
+  setBusy(branch, 'Updating');
   try {
     const r = await fetch(API + '/' + encodeURIComponent(branch) + '/update', { method: 'POST' });
     const data = await r.json();
@@ -1199,13 +1890,18 @@ async function doUpdate(branch) {
   } catch (e) {
     showToast('Connection error: ' + e.message, true);
   }
-  await loadEnvironments();
+  clearBusy(branch);
+  await loadEnvironments(true);
 }
 
 async function doRecreate(branch) {
-  if (!confirm('Recreate environment "' + branch + '"? This will delete and create it again with the same settings.')) return;
-  const card = document.querySelector('[data-branch="' + branch + '"]');
-  if (card) card.querySelectorAll('.btn').forEach(b => b.disabled = true);
+  if (!(await confirmDialog({
+    title: 'Recreate environment',
+    message: 'Delete "' + branch + '" and create it again with the same settings? The current database is replaced.',
+    confirmLabel: 'Recreate environment',
+    danger: true
+  }))) return;
+  setBusy(branch, 'Recreating');
   try {
     const r = await fetch(API + '/' + encodeURIComponent(branch) + '/recreate', { method: 'POST' });
     const data = await r.json();
@@ -1217,13 +1913,18 @@ async function doRecreate(branch) {
   } catch (e) {
     showToast('Connection error: ' + e.message, true);
   }
-  await loadEnvironments();
+  clearBusy(branch);
+  await loadEnvironments(true);
 }
 
 async function doDelete(branch) {
-  if (!confirm('Delete environment "' + branch + '"? This will remove the container, database, and workspace.')) return;
-  const card = document.querySelector('[data-branch="' + branch + '"]');
-  if (card) card.querySelectorAll('.btn').forEach(b => b.disabled = true);
+  if (!(await confirmDialog({
+    title: 'Delete environment',
+    message: 'Remove the container, database, and workspace of "' + branch + '"?',
+    confirmLabel: 'Delete environment',
+    danger: true
+  }))) return;
+  setBusy(branch, 'Deleting');
   try {
     const r = await fetch(API + '/' + encodeURIComponent(branch) + '/delete', { method: 'POST' });
     const data = await r.json();
@@ -1235,12 +1936,17 @@ async function doDelete(branch) {
   } catch (e) {
     showToast('Connection error: ' + e.message, true);
   }
-  await loadEnvironments();
+  clearBusy(branch);
+  await loadEnvironments(true);
 }
 
 async function doProtect(branch, isProtected) {
   var action = isProtected ? 'unprotect' : 'protect';
-  if (isProtected && !confirm('Remove protection from "' + branch + '"?')) return;
+  if (isProtected && !(await confirmDialog({
+    title: 'Remove protection',
+    message: 'Allow Stop, Update, Recreate and Delete for "' + branch + '" again?',
+    confirmLabel: 'Remove protection'
+  }))) return;
   try {
     var r = await fetch(API + '/' + encodeURIComponent(branch) + '/' + action, { method: 'POST' });
     var data = await r.json();
@@ -1252,7 +1958,7 @@ async function doProtect(branch, isProtected) {
   } catch (e) {
     showToast('Connection error: ' + e.message, true);
   }
-  await loadEnvironments();
+  await loadEnvironments(true);
 }
 
 var _logsState = { branch: '', lines: [], type: 'env', serviceName: '' };
@@ -1264,10 +1970,22 @@ async function showLogs(branch) {
   _logsState.serviceName = '';
   document.getElementById('logs-search').value = '';
   document.getElementById('logs-match-count').textContent = '';
-  var modal = document.getElementById('logs-modal');
+  var contSel = document.getElementById('logs-container');
+  var env = cachedEnvs.find(function(e) { return e.branch === branch; });
+  var containers = (env && env.containers) || [];
+  if (containers.length > 1) {
+    contSel.innerHTML = containers.map(function(c) {
+      return '<option value="' + esc(c.name) + '">' + esc(c.name) +
+        (c.status !== 'running' ? ' [' + esc(c.status) + ']' : '') + '</option>';
+    }).join('');
+    contSel.style.display = '';
+  } else {
+    contSel.innerHTML = '';
+    contSel.style.display = 'none';
+  }
   document.getElementById('logs-title').textContent = 'Logs — ' + branch;
   document.getElementById('logs-content').textContent = 'Loading...';
-  modal.classList.add('show');
+  showModal('logs-modal');
   document.getElementById('logs-search').focus();
   await fetchLogs();
 }
@@ -1280,6 +1998,8 @@ async function fetchLogs() {
       url = API_SERVICES + '/' + encodeURIComponent(_logsState.serviceName) + '/logs?n=' + n;
     } else {
       url = API + '/' + encodeURIComponent(_logsState.branch) + '/logs?n=' + n;
+      var cont = document.getElementById('logs-container').value;
+      if (cont) url += '&container=' + encodeURIComponent(cont);
     }
     var r = await fetch(url);
     var data = await r.json();
@@ -1295,11 +2015,12 @@ async function fetchLogs() {
 }
 
 function ansiToHtml(text) {
+  // Terminal palette aligned with the Console signal colors (see DESIGN.md)
   var ANSI_COLORS = {
-    '30': '#484f58', '31': '#f85149', '32': '#3fb950', '33': '#d29922',
-    '34': '#58a6ff', '35': '#bc8cff', '36': '#76e3ea', '37': '#e6edf3',
-    '90': '#6e7681', '91': '#ff7b72', '92': '#56d364', '93': '#e3b341',
-    '94': '#79c0ff', '95': '#d2a8ff', '96': '#a5d6ff', '97': '#ffffff'
+    '30': '#4b5563', '31': '#f94144', '32': '#34d399', '33': '#fbbf24',
+    '34': '#659dfb', '35': '#a78bfa', '36': '#22d3ee', '37': '#e6e8eb',
+    '90': '#6b7280', '91': '#ff645f', '92': '#6ee7b7', '93': '#fcd34d',
+    '94': '#93c5fd', '95': '#c4b5fd', '96': '#67e8f9', '97': '#ffffff'
   };
   var escaped = text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   var result = '';
@@ -1350,18 +2071,39 @@ function renderLogs() {
   body.scrollTop = body.scrollHeight;
 }
 
-function filterLogs() { renderLogs(); }
+function copyLogs() {
+  var lines = _logsState.lines.slice();
+  var search = document.getElementById('logs-search').value.toLowerCase();
+  if (search) {
+    lines = lines.filter(function(l) { return l.toLowerCase().indexOf(search) !== -1; });
+  }
+  var text = lines.join('\n').replace(/\x1b\[[0-9;]*m/g, '');
+  if (!text.trim()) {
+    showToast('No log lines to copy', true);
+    return;
+  }
+  copyToClipboard(text, 'Copied ' + lines.length + ' log line' + (lines.length !== 1 ? 's' : ''));
+}
+
+var _logsFilterTid = null;
+function filterLogs() {
+  clearTimeout(_logsFilterTid);
+  _logsFilterTid = setTimeout(renderLogs, 150);
+}
 
 function changeLogLines() { fetchLogs(); }
 
 function closeLogsModal(event) {
   if (event && event.target !== event.currentTarget) return;
-  document.getElementById('logs-modal').classList.remove('show');
+  hideModal('logs-modal');
 }
 
 function switchTab(name) {
   document.querySelectorAll('.tab-btn').forEach(function(b) {
-    b.classList.toggle('active', b.getAttribute('data-tab') === name);
+    var active = b.getAttribute('data-tab') === name;
+    b.classList.toggle('active', active);
+    b.setAttribute('aria-selected', active ? 'true' : 'false');
+    b.tabIndex = active ? 0 : -1;
   });
   document.querySelectorAll('.tab-content').forEach(function(el) {
     el.classList.toggle('active', el.id === 'tab-' + name);
@@ -1397,25 +2139,25 @@ function renderTemplates(templates) {
   }
   el.innerHTML = templates.map(function(t) {
     var dbTag = t.db_loaded
-      ? '<span class="tag tag-ok">DB Loaded</span>'
-      : '<span class="tag tag-missing">DB Not Loaded</span>';
+      ? '<span class="tag tag-ok" title="Template database is loaded in PostgreSQL and ready to clone">DB Loaded</span>'
+      : '<span class="tag tag-missing" title="Template database is not loaded; environments will fall back to the SQL dump">DB Not Loaded</span>';
     var sqlTag = t.has_sql
-      ? '<span class="tag tag-ok">SQL</span>'
-      : '<span class="tag tag-missing">No SQL</span>';
+      ? '<span class="tag tag-ok" title="SQL dump file is present">SQL</span>'
+      : '<span class="tag tag-missing" title="No SQL dump file">No SQL</span>';
     var fsTag = t.has_filestore
-      ? '<span class="tag tag-ok">Filestore</span>'
-      : '<span class="tag tag-missing">No Filestore</span>';
+      ? '<span class="tag tag-ok" title="Filestore snapshot (attachments) is present">Filestore</span>'
+      : '<span class="tag tag-missing" title="No filestore snapshot">No Filestore</span>';
     var modeTag = t.use_overlay
-      ? '<span class="tag tag-ok">Overlay</span>'
-      : '<span class="tag tag-ok">Copy</span>';
+      ? '<span class="tag tag-ok" title="Filestore cloning mode: copy-on-write via fuse-overlayfs">Overlay</span>'
+      : '<span class="tag tag-ok" title="Filestore cloning mode: plain copy">Copy</span>';
     var sizeHtml = '';
     if (t.filestore_size_mb != null || t.dump_size_mb != null) {
       var fmtSize = function(mb) {
         if (mb == null) return '?';
         return mb >= 1024 ? (mb / 1024).toFixed(1) + ' GB' : Math.round(mb) + ' MB';
       };
-      sizeHtml = '<span class="tag" style="font-weight:normal;">Filestore: ' + fmtSize(t.filestore_size_mb) + '</span>' +
-                 '<span class="tag" style="font-weight:normal;">Dump: ' + fmtSize(t.dump_size_mb) + '</span>';
+      sizeHtml = '<span class="tag tag-plain">Filestore: ' + fmtSize(t.filestore_size_mb) + '</span>' +
+                 '<span class="tag tag-plain">Dump: ' + fmtSize(t.dump_size_mb) + '</span>';
     }
     var metaHtml = '';
     if (t.odoo_image || t.repo_url) {
@@ -1424,14 +2166,14 @@ function renderTemplates(templates) {
       if (t.repo_url) parts.push('<span>Repo: <strong>' + esc(t.repo_url) + '</strong></span>');
       if (t.git_user) parts.push('<span>Git User: <strong>' + esc(t.git_user) + '</strong></span>');
       if (t.auto_install_modules) parts.push('<span>Auto-install: <strong>' + esc(t.auto_install_modules) + '</strong></span>');
-      metaHtml = '<div class="tpl-meta" style="margin-top:8px;">' + parts.join('') + '</div>';
+      metaHtml = '<div class="tpl-meta" style="margin-top:8px;flex-wrap:wrap;">' + parts.join('') + '</div>';
     }
-    return '<div class="tpl-card" style="flex-direction:column;align-items:stretch;">' +
-      '<div style="display:flex;align-items:center;justify-content:space-between;">' +
+    return '<div class="tpl-card tpl-card-stacked">' +
+      '<div class="tpl-head">' +
         '<span class="tpl-name">' + esc(t.template_name) + '</span>' +
-        '<div style="display:flex;align-items:center;gap:8px;">' +
+        '<div class="tpl-head-right">' +
           '<div class="tpl-meta">' + dbTag + sqlTag + fsTag + modeTag + sizeHtml + '</div>' +
-          '<button class="btn-create" style="font-size:12px;padding:4px 12px;" onclick="openCreateFromTemplate(\'' + escAttr(t.template_name) + '\')">+ New Env</button>' +
+          '<button class="btn-create btn-sm" onclick="openCreateFromTemplate(\'' + escAttr(t.template_name) + '\')">+ New Env</button>' +
         '</div>' +
       '</div>' +
       metaHtml +
@@ -1497,23 +2239,22 @@ function openCreateFromTemplate(templateName) {
   loadExtraRepos().then(function() {
     var container = document.getElementById('cr-extra-addons-checkboxes');
     if (cachedExtraRepos.length === 0) {
-      container.innerHTML = '<span style="font-size:12px;color:var(--text-dim);">No extra repos available</span>';
+      container.innerHTML = '<span class="hint" style="margin-top:0;">No extra repos available</span>';
       return;
     }
     var tplExtras = (tpl && tpl.extra_addons) ? tpl.extra_addons : {};
     container.innerHTML = cachedExtraRepos.map(function(r) {
       var checked = (r.name in tplExtras) ? ' checked' : '';
       var defaultBranch = tplExtras[r.name] || '';
-      return '<label style="display:flex;align-items:center;gap:8px;padding:3px 0;font-size:13px;cursor:pointer;">' +
+      return '<label class="check-item">' +
         '<input type="checkbox" class="cr-extra-cb" value="' + escAttr(r.name) + '"' + checked + '>' +
-        esc(r.name) + ' <span style="color:var(--text-dim);font-size:11px;">(' + esc(r.repo_url) + ')</span>' +
-        '<input type="text" class="cr-extra-branch-input" data-repo="' + escAttr(r.name) + '"' +
-        ' placeholder="branch" value="' + escAttr(defaultBranch) + '"' +
-        ' style="width:100px;font-size:12px;padding:2px 6px;margin-left:auto;">' +
+        esc(r.name) + ' <span class="hint" style="margin-top:0;">(' + esc(r.repo_url) + ')</span>' +
+        '<input type="text" class="cr-extra-branch-input branch-input" data-repo="' + escAttr(r.name) + '"' +
+        ' placeholder="branch" value="' + escAttr(defaultBranch) + '">' +
       '</label>';
     }).join('');
   });
-  document.getElementById('create-modal').classList.add('show');
+  showModal('create-modal');
   document.getElementById('cr-branch').focus();
 }
 
@@ -1539,26 +2280,25 @@ function openCreateModal() {
   loadExtraRepos().then(function() {
     var container = document.getElementById('cr-extra-addons-checkboxes');
     if (cachedExtraRepos.length === 0) {
-      container.innerHTML = '<span style="font-size:12px;color:var(--text-dim);">No extra repos available</span>';
+      container.innerHTML = '<span class="hint" style="margin-top:0;">No extra repos available</span>';
       return;
     }
     container.innerHTML = cachedExtraRepos.map(function(r) {
-      return '<label style="display:flex;align-items:center;gap:8px;padding:3px 0;font-size:13px;cursor:pointer;">' +
+      return '<label class="check-item">' +
         '<input type="checkbox" class="cr-extra-cb" value="' + escAttr(r.name) + '">' +
-        esc(r.name) + ' <span style="color:var(--text-dim);font-size:11px;">(' + esc(r.repo_url) + ')</span>' +
-        '<input type="text" class="cr-extra-branch-input" data-repo="' + escAttr(r.name) + '"' +
-        ' placeholder="branch" value=""' +
-        ' style="width:100px;font-size:12px;padding:2px 6px;margin-left:auto;">' +
+        esc(r.name) + ' <span class="hint" style="margin-top:0;">(' + esc(r.repo_url) + ')</span>' +
+        '<input type="text" class="cr-extra-branch-input branch-input" data-repo="' + escAttr(r.name) + '"' +
+        ' placeholder="branch" value="">' +
       '</label>';
     }).join('');
   });
-  document.getElementById('create-modal').classList.add('show');
+  showModal('create-modal');
   document.getElementById('cr-branch').focus();
 }
 
 function closeCreateModal(event) {
   if (event && event.target !== event.currentTarget) return;
-  document.getElementById('create-modal').classList.remove('show');
+  hideModal('create-modal');
 }
 
 async function submitCreate() {
@@ -1609,7 +2349,7 @@ async function submitCreate() {
     if (data.ok) {
       closeCreateModal();
       showToast('Environment "' + branch + '" created');
-      await loadEnvironments();
+      await loadEnvironments(true);
     } else {
       errEl.textContent = data.error || 'Creation failed';
       errEl.style.display = 'block';
@@ -1623,9 +2363,10 @@ async function submitCreate() {
   }
 }
 
+var BUSY_LABELS = {start: 'Starting', stop: 'Stopping', restart: 'Restarting', sync: 'Syncing'};
+
 async function doAction(branch, action) {
-  const card = document.querySelector('[data-branch="' + branch + '"]');
-  if (card) card.querySelectorAll('.btn').forEach(b => b.disabled = true);
+  setBusy(branch, BUSY_LABELS[action] || 'Working');
 
   try {
     const r = await fetch(API + '/' + encodeURIComponent(branch) + '/' + action, { method: 'POST' });
@@ -1643,15 +2384,17 @@ async function doAction(branch, action) {
     showToast('Connection error: ' + e.message, true);
   }
 
-  await loadEnvironments();
+  clearBusy(branch);
+  await loadEnvironments(true);
 }
 
 function resetTimers() {
   clearInterval(refreshTimer);
-  clearInterval(statsTimer);
   var ms = refreshInterval * 1000;
-  refreshTimer = setInterval(loadEnvironments, ms);
-  statsTimer = setInterval(loadStats, ms);
+  refreshTimer = setInterval(function() {
+    loadEnvironments();
+    loadStats();
+  }, ms);
 }
 
 document.getElementById('refresh-interval').addEventListener('change', function() {
@@ -1694,7 +2437,7 @@ function renderServices(services) {
   }
   el.innerHTML = services.map(function(svc) {
     var urlHtml = svc.url
-      ? '<div class="svc-meta"><span>URL: <a href="' + esc(svc.url) + '" target="_blank" style="color:var(--accent);text-decoration:none;">' + esc(svc.url) + '</a></span></div>'
+      ? '<div class="svc-meta"><span>URL: <a href="' + esc(svc.url) + '" target="_blank">' + esc(svc.url) + '</a></span></div>'
       : '';
     var envHtml = '';
     if (svc.env_vars && Object.keys(svc.env_vars).length > 0) {
@@ -1708,9 +2451,9 @@ function renderServices(services) {
     }
     var capBadges = '';
     if (svc.privileged) {
-      capBadges += '<span class="badge" style="background:#7a1f1f;color:#fff;margin-left:6px;" title="Privileged container (full host access)">privileged</span>';
+      capBadges += '<span class="badge badge-privileged" title="Privileged container (full host access)">privileged</span>';
     } else if (svc.cap_add && svc.cap_add.indexOf('NET_ADMIN') !== -1) {
-      capBadges += '<span class="badge" style="background:#1f4f7a;color:#fff;margin-left:6px;" title="NET_ADMIN capability granted">NET_ADMIN</span>';
+      capBadges += '<span class="badge badge-netadmin" title="NET_ADMIN capability granted">NET_ADMIN</span>';
     }
     return '<div class="svc-card" data-svc="' + esc(svc.name) + '">' +
       '<div class="svc-header">' +
@@ -1728,7 +2471,7 @@ function renderServices(services) {
       '</div>' +
       '<div class="svc-meta">' +
         '<span>Image: <strong>' + esc(svc.image) + '</strong></span>' +
-        '<span>Container: <strong>' + esc(svc.container_name) + '</strong></span>' +
+        '<span>Container: <strong>' + esc(svc.container_name) + '</strong>' + containerStatsHtml(svc.container_name) + '</span>' +
         (svc.port ? '<span>Port: <strong>' + svc.port + '</strong></span>' : '') +
       '</div>' +
       urlHtml +
@@ -1736,12 +2479,17 @@ function renderServices(services) {
       volHtml +
     '</div>';
   }).join('');
+  applyStats();
 }
 
 async function doUpdateService(name) {
-  if (!confirm('Update service "' + name + '"? This will pull the latest image and recreate the container.')) return;
+  if (!(await confirmDialog({
+    title: 'Update service',
+    message: 'Pull the latest image for "' + name + '" and recreate its container?',
+    confirmLabel: 'Update service'
+  }))) return;
   var card = document.querySelector('[data-svc="' + name + '"]');
-  if (card) card.querySelectorAll('.btn').forEach(function(b) { b.disabled = true; });
+  if (card) card.querySelectorAll('button').forEach(function(b) { b.disabled = true; });
   try {
     var r = await fetch(API_SERVICES + '/' + encodeURIComponent(name) + '/update', { method: 'POST' });
     var data = await r.json();
@@ -1763,9 +2511,13 @@ async function doUpdateService(name) {
 }
 
 async function doRestartService(name) {
-  if (!confirm('Restart service "' + name + '"?')) return;
+  if (!(await confirmDialog({
+    title: 'Restart service',
+    message: 'Restart the container of "' + name + '"?',
+    confirmLabel: 'Restart service'
+  }))) return;
   var card = document.querySelector('[data-svc="' + name + '"]');
-  if (card) card.querySelectorAll('.btn').forEach(function(b) { b.disabled = true; });
+  if (card) card.querySelectorAll('button').forEach(function(b) { b.disabled = true; });
   try {
     var r = await fetch(API_SERVICES + '/' + encodeURIComponent(name) + '/restart', { method: 'POST' });
     var data = await r.json();
@@ -1781,9 +2533,14 @@ async function doRestartService(name) {
 }
 
 async function doDeleteService(name) {
-  if (!confirm('Delete service "' + name + '"? This will remove the container and its data.')) return;
+  if (!(await confirmDialog({
+    title: 'Delete service',
+    message: 'Remove the container of "' + name + '" and its data?',
+    confirmLabel: 'Delete service',
+    danger: true
+  }))) return;
   var card = document.querySelector('[data-svc="' + name + '"]');
-  if (card) card.querySelectorAll('.btn').forEach(function(b) { b.disabled = true; });
+  if (card) card.querySelectorAll('button').forEach(function(b) { b.disabled = true; });
   try {
     var r = await fetch(API_SERVICES + '/' + encodeURIComponent(name) + '/delete', { method: 'POST' });
     var data = await r.json();
@@ -1803,12 +2560,12 @@ async function showServiceLogs(name) {
   _logsState.lines = [];
   _logsState.type = 'service';
   _logsState.serviceName = name;
+  document.getElementById('logs-container').style.display = 'none';
   document.getElementById('logs-search').value = '';
   document.getElementById('logs-match-count').textContent = '';
-  var modal = document.getElementById('logs-modal');
   document.getElementById('logs-title').textContent = 'Service Logs — ' + name;
   document.getElementById('logs-content').textContent = 'Loading...';
-  modal.classList.add('show');
+  showModal('logs-modal');
   document.getElementById('logs-search').focus();
   await fetchLogs();
 }
@@ -1827,13 +2584,13 @@ function openCreateServiceModal() {
   errEl.style.display = 'none';
   errEl.textContent = '';
   document.getElementById('svc-submit').disabled = false;
-  document.getElementById('create-svc-modal').classList.add('show');
+  showModal('create-svc-modal');
   document.getElementById('svc-name').focus();
 }
 
 function closeCreateServiceModal(event) {
   if (event && event.target !== event.currentTarget) return;
-  document.getElementById('create-svc-modal').classList.remove('show');
+  hideModal('create-svc-modal');
 }
 
 async function submitCreateService() {
@@ -1913,25 +2670,25 @@ function renderPresetsList(presets) {
   el.innerHTML = presets.map(function(p) {
     var envStr = '';
     if (p.env_vars && Object.keys(p.env_vars).length > 0) {
-      envStr = '<span style="margin-left:12px;">Env: <strong>' + Object.keys(p.env_vars).map(function(k) { return esc(k) + '=' + esc(maskValue(k, p.env_vars[k])); }).join(', ') + '</strong></span>';
+      envStr = '<span>Env: <strong>' + Object.keys(p.env_vars).map(function(k) { return esc(k) + '=' + esc(maskValue(k, p.env_vars[k])); }).join(', ') + '</strong></span>';
     }
-    return '<div class="env-card" style="padding:10px 16px;">' +
-      '<div style="display:flex;align-items:center;justify-content:space-between;">' +
-        '<div style="display:flex;align-items:center;gap:10px;">' +
-          '<span style="font-weight:600;font-size:13px;">' + esc(p.name) + '</span>' +
-          '<span class="badge" style="background:rgba(88,166,255,0.12);color:var(--accent);">preset</span>' +
+    return '<div class="env-card preset-card">' +
+      '<div class="preset-head">' +
+        '<div class="left">' +
+          '<span class="preset-name">' + esc(p.name) + '</span>' +
+          '<span class="badge badge-preset">preset</span>' +
         '</div>' +
-        '<div style="display:flex;gap:6px;">' +
-          '<button class="btn btn-start" style="font-size:11px;padding:3px 10px;" onclick="doRestorePreset(\'' + escAttr(p.name) + '\')">Restore</button>' +
-          '<button class="btn btn-delete" style="font-size:11px;padding:3px 10px;" onclick="doDeletePreset(\'' + escAttr(p.name) + '\')">Delete</button>' +
+        '<div class="preset-actions">' +
+          '<button class="btn btn-sm btn-start" onclick="doRestorePreset(\'' + escAttr(p.name) + '\')">Restore</button>' +
+          '<button class="btn btn-sm btn-delete" onclick="doDeletePreset(\'' + escAttr(p.name) + '\')">Delete</button>' +
         '</div>' +
       '</div>' +
-      '<div style="font-size:11px;color:var(--text-dim);margin-top:4px;">' +
+      '<div class="preset-meta">' +
         '<span>Image: <strong>' + esc(p.image) + '</strong></span>' +
-        '<span style="margin-left:12px;">Port: <strong>' + p.port + '</strong></span>' +
-        (p.hostname ? '<span style="margin-left:12px;">Host: <strong>' + esc(p.hostname) + '</strong></span>' : '') +
+        '<span>Port: <strong>' + p.port + '</strong></span>' +
+        (p.hostname ? '<span>Host: <strong>' + esc(p.hostname) + '</strong></span>' : '') +
         envStr +
-        (p.volumes && p.volumes.length ? '<span style="margin-left:12px;">Volumes: <strong>' + p.volumes.map(function(v) { return esc(v.volume) + ':' + esc(v.mount_path); }).join(', ') + '</strong></span>' : '') +
+        (p.volumes && p.volumes.length ? '<span>Volumes: <strong>' + p.volumes.map(function(v) { return esc(v.volume) + ':' + esc(v.mount_path); }).join(', ') + '</strong></span>' : '') +
       '</div>' +
     '</div>';
   }).join('');
@@ -1942,7 +2699,12 @@ async function doRestorePreset(name) {
 }
 
 async function doDeletePreset(name) {
-  if (!confirm('Delete preset "' + name + '"? This only removes the saved configuration, not any running service.')) return;
+  if (!(await confirmDialog({
+    title: 'Delete preset',
+    message: 'Remove the saved configuration "' + name + '"? Running services are not affected.',
+    confirmLabel: 'Delete preset',
+    danger: true
+  }))) return;
   try {
     var r = await fetch(API_PRESETS + '/' + encodeURIComponent(name) + '/delete', { method: 'POST' });
     var data = await r.json();
@@ -1993,7 +2755,7 @@ function openRestoreServiceModal(preselect) {
    document.getElementById('restore-svc-net-admin').checked = false;
 
   sel.innerHTML = '<option value="">Loading...</option>';
-  document.getElementById('restore-svc-modal').classList.add('show');
+  showModal('restore-svc-modal');
 
   fetch(API_PRESETS).then(function(r) { return r.json(); }).then(function(data) {
     if (data.ok && data.presets && data.presets.length > 0) {
@@ -2022,7 +2784,7 @@ function openRestoreServiceModal(preselect) {
 
 function closeRestoreServiceModal(event) {
   if (event && event.target !== event.currentTarget) return;
-  document.getElementById('restore-svc-modal').classList.remove('show');
+  hideModal('restore-svc-modal');
 }
 
 async function submitRestoreService() {
@@ -2109,9 +2871,9 @@ function renderVolumes(volumes) {
   el.innerHTML = volumes.map(function(vol) {
     var usedHtml = '';
     if (vol.used_by && vol.used_by.length > 0) {
-      usedHtml = '<span class="badge badge-running" style="font-size:10px;">in use</span>';
+      usedHtml = '<span class="badge badge-running">in use</span>';
     } else {
-      usedHtml = '<span class="badge badge-exited" style="font-size:10px;">unused</span>';
+      usedHtml = '<span class="badge badge-neutral">unused</span>';
     }
     var usedByStr = vol.used_by && vol.used_by.length > 0
       ? 'Used by: <strong>' + vol.used_by.map(function(s) { return esc(s); }).join(', ') + '</strong>'
@@ -2144,13 +2906,13 @@ function openCreateVolumeModal() {
   errEl.style.display = 'none';
   errEl.textContent = '';
   document.getElementById('vol-submit').disabled = false;
-  document.getElementById('create-vol-modal').classList.add('show');
+  showModal('create-vol-modal');
   document.getElementById('vol-name').focus();
 }
 
 function closeCreateVolumeModal(event) {
   if (event && event.target !== event.currentTarget) return;
-  document.getElementById('create-vol-modal').classList.remove('show');
+  hideModal('create-vol-modal');
 }
 
 async function submitCreateVolume() {
@@ -2196,7 +2958,12 @@ async function submitCreateVolume() {
 }
 
 async function doDeleteVolume(name) {
-  if (!confirm('Delete volume "' + name + '"? This will permanently remove the volume and its data.')) return;
+  if (!(await confirmDialog({
+    title: 'Delete volume',
+    message: 'Permanently remove the volume "' + name + '" and its data?',
+    confirmLabel: 'Delete volume',
+    danger: true
+  }))) return;
   try {
     var r = await fetch(API_VOLUMES + '/' + encodeURIComponent(name) + '/delete', { method: 'POST' });
     var data = await r.json();
@@ -2230,16 +2997,16 @@ async function loadAgentGuides() {
 
 function renderAgentGuides(guides) {
   var html = guides.map(function(g) {
-    return '<div class="svc-card" style="cursor:pointer;" onclick="openGuide(\'' + escAttr(g.filename) + '\', \'' + escAttr(g.title) + '\')">' +
+    return '<div class="svc-card guide-card" role="button" tabindex="0" aria-label="Open guide ' + escAttr(g.title) + '" onclick="openGuide(\'' + escAttr(g.filename) + '\', \'' + escAttr(g.title) + '\')">' +
       '<div class="svc-header">' +
         '<div class="left">' +
           '<span class="svc-name">' + esc(g.title) + '</span>' +
         '</div>' +
-        '<div style="font-size:12px;color:var(--text-dim);">' + esc(g.filename) + '</div>' +
+        '<div class="guide-file">' + esc(g.filename) + '</div>' +
       '</div>' +
     '</div>';
   }).join('');
-  document.getElementById('agent-guides-list').innerHTML = html || '<div style="color:var(--text-dim);padding:24px;text-align:center;">No agent guides found.</div>';
+  document.getElementById('agent-guides-list').innerHTML = html || '<div class="empty">No agent guides found.</div>';
 }
 
 async function openGuide(filename, title) {
@@ -2295,12 +3062,12 @@ function openLicenseModal() {
   document.getElementById('lic-key').value = '';
   document.getElementById('lic-submit').disabled = false;
   document.getElementById('lic-submit').textContent = 'Activate';
-  document.getElementById('license-modal').classList.add('show');
+  showModal('license-modal');
 }
 
 function closeLicenseModal(event) {
   if (event && event.target !== event.currentTarget) return;
-  document.getElementById('license-modal').classList.remove('show');
+  hideModal('license-modal');
 }
 
 async function activateLicense() {
@@ -2369,12 +3136,13 @@ function renderExtraRepos(repos) {
       '<div class="svc-header">' +
         '<div class="left">' +
           '<span class="svc-name">' + esc(r.name) + '</span>' +
+          (r.protected ? '<span class="badge badge-protected" title="Deletion is disabled">protected</span>' : '') +
         '</div>' +
         '<div class="svc-actions">' +
           '<button class="btn btn-sync" onclick="doPullExtraRepo(\'' + escAttr(r.name) + '\', this)">Update</button> ' +
-          '<button class="btn btn-protect' + (r.protected ? ' active' : '') + '" ' +
+          '<button class="btn btn-protect" title="' + (r.protected ? 'Allow deleting this repository again' : 'Disable deleting this repository') + '" ' +
             'onclick="doProtectExtraRepo(\'' + escAttr(r.name) + '\',' + (r.protected ? 'true' : 'false') + ')">' +
-            (r.protected ? '🔒 Protected' : '🔓 Protect') + '</button> ' +
+            (r.protected ? 'Unprotect' : 'Protect') + '</button> ' +
           '<button class="btn btn-delete" onclick="doDeleteExtraRepo(\'' + escAttr(r.name) + '\')" ' +
             (r.protected ? 'disabled title="Repository is protected"' : '') + '>Delete</button>' +
         '</div>' +
@@ -2400,13 +3168,13 @@ function openAddExtraRepoModal() {
       sel.innerHTML += '<option value="' + escAttr(c.username) + '">' + esc(c.username) + ' (' + esc(c.host) + ')</option>';
     });
   });
-  document.getElementById('add-extra-repo-modal').classList.add('show');
+  showModal('add-extra-repo-modal');
   document.getElementById('extra-repo-name').focus();
 }
 
 function closeAddExtraRepoModal(event) {
   if (event && event.target !== event.currentTarget) return;
-  document.getElementById('add-extra-repo-modal').classList.remove('show');
+  hideModal('add-extra-repo-modal');
 }
 
 async function submitAddExtraRepo() {
@@ -2496,12 +3264,16 @@ function showExtraRepoUpdateResult(name, result) {
   }
   document.getElementById('sync-result-title').textContent = 'Update — ' + name;
   document.getElementById('sync-result-body').innerHTML = html;
-  document.getElementById('sync-result-modal').classList.add('show');
+  showModal('sync-result-modal');
 }
 
 async function doProtectExtraRepo(name, isProtected) {
   var action = isProtected ? 'unprotect' : 'protect';
-  if (isProtected && !confirm('Remove protection from extra repo "' + name + '"?')) return;
+  if (isProtected && !(await confirmDialog({
+    title: 'Remove protection',
+    message: 'Allow deleting the extra repo "' + name + '" again?',
+    confirmLabel: 'Remove protection'
+  }))) return;
   try {
     var r = await fetch(API_EXTRA_REPOS + '/' + encodeURIComponent(name) + '/' + action, { method: 'POST' });
     var data = await r.json();
@@ -2517,7 +3289,12 @@ async function doProtectExtraRepo(name, isProtected) {
 }
 
 async function doDeleteExtraRepo(name) {
-  if (!confirm('Delete extra repo "' + name + '"? The cloned repository will be removed.')) return;
+  if (!(await confirmDialog({
+    title: 'Delete repository',
+    message: 'Remove the cloned extra repo "' + name + '"?',
+    confirmLabel: 'Delete repository',
+    danger: true
+  }))) return;
   try {
     var r = await fetch(API_EXTRA_REPOS + '/' + encodeURIComponent(name) + '/delete', {method:'POST'});
     var data = await r.json();
@@ -2565,7 +3342,7 @@ function renderCredentials(creds) {
           '<span class="tag" id="cred-status-' + escAttr(id) + '" style="margin-left:8px;">—</span>' +
         '</div>' +
         '<div class="svc-actions">' +
-          '<button class="btn" style="font-size:11px;padding:3px 10px;" onclick="doValidateCredential(\'' + escAttr(c.host) + '\',\'' + escAttr(c.username) + '\')">Validate</button>' +
+          '<button class="btn btn-sm" onclick="doValidateCredential(\'' + escAttr(c.host) + '\',\'' + escAttr(c.username) + '\')">Validate</button>' +
           '<button class="btn btn-delete" onclick="doDeleteCredential(\'' + escAttr(c.host) + '\',\'' + escAttr(c.username) + '\')">Delete</button>' +
         '</div>' +
       '</div>' +
@@ -2582,13 +3359,13 @@ function openAddCredentialModal() {
   document.getElementById('add-credential-error').style.display = 'none';
   document.getElementById('credential-submit').disabled = false;
   document.getElementById('credential-submit').innerHTML = 'Save &amp; Verify';
-  document.getElementById('add-credential-modal').classList.add('show');
+  showModal('add-credential-modal');
   document.getElementById('credential-url').focus();
 }
 
 function closeAddCredentialModal(event) {
   if (event && event.target !== event.currentTarget) return;
-  document.getElementById('add-credential-modal').classList.remove('show');
+  hideModal('add-credential-modal');
 }
 
 async function submitAddCredential() {
@@ -2628,7 +3405,12 @@ async function submitAddCredential() {
 }
 
 async function doDeleteCredential(host, username) {
-  if (!confirm('Delete credential for "' + host + '" (user: ' + username + ')?')) return;
+  if (!(await confirmDialog({
+    title: 'Delete credential',
+    message: 'Remove the stored credential for ' + username + ' @ ' + host + '?',
+    confirmLabel: 'Delete credential',
+    danger: true
+  }))) return;
   try {
     var r = await fetch(API_CREDENTIALS + '/delete', {
       method: 'POST',
@@ -2678,19 +3460,53 @@ async function doValidateCredential(host, username) {
   }
 }
 
+// xterm.js is vendored under /static and loaded on first console open,
+// so the dashboard stays self-contained and works air-gapped.
+var _xtermReady = null;
+
+function ensureXterm() {
+  if (window.Terminal && window.FitAddon) return Promise.resolve();
+  if (_xtermReady) return _xtermReady;
+  var link = document.createElement('link');
+  link.rel = 'stylesheet';
+  link.href = '/static/xterm.css';
+  document.head.appendChild(link);
+  function loadScript(src) {
+    return new Promise(function(resolve, reject) {
+      var s = document.createElement('script');
+      s.src = src;
+      s.onload = resolve;
+      s.onerror = function() { reject(new Error('failed to load ' + src)); };
+      document.head.appendChild(s);
+    });
+  }
+  _xtermReady = loadScript('/static/xterm.js').then(function() {
+    return loadScript('/static/addon-fit.js');
+  });
+  return _xtermReady;
+}
+
+var _XTERM_THEME = { background: '#060a12', foreground: '#e6e8eb', cursor: '#2e79f5' };
+var _XTERM_FONT = '"Geist Mono", Menlo, ui-monospace, monospace';
+
 var _consoleState = { ws: null, term: null, fitAddon: null };
 
-function openConsole(branch) {
-  var modal = document.getElementById('console-modal');
+async function openConsole(branch) {
+  try {
+    await ensureXterm();
+  } catch (e) {
+    showToast('Failed to load terminal assets: ' + e.message, true);
+    return;
+  }
   document.getElementById('console-title').textContent = 'Console \u2014 ' + branch;
-  modal.classList.add('show');
+  showModal('console-modal');
 
   var container = document.getElementById('console-terminal');
   container.innerHTML = '';
 
   var term = new Terminal({
-    theme: { background: '#0d1117', foreground: '#e6edf3', cursor: '#58a6ff' },
-    fontFamily: '"Fira Code", "Cascadia Code", Menlo, monospace',
+    theme: _XTERM_THEME,
+    fontFamily: _XTERM_FONT,
     fontSize: 14,
     cursorBlink: true
   });
@@ -2698,6 +3514,7 @@ function openConsole(branch) {
   term.loadAddon(fitAddon);
   term.open(container);
   fitAddon.fit();
+  term.write('\x1b[90m# oduflow console \u2014 ' + branch + '\x1b[0m\r\n');
 
   var proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
   var ws = new WebSocket(proto + '//' + location.host + '/api/environments/' + encodeURIComponent(branch) + '/terminal');
@@ -2733,22 +3550,27 @@ function closeConsole(event) {
   if (_consoleState.ws) { _consoleState.ws.close(); _consoleState.ws = null; }
   if (_consoleState.term) { _consoleState.term.dispose(); _consoleState.term = null; }
   _consoleState.fitAddon = null;
-  document.getElementById('console-modal').classList.remove('show');
+  hideModal('console-modal');
 }
 
 var _sqlConsoleState = { ws: null, term: null, fitAddon: null };
 
-function openSqlConsole(branch) {
-  var modal = document.getElementById('sql-modal');
+async function openSqlConsole(branch) {
+  try {
+    await ensureXterm();
+  } catch (e) {
+    showToast('Failed to load terminal assets: ' + e.message, true);
+    return;
+  }
   document.getElementById('sql-title').textContent = 'SQL \u2014 ' + branch;
-  modal.classList.add('show');
+  showModal('sql-modal');
 
   var container = document.getElementById('sql-terminal');
   container.innerHTML = '';
 
   var term = new Terminal({
-    theme: { background: '#0d1117', foreground: '#e6edf3', cursor: '#58a6ff' },
-    fontFamily: '"Fira Code", "Cascadia Code", Menlo, monospace',
+    theme: _XTERM_THEME,
+    fontFamily: _XTERM_FONT,
     fontSize: 14,
     cursorBlink: true
   });
@@ -2756,6 +3578,7 @@ function openSqlConsole(branch) {
   term.loadAddon(fitAddon);
   term.open(container);
   fitAddon.fit();
+  term.write('\x1b[90m# oduflow sql \u2014 ' + branch + '\x1b[0m\r\n');
 
   var proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
   var ws = new WebSocket(proto + '//' + location.host + '/api/environments/' + encodeURIComponent(branch) + '/sql');
@@ -2791,7 +3614,7 @@ function closeSqlConsole(event) {
   if (_sqlConsoleState.ws) { _sqlConsoleState.ws.close(); _sqlConsoleState.ws = null; }
   if (_sqlConsoleState.term) { _sqlConsoleState.term.dispose(); _sqlConsoleState.term = null; }
   _sqlConsoleState.fitAddon = null;
-  document.getElementById('sql-modal').classList.remove('show');
+  hideModal('sql-modal');
 }
 
 window.addEventListener('resize', function() {
@@ -2802,6 +3625,101 @@ window.addEventListener('resize', function() {
     _sqlConsoleState.fitAddon.fit();
   }
 });
+
+var MODAL_CLOSERS = {
+  'sync-result-modal': closeSyncResult,
+  'create-modal': closeCreateModal,
+  'logs-modal': closeLogsModal,
+  'console-modal': closeConsole,
+  'sql-modal': closeSqlConsole,
+  'create-svc-modal': closeCreateServiceModal,
+  'restore-svc-modal': closeRestoreServiceModal,
+  'create-vol-modal': closeCreateVolumeModal,
+  'license-modal': closeLicenseModal,
+  'add-extra-repo-modal': closeAddExtraRepoModal,
+  'add-credential-modal': closeAddCredentialModal,
+  'confirm-modal': cancelConfirm,
+  'note-modal': closeNoteModal
+};
+
+document.addEventListener('keydown', function(e) {
+  // Enter/Space activate non-native role="button" elements (db name, note, guide cards)
+  if ((e.key === 'Enter' || e.key === ' ') && e.target.getAttribute &&
+      e.target.getAttribute('role') === 'button' && e.target.tagName !== 'BUTTON') {
+    e.preventDefault();
+    e.target.click();
+    return;
+  }
+
+  // Arrow keys walk the open More menu
+  var openMenu = document.querySelector('.menu-wrap.open .menu');
+  if (openMenu && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) {
+    e.preventDefault();
+    var items = Array.from(openMenu.querySelectorAll('button:not(:disabled)'));
+    if (!items.length) return;
+    var idx = items.indexOf(document.activeElement);
+    var next;
+    if (idx === -1) {
+      next = e.key === 'ArrowDown' ? 0 : items.length - 1;
+    } else {
+      next = (idx + (e.key === 'ArrowDown' ? 1 : items.length - 1)) % items.length;
+    }
+    items[next].focus();
+    return;
+  }
+
+  var open = document.querySelectorAll('.modal-overlay.show');
+  var top = open.length ? open[open.length - 1] : null;
+
+  // Trap Tab inside the topmost open modal
+  if (e.key === 'Tab' && top) {
+    var focusables = Array.from(top.querySelectorAll(
+      'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
+    )).filter(function(el) { return !el.disabled && el.offsetParent !== null; });
+    if (!focusables.length) return;
+    var first = focusables[0];
+    var last = focusables[focusables.length - 1];
+    var inside = top.contains(document.activeElement);
+    if (e.shiftKey && (!inside || document.activeElement === first)) {
+      e.preventDefault();
+      last.focus();
+    } else if (!e.shiftKey && (!inside || document.activeElement === last)) {
+      e.preventDefault();
+      first.focus();
+    }
+    return;
+  }
+
+  if (e.key !== 'Escape') return;
+  if (document.querySelector('.menu-wrap.open')) {
+    closeMenus();
+    return;
+  }
+  if (!top) return;
+  // Escape typed inside a terminal is input for the shell, not "close modal"
+  if ((top.id === 'console-modal' || top.id === 'sql-modal') &&
+      e.target.closest && e.target.closest('.modal-body')) return;
+  var closer = MODAL_CLOSERS[top.id];
+  if (closer) closer();
+});
+
+// Pause polling while the browser tab is hidden; catch up on return.
+document.addEventListener('visibilitychange', function() {
+  if (document.hidden) {
+    clearInterval(refreshTimer);
+    refreshTimer = null;
+  } else {
+    loadEnvironments();
+    loadStats();
+    resetTimers();
+  }
+});
+
+console.log(
+  '%coduflow%c The Engineer\'s Console \u2014 https://docs.oduflow.dev',
+  'background: oklch(0.6 0.2 260); color: #fff; padding: 2px 8px; border-radius: 4px; font-weight: 700;',
+  'color: #9b9fa5; padding-left: 6px;'
+);
 
 loadLicense();
 loadEnvironments();

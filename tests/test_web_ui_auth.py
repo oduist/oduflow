@@ -80,11 +80,12 @@ def test_token_roundtrip():
 def test_token_rejects_tampered_and_garbage():
     settings = _settings()
     token = _make_ui_token(_team(settings), settings)
-    # Flip the last character -> signature no longer verifies.
-    assert (
-        _check_cookie_token(token[:-1] + ("0" if token[-1] != "0" else "1"), settings)
-        is None
-    )
+    # Flip the first character (payload start) -> signature no longer matches.
+    # (The *last* character is unsafe to flip: it is the final base64 char of
+    # the signature, whose two low bits are padding — '0' vs '1' can decode to
+    # the same bytes, which made this test flaky.)
+    flipped = ("0" if token[0] != "0" else "1") + token[1:]
+    assert _check_cookie_token(flipped, settings) is None
     assert _check_cookie_token("1.deadbeef", settings) is None
     assert _check_cookie_token("nope", settings) is None
     assert _check_cookie_token("", settings) is None

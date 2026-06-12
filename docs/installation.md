@@ -133,6 +133,11 @@ image = "postgres:15"       # PostgreSQL Docker image
 # data_dir = "/srv/oduflow"         # base directory for all data (default: /srv/oduflow or ~/.oduflow/data)
 overlay_threshold_mb = 50            # template filestore size threshold (MB) — larger uses fuse-overlayfs, smaller uses copy
 
+# ── Lifecycle ─────────────────────────────────────────
+[lifecycle]
+auto_stop_hours = 48        # auto-stop environments idle for N hours (no MCP/dashboard work); 0 disables
+auto_delete_hours = 72      # auto-delete environments stopped for N hours; 0 disables (protected envs are exempt)
+
 # ── Teams ─────────────────────────────────────────────
 # Each team gets isolated workspaces, templates, credentials, and services.
 # At least one [team.*] section is required.
@@ -180,6 +185,8 @@ port_range = [50000, 50100]          # port range for Odoo containers [start, en
 |---|---|---|
 | `[storage].data_dir` | `/srv/oduflow` or `~/.oduflow/data` | Base directory for all data. Team data directories are `team_{ID}` subdirectories inside |
 | `[storage].overlay_threshold_mb` | `50` | Template filestore size threshold (MB). Templates smaller than this use a simple copy per environment; larger templates use fuse-overlayfs. The decision is stored in `metadata.json` at template creation time |
+| `[lifecycle].auto_stop_hours` | `48` | Auto-stop environments after N hours without work (env-scoped MCP calls or dashboard actions). `0` disables. Protected environments are exempt |
+| `[lifecycle].auto_delete_hours` | `72` | Auto-delete environments N hours after they stopped (manual stops count). `0` disables. Protected environments are exempt; `pull_and_apply` wakes a stopped environment automatically |
 
 ### Per-team settings
 

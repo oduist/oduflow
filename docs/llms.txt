@@ -59,6 +59,10 @@ image = "postgres:15"
 # data_dir = "/srv/oduflow"           # default: /srv/oduflow or ~/.oduflow/data
 overlay_threshold_mb = 50             # filestore size threshold for overlay vs copy
 
+[lifecycle]
+auto_stop_hours = 48                  # auto-stop after N hours without MCP/dashboard work; 0 disables
+auto_delete_hours = 72                # auto-delete N hours after the environment stopped; 0 disables
+
 [team.1]
 hostname = "localhost"
 auth_token = ""                       # MCP bearer token (empty = auth disabled)
@@ -136,6 +140,7 @@ For OAuth-based MCP clients like Claude.ai Remote MCP, set `[oauth].oauth_base_u
 - `create_environment` — provision a new Odoo environment for a branch (optional `env_vars` injects container environment variables)
 - `delete_environment` — tear down an environment
 - `start_environment` / `stop_environment` / `restart_environment` — lifecycle control
+- Idle environments auto-stop after 48h without work; stopped ones auto-delete after 72h (configurable via `[lifecycle]`; protected environments are exempt). Container-level tools (pull_and_apply, shell/tests/installs/file ops) wake a stopped environment automatically and note it in the response
 - `update_environment` — re-create the container preserving DB and filestore (optional `odoo_image` switches image, `env_vars` replaces container environment variables)
 - `install_odoo_modules` — install Odoo modules
 - `upgrade_odoo_modules` — upgrade Odoo modules

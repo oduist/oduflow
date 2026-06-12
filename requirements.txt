@@ -5,3 +5,4 @@ setuptools
 fastapi
 packaging
 cryptography
+itsdangerous
