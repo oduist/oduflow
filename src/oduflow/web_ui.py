@@ -2,13 +2,22 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
+import hmac
 import json
 import logging
 import os
 import pathlib
+import secrets
 
-from starlette.requests import Request
-from starlette.responses import HTMLResponse, JSONResponse, Response
+from itsdangerous import BadData, URLSafeTimedSerializer
+from starlette.requests import HTTPConnection, Request
+from starlette.responses import (
+    HTMLResponse,
+    JSONResponse,
+    RedirectResponse,
+    Response,
+)
 from starlette.routing import Route, WebSocketRoute
 from starlette.types import ASGIApp, Receive, Scope, Send
 from starlette.websockets import WebSocket
@@ -24,13 +33,114 @@ from oduflow.docker_ops.odoo_ops import get_environment_logs
 from oduflow.docker_ops.stats import get_container_stats, get_system_stats
 from oduflow.errors import BusyError, FlowError, NotFoundError
 from oduflow.locking import LockManager
-from oduflow.settings import TeamSettings
+from oduflow.settings import Settings, TeamSettings
 from oduflow.licensing import get_license_info, install_license_from_text
 
 logger = logging.getLogger("oduflow")
 
-_AUTH_REALM = "Oduflow Dashboard"
 _AUTH_USER = "admin"
+_AUTH_COOKIE = "oduflow_ui_auth"
+# Reachable without authentication: the login flow and static brand assets
+# (so the login page can render its logo/favicon).
+_PUBLIC_PATHS = frozenset({"/login", "/logout", "/favicon.ico", "/logo.png"})
+_SESSION_SALT = "oduflow.ui-auth.v1"
+_SESSION_MAX_AGE = 7 * 24 * 3600  # 7 days
+_SECRET_FILENAME = ".ui_session_secret"
+
+# Cached per data dir (process-wide; the server runs against a single one).
+_secrets_cache: dict[str, str] = {}
+_signers: dict[str, URLSafeTimedSerializer] = {}
+
+
+def _load_or_create_secret(data_dir: str) -> str:
+    """Load the persistent UI-session signing secret from the data dir, creating
+    it on first use. Persisting it means a server restart does not invalidate
+    live sessions."""
+    path = os.path.join(data_dir, _SECRET_FILENAME)
+    try:
+        existing = pathlib.Path(path).read_text(encoding="utf-8").strip()
+        if existing:
+            return existing
+    except FileNotFoundError:
+        pass
+    os.makedirs(data_dir, exist_ok=True)
+    secret = secrets.token_hex(32)
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError:
+        # Another worker created it between our read and write; use theirs.
+        return pathlib.Path(path).read_text(encoding="utf-8").strip()
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(secret)
+    return secret
+
+
+def _get_secret(settings: Settings) -> str:
+    """Return the cached persistent server-side signing secret for this server."""
+    key = settings.base_data_dir or ""
+    secret = _secrets_cache.get(key)
+    if secret is None:
+        secret = _load_or_create_secret(key) if key else secrets.token_hex(32)
+        _secrets_cache[key] = secret
+    return secret
+
+
+def _get_signer(settings: Settings) -> URLSafeTimedSerializer:
+    """Return the cached itsdangerous signer for this server's session cookies.
+
+    The signing key is a persistent server-side secret (NOT the team password),
+    so a leaked cookie reveals nothing about the password and cannot be
+    brute-forced offline.
+    """
+    key = settings.base_data_dir or ""
+    signer = _signers.get(key)
+    if signer is None:
+        signer = URLSafeTimedSerializer(_get_secret(settings), salt=_SESSION_SALT)
+        _signers[key] = signer
+    return signer
+
+
+def _password_fingerprint(secret: str, ui_password: str) -> str:
+    """A fingerprint of the team password, keyed by the server secret. Embedded
+    in the token so that changing ui_password invalidates outstanding cookies
+    immediately, while a leaked cookie still cannot be used to brute-force the
+    password offline (the key is the server secret, not public)."""
+    return hmac.new(
+        secret.encode("utf-8"), ui_password.encode("utf-8"), hashlib.sha256
+    ).hexdigest()
+
+
+def _make_ui_token(team: "TeamSettings", settings: Settings) -> str:
+    """Signed, timestamped session token for a team, stored as a cookie so
+    WebSocket handshakes (which cannot send an Authorization header) can
+    authenticate. Expires after `_SESSION_MAX_AGE`; carries a password
+    fingerprint so a password change revokes it at once."""
+    fingerprint = _password_fingerprint(_get_secret(settings), team.ui_password)
+    return _get_signer(settings).dumps([team.team_id, fingerprint])
+
+
+def _check_cookie_token(token: str, settings: Settings) -> "TeamSettings | None":
+    """Validate a cookie token from `_make_ui_token`: verify its signature, that
+    it is within `_SESSION_MAX_AGE`, and that the embedded password fingerprint
+    still matches the team's current ui_password, then return its team."""
+    if not token:
+        return None
+    try:
+        data = _get_signer(settings).loads(token, max_age=_SESSION_MAX_AGE)
+    except BadData:
+        return None
+    if not (isinstance(data, list) and len(data) == 2):
+        return None
+    team_id, fingerprint = data
+    if not isinstance(team_id, str) or not isinstance(fingerprint, str):
+        return None
+    team = settings.teams.get(team_id)
+    if not team or not team.ui_password:
+        return None
+    expected = _password_fingerprint(_get_secret(settings), team.ui_password)
+    if not hmac.compare_digest(fingerprint, expected):
+        return None
+    return team
 
 
 class BasicAuthMiddleware:
@@ -43,24 +153,35 @@ class BasicAuthMiddleware:
             await self._app(scope, receive, send)
             return
 
-        headers = dict(scope.get("headers", []))
-        auth_header = headers.get(b"authorization", b"").decode()
+        path = scope.get("path", "")
+        if scope["type"] == "http" and path in _PUBLIC_PATHS:
+            await self._app(scope, receive, send)
+            return
 
-        team = self._check_credentials(auth_header)
+        conn = HTTPConnection(scope)
+        team = self._check_credentials(conn.headers.get("authorization", ""))
+        if not team:
+            token = conn.cookies.get(_AUTH_COOKIE)
+            if token:
+                team = _check_cookie_token(token, self._get_settings())
         if team:
             scope.setdefault("state", {})["team"] = team
             await self._app(scope, receive, send)
+            return
+
+        # Unauthenticated. Browsers get a login page (no Basic dialog); API
+        # clients and WebSocket handshakes get a machine-readable rejection.
+        if scope["type"] == "websocket":
+            ws = WebSocket(scope, receive, send)
+            await ws.close(code=1008)
+        elif path.startswith("/api/"):
+            response: Response = JSONResponse(
+                {"ok": False, "error": "Unauthorized"}, status_code=401
+            )
+            await response(scope, receive, send)
         else:
-            if scope["type"] == "websocket":
-                ws = WebSocket(scope, receive, send)
-                await ws.close(code=1008)
-            else:
-                response = Response(
-                    "Unauthorized",
-                    status_code=401,
-                    headers={"WWW-Authenticate": f'Basic realm="{_AUTH_REALM}"'},
-                )
-                await response(scope, receive, send)
+            response = RedirectResponse("/login", status_code=302)
+            await response(scope, receive, send)
 
     def _check_credentials(self, auth_header: str) -> "TeamSettings | None":
         if not auth_header.startswith("Basic "):
@@ -75,7 +196,41 @@ class BasicAuthMiddleware:
         return self._get_settings().get_team_by_ui_password(password)
 
 
+def _is_secure_request(request: Request) -> bool:
+    """Whether the browser sees this connection as HTTPS, honouring a single
+    X-Forwarded-Proto hop (first value, case-insensitive). Drives the cookie
+    Secure attribute without guessing from routing_mode."""
+    if request.url.scheme == "https":
+        return True
+    forwarded = request.headers.get("x-forwarded-proto", "")
+    return forwarded.split(",")[0].strip().lower() == "https"
+
+
 _TEMPLATE_DIR = pathlib.Path(__file__).resolve().parent / "templates"
+
+
+def _render_login(error: str = "") -> str:
+    """Render the login page, optionally with a server-controlled error banner."""
+    html = (_TEMPLATE_DIR / "login.html").read_text(encoding="utf-8")
+    banner = f'<div class="error">{error}</div>' if error else ""
+    return html.replace("<!--ERROR-->", banner)
+
+
+async def _read_login_password(request: Request) -> str:
+    """Extract the password from a login POST, accepting either an HTML form
+    (application/x-www-form-urlencoded) or a JSON body. Parsed directly so the
+    UI needs no python-multipart dependency."""
+    import urllib.parse
+
+    body = await request.body()
+    if "application/json" in request.headers.get("content-type", ""):
+        try:
+            data = json.loads(body or b"{}")
+        except (ValueError, TypeError):
+            return ""
+        return str((data or {}).get("password") or "").strip()
+    parsed = urllib.parse.parse_qs(body.decode("utf-8", "replace"))
+    return (parsed.get("password", [""])[0]).strip()
 
 
 def _error_response(e: FlowError) -> JSONResponse:
@@ -133,9 +288,50 @@ def _build_routes(
     locks: LockManager,
 ) -> list[Route]:
 
+    def _set_session_cookie(
+        response: Response, team: TeamSettings, request: Request
+    ) -> None:
+        response.set_cookie(
+            _AUTH_COOKIE,
+            _make_ui_token(team, get_settings()),
+            max_age=_SESSION_MAX_AGE,
+            httponly=True,
+            samesite="strict",
+            secure=_is_secure_request(request),
+            path="/",
+        )
+
     def dashboard(request: Request) -> HTMLResponse:
         html_path = _TEMPLATE_DIR / "dashboard.html"
-        return HTMLResponse(html_path.read_text(encoding="utf-8"))
+        response = HTMLResponse(html_path.read_text(encoding="utf-8"))
+        team = getattr(request.state, "team", None)
+        if team is not None and team.ui_password:
+            _set_session_cookie(response, team, request)
+        return response
+
+    async def login(request: Request) -> Response:
+        settings = get_settings()
+        # Auth disabled entirely -> the dashboard is open, no login needed.
+        if not any(t.ui_password for t in settings.teams.values()):
+            return RedirectResponse("/", status_code=302)
+        # Already signed in (valid session cookie) -> go straight to the app.
+        token = request.cookies.get(_AUTH_COOKIE)
+        if token and _check_cookie_token(token, settings) is not None:
+            return RedirectResponse("/", status_code=302)
+        if request.method == "POST":
+            password = await _read_login_password(request)
+            team = settings.get_team_by_ui_password(password) if password else None
+            if team is not None:
+                response: Response = RedirectResponse("/", status_code=303)
+                _set_session_cookie(response, team, request)
+                return response
+            return HTMLResponse(_render_login("Invalid password."), status_code=401)
+        return HTMLResponse(_render_login())
+
+    def logout(request: Request) -> RedirectResponse:
+        response = RedirectResponse("/login", status_code=303)
+        response.delete_cookie(_AUTH_COOKIE, path="/", samesite="strict")
+        return response
 
     def favicon(request: Request) -> Response:
         ico_path = _TEMPLATE_DIR / "favicon.ico"
@@ -337,6 +533,7 @@ def _build_routes(
             extra_addons = json.loads(extra_addons_raw) or None
             git_user = labels.get("oduflow.git_user", "")
             env_vars = json.loads(labels.get("oduflow.env_vars", "{}")) or None
+            local_path = labels.get("oduflow.local_path", "")
 
             env_ops.delete_environment(settings, team, branch)
             result = env_ops.create_environment(
@@ -349,6 +546,7 @@ def _build_routes(
                 extra_addons=extra_addons,
                 git_user=git_user,
                 env_vars=env_vars,
+                local_path=local_path,
             )
             return JSONResponse({"ok": True, "result": result})
         except FlowError as e:
@@ -421,6 +619,20 @@ def _build_routes(
                             extra_dict = _normalize_extra_addons(raw) or None
                     if not auto_install_raw:
                         auto_install_raw = metadata.get("auto_install_modules", "")
+                    if not repo_url and metadata.get("local_path"):
+                        return JSONResponse(
+                            {
+                                "ok": False,
+                                "error": (
+                                    f"Template '{resolved_template}' was saved "
+                                    "from a live-mounted environment and has no "
+                                    "repo_url. Provide repo_url explicitly, or "
+                                    "create the environment via the local "
+                                    "(stdio) server."
+                                ),
+                            },
+                            status_code=400,
+                        )
 
             if not repo_url or not odoo_image:
                 return JSONResponse(
@@ -1330,6 +1542,8 @@ def _build_routes(
 
     return [
         Route("/", dashboard, methods=["GET"]),
+        Route("/login", login, methods=["GET", "POST"]),
+        Route("/logout", logout, methods=["POST"]),
         Route("/favicon.ico", favicon, methods=["GET"]),
         Route("/logo.png", logo, methods=["GET"]),
         Route("/static/{filename}", static_file, methods=["GET"]),

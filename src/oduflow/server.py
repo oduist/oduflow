@@ -367,7 +367,7 @@ def create_environment(
     Args:
         branch: The git branch to clone (e.g. "19.0", "feature/my-feature").
         env_name: Optional environment name. If empty, defaults to the branch name. Use this to create multiple environments from the same branch (e.g. env_name="client-a" with branch="19.0").
-        template_name: Name of the template profile to use as database template. Pass "none" to skip template and initialise Odoo from scratch with -i base. When a template is specified, repo_url and odoo_image are loaded from template metadata (but can be overridden).
+        template_name: Name of the template profile to use as database template. Pass "none" to skip template and initialise Odoo from scratch with -i base. When a template is specified, repo_url and odoo_image are loaded from template metadata (but can be overridden). A template saved from a live-mounted environment supplies local_path instead of repo_url and recreates the live-mount (stdio transport only; over http pass repo_url explicitly).
         repo_url: URL of the git repository to clone. Optional when template_name is specified (loaded from template metadata).
         odoo_image: Full Docker image name with tag (e.g. "odoo:19.0"). Optional when template_name is specified (loaded from template metadata).
         extra_addons: Comma-separated list of extra addon repo names with branches (e.g. "enterprise:19.0,custom-themes:main"). Each entry must include a branch after a colon.
@@ -393,6 +393,8 @@ def create_environment(
         effective_repo_url = repo_url
         effective_odoo_image = odoo_image
         effective_git_user = ""
+        local_path = (local_path or "").strip()
+        local_path_from_template = False
         if resolved_template:
             metadata_path = team.get_template_metadata_path(resolved_template)
             if os.path.isfile(metadata_path):
@@ -416,10 +418,24 @@ def create_environment(
                             )
                 if not auto_install_modules:
                     auto_install_modules = metadata.get("auto_install_modules", "")
+                # The template's live-mount path applies only when the caller
+                # gave no code source of their own (explicit repo_url wins, so
+                # http clients can still clone from a real remote).
+                if not local_path and not repo_url and metadata.get("local_path"):
+                    local_path = metadata["local_path"]
+                    local_path_from_template = True
 
-        local_path = (local_path or "").strip()
         if local_path:
             if settings_module.TRANSPORT != "stdio":
+                if local_path_from_template:
+                    raise ValueError(
+                        f"Template '{resolved_template}' was saved from a "
+                        "live-mounted environment, so it provides a local_path "
+                        "instead of a repo_url. Live-mount is only available "
+                        "with the stdio (local) transport — pass repo_url= "
+                        "explicitly to clone over http, or create the "
+                        "environment via the local (stdio) server."
+                    )
                 raise ValueError(
                     "local_path (live-mount) is only available with the stdio "
                     "(local) transport, not over http."
@@ -1935,7 +1951,7 @@ def get_service_info(name: str, ctx: Context = None) -> str:
     team = _resolve_team(ctx)
     info = service_ops.get_service_info(settings, team, name)
 
-    digest = (info.get("image_digest") or "")
+    digest = info.get("image_digest") or ""
     digest_short = digest[:19] if digest else ""
 
     lines = [f"Service '{info['name']}': {info['status']}"]
@@ -2637,8 +2653,7 @@ def _run_template_from_env(
         lines.append(f"{verb} filestore overlays for: {', '.join(affected)}")
     if failures:
         lines.append(
-            "Remount issues:\n"
-            + "\n".join(f"- {env}: {msg}" for env, msg in failures)
+            "Remount issues:\n" + "\n".join(f"- {env}: {msg}" for env, msg in failures)
         )
     print("\n".join(lines))
 
@@ -2664,8 +2679,7 @@ def _run_refresh_template(
         ]
     if failures:
         lines.append(
-            "Remount issues:\n"
-            + "\n".join(f"- {env}: {msg}" for env, msg in failures)
+            "Remount issues:\n" + "\n".join(f"- {env}: {msg}" for env, msg in failures)
         )
     print("\n".join(lines))
 
@@ -2713,8 +2727,7 @@ def _run_import_template(
         )
     if failures:
         lines.append(
-            "Remount issues:\n"
-            + "\n".join(f"- {env}: {msg}" for env, msg in failures)
+            "Remount issues:\n" + "\n".join(f"- {env}: {msg}" for env, msg in failures)
         )
     print("\n".join(lines))
 
