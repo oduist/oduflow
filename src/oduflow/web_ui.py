@@ -145,6 +145,30 @@ def _build_routes(
         logo_path = _TEMPLATE_DIR / "logo.png"
         return Response(logo_path.read_bytes(), media_type="image/png")
 
+    _STATIC_MEDIA_TYPES = {
+        ".css": "text/css",
+        ".js": "application/javascript",
+        ".woff2": "font/woff2",
+        ".png": "image/png",
+    }
+
+    def static_file(request: Request) -> Response:
+        filename = request.path_params["filename"]
+        static_dir = (_TEMPLATE_DIR / "static").resolve()
+        file_path = (static_dir / filename).resolve()
+        media_type = _STATIC_MEDIA_TYPES.get(file_path.suffix)
+        if (
+            not file_path.is_relative_to(static_dir)
+            or media_type is None
+            or not file_path.is_file()
+        ):
+            return Response("Not found", status_code=404)
+        return Response(
+            file_path.read_bytes(),
+            media_type=media_type,
+            headers={"Cache-Control": "public, max-age=86400"},
+        )
+
     def _get_ui_team(request: Request) -> TeamSettings:
         """Get the team from request state (set by auth middleware) or fallback."""
         if hasattr(request.state, "team"):
@@ -1305,6 +1329,7 @@ def _build_routes(
         Route("/", dashboard, methods=["GET"]),
         Route("/favicon.ico", favicon, methods=["GET"]),
         Route("/logo.png", logo, methods=["GET"]),
+        Route("/static/{filename}", static_file, methods=["GET"]),
         Route("/api/license", api_license, methods=["GET"]),
         Route("/api/license/activate", api_license_activate, methods=["POST"]),
         Route("/api/templates", api_templates, methods=["GET"]),
