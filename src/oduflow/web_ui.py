@@ -41,8 +41,10 @@ logger = logging.getLogger("oduflow")
 _AUTH_USER = "admin"
 _AUTH_COOKIE = "oduflow_ui_auth"
 # Reachable without authentication: the login flow and static brand assets
-# (so the login page can render its logo/favicon).
+# (so the login page can render its logo/favicon/fonts). /static/ serves only
+# vetted extensions from the packaged assets dir (fonts, icons, xterm).
 _PUBLIC_PATHS = frozenset({"/login", "/logout", "/favicon.ico", "/logo.png"})
+_PUBLIC_PREFIXES = ("/static/",)
 _SESSION_SALT = "oduflow.ui-auth.v1"
 _SESSION_MAX_AGE = 7 * 24 * 3600  # 7 days
 _SECRET_FILENAME = ".ui_session_secret"
@@ -154,7 +156,9 @@ class BasicAuthMiddleware:
             return
 
         path = scope.get("path", "")
-        if scope["type"] == "http" and path in _PUBLIC_PATHS:
+        if scope["type"] == "http" and (
+            path in _PUBLIC_PATHS or path.startswith(_PUBLIC_PREFIXES)
+        ):
             await self._app(scope, receive, send)
             return
 
