@@ -330,3 +330,24 @@ def test_ensure_running_starts_stopped_env(monkeypatch, tmp_path):
     state["status"] = "running"
     assert env_ops.ensure_running(settings, "env-x") is False
     assert started == ["env-x"]
+
+
+# --- _wake_for_work (tool-level wake-up) -----------------------------------
+
+
+def test_wake_for_work_starts_and_notes(monkeypatch, tmp_path):
+    from oduflow import server
+    from oduflow.docker_ops import env_ops
+
+    team = _team(tmp_path)
+    settings = _settings(tmp_path)
+    activity.mark_stopped(team, "env-x", by="auto")
+
+    monkeypatch.setattr(env_ops, "ensure_running", lambda s, n: True)
+    note = server._wake_for_work(settings, team, "env-x")
+    assert note == "Note: environment was stopped; started it for this call.\n"
+    rec = activity.get_all(team)["env-x"]
+    assert "stopped_at" not in rec  # the stopped clock is cleared
+
+    monkeypatch.setattr(env_ops, "ensure_running", lambda s, n: False)
+    assert server._wake_for_work(settings, team, "env-x") == ""

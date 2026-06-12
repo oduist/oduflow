@@ -121,7 +121,7 @@ Same JSON format in `claude_desktop_config.json` or `.amp/settings.json`.
 - `create_environment` — provision a new Odoo environment for a branch (optional `env_vars` injects container environment variables)
 - `delete_environment` — tear down an environment
 - `start_environment` / `stop_environment` / `restart_environment` — lifecycle control
-- Idle environments auto-stop after 48h without work; stopped ones auto-delete after 72h (configurable via `[lifecycle]`; protected environments are exempt; `pull_and_apply` wakes a stopped environment automatically)
+- Idle environments auto-stop after 48h without work; stopped ones auto-delete after 72h (configurable via `[lifecycle]`; protected environments are exempt). Container-level tools (pull_and_apply, shell/tests/installs/file ops) wake a stopped environment automatically and note it in the response
 - `update_environment` — re-create the container preserving DB and filestore (optional `odoo_image` switches image, `env_vars` replaces container environment variables)
 - `install_odoo_modules` — install Odoo modules
 - `upgrade_odoo_modules` — upgrade Odoo modules
@@ -442,7 +442,7 @@ port_range = [50000, 50100]          # port range for Odoo containers [start, en
 | `[storage].data_dir` | `/srv/oduflow` or `~/.oduflow/data` | Base directory for all data. Team data directories are `team_{ID}` subdirectories inside |
 | `[storage].overlay_threshold_mb` | `50` | Template filestore size threshold (MB). Templates smaller than this use a simple copy per environment; larger templates use fuse-overlayfs. The decision is stored in `metadata.json` at template creation time |
 | `[lifecycle].auto_stop_hours` | `48` | Auto-stop environments after N hours without work (env-scoped MCP calls or dashboard actions). `0` disables. Protected environments are exempt |
-| `[lifecycle].auto_delete_hours` | `72` | Auto-delete environments N hours after they stopped (manual stops count). `0` disables. Protected environments are exempt; `pull_and_apply` wakes a stopped environment automatically |
+| `[lifecycle].auto_delete_hours` | `72` | Auto-delete environments N hours after they stopped (manual stops count). `0` disables. Protected environments are exempt; container-level tools wake a stopped environment automatically |
 
 ### Per-team settings
 

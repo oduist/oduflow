@@ -202,10 +202,15 @@ auto-delete — protect anything you hand to customers for testing. Keeping an
 environment running (any activity resets the idle clock) also keeps it safe
 from deletion, since only stopped environments are ever deleted.
 
-**Waking up.** Calling `pull_and_apply` on a stopped environment starts it
-automatically and prepends a short note to the response:
-`Note: environment was stopped; started it to apply the changes.` Other tools
-do not auto-start stopped environments.
+**Waking up.** Container-level tools start a stopped environment
+automatically and prepend a short note to the response
+(`Note: environment was stopped; started it ...`): `pull_and_apply`, module
+installs/upgrades, `run_odoo_tests`, `run_odoo_shell`, `run_odoo_command`,
+file tools (`read/write/search_in_odoo`), `http_request_to_odoo` and
+`reset_admin_password`. Read-only and diagnostic tools never wake an
+environment: `run_db_query` and `list_installed_modules` go to the shared
+PostgreSQL, and `get_environment_logs` reads logs of stopped containers —
+useful when diagnosing why something died.
 
 The dashboard shows each environment's last activity (`Active: 2h ago`) and,
 for stopped ones, when and how it stopped (`Stopped: 1d ago (auto)`). Every

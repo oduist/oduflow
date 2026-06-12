@@ -436,8 +436,9 @@ class TestGetServiceLogsTool:
 
 
 class TestResetAdminPasswordTool:
+    @patch("oduflow.docker_ops.env_ops.ensure_running", return_value=False)
     @patch("oduflow.docker_ops.odoo_ops.reset_admin_password")
-    def test_reset_default_password(self, mock_reset):
+    def test_reset_default_password(self, mock_reset, mock_ensure):
         mock_reset.return_value = {
             "status": "ok",
             "login": "admin",
@@ -449,8 +450,9 @@ class TestResetAdminPasswordTool:
         assert "New password: test" in result
         mock_reset.assert_called_once_with(TEST_SETTINGS, TEST_TEAM, "main", "test")
 
+    @patch("oduflow.docker_ops.env_ops.ensure_running", return_value=False)
     @patch("oduflow.docker_ops.odoo_ops.reset_admin_password")
-    def test_reset_custom_password(self, mock_reset):
+    def test_reset_custom_password(self, mock_reset, mock_ensure):
         mock_reset.return_value = {
             "status": "ok",
             "login": "admin",
