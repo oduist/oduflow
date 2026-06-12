@@ -79,6 +79,15 @@
   header h1 img { height: 28px; }
   header .actions { display: flex; gap: 8px; align-items: center; }
   .auto-label { font-size: 12px; color: var(--text-dim); }
+  .docs-link {
+    color: var(--text-dim);
+    text-decoration: none;
+    font-size: 13px;
+    font-weight: 500;
+    padding: 6px 8px;
+    border-radius: var(--radius-sm);
+  }
+  .docs-link:hover { color: var(--accent); }
   #refresh-btn {
     background: var(--surface);
     color: var(--text);
@@ -693,6 +702,7 @@
   <h1><img src="/logo.png" alt="Oduflow logo">Oduflow</h1>
   <button id="license-badge" class="license-badge" style="display:none"></button>
   <div class="actions">
+    <a class="docs-link" href="https://docs.oduflow.dev" target="_blank" rel="noopener" title="Open the Oduflow documentation">Docs &#8599;</a>
     <label class="auto-label" for="refresh-interval">Auto-refresh
       <input type="number" id="refresh-interval" value="60" min="5" step="5"
              aria-label="Auto-refresh interval, seconds" class="interval-input">s
@@ -2249,7 +2259,7 @@ function renderServices(services) {
       '</div>' +
       '<div class="svc-meta">' +
         '<span>Image: <strong>' + esc(svc.image) + '</strong></span>' +
-        '<span>Container: <strong>' + esc(svc.container_name) + '</strong></span>' +
+        '<span>Container: <strong>' + esc(svc.container_name) + '</strong>' + containerStatsHtml(svc.container_name) + '</span>' +
         (svc.port ? '<span>Port: <strong>' + svc.port + '</strong></span>' : '') +
       '</div>' +
       urlHtml +
@@ -2257,6 +2267,7 @@ function renderServices(services) {
       volHtml +
     '</div>';
   }).join('');
+  applyStats();
 }
 
 async function doUpdateService(name) {
