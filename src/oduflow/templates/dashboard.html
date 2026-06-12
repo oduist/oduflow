@@ -3,6 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="preload" href="/static/outfit-latin.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="/static/geist-mono-latin.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="icon" href="/favicon.ico" sizes="16x16 32x32">
 <link rel="icon" href="/static/icon.png" type="image/png" sizes="32x32">
 <link rel="apple-touch-icon" href="/static/apple-icon.png">
@@ -61,7 +63,7 @@
     padding-bottom: 56px;
     min-height: 100vh;
   }
-  :is(button, a, input, select, textarea):focus-visible {
+  :is(button, a, input, select, textarea, [role="button"]):focus-visible {
     outline: none;
     box-shadow: var(--focus-ring);
   }
@@ -316,6 +318,9 @@
     max-height: 80vh; display: flex; flex-direction: column;
     box-shadow: 0 24px 64px rgba(0,0,0,0.65);
   }
+  .modal-sm { max-width: 460px; }
+  .modal-md { max-width: 520px; }
+  .modal-terminal { max-width: 1000px; height: 80vh; }
   .modal-header {
     display: flex; align-items: center; justify-content: space-between;
     padding: 12px 20px; border-bottom: 1px solid var(--border);
@@ -624,12 +629,15 @@
     .env-header { flex-wrap: wrap; gap: 10px; }
     .env-header .left { flex-wrap: wrap; }
     .env-meta { flex-wrap: wrap; gap: 6px 16px; }
-    .btn { padding: 12px 16px; }
-    .menu button { padding: 13px 14px; }
-    .tab-btn { padding: 12px 18px; }
-    .logs-toolbar .logs-btn { padding: 10px 12px; }
-    .modal-close { padding: 8px 12px; }
-    .btn-create { padding: 11px 16px; }
+    .btn { padding: 14px 16px; }
+    .menu button { padding: 15px 14px; }
+    .tab-btn { padding: 13px 18px; }
+    .logs-toolbar .logs-btn { padding: 14px 14px; }
+    .logs-toolbar input[type="text"], .logs-toolbar select { padding: 14px 8px; }
+    .modal-close { padding: 12px 14px; }
+    .btn-create { padding: 14px 16px; }
+    .interval-input { padding: 12px 4px; }
+    .env-note { padding: 12px 8px; }
     .svc-header { flex-wrap: wrap; gap: 10px; }
     .svc-meta { flex-wrap: wrap; gap: 4px 16px; }
     .tpl-card { flex-wrap: wrap; gap: 10px; }
@@ -735,7 +743,7 @@
 
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
 <div class="modal-overlay" id="sync-result-modal" onclick="closeSyncResult(event)">
-  <div class="modal" style="max-width:520px;">
+  <div class="modal modal-md">
     <div class="modal-header">
       <h2 id="sync-result-title">Sync Result</h2>
       <button class="modal-close" onclick="closeSyncResult()">&times;</button>
@@ -744,7 +752,7 @@
   </div>
 </div>
 <div class="modal-overlay" id="create-modal" onclick="closeCreateModal(event)">
-  <div class="modal" style="max-width:500px;">
+  <div class="modal modal-md">
     <div class="modal-header">
       <h2>Create Environment</h2>
       <button class="modal-close" onclick="closeCreateModal()">&times;</button>
@@ -819,7 +827,7 @@
   </div>
 </div>
 <div class="modal-overlay" id="console-modal" onclick="closeConsole(event)">
-  <div class="modal" style="max-width:1000px; height:80vh;">
+  <div class="modal modal-terminal">
     <div class="modal-header">
       <h2 id="console-title">Console</h2>
       <button class="modal-close" onclick="closeConsole()">&times;</button>
@@ -830,7 +838,7 @@
   </div>
 </div>
 <div class="modal-overlay" id="sql-modal" onclick="closeSqlConsole(event)">
-  <div class="modal" style="max-width:1000px; height:80vh;">
+  <div class="modal modal-terminal">
     <div class="modal-header">
       <h2 id="sql-title">SQL Console</h2>
       <button class="modal-close" onclick="closeSqlConsole()">&times;</button>
@@ -841,7 +849,7 @@
   </div>
 </div>
 <div class="modal-overlay" id="create-svc-modal" onclick="closeCreateServiceModal(event)">
-  <div class="modal" style="max-width:500px;">
+  <div class="modal modal-md">
     <div class="modal-header">
       <h2>Create Service</h2>
       <button class="modal-close" onclick="closeCreateServiceModal()">&times;</button>
@@ -895,7 +903,7 @@
   </div>
 </div>
 <div class="modal-overlay" id="restore-svc-modal" onclick="closeRestoreServiceModal(event)">
-  <div class="modal" style="max-width:500px;">
+  <div class="modal modal-md">
     <div class="modal-header">
       <h2>Restore Service</h2>
       <button class="modal-close" onclick="closeRestoreServiceModal()">&times;</button>
@@ -955,7 +963,7 @@
   </div>
 </div>
 <div class="modal-overlay" id="create-vol-modal" onclick="closeCreateVolumeModal(event)">
-  <div class="modal" style="max-width:440px;">
+  <div class="modal modal-sm">
     <div class="modal-header">
       <h2>Create Volume</h2>
       <button class="modal-close" onclick="closeCreateVolumeModal()">&times;</button>
@@ -985,7 +993,7 @@
 </div>
 
 <div class="modal-overlay" id="confirm-modal" onclick="cancelConfirm(event)">
-  <div class="modal" style="max-width:440px;">
+  <div class="modal modal-sm">
     <div class="modal-header">
       <h2 id="confirm-title">Confirm</h2>
       <button class="modal-close" onclick="cancelConfirm()">&times;</button>
@@ -1000,7 +1008,7 @@
   </div>
 </div>
 <div class="modal-overlay" id="note-modal" onclick="closeNoteModal(event)">
-  <div class="modal" style="max-width:480px;">
+  <div class="modal modal-sm">
     <div class="modal-header">
       <h2 id="note-modal-title">Edit note</h2>
       <button class="modal-close" onclick="closeNoteModal()">&times;</button>
@@ -1018,7 +1026,7 @@
   </div>
 </div>
 <div class="modal-overlay" id="license-modal" onclick="closeLicenseModal(event)">
-  <div class="modal" style="max-width:460px;">
+  <div class="modal modal-sm">
     <div class="modal-header">
       <h2>Activate License</h2>
       <button class="modal-close" onclick="closeLicenseModal()">&times;</button>
@@ -1040,7 +1048,7 @@
   </div>
 </div>
 <div class="modal-overlay" id="add-extra-repo-modal" onclick="closeAddExtraRepoModal(event)">
-  <div class="modal" style="max-width:500px;">
+  <div class="modal modal-md">
     <div class="modal-header">
       <h2>Add Extra Addons Repository</h2>
       <button class="modal-close" onclick="closeAddExtraRepoModal()">&times;</button>
@@ -1069,7 +1077,7 @@
   </div>
 </div>
 <div class="modal-overlay" id="add-credential-modal" onclick="closeAddCredentialModal(event)">
-  <div class="modal" style="max-width:500px;">
+  <div class="modal modal-md">
     <div class="modal-header">
       <h2>Add Git Credential</h2>
       <button class="modal-close" onclick="closeAddCredentialModal()">&times;</button>
@@ -1281,7 +1289,7 @@ function usageColor(pct) {
 function usageBar(pct) {
   var w = Math.min(Math.max(pct, 2), 100);
   var color = usageColor(pct);
-  return '<span class="usage-bar"><span class="usage-bar-fill" style="' +
+  return '<span class="usage-bar" aria-hidden="true"><span class="usage-bar-fill" style="' +
     'transform:scaleX(' + (w / 100) + ');background:' + color + '"></span></span>';
 }
 
@@ -1321,7 +1329,7 @@ function renderEnvironments(envs, force) {
 
     const metaHtml = (env.odoo_image || env.repo_url || env.db_name || env.template_name)
       ? '<div class="env-meta">' +
-          (env.db_name ? '<span>DB: <strong class="copy-db" title="Click to copy" onclick="copyToClipboard(\'' + esc(env.db_name).replace(/'/g, "\\'") + '\')">' + esc(env.db_name) + '</strong></span>' : '') +
+          (env.db_name ? '<span>DB: <strong class="copy-db" role="button" tabindex="0" title="Copy database name" aria-label="Copy database name" onclick="copyToClipboard(\'' + esc(env.db_name).replace(/'/g, "\\'") + '\')">' + esc(env.db_name) + '</strong></span>' : '') +
           (env.template_name && env.template_name !== 'none' ? '<span>Template: <strong>' + esc(env.template_name) + '</strong></span>' : '') +
           (env.odoo_image ? '<span>Image: <strong>' + esc(env.odoo_image) + '</strong></span>' : '') +
           (env.repo_url ? '<span>Repo: <strong>' + esc(env.repo_url) + '</strong>' +
@@ -1370,19 +1378,19 @@ function renderEnvironments(envs, force) {
             (allStopped ? 'disabled' : '') + '>Sync</button>' +
           '<button class="btn btn-logs" onclick="showLogs(\'' + escAttr(env.branch) + '\')">Logs</button>' +
           '<div class="menu-wrap">' +
-            '<button class="btn btn-more" onclick="toggleMenu(event)" aria-haspopup="true" aria-expanded="false">More &#9662;</button>' +
-            '<div class="menu">' +
-              '<button onclick="openConsole(\'' + escAttr(env.branch) + '\')" ' +
+            '<button class="btn btn-more" onclick="toggleMenu(event)" aria-haspopup="menu" aria-expanded="false">More &#9662;</button>' +
+            '<div class="menu" role="menu">' +
+              '<button role="menuitem" onclick="openConsole(\'' + escAttr(env.branch) + '\')" ' +
                 (allStopped ? 'disabled' : '') + '>Open console</button>' +
-              '<button onclick="openSqlConsole(\'' + escAttr(env.branch) + '\')" ' +
+              '<button role="menuitem" onclick="openSqlConsole(\'' + escAttr(env.branch) + '\')" ' +
                 (allStopped ? 'disabled' : '') + '>Open SQL console</button>' +
-              '<button onclick="doProtect(\'' + escAttr(env.branch) + '\',' + (env.protected ? 'true' : 'false') + ')">' +
+              '<button role="menuitem" onclick="doProtect(\'' + escAttr(env.branch) + '\',' + (env.protected ? 'true' : 'false') + ')">' +
                 (env.protected ? 'Unprotect' : 'Protect') + '</button>' +
-              '<button onclick="doUpdate(\'' + escAttr(env.branch) + '\')" ' +
+              '<button role="menuitem" onclick="doUpdate(\'' + escAttr(env.branch) + '\')" ' +
                 (env.protected ? 'disabled title="Environment is protected"' : '') + '>Update</button>' +
-              '<button onclick="doRecreate(\'' + escAttr(env.branch) + '\')" ' +
+              '<button role="menuitem" onclick="doRecreate(\'' + escAttr(env.branch) + '\')" ' +
                 (env.protected ? 'disabled title="Environment is protected"' : '') + '>Recreate</button>' +
-              '<button class="danger" onclick="doDelete(\'' + escAttr(env.branch) + '\')" ' +
+              '<button role="menuitem" class="danger" onclick="doDelete(\'' + escAttr(env.branch) + '\')" ' +
                 (env.protected ? 'disabled title="Environment is protected"' : '') + '>Delete</button>' +
             '</div>' +
           '</div>' +
@@ -1392,6 +1400,7 @@ function renderEnvironments(envs, force) {
       metaHtml +
       extraHtml +
       '<div class="env-note' + (!env.note ? ' env-note-empty' : '') + '" ' +
+        'role="button" tabindex="0" aria-label="Edit note" ' +
         'onclick="editNote(\'' + escAttr(env.branch) + '\')" ' +
         'title="Click to edit note">' +
         (env.note ? esc(env.note) : 'Add a note...') +
@@ -2645,7 +2654,7 @@ async function loadAgentGuides() {
 
 function renderAgentGuides(guides) {
   var html = guides.map(function(g) {
-    return '<div class="svc-card guide-card" onclick="openGuide(\'' + escAttr(g.filename) + '\', \'' + escAttr(g.title) + '\')">' +
+    return '<div class="svc-card guide-card" role="button" tabindex="0" aria-label="Open guide ' + escAttr(g.title) + '" onclick="openGuide(\'' + escAttr(g.filename) + '\', \'' + escAttr(g.title) + '\')">' +
       '<div class="svc-header">' +
         '<div class="left">' +
           '<span class="svc-name">' + esc(g.title) + '</span>' +
@@ -3288,6 +3297,31 @@ var MODAL_CLOSERS = {
 };
 
 document.addEventListener('keydown', function(e) {
+  // Enter/Space activate non-native role="button" elements (db name, note, guide cards)
+  if ((e.key === 'Enter' || e.key === ' ') && e.target.getAttribute &&
+      e.target.getAttribute('role') === 'button' && e.target.tagName !== 'BUTTON') {
+    e.preventDefault();
+    e.target.click();
+    return;
+  }
+
+  // Arrow keys walk the open More menu
+  var openMenu = document.querySelector('.menu-wrap.open .menu');
+  if (openMenu && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) {
+    e.preventDefault();
+    var items = Array.from(openMenu.querySelectorAll('button:not(:disabled)'));
+    if (!items.length) return;
+    var idx = items.indexOf(document.activeElement);
+    var next;
+    if (idx === -1) {
+      next = e.key === 'ArrowDown' ? 0 : items.length - 1;
+    } else {
+      next = (idx + (e.key === 'ArrowDown' ? 1 : items.length - 1)) % items.length;
+    }
+    items[next].focus();
+    return;
+  }
+
   var open = document.querySelectorAll('.modal-overlay.show');
   var top = open.length ? open[open.length - 1] : null;
 
