@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
+import hmac
 import json
 import logging
 import os
@@ -24,13 +26,41 @@ from oduflow.docker_ops.odoo_ops import get_environment_logs
 from oduflow.docker_ops.stats import get_container_stats, get_system_stats
 from oduflow.errors import BusyError, FlowError, NotFoundError
 from oduflow.locking import LockManager
-from oduflow.settings import TeamSettings
+from oduflow.settings import Settings, TeamSettings
 from oduflow.licensing import get_license_info, install_license_from_text
 
 logger = logging.getLogger("oduflow")
 
 _AUTH_REALM = "Oduflow Dashboard"
 _AUTH_USER = "admin"
+_AUTH_COOKIE = "oduflow_ui_auth"
+
+
+def _make_ui_token(team: "TeamSettings") -> str:
+    """Signed bearer token for a team, used as a cookie so WebSocket handshakes
+    (which cannot send an Authorization header) can authenticate."""
+    mac = hmac.new(
+        team.ui_password.encode("utf-8"),
+        team.team_id.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+    return f"{team.team_id}.{mac}"
+
+
+def _check_cookie_token(token: str, settings: Settings) -> "TeamSettings | None":
+    """Validate a cookie token produced by `_make_ui_token` and return its team."""
+    if not token or "." not in token:
+        return None
+    team_id, mac = token.rsplit(".", 1)
+    team = settings.teams.get(team_id)
+    if not team or not team.ui_password:
+        return None
+    expected = hmac.new(
+        team.ui_password.encode("utf-8"),
+        team.team_id.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+    return team if hmac.compare_digest(mac, expected) else None
 
 
 class BasicAuthMiddleware:
@@ -47,6 +77,12 @@ class BasicAuthMiddleware:
         auth_header = headers.get(b"authorization", b"").decode()
 
         team = self._check_credentials(auth_header)
+        if not team:
+            token = self._parse_cookie(
+                headers.get(b"cookie", b"").decode(), _AUTH_COOKIE
+            )
+            if token:
+                team = _check_cookie_token(token, self._get_settings())
         if team:
             scope.setdefault("state", {})["team"] = team
             await self._app(scope, receive, send)
@@ -73,6 +109,14 @@ class BasicAuthMiddleware:
         if user != _AUTH_USER:
             return None
         return self._get_settings().get_team_by_ui_password(password)
+
+    @staticmethod
+    def _parse_cookie(cookie_header: str, name: str) -> "str | None":
+        for part in cookie_header.split(";"):
+            key, _, value = part.strip().partition("=")
+            if key == name:
+                return value
+        return None
 
 
 _TEMPLATE_DIR = pathlib.Path(__file__).resolve().parent / "templates"
@@ -135,7 +179,24 @@ def _build_routes(
 
     def dashboard(request: Request) -> HTMLResponse:
         html_path = _TEMPLATE_DIR / "dashboard.html"
-        return HTMLResponse(html_path.read_text(encoding="utf-8"))
+        response = HTMLResponse(html_path.read_text(encoding="utf-8"))
+        team = getattr(request.state, "team", None)
+        if team is not None and getattr(team, "ui_password", ""):
+            settings = get_settings()
+            secure = (
+                request.url.scheme == "https"
+                or request.headers.get("x-forwarded-proto") == "https"
+                or settings.routing_mode == "traefik"
+            )
+            response.set_cookie(
+                _AUTH_COOKIE,
+                _make_ui_token(team),
+                httponly=True,
+                samesite="strict",
+                secure=secure,
+                path="/",
+            )
+        return response
 
     def favicon(request: Request) -> Response:
         ico_path = _TEMPLATE_DIR / "favicon.ico"
