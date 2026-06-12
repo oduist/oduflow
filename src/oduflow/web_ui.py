@@ -8,8 +8,10 @@ import json
 import logging
 import os
 import pathlib
+import secrets
 
-from starlette.requests import Request
+from itsdangerous import BadData, URLSafeTimedSerializer
+from starlette.requests import HTTPConnection, Request
 from starlette.responses import HTMLResponse, JSONResponse, Response
 from starlette.routing import Route, WebSocketRoute
 from starlette.types import ASGIApp, Receive, Scope, Send
@@ -34,33 +36,104 @@ logger = logging.getLogger("oduflow")
 _AUTH_REALM = "Oduflow Dashboard"
 _AUTH_USER = "admin"
 _AUTH_COOKIE = "oduflow_ui_auth"
+_SESSION_SALT = "oduflow.ui-auth.v1"
+_SESSION_MAX_AGE = 7 * 24 * 3600  # 7 days
+_SECRET_FILENAME = ".ui_session_secret"
+
+# Cached per data dir (process-wide; the server runs against a single one).
+_secrets_cache: dict[str, str] = {}
+_signers: dict[str, URLSafeTimedSerializer] = {}
 
 
-def _make_ui_token(team: "TeamSettings") -> str:
-    """Signed bearer token for a team, used as a cookie so WebSocket handshakes
-    (which cannot send an Authorization header) can authenticate."""
-    mac = hmac.new(
-        team.ui_password.encode("utf-8"),
-        team.team_id.encode("utf-8"),
-        hashlib.sha256,
+def _load_or_create_secret(data_dir: str) -> str:
+    """Load the persistent UI-session signing secret from the data dir, creating
+    it on first use. Persisting it means a server restart does not invalidate
+    live sessions."""
+    path = os.path.join(data_dir, _SECRET_FILENAME)
+    try:
+        existing = pathlib.Path(path).read_text(encoding="utf-8").strip()
+        if existing:
+            return existing
+    except FileNotFoundError:
+        pass
+    os.makedirs(data_dir, exist_ok=True)
+    secret = secrets.token_hex(32)
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError:
+        # Another worker created it between our read and write; use theirs.
+        return pathlib.Path(path).read_text(encoding="utf-8").strip()
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(secret)
+    return secret
+
+
+def _get_secret(settings: Settings) -> str:
+    """Return the cached persistent server-side signing secret for this server."""
+    key = settings.base_data_dir or ""
+    secret = _secrets_cache.get(key)
+    if secret is None:
+        secret = _load_or_create_secret(key) if key else secrets.token_hex(32)
+        _secrets_cache[key] = secret
+    return secret
+
+
+def _get_signer(settings: Settings) -> URLSafeTimedSerializer:
+    """Return the cached itsdangerous signer for this server's session cookies.
+
+    The signing key is a persistent server-side secret (NOT the team password),
+    so a leaked cookie reveals nothing about the password and cannot be
+    brute-forced offline.
+    """
+    key = settings.base_data_dir or ""
+    signer = _signers.get(key)
+    if signer is None:
+        signer = URLSafeTimedSerializer(_get_secret(settings), salt=_SESSION_SALT)
+        _signers[key] = signer
+    return signer
+
+
+def _password_fingerprint(secret: str, ui_password: str) -> str:
+    """A fingerprint of the team password, keyed by the server secret. Embedded
+    in the token so that changing ui_password invalidates outstanding cookies
+    immediately, while a leaked cookie still cannot be used to brute-force the
+    password offline (the key is the server secret, not public)."""
+    return hmac.new(
+        secret.encode("utf-8"), ui_password.encode("utf-8"), hashlib.sha256
     ).hexdigest()
-    return f"{team.team_id}.{mac}"
+
+
+def _make_ui_token(team: "TeamSettings", settings: Settings) -> str:
+    """Signed, timestamped session token for a team, stored as a cookie so
+    WebSocket handshakes (which cannot send an Authorization header) can
+    authenticate. Expires after `_SESSION_MAX_AGE`; carries a password
+    fingerprint so a password change revokes it at once."""
+    fingerprint = _password_fingerprint(_get_secret(settings), team.ui_password)
+    return _get_signer(settings).dumps([team.team_id, fingerprint])
 
 
 def _check_cookie_token(token: str, settings: Settings) -> "TeamSettings | None":
-    """Validate a cookie token produced by `_make_ui_token` and return its team."""
-    if not token or "." not in token:
+    """Validate a cookie token from `_make_ui_token`: verify its signature, that
+    it is within `_SESSION_MAX_AGE`, and that the embedded password fingerprint
+    still matches the team's current ui_password, then return its team."""
+    if not token:
         return None
-    team_id, mac = token.rsplit(".", 1)
+    try:
+        data = _get_signer(settings).loads(token, max_age=_SESSION_MAX_AGE)
+    except BadData:
+        return None
+    if not (isinstance(data, list) and len(data) == 2):
+        return None
+    team_id, fingerprint = data
+    if not isinstance(team_id, str) or not isinstance(fingerprint, str):
+        return None
     team = settings.teams.get(team_id)
     if not team or not team.ui_password:
         return None
-    expected = hmac.new(
-        team.ui_password.encode("utf-8"),
-        team.team_id.encode("utf-8"),
-        hashlib.sha256,
-    ).hexdigest()
-    return team if hmac.compare_digest(mac, expected) else None
+    expected = _password_fingerprint(_get_secret(settings), team.ui_password)
+    if not hmac.compare_digest(fingerprint, expected):
+        return None
+    return team
 
 
 class BasicAuthMiddleware:
@@ -73,14 +146,10 @@ class BasicAuthMiddleware:
             await self._app(scope, receive, send)
             return
 
-        headers = dict(scope.get("headers", []))
-        auth_header = headers.get(b"authorization", b"").decode()
-
-        team = self._check_credentials(auth_header)
+        conn = HTTPConnection(scope)
+        team = self._check_credentials(conn.headers.get("authorization", ""))
         if not team:
-            token = self._parse_cookie(
-                headers.get(b"cookie", b"").decode(), _AUTH_COOKIE
-            )
+            token = conn.cookies.get(_AUTH_COOKIE)
             if token:
                 team = _check_cookie_token(token, self._get_settings())
         if team:
@@ -110,13 +179,15 @@ class BasicAuthMiddleware:
             return None
         return self._get_settings().get_team_by_ui_password(password)
 
-    @staticmethod
-    def _parse_cookie(cookie_header: str, name: str) -> "str | None":
-        for part in cookie_header.split(";"):
-            key, _, value = part.strip().partition("=")
-            if key == name:
-                return value
-        return None
+
+def _is_secure_request(request: Request) -> bool:
+    """Whether the browser sees this connection as HTTPS, honouring a single
+    X-Forwarded-Proto hop (first value, case-insensitive). Drives the cookie
+    Secure attribute without guessing from routing_mode."""
+    if request.url.scheme == "https":
+        return True
+    forwarded = request.headers.get("x-forwarded-proto", "")
+    return forwarded.split(",")[0].strip().lower() == "https"
 
 
 _TEMPLATE_DIR = pathlib.Path(__file__).resolve().parent / "templates"
@@ -181,19 +252,14 @@ def _build_routes(
         html_path = _TEMPLATE_DIR / "dashboard.html"
         response = HTMLResponse(html_path.read_text(encoding="utf-8"))
         team = getattr(request.state, "team", None)
-        if team is not None and getattr(team, "ui_password", ""):
-            settings = get_settings()
-            secure = (
-                request.url.scheme == "https"
-                or request.headers.get("x-forwarded-proto") == "https"
-                or settings.routing_mode == "traefik"
-            )
+        if team is not None and team.ui_password:
             response.set_cookie(
                 _AUTH_COOKIE,
-                _make_ui_token(team),
+                _make_ui_token(team, get_settings()),
+                max_age=_SESSION_MAX_AGE,
                 httponly=True,
                 samesite="strict",
-                secure=secure,
+                secure=_is_secure_request(request),
                 path="/",
             )
         return response

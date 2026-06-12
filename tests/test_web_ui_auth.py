@@ -3,13 +3,18 @@ handshakes (which cannot carry an Authorization header) authenticate.
 
 Regression: the Console/SQL terminal buttons opened WebSocket connections that
 ``BasicAuthMiddleware`` rejected with HTTP 403, because the browser never sends
-HTTP Basic credentials on a WebSocket upgrade. The fix mints a signed cookie on
-dashboard load and validates it for both HTTP and WebSocket scopes.
+HTTP Basic credentials on a WebSocket upgrade. The fix mints a signed session
+cookie on dashboard load and validates it for both HTTP and WebSocket scopes.
+
+The cookie is an ``itsdangerous`` timed token signed with a persistent
+server-side secret (stored in the data dir), so it survives restarts, expires
+after ``_SESSION_MAX_AGE``, and never exposes the team password.
 """
 
 from __future__ import annotations
 
 import base64
+import tempfile
 
 import pytest
 from starlette.applications import Starlette
@@ -17,11 +22,13 @@ from starlette.routing import Router, WebSocketRoute
 from starlette.testclient import TestClient
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
+from oduflow import web_ui
 from oduflow.settings import Settings, TeamSettings
 from oduflow.web_ui import (
     _AUTH_COOKIE,
     BasicAuthMiddleware,
     _check_cookie_token,
+    _get_signer,
     _make_ui_token,
     mount_web_ui,
 )
@@ -29,10 +36,15 @@ from oduflow.locking import LockManager
 
 _PW = "s3cret"
 
+# A single shared data dir so every ``_settings()`` instance reads the same
+# persisted signing secret (mirrors one real server with one data dir).
+_DATA_DIR = tempfile.mkdtemp(prefix="oduflow-uiauth-test-")
+
 
 def _settings(routing_mode: str = "port") -> Settings:
     return Settings(
         routing_mode=routing_mode,
+        base_data_dir=_DATA_DIR,
         teams={
             "1": TeamSettings(team_id="1", ui_password=_PW),
         },
@@ -61,14 +73,14 @@ def _full_app(settings: Settings) -> Starlette:
 
 def test_token_roundtrip():
     settings = _settings()
-    token = _make_ui_token(_team(settings))
-    assert token.startswith("1.")
+    token = _make_ui_token(_team(settings), settings)
     assert _check_cookie_token(token, settings) is _team(settings)
 
 
 def test_token_rejects_tampered_and_garbage():
     settings = _settings()
-    token = _make_ui_token(_team(settings))
+    token = _make_ui_token(_team(settings), settings)
+    # Flip the last character -> signature no longer verifies.
     assert (
         _check_cookie_token(token[:-1] + ("0" if token[-1] != "0" else "1"), settings)
         is None
@@ -76,16 +88,72 @@ def test_token_rejects_tampered_and_garbage():
     assert _check_cookie_token("1.deadbeef", settings) is None
     assert _check_cookie_token("nope", settings) is None
     assert _check_cookie_token("", settings) is None
-    # Unknown team id
-    assert _check_cookie_token("99." + token.split(".", 1)[1], settings) is None
 
 
-def test_parse_cookie():
-    parse = BasicAuthMiddleware._parse_cookie
-    assert parse("a=1; oduflow_ui_auth=tok; b=2", _AUTH_COOKIE) == "tok"
-    assert parse("oduflow_ui_auth=tok", _AUTH_COOKIE) == "tok"
-    assert parse("", _AUTH_COOKIE) is None
-    assert parse("other=1", _AUTH_COOKIE) is None
+def test_token_rejects_unknown_team():
+    settings = _settings()
+    # Validly-signed (same secret) but for a team that is not configured.
+    token = _get_signer(settings).dumps(["99", "deadbeef"])
+    assert _check_cookie_token(token, settings) is None
+
+
+def test_token_rejects_foreign_secret(tmp_path):
+    settings = _settings()
+    token = _make_ui_token(_team(settings), settings)
+    # A different data dir => a different signing secret => token must not pass.
+    other = Settings(
+        routing_mode="port",
+        base_data_dir=str(tmp_path),
+        teams={"1": TeamSettings(team_id="1", ui_password=_PW)},
+    )
+    web_ui._signers.pop(str(tmp_path), None)
+    web_ui._secrets_cache.pop(str(tmp_path), None)
+    assert _check_cookie_token(token, other) is None
+
+
+def test_token_expires(monkeypatch):
+    settings = _settings()
+    token = _make_ui_token(_team(settings), settings)
+    # Any positive age now exceeds the (negative) max age -> SignatureExpired.
+    monkeypatch.setattr(web_ui, "_SESSION_MAX_AGE", -1)
+    assert _check_cookie_token(token, settings) is None
+
+
+def test_secret_persists_across_restart():
+    """A persistent server secret means tokens survive a process restart."""
+    settings = _settings()
+    token = _make_ui_token(_team(settings), settings)
+    # Simulate a restart: drop the in-memory caches; the secret file in the
+    # data dir is re-read, yielding the same key.
+    web_ui._signers.clear()
+    web_ui._secrets_cache.clear()
+    assert _check_cookie_token(token, settings) is _team(settings)
+
+
+def test_token_revoked_on_password_change():
+    """Changing ui_password invalidates outstanding cookies immediately."""
+    settings = _settings()
+    token = _make_ui_token(_team(settings), settings)
+    # Same team, same data dir/secret, but a new password: the embedded
+    # fingerprint no longer matches -> the cookie is rejected at once.
+    changed = Settings(
+        routing_mode="port",
+        base_data_dir=_DATA_DIR,
+        teams={"1": TeamSettings(team_id="1", ui_password="new-password")},
+    )
+    assert _check_cookie_token(token, changed) is None
+
+
+def test_token_rejected_when_ui_password_cleared():
+    settings = _settings()
+    token = _make_ui_token(_team(settings), settings)
+    # Auth turned off for the team afterwards -> cookie no longer authenticates.
+    disabled = Settings(
+        routing_mode="port",
+        base_data_dir=_DATA_DIR,
+        teams={"1": TeamSettings(team_id="1", ui_password="")},
+    )
+    assert _check_cookie_token(token, disabled) is None
 
 
 # --- HTTP dashboard ------------------------------------------------------
@@ -106,6 +174,7 @@ def test_dashboard_basic_sets_cookie():
     assert f"{_AUTH_COOKIE}=" in set_cookie
     assert "httponly" in set_cookie.lower()
     assert "samesite=strict" in set_cookie.lower()
+    assert "max-age=" in set_cookie.lower()
     # The minted cookie validates back to the team.
     token = client.cookies.get(_AUTH_COOKIE)
     assert _check_cookie_token(token, _settings()) is not None
@@ -115,7 +184,7 @@ def test_dashboard_cookie_fallback_without_basic():
     """The core regression: a request carrying only the cookie (no Authorization
     header) is the exact shape of a browser WebSocket handshake."""
     settings = _settings()
-    token = _make_ui_token(_team(settings))
+    token = _make_ui_token(_team(settings), settings)
     client = TestClient(_full_app(settings))
     client.cookies.set(_AUTH_COOKIE, token)
     resp = client.get("/")
@@ -129,6 +198,18 @@ def test_dashboard_invalid_cookie_rejected():
     assert resp.status_code == 401
 
 
+def test_non_ascii_cookie_does_not_crash():
+    """A malformed/non-ASCII cookie must be rejected cleanly, never raise.
+
+    The previous HMAC implementation called ``hmac.compare_digest`` on the raw
+    cookie value, which raises ``TypeError`` on non-ASCII input (an
+    unauthenticated 500). ``itsdangerous`` rejects it as ``BadData`` instead.
+    """
+    settings = _settings()
+    assert _check_cookie_token("1.é", settings) is None
+    assert _check_cookie_token("é", settings) is None
+
+
 def test_cookie_secure_flag():
     # plain http, port mode -> no Secure
     client = TestClient(_full_app(_settings("port")))
@@ -140,10 +221,17 @@ def test_cookie_secure_flag():
     resp = client.get("/", headers=headers)
     assert "secure" in resp.headers.get("set-cookie", "").lower()
 
-    # routing_mode=traefik -> Secure even on plain http
+    # Chained proxies "https, http": first hop is https -> Secure
+    headers = {**_basic("admin", _PW), "X-Forwarded-Proto": "https, http"}
+    resp = client.get("/", headers=headers)
+    assert "secure" in resp.headers.get("set-cookie", "").lower()
+
+    # traefik mode but reached over plain http with no X-Forwarded-Proto:
+    # NOT Secure, otherwise the browser would silently drop the cookie and the
+    # terminal buttons would stay broken on that origin.
     client = TestClient(_full_app(_settings("traefik")))
     resp = client.get("/", headers=_basic("admin", _PW))
-    assert "secure" in resp.headers.get("set-cookie", "").lower()
+    assert "secure" not in resp.headers.get("set-cookie", "").lower()
 
 
 # --- WebSocket handshake -------------------------------------------------
@@ -167,7 +255,7 @@ _WS_URL = "/api/environments/main/terminal"
 
 def test_ws_accepts_valid_cookie():
     settings = _settings()
-    token = _make_ui_token(_team(settings))
+    token = _make_ui_token(_team(settings), settings)
     client = TestClient(_ws_app(settings))
     with client.websocket_connect(
         _WS_URL, headers={"cookie": f"{_AUTH_COOKIE}={token}"}
