@@ -476,6 +476,7 @@
     </label>
     <button id="refresh-btn" onclick="loadEnvironments()">Refresh</button>
     <button class="btn-create" onclick="openCreateModal()">+ Create</button>
+    <button class="btn" onclick="logout()" title="Sign out">Logout</button>
   </div>
 </header>
 
@@ -866,6 +867,26 @@
   </div>
 </div>
 <script>
+// Redirect to the login page whenever a request is rejected as unauthenticated
+// (e.g. the session cookie expired while the tab was open).
+(function () {
+  const _fetch = window.fetch;
+  window.fetch = function () {
+    return _fetch.apply(this, arguments).then(function (resp) {
+      if (resp.status === 401) { window.location.href = '/login'; }
+      return resp;
+    });
+  };
+})();
+
+function logout() {
+  const form = document.createElement('form');
+  form.method = 'POST';
+  form.action = '/logout';
+  document.body.appendChild(form);
+  form.submit();
+}
+
 const API = '/api/environments';
 const API_TEMPLATES = '/api/templates';
 const MIN_INTERVAL = 5;

@@ -159,11 +159,71 @@ def test_token_rejected_when_ui_password_cleared():
 # --- HTTP dashboard ------------------------------------------------------
 
 
-def test_dashboard_requires_auth():
+def test_dashboard_redirects_to_login_when_unauthenticated():
     client = TestClient(_full_app(_settings()))
-    resp = client.get("/")
+    resp = client.get("/", follow_redirects=False)
+    assert resp.status_code == 302
+    assert resp.headers["location"] == "/login"
+    # No Basic dialog is triggered anymore.
+    assert "www-authenticate" not in {k.lower() for k in resp.headers}
+
+
+def test_login_page_is_public():
+    client = TestClient(_full_app(_settings()))
+    resp = client.get("/login")
+    assert resp.status_code == 200
+    assert "password" in resp.text.lower()
+
+
+def test_login_success_sets_cookie_and_redirects():
+    client = TestClient(_full_app(_settings()))
+    resp = client.post("/login", data={"password": _PW}, follow_redirects=False)
+    assert resp.status_code == 303
+    assert resp.headers["location"] == "/"
+    assert f"{_AUTH_COOKIE}=" in resp.headers.get("set-cookie", "")
+    # The minted cookie now authenticates the dashboard without Basic.
+    assert client.get("/").status_code == 200
+
+
+def test_login_wrong_password_rejected():
+    client = TestClient(_full_app(_settings()))
+    resp = client.post("/login", data={"password": "nope"}, follow_redirects=False)
     assert resp.status_code == 401
-    assert "Basic" in resp.headers.get("www-authenticate", "")
+    assert _AUTH_COOKIE not in resp.headers.get("set-cookie", "")
+
+
+def test_login_redirects_when_already_authenticated():
+    settings = _settings()
+    token = _make_ui_token(_team(settings), settings)
+    client = TestClient(_full_app(settings))
+    client.cookies.set(_AUTH_COOKIE, token)
+    resp = client.get("/login", follow_redirects=False)
+    assert resp.status_code == 302
+    assert resp.headers["location"] == "/"
+
+
+def test_logout_clears_cookie():
+    client = TestClient(_full_app(_settings()))
+    client.post("/login", data={"password": _PW})
+    resp = client.post("/logout", follow_redirects=False)
+    assert resp.status_code == 303
+    assert resp.headers["location"] == "/login"
+    set_cookie = resp.headers.get("set-cookie", "").lower()
+    assert _AUTH_COOKIE in set_cookie
+    assert "max-age=0" in set_cookie or "expires=" in set_cookie
+
+
+def test_api_unauthenticated_is_401_without_basic_challenge():
+    client = TestClient(_full_app(_settings()))
+    resp = client.get("/api/license", follow_redirects=False)
+    assert resp.status_code == 401
+    assert "www-authenticate" not in {k.lower() for k in resp.headers}
+
+
+def test_api_basic_auth_still_works():
+    client = TestClient(_full_app(_settings()))
+    resp = client.get("/api/license", headers=_basic("admin", _PW))
+    assert resp.status_code == 200
 
 
 def test_dashboard_basic_sets_cookie():
@@ -191,11 +251,12 @@ def test_dashboard_cookie_fallback_without_basic():
     assert resp.status_code == 200
 
 
-def test_dashboard_invalid_cookie_rejected():
+def test_dashboard_invalid_cookie_redirects_to_login():
     client = TestClient(_full_app(_settings()))
     client.cookies.set(_AUTH_COOKIE, "1.deadbeef")
-    resp = client.get("/")
-    assert resp.status_code == 401
+    resp = client.get("/", follow_redirects=False)
+    assert resp.status_code == 302
+    assert resp.headers["location"] == "/login"
 
 
 def test_non_ascii_cookie_does_not_crash():

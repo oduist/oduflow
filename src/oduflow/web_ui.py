@@ -12,7 +12,12 @@ import secrets
 
 from itsdangerous import BadData, URLSafeTimedSerializer
 from starlette.requests import HTTPConnection, Request
-from starlette.responses import HTMLResponse, JSONResponse, Response
+from starlette.responses import (
+    HTMLResponse,
+    JSONResponse,
+    RedirectResponse,
+    Response,
+)
 from starlette.routing import Route, WebSocketRoute
 from starlette.types import ASGIApp, Receive, Scope, Send
 from starlette.websockets import WebSocket
@@ -33,9 +38,11 @@ from oduflow.licensing import get_license_info, install_license_from_text
 
 logger = logging.getLogger("oduflow")
 
-_AUTH_REALM = "Oduflow Dashboard"
 _AUTH_USER = "admin"
 _AUTH_COOKIE = "oduflow_ui_auth"
+# Reachable without authentication: the login flow and static brand assets
+# (so the login page can render its logo/favicon).
+_PUBLIC_PATHS = frozenset({"/login", "/logout", "/favicon.ico", "/logo.png"})
 _SESSION_SALT = "oduflow.ui-auth.v1"
 _SESSION_MAX_AGE = 7 * 24 * 3600  # 7 days
 _SECRET_FILENAME = ".ui_session_secret"
@@ -146,6 +153,11 @@ class BasicAuthMiddleware:
             await self._app(scope, receive, send)
             return
 
+        path = scope.get("path", "")
+        if scope["type"] == "http" and path in _PUBLIC_PATHS:
+            await self._app(scope, receive, send)
+            return
+
         conn = HTTPConnection(scope)
         team = self._check_credentials(conn.headers.get("authorization", ""))
         if not team:
@@ -155,17 +167,21 @@ class BasicAuthMiddleware:
         if team:
             scope.setdefault("state", {})["team"] = team
             await self._app(scope, receive, send)
+            return
+
+        # Unauthenticated. Browsers get a login page (no Basic dialog); API
+        # clients and WebSocket handshakes get a machine-readable rejection.
+        if scope["type"] == "websocket":
+            ws = WebSocket(scope, receive, send)
+            await ws.close(code=1008)
+        elif path.startswith("/api/"):
+            response: Response = JSONResponse(
+                {"ok": False, "error": "Unauthorized"}, status_code=401
+            )
+            await response(scope, receive, send)
         else:
-            if scope["type"] == "websocket":
-                ws = WebSocket(scope, receive, send)
-                await ws.close(code=1008)
-            else:
-                response = Response(
-                    "Unauthorized",
-                    status_code=401,
-                    headers={"WWW-Authenticate": f'Basic realm="{_AUTH_REALM}"'},
-                )
-                await response(scope, receive, send)
+            response = RedirectResponse("/login", status_code=302)
+            await response(scope, receive, send)
 
     def _check_credentials(self, auth_header: str) -> "TeamSettings | None":
         if not auth_header.startswith("Basic "):
@@ -191,6 +207,30 @@ def _is_secure_request(request: Request) -> bool:
 
 
 _TEMPLATE_DIR = pathlib.Path(__file__).resolve().parent / "templates"
+
+
+def _render_login(error: str = "") -> str:
+    """Render the login page, optionally with a server-controlled error banner."""
+    html = (_TEMPLATE_DIR / "login.html").read_text(encoding="utf-8")
+    banner = f'<div class="error">{error}</div>' if error else ""
+    return html.replace("<!--ERROR-->", banner)
+
+
+async def _read_login_password(request: Request) -> str:
+    """Extract the password from a login POST, accepting either an HTML form
+    (application/x-www-form-urlencoded) or a JSON body. Parsed directly so the
+    UI needs no python-multipart dependency."""
+    import urllib.parse
+
+    body = await request.body()
+    if "application/json" in request.headers.get("content-type", ""):
+        try:
+            data = json.loads(body or b"{}")
+        except (ValueError, TypeError):
+            return ""
+        return str((data or {}).get("password") or "").strip()
+    parsed = urllib.parse.parse_qs(body.decode("utf-8", "replace"))
+    return (parsed.get("password", [""])[0]).strip()
 
 
 def _error_response(e: FlowError) -> JSONResponse:
@@ -248,20 +288,49 @@ def _build_routes(
     locks: LockManager,
 ) -> list[Route]:
 
+    def _set_session_cookie(
+        response: Response, team: TeamSettings, request: Request
+    ) -> None:
+        response.set_cookie(
+            _AUTH_COOKIE,
+            _make_ui_token(team, get_settings()),
+            max_age=_SESSION_MAX_AGE,
+            httponly=True,
+            samesite="strict",
+            secure=_is_secure_request(request),
+            path="/",
+        )
+
     def dashboard(request: Request) -> HTMLResponse:
         html_path = _TEMPLATE_DIR / "dashboard.html"
         response = HTMLResponse(html_path.read_text(encoding="utf-8"))
         team = getattr(request.state, "team", None)
         if team is not None and team.ui_password:
-            response.set_cookie(
-                _AUTH_COOKIE,
-                _make_ui_token(team, get_settings()),
-                max_age=_SESSION_MAX_AGE,
-                httponly=True,
-                samesite="strict",
-                secure=_is_secure_request(request),
-                path="/",
-            )
+            _set_session_cookie(response, team, request)
+        return response
+
+    async def login(request: Request) -> Response:
+        settings = get_settings()
+        # Auth disabled entirely -> the dashboard is open, no login needed.
+        if not any(t.ui_password for t in settings.teams.values()):
+            return RedirectResponse("/", status_code=302)
+        # Already signed in (valid session cookie) -> go straight to the app.
+        token = request.cookies.get(_AUTH_COOKIE)
+        if token and _check_cookie_token(token, settings) is not None:
+            return RedirectResponse("/", status_code=302)
+        if request.method == "POST":
+            password = await _read_login_password(request)
+            team = settings.get_team_by_ui_password(password) if password else None
+            if team is not None:
+                response: Response = RedirectResponse("/", status_code=303)
+                _set_session_cookie(response, team, request)
+                return response
+            return HTMLResponse(_render_login("Invalid password."), status_code=401)
+        return HTMLResponse(_render_login())
+
+    def logout(request: Request) -> RedirectResponse:
+        response = RedirectResponse("/login", status_code=303)
+        response.delete_cookie(_AUTH_COOKIE, path="/", samesite="strict")
         return response
 
     def favicon(request: Request) -> Response:
@@ -1430,6 +1499,8 @@ def _build_routes(
 
     return [
         Route("/", dashboard, methods=["GET"]),
+        Route("/login", login, methods=["GET", "POST"]),
+        Route("/logout", logout, methods=["POST"]),
         Route("/favicon.ico", favicon, methods=["GET"]),
         Route("/logo.png", logo, methods=["GET"]),
         Route("/api/license", api_license, methods=["GET"]),
