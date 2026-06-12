@@ -594,9 +594,7 @@ def reload_template(
             if os.path.isfile(old_path):
                 os.remove(old_path)
                 logger.info("Removed old dump %s", old_path)
-        if not os.path.exists(dest_path) or not os.path.samefile(
-            dump_path, dest_path
-        ):
+        if not os.path.exists(dest_path) or not os.path.samefile(dump_path, dest_path):
             shutil.copy2(dump_path, dest_path)
         logger.info("Saved dump to workspace: %s", dest_path)
 
@@ -853,6 +851,34 @@ def init_template(
     return result
 
 
+def _source_env_metadata(settings: Settings, labels: dict) -> dict:
+    """Template metadata describing the source environment's code origin.
+
+    A live-mounted environment (``oduflow.local_path`` label) has no repo URL;
+    record the path instead so create-from-template can re-establish the
+    live-mount (stdio transport only).
+    """
+    metadata: dict[str, object] = {"odoo_image": labels.get(settings.image_label, "")}
+    live_path = labels.get("oduflow.local_path", "")
+    if live_path:
+        metadata["local_path"] = live_path
+        metadata["repo_url"] = ""
+    else:
+        metadata["repo_url"] = labels.get(settings.repo_label, "")
+    metadata["git_user"] = labels.get("oduflow.git_user", "")
+    raw_extras = labels.get("oduflow.extra_addons", "")
+    if raw_extras:
+        try:
+            parsed = json.loads(raw_extras)
+            metadata["extra_addons"] = _normalize_extra_addons(parsed)
+        except (json.JSONDecodeError, TypeError):
+            pass
+    raw_auto = labels.get("oduflow.auto_install_modules", "")
+    if raw_auto:
+        metadata["auto_install_modules"] = raw_auto
+    return metadata
+
+
 def publish_env_as_template(
     settings: Settings,
     team: TeamSettings,
@@ -1001,19 +1027,7 @@ def publish_env_as_template(
     metadata = {}
     try:
         pc = client.containers.get(promoted_container_name)
-        metadata["odoo_image"] = pc.labels.get(settings.image_label, "")
-        metadata["repo_url"] = pc.labels.get(settings.repo_label, "")
-        metadata["git_user"] = pc.labels.get("oduflow.git_user", "")
-        raw_extras = pc.labels.get("oduflow.extra_addons", "")
-        if raw_extras:
-            try:
-                parsed = json.loads(raw_extras)
-                metadata["extra_addons"] = _normalize_extra_addons(parsed)
-            except (json.JSONDecodeError, TypeError):
-                pass
-        raw_auto = pc.labels.get("oduflow.auto_install_modules", "")
-        if raw_auto:
-            metadata["auto_install_modules"] = raw_auto
+        metadata = _source_env_metadata(settings, pc.labels)
     except docker.errors.NotFound:
         pass
     fs_size = (
