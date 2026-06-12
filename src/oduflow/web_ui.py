@@ -29,6 +29,7 @@ from oduflow.docker_ops import (
     system_ops,
     volume_ops,
 )
+from oduflow import activity
 from oduflow.docker_ops.odoo_ops import get_environment_logs
 from oduflow.docker_ops.stats import get_container_stats, get_system_stats
 from oduflow.errors import BusyError, FlowError, NotFoundError
@@ -394,6 +395,7 @@ def _build_routes(
         branch = request.path_params["branch"]
         try:
             result = env_ops.start_environment(get_settings(), branch)
+            activity.mark_started(_get_ui_team(request), branch)
             return JSONResponse({"ok": True, "result": result})
         except FlowError as e:
             return _error_response(e)
@@ -418,6 +420,7 @@ def _build_routes(
         branch = request.path_params["branch"]
         try:
             result = env_ops.restart_environment(get_settings(), branch)
+            activity.mark_started(_get_ui_team(request), branch)
             return JSONResponse({"ok": True, "result": result})
         except FlowError as e:
             return _error_response(e)
@@ -434,6 +437,7 @@ def _build_routes(
         try:
             settings = get_settings()
             team = _get_ui_team(request)
+            activity.touch(team, branch)
             result = env_ops.pull_environment(settings, team, branch)
             return JSONResponse({"ok": True, "result": result})
         except FlowError as e:
@@ -487,6 +491,7 @@ def _build_routes(
         try:
             settings = get_settings()
             team = _get_ui_team(request)
+            activity.touch(team, branch)
             result = env_ops.update_environment(
                 settings,
                 team,
@@ -515,6 +520,7 @@ def _build_routes(
 
             settings = get_settings()
             team = _get_ui_team(request)
+            activity.touch(team, branch)
             client = _get_client()
             odoo_container_name = env_ops.get_resource_name(
                 branch, "odoo", settings.prefix

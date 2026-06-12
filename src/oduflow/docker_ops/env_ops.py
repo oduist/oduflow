@@ -46,6 +46,7 @@ from oduflow.naming import (
 )
 from oduflow.port_registry import allocate_port, release_port
 from oduflow import settings
+from oduflow import activity
 from oduflow.settings import Settings, TeamSettings
 
 logger = logging.getLogger("oduflow")
@@ -398,9 +399,7 @@ def remount_template_overlays(
             try:
                 if os.path.ismount(paths["merged"]):
                     # Unmount failed earlier — don't stack a second mount.
-                    result.failures.append(
-                        (env_name, "still mounted, skipped remount")
-                    )
+                    result.failures.append((env_name, "still mounted, skipped remount"))
                 else:
                     if reset_upper:
                         for key in ("upper", "work"):
@@ -1087,6 +1086,7 @@ def create_environment(
     result["extra_addons"] = extra_addons or {}
     result["local_path"] = repo_path if local_mount else ""
     result["elapsed_seconds"] = round(time.time() - start_time, 1)
+    activity.touch(team, env_name)
     return result
 
 
@@ -1236,6 +1236,7 @@ def delete_environment(
                     remove_worktree(team, repo_name, wt_path)
         shutil.rmtree(workspace_path)
 
+    activity.remove(team, env_name)
     logger.info("Environment deleted", extra={"env_name": env_name})
     return warnings
 
@@ -1317,6 +1318,13 @@ def list_environments(settings: Settings, team: TeamSettings) -> list[dict[str, 
         if container.status != "running":
             envs[env_name]["status"] = "partial"
 
+    records = activity.get_all(team)
+    for env_name, env in envs.items():
+        rec = records.get(env_name, {})
+        env["last_activity"] = rec.get("last_activity", "")
+        env["stopped_at"] = rec.get("stopped_at", "")
+        env["auto_stopped"] = rec.get("stopped_by") == "auto"
+
     return list(envs.values())
 
 
@@ -1344,6 +1352,26 @@ def wait_for_odoo_ready(
             pass
         time.sleep(2)
     return False
+
+
+def ensure_running(settings: Settings, env_name: str) -> bool:
+    """Start the environment's Odoo container if it is stopped.
+
+    Returns True when a start was needed (the caller may want to tell the
+    agent the environment was woken up), False when it was already running.
+    """
+    client = get_client()
+    odoo_container_name = get_resource_name(env_name, "odoo", settings.prefix)
+    try:
+        container = client.containers.get(odoo_container_name)
+    except docker.errors.NotFound:
+        raise NotFoundError(
+            f"Environment '{env_name}' does not exist. Use create_environment first."
+        )
+    if container.status == "running":
+        return False
+    start_environment(settings, env_name)
+    return True
 
 
 def restart_environment(settings: Settings, env_name: str) -> dict[str, str]:
@@ -1380,6 +1408,7 @@ def stop_environment(
             f"Environment '{env_name}' does not exist. Use create_environment first."
         )
 
+    activity.mark_stopped(team, env_name, by="manual")
     logger.info("Environment stopped", extra={"env_name": env_name})
     return {"odoo_container": odoo_container_name, "stopped": [odoo_container_name]}
 
@@ -1449,9 +1478,9 @@ def get_environment_info(
         )
         result["auto_install_modules"] = labels.get("oduflow.auto_install_modules", "")
         result["env_vars"] = json.loads(labels.get("oduflow.env_vars", "{}"))
-        result["created_at"] = labels.get("oduflow.created_at", "") or odoo_container.attrs.get(
-            "Created", ""
-        )
+        result["created_at"] = labels.get(
+            "oduflow.created_at", ""
+        ) or odoo_container.attrs.get("Created", "")
         result["note"] = _get_note_text(env_name, team.workspaces_dir)
 
         if settings.routing_mode == "traefik":

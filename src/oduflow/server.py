@@ -20,7 +20,7 @@ from oduflow.docker_ops import (
     volume_file_ops,
     volume_ops,
 )
-from oduflow import git_ops
+from oduflow import activity, git_ops, reaper
 from oduflow import settings as settings_module
 from oduflow.errors import FlowError
 from oduflow.locking import LockManager
@@ -176,6 +176,10 @@ def with_env_lock(fn):
             raise ToolError("env_name is required")
         _locks.acquire_env(env_name)
         try:
+            try:
+                activity.touch(_resolve_team(kwargs.get("ctx")), env_name)
+            except Exception:
+                pass  # activity tracking is best-effort
             return fn(*args, **kwargs)
         finally:
             _locks.release_env(env_name)
@@ -958,6 +962,7 @@ def restart_environment(env_name: str, wait: bool = True, ctx: Context = None) -
     """
     settings = _get_settings()
     result = env_ops.restart_environment(settings, env_name)
+    activity.mark_started(_resolve_team(ctx), env_name)
     lines = [
         "Environment restarted successfully!",
         f"Odoo Container: {result['odoo_container']}",
@@ -1097,6 +1102,7 @@ def stop_environment(env_name: str, ctx: Context = None) -> str:
     """
     settings = _get_settings()
     team = _resolve_team(ctx)
+    activity.touch(team, env_name)
     result = env_ops.stop_environment(settings, team, env_name)
     return (
         f"Environment stopped successfully!\n"
@@ -1115,13 +1121,14 @@ def start_environment(env_name: str, wait: bool = True, ctx: Context = None) -> 
         wait: Wait for Odoo to become ready after start (default True). Polls /web/health every 2 seconds for up to 120 seconds.
     """
     settings = _get_settings()
+    team = _resolve_team(ctx)
     result = env_ops.start_environment(settings, env_name)
+    activity.mark_started(team, env_name)
     lines = [
         "Environment started successfully!",
         f"Started containers: {', '.join(result['started'])}",
     ]
     if wait:
-        team = _resolve_team(ctx)
         ready = env_ops.wait_for_odoo_ready(settings, team, env_name)
         if ready:
             lines.append("Odoo is ready.")
@@ -1183,6 +1190,12 @@ def pull_and_apply(
     """
     settings = _get_settings()
     team = _resolve_team(ctx)
+    woke_note = ""
+    if env_ops.ensure_running(settings, env_name):
+        activity.mark_started(team, env_name)
+        woke_note = (
+            "Note: environment was stopped; started it to apply the changes.\n"
+        )
     install_list = [m.strip() for m in install.split(",") if m.strip()]
     upgrade_list = [m.strip() for m in upgrade.split(",") if m.strip()]
     result = env_ops.pull_environment(
@@ -1198,16 +1211,16 @@ def pull_and_apply(
     warnings = result.get("warnings") or []
 
     if action == "blocked":
-        lines = ["BLOCKED by guardrail (strict mode):"]
+        lines = [woke_note + "BLOCKED by guardrail (strict mode):"]
         lines.extend(f"  ⚠ {w}" for w in warnings)
         lines.append("")
         lines.append(result["message"])
         return "\n".join(lines)
 
     if action == "none":
-        return result["message"]
+        return woke_note + result["message"]
 
-    header_lines = [result["message"]]
+    header_lines = [woke_note + result["message"]]
     if result.get("modules_installed"):
         header_lines.append(f"Installed: {', '.join(result['modules_installed'])}")
     if result.get("modules_upgraded"):
@@ -3260,6 +3273,7 @@ def _start_stdio() -> None:
     """Start the MCP server (stdio transport)."""
     import asyncio
 
+    reaper.start_reaper(_get_settings, _locks)
     try:
         asyncio.run(mcp.run_stdio_async())
     except KeyboardInterrupt:
@@ -3277,6 +3291,8 @@ def _start_http() -> None:
     auth = _build_auth(settings)
 
     app = create_streamable_http_app(mcp, "/mcp", auth=auth, stateless_http=True)
+
+    reaper.start_reaper(_get_settings, _locks)
 
     from oduflow.web_ui import mount_web_ui
 

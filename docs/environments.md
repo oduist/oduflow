@@ -181,6 +181,45 @@ curl -X POST http://localhost:8000/api/environments/feature-login/recreate
 
 Recreate reads the original configuration from the container's Docker labels, so all parameters (repo URL, image, template, extra addons, git user) are preserved automatically.
 
+### Automatic Stop and Cleanup
+
+Environments accumulate: agents create them faster than anyone cleans up. A
+background sweep inside the Oduflow server keeps the fleet tidy:
+
+- **Auto-stop** — a running environment with no *work* for `auto_stop_hours`
+  (default **48**) is stopped. Work means any env-scoped MCP tool call
+  (`pull_and_apply`, module installs, tests, logs, shell, queries, ...) or a
+  lifecycle action in the Web Dashboard. Listing environments and dashboard
+  polling do **not** count.
+- **Auto-delete** — a stopped environment that nobody started for
+  `auto_delete_hours` (default **72**) after it stopped is deleted entirely
+  (container, database, filestore, workspace). Manual stops count too: a
+  stopped environment is on the deletion clock.
+
+**Keeping an environment alive.** Protected environments (`protect_environment`
+or the Protect action in the dashboard) are exempt from both auto-stop and
+auto-delete — protect anything you hand to customers for testing. Keeping an
+environment running (any activity resets the idle clock) also keeps it safe
+from deletion, since only stopped environments are ever deleted.
+
+**Waking up.** Calling `pull_and_apply` on a stopped environment starts it
+automatically and prepends a short note to the response:
+`Note: environment was stopped; started it to apply the changes.` Other tools
+do not auto-start stopped environments.
+
+The dashboard shows each environment's last activity (`Active: 2h ago`) and,
+for stopped ones, when and how it stopped (`Stopped: 1d ago (auto)`). Every
+auto-stop/auto-delete is logged by the server
+(`Auto-stopped environment 'x' (idle longer than 48h)`).
+
+Configure (or disable with `0`) in `oduflow.toml`:
+
+```toml
+[lifecycle]
+auto_stop_hours = 48    # stop after N hours without work; 0 disables
+auto_delete_hours = 72  # delete N hours after the environment stopped; 0 disables
+```
+
 ## Viewing Logs
 
 ```bash

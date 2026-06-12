@@ -1540,6 +1540,8 @@ function renderEnvironments(envs, force) {
             })() +
           '</span>' : '') +
           (env.created_at ? '<span>Created: <strong>' + formatDate(env.created_at) + '</strong></span>' : '') +
+          (env.last_activity ? '<span title="Last MCP call or dashboard action for this environment">Active: <strong>' + formatDate(env.last_activity) + '</strong></span>' : '') +
+          (env.stopped_at ? '<span>Stopped: <strong>' + formatDate(env.stopped_at) + (env.auto_stopped ? ' (auto)' : '') + '</strong></span>' : '') +
         '</div>'
       : '';
 
