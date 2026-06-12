@@ -272,7 +272,6 @@
   .btn-sync:hover, .btn-sync:focus-visible { border-color: var(--accent); color: var(--accent); background: color-mix(in oklab, var(--accent) 10%, transparent); }
   .btn-logs:hover, .btn-logs:focus-visible { border-color: var(--accent); color: var(--accent); background: color-mix(in oklab, var(--accent) 10%, transparent); }
   .btn-protect:hover, .btn-protect:focus-visible { border-color: var(--yellow); color: var(--yellow); background: color-mix(in oklab, var(--yellow) 10%, transparent); }
-  .btn-protect.active { background: var(--yellow); color: #000; border-color: var(--yellow); }
   .btn-create {
     background: var(--accent);
     color: #fff;
@@ -989,7 +988,7 @@
       </div>
       <div class="form-actions">
         <button class="btn" onclick="closeRestoreServiceModal()">Cancel</button>
-        <button class="btn-create" id="restore-svc-submit" onclick="submitRestoreService()" style="background:var(--green);border-color:var(--green);">Restore</button>
+        <button class="btn-create" id="restore-svc-submit" onclick="submitRestoreService()">Restore service</button>
       </div>
     </div>
   </div>
@@ -2918,10 +2917,11 @@ function renderExtraRepos(repos) {
       '<div class="svc-header">' +
         '<div class="left">' +
           '<span class="svc-name">' + esc(r.name) + '</span>' +
+          (r.protected ? '<span class="badge badge-protected" title="Deletion is disabled">protected</span>' : '') +
         '</div>' +
         '<div class="svc-actions">' +
           '<button class="btn btn-sync" onclick="doPullExtraRepo(\'' + escAttr(r.name) + '\', this)">Update</button> ' +
-          '<button class="btn btn-protect' + (r.protected ? ' active' : '') + '" ' +
+          '<button class="btn btn-protect" title="' + (r.protected ? 'Allow deleting this repository again' : 'Disable deleting this repository') + '" ' +
             'onclick="doProtectExtraRepo(\'' + escAttr(r.name) + '\',' + (r.protected ? 'true' : 'false') + ')">' +
             (r.protected ? 'Unprotect' : 'Protect') + '</button> ' +
           '<button class="btn btn-delete" onclick="doDeleteExtraRepo(\'' + escAttr(r.name) + '\')" ' +
