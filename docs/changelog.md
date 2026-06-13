@@ -1,6 +1,6 @@
 # Changelog
 
-## v1.50.1 (since v1.20.1)
+## v1.50.2 (since v1.20.1)
 
 ### Breaking Changes
 
