@@ -10,7 +10,7 @@
                      │  MCP (stdio or Streamable HTTP)
 ┌────────────────────▼─────────────────────────────┐
 │  server.py — FastMCP transport layer             │
-│  • MCP tool definitions (43 tools)               │
+│  • MCP tool definitions (54 tools)               │
 │  • Per-branch / per-team / system locking        │
 │  • Unified error handler (FlowError → ToolError) │
 │  • Web UI mount (Starlette)                      │
