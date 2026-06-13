@@ -6,7 +6,18 @@ import logging
 import os
 import re
 import sys
+import warnings
 from typing import cast
+
+# Suppress a third-party deprecation warning emitted at import time by fastmcp's
+# JWT auth provider (it imports the deprecated authlib.jose module). This keeps
+# CLI output (e.g. `oduflow --version`) clean.
+try:
+    from authlib.deprecate import AuthlibDeprecationWarning
+
+    warnings.filterwarnings("ignore", category=AuthlibDeprecationWarning)
+except Exception:  # pragma: no cover - authlib internals may change
+    pass
 
 from fastmcp import FastMCP, Context
 from fastmcp.exceptions import ToolError
