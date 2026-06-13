@@ -551,15 +551,6 @@
   }
   .system-bar .sys-label { font-weight: 600; color: var(--text); margin-right: 4px; }
   .system-bar .sys-val { color: var(--text); font-weight: 500; }
-  .system-credit {
-    margin-left: auto;
-    white-space: nowrap;
-    color: var(--text-dim);
-  }
-  .system-credit strong {
-    color: var(--text);
-    font-weight: 600;
-  }
   .usage-bar {
     display: inline-block;
     width: 64px;
@@ -856,7 +847,6 @@
     .tpl-meta { flex-wrap: wrap; gap: 6px; }
     .env-meta strong, .svc-meta strong, .tpl-meta strong, .preset-meta strong { word-break: break-all; }
     .system-bar { flex-wrap: wrap; gap: 6px 16px; padding: 8px 16px; }
-    .system-credit { margin-left: 0; width: 100%; text-align: right; }
     .modal { width: calc(100vw - 24px); max-height: 88vh; }
     #logs-modal .modal { max-width: none; }
     .logs-toolbar { flex-wrap: wrap; }
@@ -1222,7 +1212,6 @@
   <span>CPU: <span class="sys-val" id="sys-cpu">—</span></span>
   <span>RAM: <span class="sys-val" id="sys-ram">—</span></span>
   <span>Load: <span class="sys-val" id="sys-load">—</span></span>
-  <span class="system-credit">An <strong>Oduist</strong> product</span>
 </div>
 
 <div class="modal-overlay" id="confirm-modal" onclick="cancelConfirm(event)">
