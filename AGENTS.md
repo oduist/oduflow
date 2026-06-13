@@ -122,6 +122,17 @@ Do NOT run `mkdocs gh-deploy` (or otherwise deploy docs) from a working/feature 
 
 The site is hosted at: https://docs.oduflow.dev/
 
+## Publishing a New Version
+
+When preparing a new release, update the product version before creating the tag:
+
+1. Update `pyproject.toml` to the new version.
+2. Update `docs/changelog.md` so the top section is titled with the new version and includes the release notes for the changes being published.
+3. Commit and push those version/changelog changes to `main`.
+4. Create the annotated tag (for example `git tag -a vX.Y.Z -m "vX.Y.Z"`) on the final `main` commit and push the tag.
+
+Do not create or move a release tag until the version bump and changelog commit is already on `main`; the PyPI publishing workflow reads the package version from the tagged commit.
+
 ## Publishing Docker Image
 
 When asked to publish a Docker image, build and push to Docker Hub:
