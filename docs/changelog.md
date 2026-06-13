@@ -1,6 +1,18 @@
 # Changelog
 
-## v1.50.2 (since v1.20.1)
+## v1.50.2 (since v1.50.1)
+
+### Bug Fixes
+
+- **License config path** — license activation now stores `license.key` in the resolved Oduflow config directory instead of hard-coding `/etc/oduflow`; when `/etc/oduflow` is not writable it follows the same `~/.oduflow/conf` fallback as the rest of the config. The dashboard license API now uses the running server settings, so the unlicensed badge still appears when no key is installed. ([fe142ec](https://github.com/oduist/oduflow/commit/fe142ec))
+- **CLI startup warning** — suppress the noisy Authlib deprecation warning emitted by FastMCP on startup. ([44872e8](https://github.com/oduist/oduflow/commit/44872e8))
+
+### Documentation
+
+- **MCP tool count** — correct the documented MCP tool count from 43 to 54. ([513a53d](https://github.com/oduist/oduflow/commit/513a53d))
+- **Release process** — document that version and changelog updates must be committed before creating the release tag. ([9371be5](https://github.com/oduist/oduflow/commit/9371be5))
+
+## v1.50.1 (since v1.20.1)
 
 ### Breaking Changes
 
@@ -39,7 +51,6 @@
 
 ### Bug Fixes
 
-- **License config path** — license activation now stores `license.key` in the resolved Oduflow config directory instead of hard-coding `/etc/oduflow`; when `/etc/oduflow` is not writable it follows the same `~/.oduflow/conf` fallback as the rest of the config. The dashboard license API now uses the running server settings, so the unlicensed badge still appears when no key is installed. ([fe142ec](https://github.com/oduist/oduflow/commit/fe142ec))
 - **WebSocket terminal auth** — Console/SQL terminals failed because browsers can't send a Basic auth header on a WS handshake; added a signed cookie auth fallback for HTTP and WebSocket scopes ([9e24ab2](https://github.com/oduist/oduflow/commit/9e24ab2))
 - **Greenfield DB init race** — for `template_name=none`, initialize the empty DB in an isolated short-lived container before the serving container starts, avoiding a concurrent `orm_signaling_registry` collision that left `base` uninstalled ([aca9445](https://github.com/oduist/oduflow/commit/aca9445))
 - **Orphan PG role on template restore** — restore env-derived templates with `--no-owner` so deleting the source environment can drop its per-environment role ([aca9445](https://github.com/oduist/oduflow/commit/aca9445))
