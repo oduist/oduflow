@@ -1088,7 +1088,8 @@ def _build_routes(
             return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
 
     def api_license(request: Request) -> JSONResponse:
-        info = get_license_info()
+        settings = get_settings()
+        info = get_license_info(settings.etc_dir)
         return JSONResponse({"ok": True, "license": info.to_dict()})
 
     async def api_license_activate(request: Request) -> JSONResponse:
@@ -1099,7 +1100,8 @@ def _build_routes(
                 return JSONResponse(
                     {"ok": False, "error": "License key is required."}, status_code=400
                 )
-            info = install_license_from_text(key_text)
+            settings = get_settings()
+            info = install_license_from_text(key_text, settings.etc_dir)
             return JSONResponse({"ok": True, "license": info.to_dict()})
         except ValueError as e:
             return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
