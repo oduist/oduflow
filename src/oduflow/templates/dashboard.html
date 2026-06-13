@@ -75,8 +75,23 @@
     padding-bottom: 16px;
     border-bottom: 1px solid var(--border);
   }
-  header h1 { font-size: 20px; font-weight: 600; display: flex; align-items: center; gap: 10px; }
-  header h1 img { height: 28px; }
+  .brand-lockup { display: flex; align-items: center; gap: 10px; }
+  .brand-lockup img { height: 28px; }
+  .brand-copy { display: flex; flex-direction: column; gap: 1px; }
+  header h1 { font-size: 20px; font-weight: 600; line-height: 1.05; }
+  .brand-byline {
+    color: var(--text-dim);
+    font-size: 10.5px;
+    font-weight: 500;
+    line-height: 1.2;
+    letter-spacing: 0.02em;
+  }
+  .brand-byline a {
+    color: var(--text);
+    font-weight: 600;
+    text-decoration: none;
+  }
+  .brand-byline a:hover { color: var(--accent); }
   header .actions { display: flex; gap: 8px; align-items: center; }
   .auto-label { font-size: 12px; color: var(--text-dim); }
   .docs-link {
@@ -652,23 +667,114 @@
   .svc-meta a:hover { text-decoration: underline; }
   .svc-actions { display: flex; gap: 8px; flex-wrap: wrap; }
   .license-badge {
-    border: 0;
-    background: none;
+    position: relative;
+    isolation: isolate;
+    max-width: min(42vw, 520px);
+    min-width: 0;
+    overflow: hidden;
     font-family: inherit;
     display: inline-flex;
     align-items: center;
-    gap: 8px;
+    justify-content: center;
     padding: 4px 12px;
     border-radius: 14px;
+    border: 0;
+    background: none;
     font-size: 11px;
     font-weight: 600;
+    line-height: 1.2;
     letter-spacing: 0.3px;
     white-space: nowrap;
+    transition: border-color 0.18s, background 0.18s, color 0.18s;
+  }
+  .license-badge-text {
+    position: relative;
+    z-index: 1;
+    display: block;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .license-owner {
+    position: relative;
+    z-index: 1;
+    display: inline-block;
+    color: var(--text);
+    font-weight: 700;
+  }
+  .license-owner::before {
+    content: "";
+    position: absolute;
+    z-index: -1;
+    inset: -3px -7px;
+    border-radius: 999px;
+    background: color-mix(in oklab, var(--accent) 18%, transparent);
+    opacity: 0;
+    transform: scale(0.86);
+    pointer-events: none;
   }
   .license-unlicensed { background: color-mix(in oklab, var(--red) 12%, transparent); color: var(--red); border: 1px solid color-mix(in oklab, var(--red) 30%, transparent); }
   .license-individual { background: color-mix(in oklab, var(--green) 10%, transparent); color: var(--green); border: 1px solid color-mix(in oklab, var(--green) 25%, transparent); }
   .license-business { background: color-mix(in oklab, var(--green) 10%, transparent); color: var(--green); border: 1px solid color-mix(in oklab, var(--green) 25%, transparent); }
   .license-integrator { background: color-mix(in oklab, var(--accent) 10%, transparent); color: var(--accent); border: 1px solid color-mix(in oklab, var(--accent) 25%, transparent); }
+  .license-active {
+    padding: 5px 14px;
+    background: color-mix(in oklab, var(--accent) 14%, var(--bg));
+    color: var(--accent);
+    border: 1px solid color-mix(in oklab, var(--accent) 42%, transparent);
+  }
+  .license-active::after {
+    content: "";
+    position: absolute;
+    z-index: 0;
+    top: -2px;
+    bottom: -2px;
+    left: -30%;
+    width: 24%;
+    background: color-mix(in oklab, var(--accent) 34%, transparent);
+    opacity: 0;
+    pointer-events: none;
+    transform: translateX(0) skewX(-18deg);
+  }
+  .license-reveal {
+    animation:
+      license-reveal 0.72s cubic-bezier(0.22, 1, 0.36, 1) both,
+      license-halo 1.15s cubic-bezier(0.22, 1, 0.36, 1) both;
+  }
+  .license-active.license-reveal::after {
+    animation: license-scan 0.95s cubic-bezier(0.22, 1, 0.36, 1) 0.16s both;
+  }
+  .license-owner-reveal {
+    animation: license-owner-text 1.25s cubic-bezier(0.22, 1, 0.36, 1) 0.22s both;
+  }
+  .license-owner-reveal::before {
+    animation: license-owner-aura 1.25s cubic-bezier(0.22, 1, 0.36, 1) 0.22s both;
+  }
+  @keyframes license-reveal {
+    0% { opacity: 0; transform: translateY(-8px) scale(0.98); }
+    56% { opacity: 1; transform: translateY(1px) scale(1.006); }
+    100% { opacity: 1; transform: translateY(0) scale(1); }
+  }
+  @keyframes license-halo {
+    0% { box-shadow: 0 0 0 0 color-mix(in oklab, var(--accent) 0%, transparent); }
+    36% { box-shadow: 0 0 0 4px color-mix(in oklab, var(--accent) 18%, transparent); }
+    100% { box-shadow: 0 0 0 10px transparent; }
+  }
+  @keyframes license-scan {
+    0% { opacity: 0; transform: translateX(0) skewX(-18deg); }
+    18% { opacity: 0.9; }
+    100% { opacity: 0; transform: translateX(560%) skewX(-18deg); }
+  }
+  @keyframes license-owner-text {
+    0% { text-shadow: 0 0 0 transparent; }
+    35% { text-shadow: 0 0 12px color-mix(in oklab, var(--accent) 70%, transparent); }
+    100% { text-shadow: 0 0 0 transparent; }
+  }
+  @keyframes license-owner-aura {
+    0% { opacity: 0; transform: scale(0.86); }
+    32% { opacity: 1; transform: scale(1); }
+    100% { opacity: 0; transform: scale(1.16); }
+  }
   .tab-toolbar { display: flex; justify-content: flex-end; gap: 8px; margin-bottom: 12px; }
   .hint { font-size: 12px; color: var(--text-dim); margin-top: 4px; }
   .label-hint { color: var(--text-dim); font-weight: 400; }
@@ -718,6 +824,9 @@
   @media (max-width: 880px) {
     body { padding: 16px; padding-bottom: 96px; }
     header { flex-wrap: wrap; gap: 12px; }
+    .brand-lockup { order: 1; }
+    header .actions { order: 2; flex-wrap: wrap; justify-content: flex-end; }
+    .license-badge { order: 3; flex: 1 1 100%; max-width: 100%; }
     .env-header { flex-wrap: wrap; gap: 10px; }
     .env-header .left { flex-wrap: wrap; }
     .env-meta { flex-wrap: wrap; gap: 6px 16px; }
@@ -746,17 +855,26 @@
   @media (prefers-reduced-motion: reduce) {
     .spinner { animation: none; opacity: 0.7; }
     .badge-pulse { animation: none; }
+    .license-reveal { animation: none; }
+    .license-active.license-reveal::after { animation: none; }
+    .license-owner-reveal, .license-owner-reveal::before { animation: none; }
     .toast { transition: opacity 0.1s; transform: none; }
     .toast.show { transform: none; }
     .usage-bar-fill { transition: none; }
-    .btn, .tab-btn, .repo-link, .copy-db { transition: none; }
+    .btn, .tab-btn, .repo-link, .copy-db, .license-badge { transition: none; }
   }
 </style>
 </head>
 <body>
 
 <header>
-  <h1><img src="/logo.png" alt="Oduflow logo">Oduflow</h1>
+  <div class="brand-lockup">
+    <img src="/logo.png" alt="Oduflow logo">
+    <div class="brand-copy">
+      <h1>Oduflow</h1>
+      <div class="brand-byline">a product by <a href="https://oduist.com" target="_blank" rel="noopener">Oduist</a></div>
+    </div>
+  </div>
   <button id="license-badge" class="license-badge" style="display:none"></button>
   <div class="actions">
     <a class="docs-link" href="https://docs.oduflow.dev" target="_blank" rel="noopener" title="Open the Oduflow documentation">Docs &#8599;</a>
@@ -3042,10 +3160,32 @@ async function loadLicense() {
     if (!data.ok) return;
     var lic = data.license;
     var badge = document.getElementById('license-badge');
-    badge.textContent = lic.label;
-    badge.className = 'license-badge license-' + lic.type;
+    var label = document.createElement('span');
+    var isLicensed = lic.type !== 'unlicensed';
+    var shouldReveal = isLicensed && badge.dataset.licenseRevealed !== 'true';
+    label.className = 'license-badge-text';
+    if (isLicensed) {
+      var ownerSeparator = lic.label.lastIndexOf(': ');
+      if (ownerSeparator >= 0) {
+        var owner = document.createElement('span');
+        label.appendChild(document.createTextNode(lic.label.slice(0, ownerSeparator + 2)));
+        owner.className = 'license-owner' + (shouldReveal ? ' license-owner-reveal' : '');
+        owner.textContent = lic.label.slice(ownerSeparator + 2);
+        label.appendChild(owner);
+      } else {
+        label.textContent = lic.label;
+      }
+    } else {
+      label.textContent = lic.label;
+    }
+    badge.replaceChildren(label);
+    badge.className = 'license-badge license-' + lic.type + (isLicensed ? ' license-active' : '') + (shouldReveal ? ' license-reveal' : '');
+    if (shouldReveal) {
+      badge.dataset.licenseRevealed = 'true';
+    }
     badge.style.display = '';
     if (lic.type === 'unlicensed') {
+      delete badge.dataset.licenseRevealed;
       badge.style.cursor = 'pointer';
       badge.onclick = openLicenseModal;
       badge.title = 'Click to activate a license';
