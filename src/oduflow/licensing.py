@@ -7,7 +7,7 @@ from dataclasses import dataclass
 
 logger = logging.getLogger("oduflow")
 
-LICENSE_PATH = "/etc/oduflow/license.key"
+LICENSE_FILENAME = "license.key"
 
 # License types
 TYPE_UNLICENSED = "unlicensed"
@@ -69,6 +69,14 @@ class LicenseInfo:
 _UNLICENSED = LicenseInfo(type=TYPE_UNLICENSED, name="", email="")
 
 
+def get_license_path(etc_dir: str | None = None) -> str:
+    if not etc_dir:
+        from oduflow.settings import _resolve_etc_dir
+
+        etc_dir = _resolve_etc_dir()
+    return os.path.join(etc_dir, LICENSE_FILENAME)
+
+
 def _verify_license_text(raw: str) -> LicenseInfo:
     from cryptography.hazmat.primitives.asymmetric import padding
     from cryptography.hazmat.primitives import hashes
@@ -105,30 +113,35 @@ def _verify_license_text(raw: str) -> LicenseInfo:
     )
 
 
-def get_license_info() -> LicenseInfo:
-    if not os.path.isfile(LICENSE_PATH):
+def get_license_info(etc_dir: str | None = None) -> LicenseInfo:
+    license_path = get_license_path(etc_dir)
+    if not os.path.isfile(license_path):
         return _UNLICENSED
     try:
-        raw = open(LICENSE_PATH, "r").read()
+        raw = open(license_path, "r", encoding="utf-8").read()
         return _verify_license_text(raw)
     except Exception as e:
-        logger.warning("Invalid license file %s: %s", LICENSE_PATH, e)
+        logger.warning("Invalid license file %s: %s", license_path, e)
         return _UNLICENSED
 
 
-def install_license(source_path: str) -> LicenseInfo:
-    raw = open(source_path, "r").read()
+def install_license(source_path: str, etc_dir: str | None = None) -> LicenseInfo:
+    raw = open(source_path, "r", encoding="utf-8").read()
     info = _verify_license_text(raw)
-    os.makedirs(os.path.dirname(LICENSE_PATH), exist_ok=True)
-    shutil.copy2(source_path, LICENSE_PATH)
+    license_path = get_license_path(etc_dir)
+    os.makedirs(os.path.dirname(license_path), exist_ok=True)
+    shutil.copy2(source_path, license_path)
     logger.info("License installed: %s", info.label)
     return info
 
 
-def install_license_from_text(key_text: str) -> LicenseInfo:
+def install_license_from_text(
+    key_text: str, etc_dir: str | None = None
+) -> LicenseInfo:
     info = _verify_license_text(key_text)
-    os.makedirs(os.path.dirname(LICENSE_PATH), exist_ok=True)
-    with open(LICENSE_PATH, "w") as f:
+    license_path = get_license_path(etc_dir)
+    os.makedirs(os.path.dirname(license_path), exist_ok=True)
+    with open(license_path, "w", encoding="utf-8") as f:
         f.write(key_text.strip())
     logger.info("License installed: %s", info.label)
     return info

@@ -23,6 +23,7 @@ from starlette.testclient import TestClient
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
 from oduflow import web_ui
+from oduflow.licensing import LicenseInfo, TYPE_INDIVIDUAL, TYPE_UNLICENSED
 from oduflow.settings import Settings, TeamSettings
 from oduflow.web_ui import (
     _AUTH_COOKIE,
@@ -41,10 +42,11 @@ _PW = "s3cret"
 _DATA_DIR = tempfile.mkdtemp(prefix="oduflow-uiauth-test-")
 
 
-def _settings(routing_mode: str = "port") -> Settings:
+def _settings(routing_mode: str = "port", etc_dir: str = "") -> Settings:
     return Settings(
         routing_mode=routing_mode,
         base_data_dir=_DATA_DIR,
+        etc_dir=etc_dir,
         teams={
             "1": TeamSettings(team_id="1", ui_password=_PW),
         },
@@ -221,10 +223,40 @@ def test_api_unauthenticated_is_401_without_basic_challenge():
     assert "www-authenticate" not in {k.lower() for k in resp.headers}
 
 
-def test_api_basic_auth_still_works():
-    client = TestClient(_full_app(_settings()))
+def test_api_basic_auth_still_works(tmp_path):
+    client = TestClient(_full_app(_settings(etc_dir=str(tmp_path / "conf"))))
     resp = client.get("/api/license", headers=_basic("admin", _PW))
     assert resp.status_code == 200
+    assert resp.json()["license"]["type"] == TYPE_UNLICENSED
+
+
+def test_api_license_activate_uses_settings_etc_dir(tmp_path, monkeypatch):
+    calls = {}
+
+    def install_license_from_text(key_text: str, etc_dir: str | None = None):
+        calls["key_text"] = key_text
+        calls["etc_dir"] = etc_dir
+        return LicenseInfo(
+            type=TYPE_INDIVIDUAL,
+            name="Ada",
+            email="ada@example.com",
+        )
+
+    monkeypatch.setattr(
+        web_ui, "install_license_from_text", install_license_from_text
+    )
+    settings = _settings(etc_dir=str(tmp_path / "conf"))
+    client = TestClient(_full_app(settings))
+
+    resp = client.post(
+        "/api/license/activate",
+        headers=_basic("admin", _PW),
+        json={"key": " fake-key "},
+    )
+
+    assert resp.status_code == 200
+    assert resp.json()["license"]["name"] == "Ada"
+    assert calls == {"key_text": "fake-key", "etc_dir": settings.etc_dir}
 
 
 def test_dashboard_basic_sets_cookie():

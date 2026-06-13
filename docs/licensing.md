@@ -15,7 +15,7 @@ Oduflow is source-available under the [Polyform Noncommercial License 1.0.0](htt
 
 **Via CLI:**
 
-Copy the license file to `/etc/oduflow/license.key`. Oduflow reads it automatically on startup.
+Copy the license file to `<config-dir>/license.key`. The config directory is usually `/etc/oduflow`; when that path is not writable, Oduflow uses `~/.oduflow/conf`. Oduflow reads the license automatically on startup.
 
 **Via Web Dashboard:**
 
