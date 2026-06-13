@@ -1,14 +1,74 @@
 # Changelog
 
-## Unreleased
+## v1.50.1 (since v1.20.1)
 
 ### Breaking Changes
 
-- **`rebuild_environment` renamed to `update_environment`** — the tool (and its REST route `/api/environments/{branch}/update`) now also accepts `odoo_image` and `env_vars` to switch the image and replace container environment variables. Called with no arguments it behaves exactly like the old `rebuild_environment` (re-create the container, preserving DB and filestore).
+- **`rebuild_environment` renamed to `update_environment`** — the tool (and its REST route `/api/environments/{branch}/update`) now also accepts `odoo_image` and `env_vars` to switch the image and replace container environment variables. Called with no arguments it behaves exactly like the old `rebuild_environment` (re-create the container, preserving DB and filestore). ([a13c73a](https://github.com/oduist/oduflow/commit/a13c73a))
+- **Removed `template-up` / `template-down` CLI commands** ([8342768](https://github.com/oduist/oduflow/commit/8342768))
 
 ### Features
 
-- **Environment variables for environments** — `create_environment` accepts `env_vars` (comma-separated `KEY=VALUE`) to inject container environment variables on top of the database connection variables; `update_environment` can replace them later. Env vars are persisted on the container, reported by `get_environment_info`, and editable from the web dashboard create form.
+- **Stdio live-mount + explicit `pull_and_apply` guardrail** — `create_environment(local_path=...)` bind-mounts the agent's own checkout live into the container (stdio transport only), so edits apply instantly with no git push/pull; `pull_and_apply` is transport-agnostic and takes explicit `install`/`upgrade`/`restart` actions, with a guardrail that cross-checks the requested action against the detected diff and surfaces non-blocking warnings ([aca9445](https://github.com/oduist/oduflow/commit/aca9445))
+- **Environment lifecycle automation** — idle environments auto-stop and long-stopped environments auto-delete after configurable hours (protected environments are exempt); container-level tools auto-wake a stopped environment and prepend a note; activity is tracked per team in `activity.json` ([e992971](https://github.com/oduist/oduflow/commit/e992971))
+- **Environment variables for environments** — `create_environment` accepts `env_vars` (comma-separated `KEY=VALUE`) injected on top of the database connection variables; `update_environment` can replace them later. Env vars are persisted on the container, reported by `get_environment_info`, and editable from the web dashboard create form ([a13c73a](https://github.com/oduist/oduflow/commit/a13c73a))
+- **Self-hosted OAuth Authorization Server for MCP clients** ([5f32f58](https://github.com/oduist/oduflow/commit/5f32f58))
+- **GitHub OAuth support for MCP HTTP transport** ([97c3fc8](https://github.com/oduist/oduflow/commit/97c3fc8))
+- **`auto_install_modules` parameter** for environments and templates ([e868d90](https://github.com/oduist/oduflow/commit/e868d90))
+- **Docker volume management** — manage persistent service data via Docker volumes, mount external Docker volumes to services, and browse/manage files inside volumes ([6b05f8a](https://github.com/oduist/oduflow/commit/6b05f8a), [a396583](https://github.com/oduist/oduflow/commit/a396583), [5cabc2c](https://github.com/oduist/oduflow/commit/5cabc2c))
+- **Host network mode for services** ([d4609e6](https://github.com/oduist/oduflow/commit/d4609e6))
+- **`privileged` and `NET_ADMIN` capability options for services** ([edad2ef](https://github.com/oduist/oduflow/commit/edad2ef))
+- **`restart_service` and `run_service_command` tools** with increased summary limits ([a2fa612](https://github.com/oduist/oduflow/commit/a2fa612))
+- **`update_service` can change any setting** — env, image, port, hostname, host_mode, volumes, privileged, and net_admin ([970aba4](https://github.com/oduist/oduflow/commit/970aba4), [5bb3f7e](https://github.com/oduist/oduflow/commit/5bb3f7e))
+- **`get_service_info` tool** ([27ec4c9](https://github.com/oduist/oduflow/commit/27ec4c9))
+- **Non-destructive template update for fuse-overlayfs environments** ([1edafff](https://github.com/oduist/oduflow/commit/1edafff))
+- **`reload-template --source` flag** for S3/local sync ([2e2e0cd](https://github.com/oduist/oduflow/commit/2e2e0cd))
+- **`# KEEP` marker** to protect files from being overwritten during upgrade ([a97e13f](https://github.com/oduist/oduflow/commit/a97e13f))
+- **Read repo-level `odoo.conf` from `.oduflow/` directory** ([48eea3e](https://github.com/oduist/oduflow/commit/48eea3e))
+- **`created_at` timestamp, editable notes, and preset-based service updates** ([b849551](https://github.com/oduist/oduflow/commit/b849551))
+- **odoo.conf `db_maxconn=16`** — bumped from 4, which was too small ([90e7e19](https://github.com/oduist/oduflow/commit/90e7e19))
+
+### Dashboard
+
+- **Engineer's Console redesign** — visual system aligned with oduflow.dev (OKLCH tokens, Outfit + Geist Mono, signal palette); all assets vendored (xterm.js and fonts, no CDN, works air-gapped); state-driven Start/Stop toggle; in-system dialogs replace native `confirm()`/`prompt()`; accessibility (focus traps, ARIA roles, keyboard navigation, ≥44px touch targets); responsive down to 390px; single polling interval; real RAM/CPU metrics on macOS ([e992971](https://github.com/oduist/oduflow/commit/e992971))
+- **Session-cookie auth with login form and logout** — replaces the HTTP Basic browser dialog; signed `itsdangerous` session cookies (7-day expiry, persistent server-side secret); Basic auth retained for API/CLI clients ([9e24ab2](https://github.com/oduist/oduflow/commit/9e24ab2))
+- **Show git branch in env list** when it differs from the environment name ([ae5441d](https://github.com/oduist/oduflow/commit/ae5441d))
+- **`host_mode` checkbox** on service creation and restore forms ([73fbee7](https://github.com/oduist/oduflow/commit/73fbee7))
+- **PR and commits icon-links** next to the repo URL ([25017cd](https://github.com/oduist/oduflow/commit/25017cd))
+- **Copy DB name on click** ([7f8d654](https://github.com/oduist/oduflow/commit/7f8d654))
+
+### Bug Fixes
+
+- **WebSocket terminal auth** — Console/SQL terminals failed because browsers can't send a Basic auth header on a WS handshake; added a signed cookie auth fallback for HTTP and WebSocket scopes ([9e24ab2](https://github.com/oduist/oduflow/commit/9e24ab2))
+- **Greenfield DB init race** — for `template_name=none`, initialize the empty DB in an isolated short-lived container before the serving container starts, avoiding a concurrent `orm_signaling_registry` collision that left `base` uninstalled ([aca9445](https://github.com/oduist/oduflow/commit/aca9445))
+- **Orphan PG role on template restore** — restore env-derived templates with `--no-owner` so deleting the source environment can drop its per-environment role ([aca9445](https://github.com/oduist/oduflow/commit/aca9445))
+- **Test port flag by Odoo version** — pick `--longpolling-port` vs `--gevent-port` based on the environment's Odoo major version ([79b1c35](https://github.com/oduist/oduflow/commit/79b1c35))
+- **`run_odoo_tests` port & execution** — pass `--no-http --workers 0` to avoid an 8069 conflict; override test ports and use `-u` so tests actually run ([6311dc4](https://github.com/oduist/oduflow/commit/6311dc4), [738263e](https://github.com/oduist/oduflow/commit/738263e))
+- **Post-clone DB fixup** — transfer object ownership and drop signaling sequences ([205e79f](https://github.com/oduist/oduflow/commit/205e79f))
+- **Filter containers by prefix** to isolate test/production environments ([4a50e1c](https://github.com/oduist/oduflow/commit/4a50e1c))
+- **Skip submodule recursion on git fetch** to tolerate inaccessible submodules ([5a1a476](https://github.com/oduist/oduflow/commit/5a1a476))
+- **Raise `NotFoundError` when deleting a non-existent environment** ([0a1d875](https://github.com/oduist/oduflow/commit/0a1d875))
+- **`update_service` URL KeyError; fresh pull on create** ([27ec4c9](https://github.com/oduist/oduflow/commit/27ec4c9))
+- **Propagate `cap_add`/`privileged` in `restore_service`** and surface them in `list_service_presets` ([6bca16c](https://github.com/oduist/oduflow/commit/6bca16c))
+- **Strip docker volume name prefix** in `resolve_volume_binds` ([2573b17](https://github.com/oduist/oduflow/commit/2573b17))
+- **Exclude checkboxes from full-width input styling** in forms ([7f685c9](https://github.com/oduist/oduflow/commit/7f685c9))
+- **Pass missing `team` arg** to `_get_used_ports` in `template_up` ([fbfc85e](https://github.com/oduist/oduflow/commit/fbfc85e))
+- **Recreate live-mount environments as live-mounts** — record `local_path` in template metadata and restore it on create ([9e24ab2](https://github.com/oduist/oduflow/commit/9e24ab2))
+
+### Performance
+
+- **`reload-template`** — pipe `gunzip` into `psql` to avoid a temp file ([0bd0838](https://github.com/oduist/oduflow/commit/0bd0838))
+
+### Documentation
+
+- **Use Odoo 19.0 across examples** and bump default image fallbacks to `odoo:19.0` ([a1fba72](https://github.com/oduist/oduflow/commit/a1fba72))
+- **Docs Material redesign** ([7980fea](https://github.com/oduist/oduflow/commit/7980fea))
+- **Document self-hosted OAuth** in the config reference, quick start, and llms docs ([73aa9b9](https://github.com/oduist/oduflow/commit/73aa9b9))
+- **Consolidate agent guidance into `AGENTS.md`**, making `CLAUDE.md` a thin include ([7b60d8c](https://github.com/oduist/oduflow/commit/7b60d8c))
+- **Document `refresh_template` MCP tool** in mcp-tools, llms, llms-full ([73a4768](https://github.com/oduist/oduflow/commit/73a4768))
+- **Rework transport mode documentation** (stdio/http), add `uvx` examples ([f2c8eef](https://github.com/oduist/oduflow/commit/f2c8eef))
+- **Fix `create_environment` CLI examples** — wrong positional arg order ([67dae80](https://github.com/oduist/oduflow/commit/67dae80))
+- **Docs auto-deploy and `.oduflow/` dependency files** ([7f8d654](https://github.com/oduist/oduflow/commit/7f8d654))
 
 ## v1.20.1 (since v1.15.1)
 
