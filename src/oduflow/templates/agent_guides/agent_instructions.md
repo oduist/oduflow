@@ -9,7 +9,18 @@ MCP endpoint: `http://<host>:8000/mcp`
 
 ---
 
-## Core Workflow for Agents
+## Choose The Code Delivery Workflow First
+
+Before editing, identify how the environment receives code:
+
+- **`repo_url` mode:** Oduflow owns a managed clone. Edit locally, commit, push, then call `pull_and_apply` so Oduflow can pull the pushed commits.
+- **`local_path` live-mount mode:** Oduflow bind-mounts a local folder. Edit files directly in that folder; no push is required. Git commits are optional and are not used by Oduflow to decide what was applied.
+
+In live-mount mode, you as the agent must track the intent of your own edits. If you add/change fields, models, `_inherit`/`_name`, manifest `data`/`depends`, security/data XML, `ir.cron`, mail templates, or anything loaded into the database, call `pull_and_apply(..., upgrade="module")`. If you add a new module, call `install="module"`. Use `restart=True` only for Python logic changes that do not require registry/schema/data updates.
+
+---
+
+## Core Workflow for Agents (`repo_url` mode)
 
 ```
 1. list_environments          — Check if an environment for the current branch exists
@@ -24,6 +35,20 @@ MCP endpoint: `http://<host>:8000/mcp`
 
 ---
 
+## Core Workflow for Agents (`local_path` live-mount mode)
+
+```
+1. list_environments          — Check if an environment already uses local_path
+2. create_environment         — If not, provision one with local_path="/abs/path"
+3. Write / edit files directly in the mounted local folder
+4. pull_and_apply             — Pass install/upgrade/restart explicitly when your edits require it
+5. If errors in response → fix code → repeat from step 4
+6. run_odoo_tests             — Run Odoo tests for the changed modules
+7. delete_environment         — Tear down when done
+```
+
+---
+
 ## MCP Tools Quick Reference
 
 ### Environment Lifecycle
@@ -31,7 +56,7 @@ MCP endpoint: `http://<host>:8000/mcp`
 | Tool | When to use |
 |---|---|
 | `list_environments` | Check existing environments before creating a new one |
-| `create_environment(branch, env_name?, repo_url, odoo_image, template_name?, env_vars?, local_path?)` | Provision an environment. `branch` is the git branch; `env_name` defaults to the branch name. Use the correct Odoo Docker image. Pass `template_name="none"` for greenfield projects. `env_vars` is a comma-separated `KEY=VALUE` list injected into the Odoo container. **Local fast-path (stdio only):** pass `local_path="/abs/path/to/checkout"` to bind-mount your local working copy live instead of cloning — edits apply with no git push (see "Local Fast-Path" below). |
+| `create_environment(branch, env_name?, repo_url, odoo_image, template_name?, env_vars?, local_path?)` | Provision an environment. `branch` is the git branch; `env_name` defaults to the branch name. Use the correct Odoo Docker image. Pass `template_name="none"` for greenfield projects. `env_vars` is a comma-separated `KEY=VALUE` list injected into the Odoo container. **Local fast-path / live-mount:** pass `local_path="/abs/path/to/checkout"` to bind-mount local files live instead of cloning — edits apply with no git push (see "Local Fast-Path / Live-Mount" below). |
 | `get_environment_info(env_name)` | Get full environment details: database name, URL, repo, image, template, extra addons, workspace, container status, CPU/RAM stats |
 | `delete_environment(env_name)` | Tear down when the task is complete or cancelled |
 | `start_environment` / `stop_environment` | Resume or pause a stopped environment |
@@ -251,7 +276,7 @@ When you call `pull_and_apply`, Oduflow analyzes every changed file:
 
 Priority: install > upgrade > restart > refresh (no action).
 
-This auto-classification runs when you call `pull_and_apply` **without** `install`/`upgrade`/`restart`. Use it for pulling commits you did not author. When you authored the edits, prefer the explicit form (next section).
+This auto-classification runs when you call `pull_and_apply` **without** `install`/`upgrade`/`restart`. In `repo_url` mode it can compare pulled commits with Git history, including field/manifest details. In `local_path` live-mount mode it is snapshot/path-based only, so it cannot reliably know whether a Python edit added a field or changed only method logic. Use auto mode for pulling commits you did not author. When you authored the edits, prefer the explicit form (next section).
 
 ---
 
@@ -273,17 +298,20 @@ In explicit mode, Oduflow cross-checks your action against the detected diff and
 
 ---
 
-## Local Fast-Path (stdio transport)
+## Local Fast-Path / Live-Mount
 
-When Oduflow runs locally (stdio) on the same machine as you, skip the GitHub round-trip entirely:
+When Oduflow runs on the same machine as the code, skip the GitHub round-trip entirely:
 
 1. `create_environment(branch=..., odoo_image=..., template_name=..., local_path="/abs/path/to/your/checkout")` — bind-mounts your working copy live into the container instead of cloning. `repo_url` is not needed.
-2. Edit files in that directory with your normal tools. Changes are visible inside the container **instantly** (no commit, no push, no clone).
-3. `pull_and_apply(env_name, upgrade="my_module")` (or `restart=True`, or `install=...`) to apply — per the decision rules above. XML view edits need no call at all: just refresh the browser.
+2. Edit files in that directory with your normal tools. Changes are visible inside the container **instantly** (no push, no clone).
+3. `pull_and_apply(env_name, upgrade="my_module")` (or `restart=True`, or `install=...`) to apply — per the decision rules above. XML view edits usually need no call at all: just refresh the browser.
 
 Notes:
-- `local_path` is **rejected over http transport** (a remote server must not mount client paths).
-- Change detection uses your checkout's git working tree (uncommitted edits included), so committing after applying gives the cleanest signal. A non-git directory falls back to file-mtime detection with a coarser guardrail.
+- `local_path` is controlled by `[server].allow_local_path` (default: `true`). Set it to `false` to disable live-mounts.
+- Live-mount change detection is snapshot-based and independent of Git. Oduflow records which local file state was last successfully applied and compares later calls against that snapshot.
+- In live-mount mode, you as the agent must track the intent of your own edits. If you add/change fields, models, `_inherit`/`_name`, manifest `data`/`depends`, security/data XML, `ir.cron`, mail templates, or anything loaded into the database, call `pull_and_apply(..., upgrade="module")`. If you add a new module, call `install="module"`. Use `restart=True` only for Python logic changes that do not require registry/schema/data updates.
+- Git is optional in live-mount mode. Commit whenever you want for your own workflow; Oduflow does not require commits, create commits, or read Git state to apply local changes.
+- With `repo_url` mode, use the normal remote workflow: edit locally, commit, push, then call `pull_and_apply` so the managed clone can pull the pushed commits.
 
 ---
 

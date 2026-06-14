@@ -213,6 +213,50 @@ class TestListEnvironmentsTool:
         result = _call_tool("list_environments")
         assert "No active" in result
 
+    @patch("oduflow.docker_ops.env_ops.list_environments")
+    def test_list_shows_live_mount_path(self, mock_list):
+        mock_list.return_value = [
+            {
+                "env_name": "local",
+                "status": "running",
+                "url": "http://localhost:50000",
+                "local_path": "/Users/dev/addons",
+                "containers": [],
+            }
+        ]
+
+        result = _call_tool("list_environments")
+
+        assert "Live-mount: /Users/dev/addons" in result
+
+
+class TestAgentInstructionsTool:
+    @patch("oduflow.docker_ops.env_ops.list_environments")
+    def test_instructions_preface_local_mode(self, mock_list):
+        mock_list.return_value = [
+            {
+                "env_name": "test-local",
+                "local_path": "/Users/dev/addons",
+            }
+        ]
+
+        result = _call_tool("get_agent_instructions")
+
+        assert result.startswith("## Current Code Delivery Mode")
+        assert "Live-mount/local_path mode is active" in result
+        assert "upgrade=\"module\"" in result
+        assert "Git commits are optional" in result
+
+    @patch("oduflow.docker_ops.env_ops.list_environments")
+    def test_instructions_preface_repo_url_mode(self, mock_list):
+        mock_list.return_value = []
+
+        result = _call_tool("get_agent_instructions")
+
+        assert result.startswith("## Current Code Delivery Mode")
+        assert "No live-mount/local_path environment was detected" in result
+        assert "commit, push, then call `pull_and_apply`" in result
+
 
 class TestInfoTool:
     @patch("oduflow.docker_ops.env_ops.get_environment_info")

@@ -354,6 +354,7 @@ class TestCreateEnvironment:
         # No git clone was invoked.
         for call in mock_run.call_args_list:
             assert "clone" not in (call.args[0] if call.args else [])
+            assert "init" not in (call.args[0] if call.args else [])
         # Result and container label point at the live-mount directory.
         abs_local = os.path.abspath(local_dir)
         assert result["local_path"] == abs_local
@@ -361,6 +362,35 @@ class TestCreateEnvironment:
         assert run_kwargs["labels"]["oduflow.local_path"] == abs_local
         # The local dir is bind-mounted to /mnt/extra-addons.
         assert run_kwargs["volumes"][abs_local]["bind"] == "/mnt/extra-addons"
+
+    def test_create_local_path_rejects_when_disabled(self, tmp_path):
+        settings = Settings(
+            base_data_dir="/tmp/flow-test",
+            db_user="odoo",
+            db_password="odoo",
+            etc_dir="/tmp/flow-test/etc",
+            allow_local_path=False,
+            teams={"1": TEST_TEAM},
+        )
+
+        with (
+            patch("oduflow.docker_ops.env_ops.get_client") as mock_get_client,
+            patch("oduflow.docker_ops.env_ops._ensure_system_ready"),
+            patch("oduflow.docker_ops.env_ops._cleanup_old_environment"),
+        ):
+            mock_get_client.return_value.containers.get.side_effect = (
+                docker.errors.NotFound("nf")
+            )
+            with pytest.raises(PrerequisiteNotMetError, match="local_path.*disabled"):
+                env_ops.create_environment(
+                    settings,
+                    TEST_TEAM,
+                    "feature/local",
+                    "",
+                    "odoo:17.0",
+                    template_name=None,
+                    local_path=str(tmp_path),
+                )
 
 
 class TestReloadTemplate:
@@ -399,17 +429,167 @@ class TestReloadTemplate:
 
 
 class TestPullEnvironmentLocal:
+    def test_local_snapshot_detects_added_modified_deleted(self, tmp_path):
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        team = TeamSettings(team_id="1", data_dir=str(tmp_path / "team"))
+
+        modified = repo / "sale" / "models" / "sale.py"
+        deleted = repo / "sale" / "views" / "old.xml"
+        unchanged = repo / "sale" / "views" / "same.xml"
+        modified.parent.mkdir(parents=True)
+        deleted.parent.mkdir(parents=True)
+        modified.write_text("old")
+        deleted.write_text("<old/>")
+        unchanged.write_text("<same/>")
+
+        env_ops._write_local_snapshot(str(repo), "env", team)
+
+        old_stat = modified.stat()
+        modified.write_text("new")
+        os.utime(
+            modified,
+            ns=(old_stat.st_atime_ns, old_stat.st_mtime_ns + 1_000_000),
+        )
+        deleted.unlink()
+        added = repo / "sale" / "views" / "new.xml"
+        added.write_text("<new/>")
+
+        base_ref, changed = env_ops._detect_local_changes(str(repo), "env", team)
+
+        assert base_ref is None
+        assert changed == [
+            "sale/models/sale.py",
+            "sale/views/new.xml",
+            "sale/views/old.xml",
+        ]
+
+    def test_local_snapshot_repeated_after_advance_is_clean(self, tmp_path):
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        team = TeamSettings(team_id="1", data_dir=str(tmp_path / "team"))
+        path = repo / "sale" / "models" / "sale.py"
+        path.parent.mkdir(parents=True)
+        path.write_text("old")
+
+        env_ops._write_local_snapshot(str(repo), "env", team)
+        old_stat = path.stat()
+        path.write_text("new")
+        os.utime(path, ns=(old_stat.st_atime_ns, old_stat.st_mtime_ns + 1_000_000))
+
+        assert env_ops._detect_local_changes(str(repo), "env", team)[1] == [
+            "sale/models/sale.py"
+        ]
+        env_ops._write_local_snapshot(str(repo), "env", team)
+        assert env_ops._detect_local_changes(str(repo), "env", team)[1] == []
+
+    @patch("oduflow.docker_ops.env_ops._apply_actions")
+    def test_local_auto_uses_path_only_classification(
+        self, mock_apply, mock_docker_client, tmp_path
+    ):
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        team = TeamSettings(team_id="1", data_dir=str(tmp_path / "team"))
+        py_file = repo / "sale" / "models" / "sale.py"
+        py_file.parent.mkdir(parents=True)
+        py_file.write_text("old")
+        env_ops._write_local_snapshot(str(repo), "env", team)
+
+        old_stat = py_file.stat()
+        py_file.write_text("new")
+        os.utime(py_file, ns=(old_stat.st_atime_ns, old_stat.st_mtime_ns + 1_000_000))
+
+        container = MagicMock()
+        container.labels = {"oduflow.local_path": str(repo)}
+        mock_docker_client.containers.get.return_value = container
+        mock_apply.return_value = {
+            "action": "restart",
+            "changed_files": ["sale/models/sale.py"],
+            "message": "Container restarted.",
+        }
+
+        result = env_ops.pull_environment(TEST_SETTINGS, team, "env")
+
+        assert result["action"] == "restart"
+        assert mock_apply.call_args.kwargs["do_restart"] is True
+        assert env_ops._detect_local_changes(str(repo), "env", team)[1] == []
+
+    @patch("oduflow.docker_ops.env_ops._apply_actions")
+    def test_local_failed_apply_does_not_advance_snapshot(
+        self, mock_apply, mock_docker_client, tmp_path
+    ):
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        team = TeamSettings(team_id="1", data_dir=str(tmp_path / "team"))
+        xml_file = repo / "sale" / "security" / "rules.xml"
+        xml_file.parent.mkdir(parents=True)
+        xml_file.write_text("<old/>")
+        env_ops._write_local_snapshot(str(repo), "env", team)
+
+        old_stat = xml_file.stat()
+        xml_file.write_text("<new/>")
+        os.utime(xml_file, ns=(old_stat.st_atime_ns, old_stat.st_mtime_ns + 1_000_000))
+
+        container = MagicMock()
+        container.labels = {"oduflow.local_path": str(repo)}
+        mock_docker_client.containers.get.return_value = container
+        mock_apply.return_value = {
+            "action": "upgrade",
+            "modules_upgraded": ["sale"],
+            "exit_code": 1,
+            "changed_files": ["sale/security/rules.xml"],
+            "message": "Upgraded modules: sale",
+        }
+
+        result = env_ops.pull_environment(TEST_SETTINGS, team, "env", upgrade=["sale"])
+
+        assert result["exit_code"] == 1
+        assert env_ops._detect_local_changes(str(repo), "env", team)[1] == [
+            "sale/security/rules.xml"
+        ]
+
+    @patch("oduflow.docker_ops.env_ops._apply_actions")
+    def test_local_strict_block_does_not_advance_snapshot(
+        self, mock_apply, mock_docker_client, tmp_path
+    ):
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        team = TeamSettings(team_id="1", data_dir=str(tmp_path / "team"))
+        xml_file = repo / "sale" / "security" / "rules.xml"
+        xml_file.parent.mkdir(parents=True)
+        xml_file.write_text("<old/>")
+        env_ops._write_local_snapshot(str(repo), "env", team)
+
+        old_stat = xml_file.stat()
+        xml_file.write_text("<new/>")
+        os.utime(xml_file, ns=(old_stat.st_atime_ns, old_stat.st_mtime_ns + 1_000_000))
+
+        container = MagicMock()
+        container.labels = {"oduflow.local_path": str(repo)}
+        mock_docker_client.containers.get.return_value = container
+
+        result = env_ops.pull_environment(
+            TEST_SETTINGS, team, "env", restart=True, strict=True
+        )
+
+        assert result["action"] == "blocked"
+        mock_apply.assert_not_called()
+        assert env_ops._detect_local_changes(str(repo), "env", team)[1] == [
+            "sale/security/rules.xml"
+        ]
+
+    @patch("oduflow.docker_ops.env_ops._write_local_snapshot")
     @patch("oduflow.docker_ops.env_ops._apply_actions")
     @patch("oduflow.docker_ops.env_ops._detect_local_changes")
     @patch("oduflow.docker_ops.env_ops.os.path.isdir", return_value=True)
     def test_local_explicit_guardrail_warns(
-        self, mock_isdir, mock_detect, mock_apply, mock_docker_client
+        self, mock_isdir, mock_detect, mock_apply, mock_write, mock_docker_client
     ):
         container = MagicMock()
         container.labels = {"oduflow.local_path": "/some/local"}
         mock_docker_client.containers.get.return_value = container
         # A security XML change recommends -u of 'sale'.
-        mock_detect.return_value = ("HEAD", ["sale/security/ir_rule.xml"])
+        mock_detect.return_value = (None, ["sale/security/ir_rule.xml"])
         mock_apply.return_value = {
             "action": "restart",
             "changed_files": ["sale/security/ir_rule.xml"],
@@ -424,17 +604,19 @@ class TestPullEnvironmentLocal:
         assert any("sale" in w for w in result.get("warnings", []))
         mock_apply.assert_called_once()
         mock_detect.assert_called_once()
+        mock_write.assert_called_once()
 
+    @patch("oduflow.docker_ops.env_ops._write_local_snapshot")
     @patch("oduflow.docker_ops.env_ops._apply_actions")
     @patch("oduflow.docker_ops.env_ops._detect_local_changes")
     @patch("oduflow.docker_ops.env_ops.os.path.isdir", return_value=True)
     def test_local_strict_blocks(
-        self, mock_isdir, mock_detect, mock_apply, mock_docker_client
+        self, mock_isdir, mock_detect, mock_apply, mock_write, mock_docker_client
     ):
         container = MagicMock()
         container.labels = {"oduflow.local_path": "/some/local"}
         mock_docker_client.containers.get.return_value = container
-        mock_detect.return_value = ("HEAD", ["sale/security/ir_rule.xml"])
+        mock_detect.return_value = (None, ["sale/security/ir_rule.xml"])
 
         result = env_ops.pull_environment(
             TEST_SETTINGS, TEST_TEAM, "feature/local", restart=True, strict=True
@@ -443,17 +625,19 @@ class TestPullEnvironmentLocal:
         assert result["action"] == "blocked"
         assert any("sale" in w for w in result["warnings"])
         mock_apply.assert_not_called()
+        mock_write.assert_not_called()
 
+    @patch("oduflow.docker_ops.env_ops._write_local_snapshot")
     @patch("oduflow.docker_ops.env_ops._apply_actions")
     @patch("oduflow.docker_ops.env_ops._detect_local_changes")
     @patch("oduflow.docker_ops.env_ops.os.path.isdir", return_value=True)
     def test_local_explicit_correct_no_warn(
-        self, mock_isdir, mock_detect, mock_apply, mock_docker_client
+        self, mock_isdir, mock_detect, mock_apply, mock_write, mock_docker_client
     ):
         container = MagicMock()
         container.labels = {"oduflow.local_path": "/some/local"}
         mock_docker_client.containers.get.return_value = container
-        mock_detect.return_value = ("HEAD", ["sale/security/ir_rule.xml"])
+        mock_detect.return_value = (None, ["sale/security/ir_rule.xml"])
         mock_apply.return_value = {
             "action": "upgrade",
             "modules_upgraded": ["sale"],
@@ -468,6 +652,7 @@ class TestPullEnvironmentLocal:
         assert result["action"] == "upgrade"
         assert not result.get("warnings")
         mock_apply.assert_called_once()
+        mock_write.assert_called_once()
 
 
 class TestCreateEnvironmentEnvVars:

@@ -612,6 +612,7 @@ def _build_routes(
                 extra_dict = extra_addons_raw or None
             elif isinstance(extra_addons_raw, str) and extra_addons_raw.strip():
                 extra_dict = _parse_extra_addons(extra_addons_raw.strip()) or None
+            local_path_from_meta = ""
             if resolved_template:
                 metadata_path = team.get_template_metadata_path(resolved_template)
                 if os.path.isfile(metadata_path):
@@ -630,25 +631,36 @@ def _build_routes(
                     if not auto_install_raw:
                         auto_install_raw = metadata.get("auto_install_modules", "")
                     if not repo_url and metadata.get("local_path"):
-                        return JSONResponse(
-                            {
-                                "ok": False,
-                                "error": (
-                                    f"Template '{resolved_template}' was saved "
-                                    "from a live-mounted environment and has no "
-                                    "repo_url. Provide repo_url explicitly, or "
-                                    "create the environment via the local "
-                                    "(stdio) server."
-                                ),
-                            },
-                            status_code=400,
-                        )
+                        if settings.allow_local_path:
+                            local_path_from_meta = metadata["local_path"]
+                        else:
+                            return JSONResponse(
+                                {
+                                    "ok": False,
+                                    "error": (
+                                        f"Template '{resolved_template}' was saved "
+                                        "from a live-mounted environment and has no "
+                                        "repo_url. Set allow_local_path = true in "
+                                        "oduflow.toml [server], or provide "
+                                        "repo_url explicitly."
+                                    ),
+                                },
+                                status_code=400,
+                            )
 
-            if not repo_url or not odoo_image:
+            if not repo_url and not local_path_from_meta:
                 return JSONResponse(
                     {
                         "ok": False,
-                        "error": "repo_url and odoo_image are required (not found in template metadata either).",
+                        "error": "repo_url is required (not found in template metadata either).",
+                    },
+                    status_code=400,
+                )
+            if not odoo_image:
+                return JSONResponse(
+                    {
+                        "ok": False,
+                        "error": "odoo_image is required (not found in template metadata either).",
                     },
                     status_code=400,
                 )
@@ -668,6 +680,7 @@ def _build_routes(
                 git_user=git_user,
                 auto_install_modules=auto_install_list or None,
                 env_vars=env_vars,
+                local_path=local_path_from_meta,
             )
             return JSONResponse({"ok": True, "result": result})
         except FlowError as e:

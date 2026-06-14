@@ -1,6 +1,23 @@
 # Changelog
 
-## v1.50.2 (since v1.50.1)
+## v1.50.3
+
+### Features
+
+- **Git-independent live-mount apply flow** — `local_path` environments now use an Oduflow-owned per-environment file snapshot instead of Git status to detect local changes. Git commits are optional in live-mount mode, non-git folders are supported as-is, and already-applied dirty/untracked files are no longer reported repeatedly.
+- **Config-gated live-mounts** — added `[server].allow_local_path` (default: `true`) to enable the single-developer live-mount workflow by default while still allowing operators to disable local bind mounts explicitly.
+- **Mode-aware agent instructions** — `get_agent_instructions` now starts with a dynamic code-delivery-mode preface. When a live-mounted environment is active, agents see the local workflow first, including the explicit `install`/`upgrade`/`restart` rules that apply to snapshot-based detection.
+
+### Bug Fixes
+
+- **Live-mount templates in Web UI** — environments created from templates that record `local_path` can now be recreated as live-mounts when `allow_local_path` is enabled, instead of always being rejected as HTTP-only.
+- **Local `pull_and_apply` repeat detection** — snapshots advance only after successful apply operations, and stay unchanged when strict guardrails block or install/upgrade fails.
+
+### Documentation
+
+- **Agent guide local workflow** — clarified the split between `repo_url` mode (`commit` → `push` → `pull_and_apply`) and `local_path` live-mount mode (edit local files directly; commits optional; pass explicit actions for database-affecting changes).
+
+## v1.50.2
 
 ### Bug Fixes
 

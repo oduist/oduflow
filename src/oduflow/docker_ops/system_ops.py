@@ -856,7 +856,7 @@ def _source_env_metadata(settings: Settings, labels: dict) -> dict:
 
     A live-mounted environment (``oduflow.local_path`` label) has no repo URL;
     record the path instead so create-from-template can re-establish the
-    live-mount (stdio transport only).
+    live-mount when allow_local_path is enabled.
     """
     metadata: dict[str, object] = {"odoo_image": labels.get(settings.image_label, "")}
     live_path = labels.get("oduflow.local_path", "")
