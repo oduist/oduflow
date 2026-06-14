@@ -2,8 +2,9 @@
 
 A template saved from a live-mounted environment must record ``local_path``
 (not a bogus path in ``repo_url``), and creating from such a template must
-re-establish the live-mount over stdio, fail with a clear message over http,
-and let an explicit repo_url override the template's local_path.
+re-establish the live-mount when allow_local_path is enabled, fail clearly
+when it is disabled, and let an explicit repo_url override the template's
+local_path.
 """
 
 from __future__ import annotations
@@ -20,7 +21,7 @@ from oduflow.settings import Settings, TeamSettings
 from tool_helpers import call_tool as _call_tool  # noqa: E402
 
 
-def _make_env(tmp_path):
+def _make_env(tmp_path, allow_local_path: bool = True):
     team = TeamSettings(
         team_id="1",
         data_dir=str(tmp_path / "team"),
@@ -29,6 +30,7 @@ def _make_env(tmp_path):
     settings = Settings(
         base_data_dir=str(tmp_path),
         disable_telemetry=True,
+        allow_local_path=allow_local_path,
         teams={"1": team},
     )
     return settings, team
@@ -94,9 +96,8 @@ class TestSourceEnvMetadata:
 
 
 class TestCreateFromLiveMountTemplate:
-    @patch("oduflow.settings.TRANSPORT", "stdio")
     @patch("oduflow.docker_ops.env_ops.create_environment")
-    def test_stdio_recreates_live_mount(self, mock_create, tool_env, tmp_path):
+    def test_recreates_live_mount_when_allowed(self, mock_create, tool_env, tmp_path):
         settings, team = tool_env
         code_dir = tmp_path / "addons"
         code_dir.mkdir()
@@ -112,22 +113,28 @@ class TestCreateFromLiveMountTemplate:
         assert mock_create.call_args.kwargs["local_path"] == str(code_dir)
         assert "Live-mount:" in result
 
-    @patch("oduflow.settings.TRANSPORT", "http")
     @patch("oduflow.docker_ops.env_ops.create_environment")
-    def test_http_rejects_with_clear_error(self, mock_create, tool_env, tmp_path):
-        settings, team = tool_env
+    def test_disabled_rejects_with_clear_error(self, mock_create, tmp_path):
+        import oduflow.server as server
+
+        settings, team = _make_env(tmp_path, allow_local_path=False)
+        old = server._settings
+        server._settings = settings
         _write_template(
             team,
             "tpl",
             {"odoo_image": "odoo:19.0", "repo_url": "", "local_path": "/x/addons"},
         )
-        with pytest.raises(ValueError, match="live-mounted environment"):
-            _call_tool("create_environment", branch="t", template_name="tpl")
-        mock_create.assert_not_called()
+        try:
+            with patch("oduflow.server._resolve_team", return_value=team):
+                with pytest.raises(ValueError, match="live-mounted environment"):
+                    _call_tool("create_environment", branch="t", template_name="tpl")
+            mock_create.assert_not_called()
+        finally:
+            server._settings = old
 
-    @patch("oduflow.settings.TRANSPORT", "http")
     @patch("oduflow.docker_ops.env_ops.create_environment")
-    def test_http_explicit_repo_url_overrides(self, mock_create, tool_env, tmp_path):
+    def test_explicit_repo_url_overrides(self, mock_create, tool_env, tmp_path):
         settings, team = tool_env
         _write_template(
             team,
@@ -147,9 +154,8 @@ class TestCreateFromLiveMountTemplate:
         assert mock_create.call_args.kwargs["local_path"] == ""
         assert "Environment provisioned successfully!" in result
 
-    @patch("oduflow.settings.TRANSPORT", "stdio")
     @patch("oduflow.docker_ops.env_ops.create_environment")
-    def test_stdio_missing_dir_fails(self, mock_create, tool_env, tmp_path):
+    def test_missing_dir_fails(self, mock_create, tool_env, tmp_path):
         settings, team = tool_env
         _write_template(
             team,
@@ -176,10 +182,31 @@ def _web_app(settings):
 
 
 class TestWebUILiveMountTemplate:
-    def test_create_returns_clear_error(self, tmp_path):
+    @patch("oduflow.docker_ops.env_ops.create_environment")
+    def test_create_passes_local_path_when_allowed(self, mock_create, tmp_path):
         from starlette.testclient import TestClient
 
         settings, team = _make_env(tmp_path)
+        code_dir = tmp_path / "addons"
+        code_dir.mkdir()
+        _write_template(
+            team,
+            "tpl",
+            {"odoo_image": "odoo:19.0", "repo_url": "", "local_path": str(code_dir)},
+        )
+        mock_create.return_value = {**_CREATE_RESULT, "local_path": str(code_dir)}
+        client = TestClient(_web_app(settings))
+        resp = client.post(
+            "/api/environments/create",
+            json={"env_name": "t", "template_name": "tpl"},
+        )
+        assert resp.status_code == 200
+        assert mock_create.call_args.kwargs["local_path"] == str(code_dir)
+
+    def test_create_returns_clear_error_when_disabled(self, tmp_path):
+        from starlette.testclient import TestClient
+
+        settings, team = _make_env(tmp_path, allow_local_path=False)
         _write_template(
             team,
             "tpl",

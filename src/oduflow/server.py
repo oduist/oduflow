@@ -397,14 +397,14 @@ def create_environment(
     Args:
         branch: The git branch to clone (e.g. "19.0", "feature/my-feature").
         env_name: Optional environment name. If empty, defaults to the branch name. Use this to create multiple environments from the same branch (e.g. env_name="client-a" with branch="19.0").
-        template_name: Name of the template profile to use as database template. Pass "none" to skip template and initialise Odoo from scratch with -i base. When a template is specified, repo_url and odoo_image are loaded from template metadata (but can be overridden). A template saved from a live-mounted environment supplies local_path instead of repo_url and recreates the live-mount (stdio transport only; over http pass repo_url explicitly).
+        template_name: Name of the template profile to use as database template. Pass "none" to skip template and initialise Odoo from scratch with -i base. When a template is specified, repo_url and odoo_image are loaded from template metadata (but can be overridden). A template saved from a live-mounted environment supplies local_path instead of repo_url and recreates the live-mount when allow_local_path is enabled.
         repo_url: URL of the git repository to clone. Optional when template_name is specified (loaded from template metadata).
         odoo_image: Full Docker image name with tag (e.g. "odoo:19.0"). Optional when template_name is specified (loaded from template metadata).
         extra_addons: Comma-separated list of extra addon repo names with branches (e.g. "enterprise:19.0,custom-themes:main"). Each entry must include a branch after a colon.
         sanitize: Sanitize the database after provisioning (default: True). Disables incoming/outgoing mail servers and runs custom scripts from the .odoo_sanitize/ folder in the repository.
         auto_install_modules: Comma-separated list of Odoo modules to install automatically after the environment is provisioned (e.g. "sale,purchase,stock"). When a template is specified and this is empty, the value is loaded from template metadata.
         env_vars: Comma-separated KEY=VALUE pairs injected as environment variables into the Odoo container (e.g. "WORKERS=2,LIMIT_TIME_CPU=600"). These are added on top of the database connection variables (HOST/USER/PASSWORD).
-        local_path: LOCAL FAST-PATH (stdio transport only). Absolute path to a checkout on THIS host. When set, Oduflow skips git clone and bind-mounts the directory live into the container — your file edits are visible instantly, no git push/pull needed. After editing, call pull_and_apply with explicit install/upgrade/restart to apply. repo_url is not required in this mode. Rejected over http transport.
+        local_path: LOCAL FAST-PATH. Absolute path to a checkout on THIS host. When set, Oduflow skips git clone and bind-mounts the directory live into the container — your file edits are visible instantly, no git push/pull needed. After editing, call pull_and_apply with explicit install/upgrade/restart to apply. repo_url is not required in this mode. Gated by allow_local_path (default: true).
     """
     import json
 
@@ -456,19 +456,19 @@ def create_environment(
                     local_path_from_template = True
 
         if local_path:
-            if settings_module.TRANSPORT != "stdio":
+            if not settings.allow_local_path:
                 if local_path_from_template:
                     raise ValueError(
                         f"Template '{resolved_template}' was saved from a "
                         "live-mounted environment, so it provides a local_path "
-                        "instead of a repo_url. Live-mount is only available "
-                        "with the stdio (local) transport — pass repo_url= "
-                        "explicitly to clone over http, or create the "
-                        "environment via the local (stdio) server."
+                        "instead of a repo_url. Set allow_local_path = true "
+                        "in oduflow.toml [server] to enable live-mount, or "
+                        "pass repo_url= explicitly."
                     )
                 raise ValueError(
-                    "local_path (live-mount) is only available with the stdio "
-                    "(local) transport, not over http."
+                    "local_path (live-mount) is disabled. Set "
+                    "allow_local_path = true in oduflow.toml [server] "
+                    "to enable it."
                 )
             local_path = os.path.abspath(os.path.expanduser(local_path))
             if not os.path.isdir(local_path):
@@ -484,10 +484,8 @@ def create_environment(
                     "repo_url",
                     "template_name (which supplies repo_url from its metadata)",
                 ]
-                if settings_module.TRANSPORT == "stdio":
-                    sources.append(
-                        "local_path=<abs path> (local live-mount fast-path, stdio only)"
-                    )
+                if settings.allow_local_path:
+                    sources.append("local_path=<abs path> (live-mount fast-path)")
                 raise ValueError(
                     "No code source for the environment — provide one of: "
                     + "; ".join(sources)
@@ -785,12 +783,43 @@ def get_agent_instructions(ctx: Context = None) -> str:
     """Get instructions for AI coding agents on how to use Oduflow MCP tools."""
     import pathlib
 
+    def _mode_preface() -> str:
+        settings = _get_settings()
+        try:
+            envs = env_ops.list_environments(settings, team)
+        except Exception:
+            envs = []
+
+        local_envs = [env for env in envs if env.get("local_path")]
+        if local_envs:
+            names = ", ".join(
+                f"{env['env_name']} ({env['local_path']})" for env in local_envs
+            )
+            return (
+                "## Current Code Delivery Mode\n\n"
+                f"Live-mount/local_path mode is active for: {names}\n\n"
+                "Use the local live-mount workflow for these environments:\n"
+                "1. Edit files directly in the mounted local folder; no git push is required.\n"
+                "2. Call `pull_and_apply` after edits. Prefer explicit actions when you authored the changes.\n"
+                "3. If you add/change fields, models, `_inherit`/`_name`, manifest `data`/`depends`, security/data XML, `ir.cron`, mail templates, or anything loaded into the database, call `pull_and_apply(..., upgrade=\"module\")`.\n"
+                "4. If you add a new module, call `pull_and_apply(..., install=\"module\")`.\n"
+                "5. Use `restart=True` only for Python logic changes that do not require registry/schema/data updates.\n"
+                "6. Git commits are optional in live-mount mode and are not used by Oduflow to detect applied changes.\n\n"
+                "---\n\n"
+            )
+
+        return (
+            "## Current Code Delivery Mode\n\n"
+            "No live-mount/local_path environment was detected. Use the `repo_url` workflow unless you create an environment with `local_path`: edit locally, commit, push, then call `pull_and_apply` so Oduflow can pull the pushed commits.\n\n"
+            "---\n\n"
+        )
+
     team = _resolve_team(ctx)
     for name in ("agent_instructions.md", "agent_skill.md", "agent_guide.md"):
         skill_path = os.path.join(team.data_dir, "agent_guides", name)
         if os.path.isfile(skill_path):
             with open(skill_path, "r", encoding="utf-8") as f:
-                return f.read()
+                return _mode_preface() + f.read()
     for name in ("agent_instructions.md", "agent_skill.md", "agent_guide.md"):
         bundled = (
             pathlib.Path(__file__).resolve().parent
@@ -799,7 +828,7 @@ def get_agent_instructions(ctx: Context = None) -> str:
             / name
         )
         if bundled.is_file():
-            return bundled.read_text(encoding="utf-8")
+            return _mode_preface() + bundled.read_text(encoding="utf-8")
     return "Agent skill not found."
 
 
@@ -921,6 +950,8 @@ def list_environments(ctx: Context = None) -> str:
             output += f"  Image: {env['odoo_image']}\n"
         if env.get("repo_url"):
             output += f"  Repo: {env['repo_url']}\n"
+        if env.get("local_path"):
+            output += f"  Live-mount: {env['local_path']}\n"
         if env.get("template_name"):
             output += f"  Template: {env['template_name']}\n"
         for container in env["containers"]:
@@ -1182,7 +1213,7 @@ def pull_and_apply(
 
     Works for both code-delivery modes (chosen automatically per environment):
     - git: pulls the branch (and extra-addon worktrees) into the managed clone.
-    - live-mount (stdio/local, from create_environment(local_path=...)): your
+    - live-mount (from create_environment(local_path=...)): your
       edits are already live on disk; this just applies them — no git needed.
 
     Two ways to drive it:
@@ -3195,8 +3226,8 @@ def main() -> None:
     if args.command is None:
         # No subcommand → start the MCP server
         _ensure_initialized(_settings)
-        # Record the active transport so tools can gate local-only features
-        # (e.g. create_environment(local_path=...)) to stdio.
+        # Record the active transport for informational purposes.
+        # local_path is gated by allow_local_path in Settings.
         settings_module.TRANSPORT = args.transport
         if args.transport == "stdio":
             _start_stdio()

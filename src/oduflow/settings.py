@@ -17,9 +17,8 @@ logger = logging.getLogger("oduflow")
 TRACE: bool = False
 
 # Active MCP transport for the running server ("stdio" | "http").
-# Set in server.main() before the server starts. Tools use this to gate
-# local-only features (e.g. create_environment(local_path=...)) that must
-# never be exposed over a remote/http transport.
+# Set in server.main() before the server starts. Mostly informational;
+# local_path is gated by the allow_local_path setting.
 TRANSPORT: str = "stdio"
 
 
@@ -84,6 +83,7 @@ class Settings:
     port: int = 8000
     trace: bool = False
     disable_telemetry: bool = False
+    allow_local_path: bool = True
 
     # Routing
     routing_mode: str = "port"
@@ -274,6 +274,7 @@ class Settings:
             port=int(server.get("port", 8000)),
             trace=trace,
             disable_telemetry=bool(server.get("disable_telemetry", False)),
+            allow_local_path=bool(server.get("allow_local_path", True)),
             routing_mode=str(routing.get("mode", "port")).strip().lower(),
             acme_email=str(routing.get("acme_email", "")).strip(),
             db_user=str(database.get("user", "odoo")),

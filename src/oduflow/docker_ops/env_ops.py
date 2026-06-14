@@ -690,7 +690,7 @@ def create_environment(
 
     _cleanup_old_environment(client, settings, team, env_name)
     workspace_path = get_workspace_path(env_name, team.workspaces_dir)
-    # Live-mount mode (stdio/local): bind-mount the agent's own checkout
+    # Live-mount mode: bind-mount the agent's own checkout
     # directly instead of cloning. The repo lives OUTSIDE the managed
     # workspace, so it is never touched by cleanup/delete.
     local_mount = bool(local_path)
@@ -699,6 +699,11 @@ def create_environment(
         if local_mount
         else get_repo_path(env_name, team.workspaces_dir)
     )
+    if local_mount and not settings.allow_local_path:
+        raise PrerequisiteNotMetError(
+            "local_path (live-mount) is disabled. Set allow_local_path = true "
+            "in oduflow.toml [server] to enable it."
+        )
     env_db = get_db_name(env_name, team.team_id)
 
     labels = {
@@ -762,13 +767,9 @@ def create_environment(
                 f"local_path does not exist or is not a directory: {repo_path}"
             )
         logger.info("Live-mount mode: using local checkout at %s", repo_path)
-        # Baseline for non-git change detection: first pull_and_apply diffs
-        # against this snapshot. (Git checkouts use working-tree diff instead.)
-        try:
-            with open(_mtime_snapshot_path(env_name, team), "w") as _snap:
-                json.dump(_scan_mtimes(repo_path), _snap)
-        except OSError:
-            pass
+        # Baseline for local change detection: first pull_and_apply diffs
+        # against this snapshot. Git is deliberately ignored in live-mount mode.
+        _write_local_snapshot(repo_path, env_name, team)
     else:
         git_env = git_env_for_team(team.git_credentials_file())
 
@@ -1272,6 +1273,7 @@ def list_environments(settings: Settings, team: TeamSettings) -> list[dict[str, 
                 "repo_url": sanitize_repo_url(
                     container.labels.get(settings.repo_label, "")
                 ),
+                "local_path": container.labels.get("oduflow.local_path", ""),
                 "template_name": container.labels.get("oduflow.template", ""),
                 "extra_addons": _normalize_extra_addons(
                     json.loads(container.labels.get("oduflow.extra_addons", "{}")),
@@ -1527,72 +1529,85 @@ def get_environment_info(
     return result
 
 
-def _is_git_repo(path: str) -> bool:
-    try:
-        r = subprocess.run(
-            ["git", "-C", path, "rev-parse", "--is-inside-work-tree"],
-            capture_output=True,
-            text=True,
-        )
-        return r.returncode == 0 and r.stdout.strip() == "true"
-    except OSError:
-        return False
+_LOCAL_SNAPSHOT_SKIP_DIRS = {
+    ".git",
+    ".mypy_cache",
+    ".pytest_cache",
+    ".ruff_cache",
+    ".venv",
+    "__pycache__",
+    ".idea",
+    ".vscode",
+    "node_modules",
+}
+_LOCAL_SNAPSHOT_SKIP_SUFFIXES = (".pyc", ".pyo")
 
 
-def _git_working_changes(repo_path: str) -> list[str]:
-    """Paths changed in the working tree vs HEAD plus untracked files.
-
-    Returned relative to *repo_path* — suitable for ``classify_changes``. This
-    is "since the last commit", so committing after applying gives the cleanest
-    signal; otherwise cumulative uncommitted edits are re-evaluated each call.
-    """
-    changed: list[str] = []
-    try:
-        tracked = subprocess.run(
-            ["git", "-C", repo_path, "diff", "--name-only", "HEAD"],
-            capture_output=True,
-            text=True,
-        )
-        if tracked.returncode == 0:
-            changed.extend(tracked.stdout.splitlines())
-    except OSError:
-        pass
-    try:
-        untracked = subprocess.run(
-            ["git", "-C", repo_path, "ls-files", "--others", "--exclude-standard"],
-            capture_output=True,
-            text=True,
-        )
-        if untracked.returncode == 0:
-            changed.extend(untracked.stdout.splitlines())
-    except OSError:
-        pass
-    return [f for f in changed if f]
-
-
-_MTIME_SKIP_DIRS = {".git", "__pycache__", ".idea", ".vscode", "node_modules"}
-
-
-def _scan_mtimes(root: str) -> dict[str, float]:
-    """Map of relative-path -> mtime for files under *root* (cheap: stat only)."""
-    out: dict[str, float] = {}
+def _scan_local_snapshot(root: str) -> dict[str, dict[str, int]]:
+    """Map relative paths to cheap file fingerprints for live-mount mode."""
+    out: dict[str, dict[str, int]] = {}
     for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = [d for d in dirnames if d not in _MTIME_SKIP_DIRS]
+        dirnames[:] = [d for d in dirnames if d not in _LOCAL_SNAPSHOT_SKIP_DIRS]
         for f in filenames:
-            if f.endswith((".pyc", ".pyo")):
+            if f.endswith(_LOCAL_SNAPSHOT_SKIP_SUFFIXES):
                 continue
             fp = os.path.join(dirpath, f)
             try:
-                out[os.path.relpath(fp, root)] = os.path.getmtime(fp)
+                st = os.stat(fp)
             except OSError:
-                pass
+                continue
+            out[os.path.relpath(fp, root)] = {
+                "size": int(st.st_size),
+                "mtime_ns": int(st.st_mtime_ns),
+            }
     return out
 
 
-def _mtime_snapshot_path(env_name: str, team: TeamSettings) -> str:
+def _local_snapshot_path(env_name: str, team: TeamSettings) -> str:
     return os.path.join(
-        get_workspace_path(env_name, team.workspaces_dir), ".oduflow_mtimes.json"
+        get_workspace_path(env_name, team.workspaces_dir), ".oduflow_local_state.json"
     )
+
+
+def _load_local_snapshot(env_name: str, team: TeamSettings) -> dict[str, dict[str, int]]:
+    snap_path = _local_snapshot_path(env_name, team)
+    if not os.path.isfile(snap_path):
+        return {}
+    try:
+        with open(snap_path) as f:
+            raw = json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+    if not isinstance(raw, dict):
+        return {}
+
+    # Current format stores {"version": 1, "files": {...}}. Older dev builds
+    # stored the file map directly; accept both so existing environments recover.
+    files = raw.get("files") if "files" in raw else raw
+    if not isinstance(files, dict):
+        return {}
+    return files
+
+
+def _write_local_snapshot(repo_path: str, env_name: str, team: TeamSettings) -> None:
+    snap_path = _local_snapshot_path(env_name, team)
+    try:
+        os.makedirs(os.path.dirname(snap_path), exist_ok=True)
+        with open(snap_path, "w") as f:
+            json.dump(
+                {
+                    "version": 1,
+                    "repo_path": repo_path,
+                    "files": _scan_local_snapshot(repo_path),
+                },
+                f,
+                sort_keys=True,
+            )
+    except OSError:
+        logger.warning(
+            "Could not write live-mount snapshot for %s", env_name, exc_info=True
+        )
 
 
 def _detect_local_changes(
@@ -1600,29 +1615,17 @@ def _detect_local_changes(
 ) -> tuple[str | None, list[str]]:
     """Return ``(base_ref, changed_files)`` for a live-mounted checkout.
 
-    Git checkout → working-tree diff vs HEAD + untracked, ``base_ref="HEAD"``
-    (enables deep field/manifest guardrail checks). Non-git → mtime snapshot
-    diff, ``base_ref=None`` (path-only guardrail). The snapshot is refreshed
-    every call so each apply reports changes since the previous one.
+    Live-mount mode is independent of Git: commits are the user's choice, and
+    Oduflow tracks only what has been successfully applied to Odoo. The diff is
+    computed from a per-env file snapshot and the snapshot is advanced only
+    after a successful apply.
     """
-    if _is_git_repo(repo_path):
-        return "HEAD", _git_working_changes(repo_path)
-
-    snap_path = _mtime_snapshot_path(env_name, team)
-    current = _scan_mtimes(repo_path)
-    old: dict[str, float] = {}
-    if os.path.isfile(snap_path):
-        try:
-            with open(snap_path) as f:
-                old = json.load(f)
-        except (json.JSONDecodeError, OSError):
-            old = {}
-    changed = [p for p, m in current.items() if old.get(p) != m]
-    try:
-        with open(snap_path, "w") as f:
-            json.dump(current, f)
-    except OSError:
-        pass
+    current = _scan_local_snapshot(repo_path)
+    old = _load_local_snapshot(env_name, team)
+    changed = sorted(
+        {p for p, fingerprint in current.items() if old.get(p) != fingerprint}
+        | {p for p in old if p not in current}
+    )
     return None, changed
 
 
@@ -1713,9 +1716,9 @@ def pull_environment(
 
     * **git** (default) — ``git pull`` the branch (and extra-addon worktrees)
       into the managed clone, which is bind-mounted into the container.
-    * **live-mount** (``oduflow.local_path`` label, stdio/local only) — the
+    * **live-mount** (``oduflow.local_path`` label, gated by allow_local_path) — the
       agent's checkout is already bind-mounted, so there is nothing to pull;
-      changes are detected straight from the working tree.
+      changes are detected from Oduflow's last successful local snapshot.
 
     Action selection:
 
@@ -1723,8 +1726,8 @@ def pull_environment(
       given, do exactly that. A guardrail compares the request against what the
       changed files suggest and returns non-blocking ``warnings`` (or, with
       ``strict=True``, refuses with ``action="blocked"``).
-    * **auto** — otherwise fall back to ``classify_changes`` (unchanged legacy
-      behavior), useful for pulling commits you did not author.
+    * **auto** — otherwise fall back to ``classify_changes`` in git mode or
+      path-only ``shallow_classify`` in live-mount mode.
     """
     from oduflow.git_analysis import guardrail_warnings, recommend
     from oduflow.git_ops import pull_repo
@@ -1844,6 +1847,8 @@ def pull_environment(
     )
     if warnings:
         result["warnings"] = warnings
+    if is_local and int(result.get("exit_code", 0)) == 0:
+        _write_local_snapshot(repo_path, env_name, team)
     return result
 
 
