@@ -221,8 +221,8 @@ h4:hover .headerlink, h5:hover .headerlink, h6:hover .headerlink { opacity: 1; }
 
 .md-typeset .odu-hero__title {
   margin: 0;
-  font-size: clamp(2.6rem, 7vw, 4.6rem);
-  line-height: 1.02;
+  font-size: clamp(2.4rem, 7vw, 4.6rem);
+  line-height: 1.1;
   font-weight: 800;
   letter-spacing: -.035em;
   background: linear-gradient(180deg, var(--md-default-fg-color) 25%, var(--odu-brand) 130%);
@@ -278,6 +278,19 @@ h4:hover .headerlink, h5:hover .headerlink, h6:hover .headerlink { opacity: 1; }
   color: var(--md-default-fg-color);
   border-color: var(--odu-brand-bright);
   background: var(--odu-surface-2);
+}
+.md-typeset .odu-btn--changelog {
+  color: #ffffff;
+  background: linear-gradient(135deg, #2e79f5 0%, #4a00e0 100%);
+  border-color: transparent;
+  border-right: 1px solid #4a00e0 !important;
+  box-shadow: 0 .4rem 1.2rem rgba(64, 25, 95, .30);
+}
+.md-typeset .odu-btn--changelog:hover {
+  color: #ffffff;
+  background: linear-gradient(135deg, #4f8dff 0%, #5a1dff 100%);
+  border-right: 1px solid #5a1dff !important;
+  box-shadow: 0 .7rem 1.6rem rgba(64, 25, 95, .35);
 }
 
 /* ===========================================================================
