@@ -49,7 +49,22 @@ _SUMMARY_ERROR_CONTEXT = 5
 
 _output_cache = OutputCache()
 
-mcp = FastMCP("Oduflow")
+_MCP_INSTRUCTIONS = """
+Before using Oduflow tools, call get_agent_instructions to load the current
+Oduflow workflow guide. It includes the active code delivery mode, including
+repo_url versus local_path/live-mount guidance.
+
+Before writing or refactoring Odoo module code, call
+get_odoo_development_guide(version="<major>") for the target Odoo version.
+Determine the version from the user request, existing environment info, or the
+odoo_image value; for example, odoo:18.0 means version="18".
+
+After create_environment returns an instruction to call
+get_odoo_development_guide(version="..."), follow it immediately before
+editing code.
+""".strip()
+
+mcp = FastMCP("Oduflow", instructions=_MCP_INSTRUCTIONS)
 _locks = LockManager()
 _settings: Settings | None = None
 _instance_id: str = ""

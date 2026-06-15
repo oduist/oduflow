@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.50.4
+
+### Features
+
+- **MCP bootstrap instructions** — the MCP initialize response now tells agents to load `get_agent_instructions` first and then call `get_odoo_development_guide(version=...)` before writing Odoo module code.
+
 ## v1.50.3
 
 ### Features

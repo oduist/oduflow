@@ -38,6 +38,18 @@ def inject_team():
 from tool_helpers import call_tool as _call_tool  # noqa: E402
 
 
+class TestMCPBootstrapInstructions:
+    def test_instructions_point_agents_to_dynamic_guides(self):
+        import oduflow.server
+
+        instructions = oduflow.server.mcp.instructions
+
+        assert instructions
+        assert "get_agent_instructions" in instructions
+        assert "get_odoo_development_guide" in instructions
+        assert 'odoo:18.0 means version="18"' in instructions
+
+
 class TestCLIInitDestroy:
     @patch("oduflow.docker_ops.system_ops.destroy_system")
     def test_cli_destroy(self, mock_destroy):
