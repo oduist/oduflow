@@ -56,6 +56,8 @@ class TestSendEvent:
             "instance_id": "test-uuid",
         }
         assert req.get_header("Content-type") == "application/json"
+        # Branded UA so edge bot rules don't block the default urllib signature.
+        assert req.get_header("User-agent") == "oduflow/1.0.0"
 
     @patch("oduflow.telemetry.urlopen", side_effect=OSError("connection refused"))
     def test_swallows_network_errors(self, mock_urlopen):
