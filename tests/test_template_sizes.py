@@ -75,10 +75,10 @@ class TestUpdateTemplateSizes:
 
     def test_with_provided_metadata(self, tmp_path):
         team, settings = self._make_template(tmp_path)
-        provided = {"odoo_image": "odoo:18.0", "custom_key": "value"}
+        provided = {"odoo_image": "odoo:19.0", "custom_key": "value"}
         result = _update_template_sizes(team, settings, "default", metadata=provided)
 
-        assert result["odoo_image"] == "odoo:18.0"
+        assert result["odoo_image"] == "odoo:19.0"
         assert result["custom_key"] == "value"
         assert "filestore_size_mb" in result
         assert "dump_size_mb" in result
