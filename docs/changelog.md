@@ -1,5 +1,14 @@
 # Changelog
 
+## v1.50.5
+
+### Features
+
+- **Light theme** — the dashboard and login page gain a light theme alongside the dark "Engineer's Console" field. It follows the OS (`prefers-color-scheme`) by default; a header toggle cycles **System → Light → Dark** and persists the choice to `localStorage`, applied before first paint so there is no flash. It is built by re-pointing the existing `:root` color tokens — signal colors switch to AA-verified darkened variants on the light field, while the embedded terminal stays dark — and the logo is now transparent so it reads cleanly on either field.
+- **Larger dashboard type scale** — 68 hardcoded `px` font sizes were replaced with six semantic rem tokens (`--text-2xs`…`--text-xl`), raising every tier ~+2px (body 13→15px, titles 15→17px, header 20→23px) for readability at density. (#63)
+- **Note dialog Delete button** — the environment note editor now has an explicit Delete action. (#63)
+
+
 ## v1.50.4
 
 ### Features
