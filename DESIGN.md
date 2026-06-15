@@ -22,31 +22,31 @@ colors:
 typography:
   headline:
     fontFamily: "Outfit, ui-sans-serif, system-ui, sans-serif"
-    fontSize: "1.25rem"
+    fontSize: "1.4375rem"
     fontWeight: 600
     lineHeight: 1.3
     letterSpacing: "normal"
   title:
     fontFamily: "Outfit, ui-sans-serif, system-ui, sans-serif"
-    fontSize: "0.9375rem"
+    fontSize: "1.0625rem"
     fontWeight: 600
     lineHeight: 1.4
     letterSpacing: "normal"
   body:
     fontFamily: "Outfit, ui-sans-serif, system-ui, sans-serif"
-    fontSize: "0.8125rem"
+    fontSize: "0.9375rem"
     fontWeight: 400
     lineHeight: 1.5
     letterSpacing: "normal"
   label:
     fontFamily: "Outfit, ui-sans-serif, system-ui, sans-serif"
-    fontSize: "0.75rem"
+    fontSize: "0.875rem"
     fontWeight: 600
     lineHeight: 1.4
     letterSpacing: "0.02em"
   mono:
     fontFamily: "Geist Mono, ui-monospace, SFMono-Regular, Consolas, monospace"
-    fontSize: "0.75rem"
+    fontSize: "0.875rem"
     fontWeight: 400
     lineHeight: 1.5
     letterSpacing: "normal"
@@ -207,15 +207,25 @@ Both faces are bundled with the package (woff2), never loaded from a CDN;
 until bundled, the system stack fallback is acceptable.
 
 ### Hierarchy
-Fixed rem scale, ratio ≈1.15 — product register, no fluid clamp.
-- **Headline** (600, 1.25rem, 1.3): The page title in the header. One per page.
-- **Title** (600, 0.9375rem, 1.4): Card titles — environment branch, service,
-  template, volume names.
-- **Body** (400, 0.8125rem, 1.5): Controls, form fields, modal copy, notes.
-- **Label** (600, 0.75rem, 0.02em): Badges, form labels, meta keys, tab text.
-  Uppercase only for status badges (≤2 words).
-- **Mono** (400, 0.75rem, 1.5): Logs, terminal, DB names, images, paths,
-  container names, sync output.
+Fixed rem scale via semantic `--text-*` tokens (declared in `:root`) — product
+register, no fluid clamp. The dense lower steps sit a tight ≈1.07 apart, so
+in-card hierarchy leans on weight and tone, not size (see The Weight-Not-Size
+Rule); the jump to Headline is the one wide step.
+- **Headline** (`--text-xl`, 600, 1.4375rem/23px, 1.3): The page title in the
+  header. One per page.
+- **Title** (`--text-lg`, 600, 1.0625rem/17px, 1.4): Card titles — environment
+  branch, service, template, volume names.
+- **Body** (`--text-sm`, 400, 0.9375rem/15px, 1.5): Controls, form fields,
+  modal copy, notes.
+- **Label** (`--text-xs`, 600, 0.875rem/14px, 0.02em): Badges, form labels,
+  meta keys, tab text. Uppercase only for status badges (≤2 words).
+- **Mono** (`--text-xs`, 400, 0.875rem/14px, 1.5): Logs, terminal, DB names,
+  images, paths, container names, sync output.
+
+Two further ramp steps carry text that falls between these roles:
+`--text-2xs` (0.8125rem/13px — header byline, port chips, the smallest meta)
+and `--text-md` (1rem/16px — tab labels, sync message). All UI font sizes
+reference one of these six tokens; raw `px` font sizes are not used.
 
 ### Named Rules
 **The Console Voice Rule.** Monospace is reserved for what the machine
