@@ -37,7 +37,12 @@ def _send_event(event: str, version: str, instance_id: str) -> None:
         req = Request(
             _ENDPOINT,
             data=payload,
-            headers={"Content-Type": "application/json"},
+            headers={
+                "Content-Type": "application/json",
+                # A branded UA avoids edge bot-protection rules that block the
+                # default ``Python-urllib/x.y`` signature (Cloudflare error 1010).
+                "User-Agent": f"oduflow/{version}" if version else "oduflow",
+            },
             method="POST",
         )
         urlopen(req, timeout=_TIMEOUT)
