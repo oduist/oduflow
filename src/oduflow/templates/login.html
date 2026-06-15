@@ -4,6 +4,20 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Oduflow — Sign in</title>
+  <script>
+    // Resolve the active theme before first paint (follows the OS unless the dashboard
+    // toggle stored a choice). See DESIGN.md §2 (Light theme).
+    (function () {
+      try {
+        var stored = localStorage.getItem('oduflow-theme');
+        var mode = (stored === 'light' || stored === 'dark') ? stored : 'system';
+        var eff = mode === 'system'
+          ? (window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark')
+          : mode;
+        document.documentElement.dataset.theme = eff;
+      } catch (e) {}
+    })();
+  </script>
   <link rel="preload" href="/static/outfit-latin.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="icon" href="/favicon.ico" sizes="16x16 32x32">
   <link rel="icon" href="/static/icon.png" type="image/png" sizes="32x32">
@@ -26,9 +40,23 @@
       --text-dim: oklch(0.7 0.01 260);
       --accent: oklch(0.6 0.2 260);
       --red: oklch(0.65 0.22 25);
+      --accent-fg: #fff;
+      --shadow-modal: 0 24px 64px rgba(0,0,0,0.65);
       --radius: 0.625rem;
       --radius-sm: 0.425rem;
       --focus-ring: 0 0 0 3px color-mix(in oklab, var(--accent) 50%, transparent);
+    }
+    /* Light theme — mirrors the dashboard (see DESIGN.md §2); resolved in the head script. */
+    :root[data-theme="light"] {
+      --bg: oklch(0.97 0.004 260);
+      --surface-raised: oklch(1 0 0);
+      --border: oklch(0.9 0.006 260);
+      --border-raised: oklch(0.86 0.008 260);
+      --text: oklch(0.25 0.02 260);
+      --text-dim: oklch(0.48 0.02 260);
+      --accent: oklch(0.5 0.2 260);
+      --red: oklch(0.505 0.213 27.5);
+      --shadow-modal: 0 24px 64px rgba(15,23,42,0.18);
     }
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
@@ -51,13 +79,15 @@
       background: var(--surface-raised);
       border: 1px solid var(--border-raised);
       border-radius: var(--radius);
-      box-shadow: 0 24px 64px rgba(0,0,0,0.65);
+      box-shadow: var(--shadow-modal);
       padding: 32px 28px;
       display: flex;
       flex-direction: column;
       gap: 14px;
     }
     .card img.logo { height: 36px; align-self: center; }
+    /* Logo is a white glyph on transparent — darken it to ink on the light card */
+    :root[data-theme="light"] .card img.logo { filter: brightness(0); }
     .card h1 {
       font-size: 18px;
       font-weight: 600;
@@ -85,7 +115,7 @@
     button {
       margin-top: 6px;
       background: var(--accent);
-      color: oklch(0.98 0 0);
+      color: var(--accent-fg);
       border: 1px solid var(--accent);
       border-radius: var(--radius-sm);
       padding: 10px 14px;
