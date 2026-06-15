@@ -194,6 +194,39 @@ If you can't name the channel, use neutral or Console Blue.
 declared in `:root`. A reference to an undeclared custom property
 (`--card-hover`, `--muted` in the current code) is a bug, not a fallback.
 
+### Light Theme
+
+The dark Console Field is the canonical brand surface; the light theme is a
+comfort option for bright rooms, **not a rebrand**. It is built entirely by
+re-pointing the same `:root` color tokens — every component already resolves
+through them, so the markup is untouched.
+
+**Mechanism.** The active theme is resolved in JS and written to
+`<html data-theme="light|dark">`. It follows the OS (`prefers-color-scheme`) by
+default; the header toggle cycles **System → Light → Dark** and persists the
+choice to `localStorage` (`oduflow-theme`; absent = System). A tiny `<head>`
+bootstrap applies it before first paint, so there is no flash of the wrong
+theme. The toggle is inline SVG + text (monitor / sun / moon) — never emoji.
+
+**Neutrals** invert on the blue-black ramp: Field → light grey
+(`oklch(0.97 …)`), Surface/Raised → white, Hairline → a light
+(`oklch(0.9 …)`) stroke, Ink → near-black (`oklch(0.25 …)`), Muted Ink →
+`oklch(0.48 …)` (≥4.5:1 on every surface, the same contrast bar as dark).
+
+**Signal colors get darkened text variants.** The bright signal values are
+tuned for a dark field and fail 4.5:1 on white. The light theme therefore
+swaps each signal token to a ~700-level variant verified ≥4.5:1 both as text on
+white *and* on its own 15% badge tint (the tighter constraint). The token name
+and meaning are unchanged; only the value darkens, so badges, semantic-hover
+buttons, and the Note tint follow automatically.
+
+**The Terminal Stays Dark Rule.** The embedded terminal (`--terminal-bg`) and
+the ANSI log map are **not** re-themed — the console reads as a device in both
+themes (see §5, the embedded terminal). Overlay scaffolding is tokenized for
+the theme switch: `--shadow-bar/-menu/-modal` soften on light, `--backdrop`
+dims with a desaturated dark, `--track`/`--track-border` flip to dark-on-light,
+and `--accent-fg` carries button text in both themes.
+
 ## 3. Typography
 
 **Display Font:** Outfit (with ui-sans-serif, system-ui fallback)

@@ -9,6 +9,21 @@
 <link rel="icon" href="/static/icon.png" type="image/png" sizes="32x32">
 <link rel="apple-touch-icon" href="/static/apple-icon.png">
 <title>Oduflow</title>
+<script>
+  // Resolve the active theme before first paint to avoid a flash of the wrong theme.
+  // Stored mode is 'light' | 'dark' (absent = follow the OS). The effective theme is
+  // written to <html data-theme>. See DESIGN.md §2 (Light theme).
+  (function () {
+    try {
+      var stored = localStorage.getItem('oduflow-theme');
+      var mode = (stored === 'light' || stored === 'dark') ? stored : 'system';
+      var eff = mode === 'system'
+        ? (window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark')
+        : mode;
+      document.documentElement.dataset.theme = eff;
+    } catch (e) {}
+  })();
+</script>
 <style>
   @font-face {
     font-family: "Outfit";
@@ -44,6 +59,14 @@
     --violet: #a78bfa;
     --rose: #fb7185;
     --terminal-bg: #060a12;
+    /* Theme-derived tokens — overridden in the light theme below */
+    --accent-fg: #fff;
+    --backdrop: rgba(0,0,0,0.72);
+    --track: rgba(255,255,255,0.06);
+    --track-border: rgba(255,255,255,0.08);
+    --shadow-bar: 0 8px 24px rgba(0,0,0,0.4);
+    --shadow-menu: 0 16px 48px rgba(0,0,0,0.5);
+    --shadow-modal: 0 24px 64px rgba(0,0,0,0.65);
     --font-sans: "Outfit", -apple-system, BlinkMacSystemFont, "Segoe UI", ui-sans-serif, system-ui, sans-serif;
     --font-mono: "Geist Mono", ui-monospace, SFMono-Regular, Consolas, monospace;
     /* Type scale — semantic rem tokens (see DESIGN.md §3) */
@@ -60,6 +83,35 @@
     --z-dropdown: 100;
     --z-modal: 200;
     --z-toast: 300;
+  }
+  /* Light theme — see DESIGN.md §2 (Light theme). The active theme is resolved in JS
+     and written to <html data-theme>: it follows the OS by default, and the header
+     toggle overrides it and persists to localStorage. Neutrals invert on the blue-black
+     ramp; signal colors switch to AA-on-white text variants; the embedded terminal
+     (--terminal-bg) and ANSI map stay dark so the console still reads as a device. */
+  :root[data-theme="light"] {
+    --bg: oklch(0.97 0.004 260);
+    --surface: oklch(1 0 0);
+    --subtle: oklch(0.96 0.005 260);
+    --surface-raised: oklch(1 0 0);
+    --border: oklch(0.9 0.006 260);
+    --border-raised: oklch(0.86 0.008 260);
+    --text: oklch(0.25 0.02 260);
+    --text-dim: oklch(0.48 0.02 260);
+    --accent: oklch(0.5 0.2 260);
+    --green: oklch(0.47 0.13 160);
+    --red: oklch(0.505 0.213 27.5);
+    --yellow: oklch(0.5 0.14 62);
+    --cyan: oklch(0.48 0.11 220);
+    --violet: oklch(0.491 0.27 292.6);
+    --rose: oklch(0.514 0.222 17);
+    --accent-fg: #fff;
+    --backdrop: rgba(15,23,42,0.45);
+    --track: rgba(0,0,0,0.06);
+    --track-border: rgba(0,0,0,0.1);
+    --shadow-bar: 0 8px 24px rgba(15,23,42,0.1);
+    --shadow-menu: 0 16px 48px rgba(15,23,42,0.14);
+    --shadow-modal: 0 24px 64px rgba(15,23,42,0.18);
   }
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body {
@@ -85,6 +137,8 @@
   }
   .brand-lockup { display: flex; align-items: center; gap: 10px; }
   .brand-lockup img { height: 28px; }
+  /* Logo is a white glyph on transparent — darken it to ink on the light field */
+  :root[data-theme="light"] .brand-lockup img { filter: brightness(0); }
   .brand-copy { display: flex; flex-direction: column; gap: 1px; }
   header h1 { font-size: var(--text-xl); font-weight: 600; line-height: 1.05; }
   .brand-byline {
@@ -111,6 +165,22 @@
     border-radius: var(--radius-sm);
   }
   .docs-link:hover { color: var(--accent); }
+  #theme-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    background: var(--surface);
+    color: var(--text-dim);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 6px 10px;
+    cursor: pointer;
+    font-family: inherit;
+    font-size: var(--text-xs);
+    font-weight: 500;
+  }
+  #theme-toggle:hover { border-color: var(--accent); color: var(--accent); }
+  #theme-toggle svg { width: 15px; height: 15px; display: block; }
   #refresh-btn {
     background: var(--surface);
     color: var(--text);
@@ -191,7 +261,7 @@
     border-radius: var(--radius);
     padding: 8px 16px;
     margin-bottom: 12px;
-    box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+    box-shadow: var(--shadow-bar);
   }
   .bulk-count { font-weight: 600; font-size: var(--text-sm); }
   .bulk-actions { display: flex; gap: 8px; margin-left: auto; flex-wrap: wrap; }
@@ -321,7 +391,7 @@
     background: var(--surface-raised);
     border: 1px solid var(--border-raised);
     border-radius: var(--radius-sm);
-    box-shadow: 0 16px 48px rgba(0,0,0,0.5);
+    box-shadow: var(--shadow-menu);
     display: none;
     flex-direction: column;
     min-width: 150px;
@@ -359,7 +429,7 @@
   .btn-protect:hover, .btn-protect:focus-visible { border-color: var(--yellow); color: var(--yellow); background: color-mix(in oklab, var(--yellow) 10%, transparent); }
   .btn-create {
     background: var(--accent);
-    color: #fff;
+    color: var(--accent-fg);
     border: 1px solid var(--accent);
     padding: 6px 14px;
     border-radius: var(--radius);
@@ -407,7 +477,7 @@
   .form-error { color: var(--red); font-size: var(--text-xs); margin-bottom: 10px; display: none; }
   .modal-overlay {
     position: fixed; top: 0; left: 0; right: 0; bottom: 0;
-    background: rgba(0,0,0,0.72);
+    background: var(--backdrop);
     -webkit-backdrop-filter: blur(3px);
     backdrop-filter: blur(3px);
     z-index: var(--z-modal);
@@ -418,7 +488,7 @@
     background: var(--surface-raised); border: 1px solid var(--border-raised);
     border-radius: var(--radius); width: min(900px, calc(100vw - 32px));
     max-height: 80vh; display: flex; flex-direction: column;
-    box-shadow: 0 24px 64px rgba(0,0,0,0.65);
+    box-shadow: var(--shadow-modal);
   }
   .modal-sm { max-width: 460px; }
   .modal-md { max-width: 520px; }
@@ -566,12 +636,12 @@
     display: inline-block;
     width: 64px;
     height: 10px;
-    background: rgba(255,255,255,0.06);
+    background: var(--track);
     border-radius: 5px;
     overflow: hidden;
     vertical-align: middle;
     margin-left: 6px;
-    border: 1px solid rgba(255,255,255,0.08);
+    border: 1px solid var(--track-border);
   }
   .usage-bar-fill {
     display: block;
@@ -889,6 +959,7 @@
   <button id="license-badge" class="license-badge" style="display:none"></button>
   <div class="actions">
     <a class="docs-link" href="https://docs.oduflow.dev" target="_blank" rel="noopener" title="Open the Oduflow documentation">Docs &#8599;</a>
+    <button id="theme-toggle" type="button" onclick="cycleTheme()" aria-label="Theme"></button>
     <label class="auto-label" for="refresh-interval">Auto-refresh
       <input type="number" id="refresh-interval" value="60" min="5" step="5"
              aria-label="Auto-refresh interval, seconds" class="interval-input">s
@@ -3869,6 +3940,52 @@ document.addEventListener('visibilitychange', function() {
     resetTimers();
   }
 });
+
+// --- Theme toggle -----------------------------------------------------------
+// Modes: 'system' (follow the OS), 'light', 'dark'. The header button cycles
+// through them; the choice persists to localStorage (absent = system). The
+// effective theme is written to <html data-theme> (see the head bootstrap and
+// DESIGN.md \u00a72). Icons are inline SVG \u2014 no emoji as UI affordances.
+var THEME_ICONS = {
+  system: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg>',
+  light: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M6.3 17.7l-1.4 1.4M19.1 4.9l-1.4 1.4"/></svg>',
+  dark: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.8A9 9 0 1 1 11.2 3 7 7 0 0 0 21 12.8z"/></svg>'
+};
+var THEME_LABELS = { system: 'System', light: 'Light', dark: 'Dark' };
+var _prefersLight = window.matchMedia('(prefers-color-scheme: light)');
+
+function resolveTheme(mode) {
+  if (mode === 'light' || mode === 'dark') return mode;
+  return _prefersLight.matches ? 'light' : 'dark';
+}
+function getThemeMode() {
+  var s = localStorage.getItem('oduflow-theme');
+  return (s === 'light' || s === 'dark') ? s : 'system';
+}
+function updateThemeToggle(mode) {
+  var btn = document.getElementById('theme-toggle');
+  if (!btn) return;
+  btn.innerHTML = THEME_ICONS[mode] + '<span>' + THEME_LABELS[mode] + '</span>';
+  btn.title = 'Theme: ' + THEME_LABELS[mode] + ' (click to cycle)';
+  btn.setAttribute('aria-label', 'Theme: ' + THEME_LABELS[mode] + '. Click to change.');
+}
+function setThemeMode(mode) {
+  if (mode === 'system') localStorage.removeItem('oduflow-theme');
+  else localStorage.setItem('oduflow-theme', mode);
+  document.documentElement.dataset.theme = resolveTheme(mode);
+  updateThemeToggle(mode);
+}
+function cycleTheme() {
+  var order = ['system', 'light', 'dark'];
+  setThemeMode(order[(order.indexOf(getThemeMode()) + 1) % order.length]);
+}
+// Follow live OS changes while in system mode.
+_prefersLight.addEventListener('change', function () {
+  if (getThemeMode() === 'system') {
+    document.documentElement.dataset.theme = resolveTheme('system');
+  }
+});
+updateThemeToggle(getThemeMode());
 
 console.log(
   '%coduflow%c The Engineer\'s Console \u2014 https://docs.oduflow.dev',
