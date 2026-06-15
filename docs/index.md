@@ -6,7 +6,7 @@ hide:
 
 <section class="odu-hero">
   <span class="odu-hero__eyebrow">⎇ AI-First Odoo Development</span>
-  <h1 class="odu-hero__title">Oduflow Documentation</h1>
+  <h1 class="odu-hero__title">Oduflow Docs</h1>
   <p class="odu-hero__subtitle">
     Provision isolated, ephemeral <strong>Odoo</strong> environments on Docker —
     one per git branch — and hand them to your AI agents over <strong>MCP</strong>.
