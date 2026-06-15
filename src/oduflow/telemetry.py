@@ -10,6 +10,9 @@ from urllib.request import Request, urlopen
 
 _ENDPOINT = "https://oduflow.dev/usage"
 _TIMEOUT = 5
+# Optional shared marker. Must match the server's USAGE_TELEMETRY_TOKEN. Only a
+# speed bump against random scanners — this code is open source. Empty = disabled.
+_TELEMETRY_TOKEN = "5ae286c3f9a162c178577659db75f78259b01942f12ec357929f73e0a222c707"
 
 
 def _get_instance_id(etc_dir: str) -> tuple[str, bool]:
@@ -34,15 +37,18 @@ def _send_event(event: str, version: str, instance_id: str) -> None:
         payload = json.dumps(
             {"event": event, "version": version, "instance_id": instance_id}
         ).encode()
+        headers = {
+            "Content-Type": "application/json",
+            # A branded UA avoids edge bot-protection rules that block the
+            # default ``Python-urllib/x.y`` signature (Cloudflare error 1010).
+            "User-Agent": f"oduflow/{version}" if version else "oduflow",
+        }
+        if _TELEMETRY_TOKEN:
+            headers["X-Oduflow-Telemetry"] = _TELEMETRY_TOKEN
         req = Request(
             _ENDPOINT,
             data=payload,
-            headers={
-                "Content-Type": "application/json",
-                # A branded UA avoids edge bot-protection rules that block the
-                # default ``Python-urllib/x.y`` signature (Cloudflare error 1010).
-                "User-Agent": f"oduflow/{version}" if version else "oduflow",
-            },
+            headers=headers,
             method="POST",
         )
         urlopen(req, timeout=_TIMEOUT)
