@@ -34,6 +34,10 @@ def call_cli(command: str, settings=None, **kwargs) -> str:
     if settings is None:
         raise ValueError("settings must be provided")
 
+    if command == "init":
+        result = system_ops.init_system(settings)
+        return f"System {result['status']}."
+
     if command == "destroy":
         result = system_ops.destroy_system(settings)
         return f"System {result['status']}.\nRemoved: {result['removed']}"
