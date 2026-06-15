@@ -267,7 +267,6 @@
     border-radius: var(--radius-sm);
   }
   .env-note:hover { border-color: var(--border); }
-  .env-note-empty { font-style: italic; opacity: 0.5; }
   /* A set note is the one human voice on a machine card: a message from a
      developer to whoever looks next. Amber = the attention channel. */
   .env-note-set {
@@ -371,6 +370,10 @@
   .btn-create.danger { background: var(--red); border-color: var(--red); }
   .btn-create:hover { opacity: 0.85; }
   .btn-create:disabled { opacity: 0.4; cursor: not-allowed; }
+  .btn.danger { color: var(--red); }
+  .btn.danger:hover, .btn.danger:focus-visible { border-color: var(--red); background: color-mix(in oklab, var(--red) 10%, transparent); }
+  /* Destructive note action sits apart from Cancel/Save on the left edge. */
+  #note-delete-btn { margin-right: auto; }
   .form-group { margin-bottom: 14px; }
   .form-group label {
     display: block;
@@ -1249,6 +1252,7 @@
         <textarea id="note-text" rows="4" placeholder="What is this environment for?"></textarea>
       </div>
       <div class="form-actions">
+        <button class="btn danger" id="note-delete-btn" onclick="deleteNote()">Delete note</button>
         <button class="btn" onclick="closeNoteModal()">Cancel</button>
         <button class="btn-create" onclick="saveNote()">Save note</button>
       </div>
@@ -1712,6 +1716,8 @@ function renderEnvironments(envs, force) {
                 (allStopped ? 'disabled' : '') + '>Open console</button>' +
               '<button role="menuitem" title="psql session on the environment database" onclick="openSqlConsole(\'' + escAttr(env.branch) + '\')" ' +
                 (allStopped ? 'disabled' : '') + '>Open SQL console</button>' +
+              '<button role="menuitem" title="' + (env.note ? 'Edit the note on this environment' : 'Add a note to this environment') + '" onclick="editNote(\'' + escAttr(env.branch) + '\')">' +
+                (env.note ? 'Edit note' : 'Add note') + '</button>' +
               '<button role="menuitem" title="' + (env.protected ? 'Allow Stop, Update, Recreate and Delete again' : 'Disable Stop, Update, Recreate and Delete') + '" onclick="doProtect(\'' + escAttr(env.branch) + '\',' + (env.protected ? 'true' : 'false') + ')" ' + dis + '>' +
                 (env.protected ? 'Unprotect' : 'Protect') + '</button>' +
               '<button role="menuitem" onclick="doUpdate(\'' + escAttr(env.branch) + '\')" ' + dis +
@@ -1733,12 +1739,6 @@ function renderEnvironments(envs, force) {
       urlHtml +
       metaHtml +
       extraHtml +
-      (!env.note
-        ? '<div class="env-note env-note-empty" role="button" tabindex="0" aria-label="Add note" ' +
-            'onclick="editNote(\'' + escAttr(env.branch) + '\')" title="Click to add a note">' +
-            'Add a note...' +
-          '</div>'
-        : '') +
       '<div class="containers">' + containerHtml + '</div>' +
     '</div>';
   }).join('');
@@ -1931,10 +1931,11 @@ var _noteBranch = '';
 
 function editNote(branch) {
   _noteBranch = branch;
-  var el = document.querySelector('.env-card[data-branch="' + branch + '"] .env-note');
-  var current = el && el.classList.contains('env-note-empty') ? '' : (el ? el.textContent : '');
+  var env = cachedEnvs.find(function(e) { return e.branch === branch; });
+  var hasNote = !!(env && env.note);
   document.getElementById('note-modal-title').textContent = 'Note — ' + branch;
-  document.getElementById('note-text').value = current;
+  document.getElementById('note-text').value = hasNote ? env.note : '';
+  document.getElementById('note-delete-btn').style.display = hasNote ? '' : 'none';
   showModal('note-modal');
   document.getElementById('note-text').focus();
 }
@@ -1944,9 +1945,7 @@ function closeNoteModal(event) {
   hideModal('note-modal');
 }
 
-async function saveNote() {
-  var branch = _noteBranch;
-  var note = document.getElementById('note-text').value.trim();
+async function _putNote(branch, note, okMsg) {
   try {
     var r = await fetch(API + '/' + encodeURIComponent(branch) + '/note', {
       method: 'POST',
@@ -1954,10 +1953,18 @@ async function saveNote() {
       body: JSON.stringify({note: note})
     });
     var data = await r.json();
-    if (data.ok) { showToast('Note updated'); closeNoteModal(); }
+    if (data.ok) { showToast(okMsg); closeNoteModal(); }
     else { showToast(data.error || 'Failed to update note', true); }
   } catch(e) { showToast('Connection error: ' + e.message, true); }
   await loadEnvironments(true);
+}
+
+async function saveNote() {
+  await _putNote(_noteBranch, document.getElementById('note-text').value.trim(), 'Note updated');
+}
+
+async function deleteNote() {
+  await _putNote(_noteBranch, '', 'Note deleted');
 }
 
 async function loadEnvironments(force) {
