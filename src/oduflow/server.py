@@ -2991,7 +2991,11 @@ def _run_call(argv: list[str]) -> None:
     print("-" * 60)
     logging.getLogger("oduflow").setLevel(logging.WARNING)
     try:
+        import asyncio
+
         result = tool_fn(**kwargs)
+        if inspect.isawaitable(result):
+            result = asyncio.run(result)
         print(result)
     except Exception as e:
         print(f"ERROR: {e}", file=sys.stderr)
