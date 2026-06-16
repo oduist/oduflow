@@ -247,6 +247,7 @@
   }
   .badge-running { background: color-mix(in oklab, var(--green) 15%, transparent); color: var(--green); }
   .badge-partial { background: color-mix(in oklab, var(--yellow) 15%, transparent); color: var(--yellow); }
+  .badge-stopped { background: color-mix(in oklab, var(--yellow) 15%, transparent); color: var(--yellow); }
   .badge-exited  { background: color-mix(in oklab, var(--red) 15%, transparent); color: var(--red); }
   .badge-protected { background: color-mix(in oklab, var(--yellow) 15%, transparent); color: var(--yellow); }
   .bulk-bar {
@@ -287,7 +288,6 @@
     text-transform: none;
     letter-spacing: normal;
   }
-  .container-down { color: var(--red); font-weight: 600; }
   .badge-neutral { background: color-mix(in oklab, var(--text-dim) 15%, transparent); color: var(--text-dim); }
   @keyframes badge-pulse {
     0% { box-shadow: 0 0 0 0 color-mix(in oklab, currentColor 55%, transparent); }
@@ -1130,6 +1130,15 @@
     <div class="modal-body"><pre id="logs-content">Loading...</pre></div>
   </div>
 </div>
+<div class="modal-overlay" id="svc-info-modal" onclick="closeServiceInfo(event)">
+  <div class="modal modal-md">
+    <div class="modal-header">
+      <h2 id="svc-info-title">Environment</h2>
+      <button class="modal-close" onclick="closeServiceInfo()" aria-label="Close">&times;</button>
+    </div>
+    <div class="modal-body"><pre id="svc-info-content"></pre></div>
+  </div>
+</div>
 <div class="modal-overlay" id="console-modal" onclick="closeConsole(event)">
   <div class="modal modal-terminal">
     <div class="modal-header">
@@ -1429,6 +1438,7 @@ let refreshTimer = null;
 let containerStatsMap = {};
 let cachedTemplates = [];
 let cachedEnvs = [];
+let cachedServices = [];
 let _prevStatuses = {};
 // Bulk cleanup selection: survives re-renders, supports shift-click ranges.
 let selectedEnvs = new Set();
@@ -1631,6 +1641,7 @@ function showSyncResult(branch, result) {
 function badgeClass(status) {
   if (status === 'running') return 'badge-running';
   if (status === 'partial') return 'badge-partial';
+  if (status === 'stopped') return 'badge-stopped';
   return 'badge-exited';
 }
 
@@ -1708,13 +1719,12 @@ function renderEnvironments(envs, force) {
     const busy = busyOps[env.branch];
     const dis = busy ? 'disabled ' : '';
 
-    const containerHtml = env.containers.map(c =>
-      '<span>' + esc(c.name) + ' ' +
-      (c.status === 'running'
-        ? '[' + esc(c.status) + ']'
-        : '<span class="container-down">[' + esc(c.status) + ']</span>') +
-      containerStatsHtml(c.name) + '</span>'
-    ).join('');
+    const containerHtml = env.containers
+      .filter(c => c.status === 'running')
+      .map(c =>
+        '<span>' + esc(c.name) + ' [' + esc(c.status) + ']' +
+        containerStatsHtml(c.name) + '</span>'
+      ).join('');
 
     const urlHtml = env.url
       ? '<div class="env-url"><a href="' + esc(env.url) + '" target="_blank">' + esc(env.url) + '</a></div>'
@@ -1810,7 +1820,7 @@ function renderEnvironments(envs, force) {
       urlHtml +
       metaHtml +
       extraHtml +
-      '<div class="containers">' + containerHtml + '</div>' +
+      (containerHtml ? '<div class="containers">' + containerHtml + '</div>' : '') +
     '</div>';
   }).join('');
 
@@ -2634,6 +2644,7 @@ function maskValue(key, val) {
 }
 
 function renderServices(services) {
+  cachedServices = services || [];
   var el = document.getElementById('svc-list');
   if (!services || services.length === 0) {
     el.innerHTML = '<div class="empty">No services found.<br>Create one to get started.</div>';
@@ -2643,11 +2654,6 @@ function renderServices(services) {
     var urlHtml = svc.url
       ? '<div class="svc-meta"><span>URL: <a href="' + esc(svc.url) + '" target="_blank">' + esc(svc.url) + '</a></span></div>'
       : '';
-    var envHtml = '';
-    if (svc.env_vars && Object.keys(svc.env_vars).length > 0) {
-      var envStr = Object.keys(svc.env_vars).map(function(k) { return esc(k) + '=' + esc(maskValue(k, svc.env_vars[k])); }).join(', ');
-      envHtml = '<div class="svc-meta"><span>Env: <strong>' + envStr + '</strong></span></div>';
-    }
     var volHtml = '';
     if (svc.volumes && svc.volumes.length > 0) {
       var volStr = svc.volumes.map(function(v) { return esc(v.volume) + ':' + esc(v.mount_path) + (v.mode === 'ro' ? ':ro' : ''); }).join(', ');
@@ -2667,6 +2673,7 @@ function renderServices(services) {
           capBadges +
         '</div>' +
         '<div class="svc-actions">' +
+          '<button class="btn" onclick="showServiceInfo(\'' + escAttr(svc.name) + '\')">Info</button>' +
           '<button class="btn btn-update" onclick="doUpdateService(\'' + escAttr(svc.name) + '\')">Update</button>' +
           '<button class="btn btn-restart" onclick="doRestartService(\'' + escAttr(svc.name) + '\')">Restart</button>' +
           '<button class="btn btn-logs" onclick="showServiceLogs(\'' + escAttr(svc.name) + '\')">Logs</button>' +
@@ -2679,11 +2686,26 @@ function renderServices(services) {
         (svc.port ? '<span>Port: <strong>' + svc.port + '</strong></span>' : '') +
       '</div>' +
       urlHtml +
-      envHtml +
       volHtml +
     '</div>';
   }).join('');
   applyStats();
+}
+
+function showServiceInfo(name) {
+  var svc = (cachedServices || []).find(function(s) { return s.name === name; });
+  var vars = (svc && svc.env_vars) || {};
+  var keys = Object.keys(vars);
+  document.getElementById('svc-info-title').textContent = 'Environment — ' + name;
+  document.getElementById('svc-info-content').textContent = keys.length
+    ? keys.map(function(k) { return k + '=' + vars[k]; }).join('\n')
+    : 'No environment variables.';
+  showModal('svc-info-modal');
+}
+
+function closeServiceInfo(event) {
+  if (event && event.target !== event.currentTarget) return;
+  hideModal('svc-info-modal');
 }
 
 async function doUpdateService(name) {
@@ -3856,6 +3878,7 @@ var MODAL_CLOSERS = {
   'sync-result-modal': closeSyncResult,
   'create-modal': closeCreateModal,
   'logs-modal': closeLogsModal,
+  'svc-info-modal': closeServiceInfo,
   'console-modal': closeConsole,
   'sql-modal': closeSqlConsole,
   'create-svc-modal': closeCreateServiceModal,

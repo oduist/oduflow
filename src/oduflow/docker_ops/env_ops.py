@@ -1317,11 +1317,16 @@ def list_environments(settings: Settings, team: TeamSettings) -> list[dict[str, 
 
         envs[env_name]["containers"].append(container_info)
 
-        if container.status != "running":
-            envs[env_name]["status"] = "partial"
-
     records = activity.get_all(team)
     for env_name, env in envs.items():
+        total = len(env["containers"])
+        running = sum(1 for c in env["containers"] if c["status"] == "running")
+        if total and running == 0:
+            env["status"] = "stopped"
+        elif running < total:
+            env["status"] = "partial"
+        else:
+            env["status"] = "running"
         rec = records.get(env_name, {})
         env["last_activity"] = rec.get("last_activity", "")
         env["stopped_at"] = rec.get("stopped_at", "")
