@@ -2642,9 +2642,13 @@ def _run_upgrade(settings: Settings) -> None:
 
 
 def _copy_bundled_configs() -> None:
-    """Copy shared configs (postgresql.conf) to the config directory."""
+    """Provision the shared postgresql.conf in the config directory.
+
+    On first init it is auto-generated from the detected server resources
+    (lean, SSD-oriented — see ``pg_tune``); if generation fails it falls back to
+    the static bundled config. Existing files are never touched.
+    """
     import pathlib
-    import shutil
 
     settings = _get_settings()
     etc_dir = pathlib.Path(settings.etc_dir)
@@ -2655,17 +2659,57 @@ def _copy_bundled_configs() -> None:
             "Cannot create %s (permission denied), skipping config copy", etc_dir
         )
         return
-    bundled_dir = pathlib.Path(__file__).resolve().parent / "templates"
-    for conf_name in ("postgresql.conf",):
-        dest = etc_dir / conf_name
-        if not dest.is_file():
-            bundled = bundled_dir / conf_name
-            if bundled.is_file():
-                try:
-                    shutil.copy2(str(bundled), str(dest))
-                    logger.info("Config: %s", dest)
-                except PermissionError:
-                    logger.warning("Cannot write %s (permission denied)", dest)
+
+    dest = etc_dir / "postgresql.conf"
+    if not dest.is_file():
+        if not _write_tuned_pg_conf(dest):
+            _copy_bundled_pg_conf(dest)
+
+
+def _write_tuned_pg_conf(dest) -> bool:
+    """Generate a resource-tuned postgresql.conf at ``dest``. True on success."""
+    try:
+        from oduflow import pg_tune
+
+        res = pg_tune.detect_resources()
+        content = pg_tune.generate_postgresql_conf(
+            res["total_ram_mb"],
+            res["cpu_count"],
+            source=res["source"],
+            oduflow_version=_get_version(),
+        )
+        dest.write_text(content, encoding="utf-8")
+        logger.info(
+            "Config: %s (auto-tuned: %d vCPU, %d MB RAM, source=%s)",
+            dest,
+            res["cpu_count"],
+            int(res["total_ram_mb"]),
+            res["source"],
+        )
+        return True
+    except PermissionError:
+        logger.warning("Cannot write %s (permission denied)", dest)
+        return False
+    except Exception:
+        logger.warning(
+            "Failed to auto-tune postgresql.conf, using bundled default",
+            exc_info=True,
+        )
+        return False
+
+
+def _copy_bundled_pg_conf(dest) -> None:
+    """Fallback: copy the static bundled postgresql.conf to ``dest``."""
+    import pathlib
+    import shutil
+
+    bundled = pathlib.Path(__file__).resolve().parent / "templates" / "postgresql.conf"
+    if bundled.is_file():
+        try:
+            shutil.copy2(str(bundled), str(dest))
+            logger.info("Config: %s (bundled default)", dest)
+        except PermissionError:
+            logger.warning("Cannot write %s (permission denied)", dest)
 
 
 def _run_reload_template(
