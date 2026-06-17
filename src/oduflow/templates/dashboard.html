@@ -511,9 +511,10 @@
     white-space: pre-wrap; word-break: break-all;
     color: var(--text-dim); font-family: var(--font-mono);
   }
-  #logs-modal .modal { max-width: 80vw; }
+  #logs-modal .modal { width: 80vw; max-width: 80vw; }
   #logs-modal .modal-body { overflow: auto; }
   #logs-modal .modal-body pre { white-space: pre; word-break: normal; }
+  #logs-modal .modal-body pre.wrap { white-space: pre-wrap; word-break: break-all; }
   .log-error { color: var(--red); }
   .log-warning { color: var(--yellow); }
   .logs-toolbar {
@@ -929,7 +930,7 @@
     .env-meta strong, .svc-meta strong, .tpl-meta strong, .preset-meta strong { word-break: break-all; }
     .system-bar { flex-wrap: wrap; gap: 6px 16px; padding: 8px 16px; }
     .modal { width: calc(100vw - 24px); max-height: 88vh; }
-    #logs-modal .modal { max-width: none; }
+    #logs-modal .modal { width: calc(100vw - 24px); max-width: none; }
     .logs-toolbar { flex-wrap: wrap; }
     .toast { left: 16px; right: 16px; max-width: none; }
   }
@@ -1124,6 +1125,7 @@
         <option value="500">500 lines</option>
         <option value="1000">1000 lines</option>
       </select>
+      <button class="logs-btn" id="logs-wrap-btn" onclick="toggleLogsWrap()" title="Toggle line wrapping">↵ Wrap</button>
       <button class="logs-btn" onclick="fetchLogs()" title="Refresh logs">↻ Refresh</button>
       <button class="logs-btn" onclick="copyLogs()" title="Copy displayed log lines to clipboard">⧉ Copy</button>
     </div>
@@ -2290,6 +2292,12 @@ function renderLogs() {
   document.getElementById('logs-content').innerHTML = html;
   var body = document.getElementById('logs-content').parentElement;
   body.scrollTop = body.scrollHeight;
+}
+
+function toggleLogsWrap() {
+  var pre = document.getElementById('logs-content');
+  var on = pre.classList.toggle('wrap');
+  document.getElementById('logs-wrap-btn').classList.toggle('active', on);
 }
 
 function copyLogs() {
