@@ -1722,7 +1722,8 @@ function renderEnvironments(envs, force) {
     const containerHtml = env.containers
       .filter(c => c.status === 'running')
       .map(c =>
-        '<span>' + esc(c.name) + ' [' + esc(c.status) + ']' +
+        '<span><strong class="copy-db" role="button" tabindex="0" title="Copy container name" aria-label="Copy container name" onclick="copyToClipboard(\'' + escAttr(c.name) + '\')">' +
+        esc(c.name) + '</strong> [' + esc(c.status) + ']' +
         containerStatsHtml(c.name) + '</span>'
       ).join('');
 
