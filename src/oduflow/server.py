@@ -2712,6 +2712,27 @@ def _copy_bundled_pg_conf(dest) -> None:
             logger.warning("Cannot write %s (permission denied)", dest)
 
 
+def _inject_db_password(toml_text: str, password: str) -> str:
+    """Insert an auto-generated PostgreSQL superuser password into the
+    ``[database]`` section of a freshly bootstrapped oduflow.toml.
+
+    The bundled template ships without a password so each install gets a
+    unique secret. Only used when creating the config from the template —
+    existing user configs are never rewritten.
+    """
+    line = f'password = "{password}"'
+    out: list[str] = []
+    injected = False
+    for raw in toml_text.splitlines():
+        out.append(raw)
+        if not injected and raw.strip() == "[database]":
+            out.append(line)
+            injected = True
+    if not injected:
+        out.extend(["", "[database]", line])
+    return "\n".join(out) + "\n"
+
+
 def _run_reload_template(
     settings: Settings, team: TeamSettings, template_name: str, dump_path: str = ""
 ) -> None:
@@ -3258,12 +3279,13 @@ def main() -> None:
     logging.getLogger("docker").setLevel(logging.WARNING)
     logging.getLogger("docket").setLevel(logging.WARNING)
 
-    # Bootstrap: if no config exists, copy the bundled default
+    # Bootstrap: if no config exists, create it from the bundled default
+    # with an auto-generated PostgreSQL superuser password.
     try:
         find_toml()
     except FileNotFoundError:
         import pathlib
-        import shutil
+        import secrets
 
         from oduflow.settings import _resolve_etc_dir
 
@@ -3271,8 +3293,12 @@ def main() -> None:
         os.makedirs(dest_dir, exist_ok=True)
         bundled = pathlib.Path(__file__).resolve().parent / "templates" / "oduflow.toml"
         dest = os.path.join(dest_dir, "oduflow.toml")
-        shutil.copy2(str(bundled), dest)
-        logger.info("Config created: %s", dest)
+        rendered = _inject_db_password(
+            bundled.read_text(encoding="utf-8"), secrets.token_urlsafe(24)
+        )
+        with open(dest, "w", encoding="utf-8") as f:
+            f.write(rendered)
+        logger.info("Config created: %s (auto-generated DB password)", dest)
 
     global _settings
     _settings = _get_settings()

@@ -13,7 +13,7 @@ mode = "port"                   # "port" | "traefik"
 # ── Database ──────────────────────────────────────────
 [database]
 user = "odoo"
-password = "odoo"
+# password auto-generated on first init. Set explicitly to override.
 image = "postgres:15"
 
 # ── Storage ───────────────────────────────────────────

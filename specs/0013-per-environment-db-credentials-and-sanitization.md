@@ -3,7 +3,7 @@
 **Status:** Adopted (still in force)
 **Type:** Architecture
 **First introduced:** `cd0b9ec` "two-tier database sanitization" (2026-02-24), `e4949b0` "per-environment PostgreSQL credentials" (2026-02-26)
-**Key code today:** `env_credentials.py` (generate / persist / load / delete per-env creds), `sanitizer.py` (two-tier script runner), `docker_ops/env_ops.py` (`_create_pg_role`, post-clone ownership fixup), `docker_ops/system_ops.py` (shared DB, role helpers)
+**Key code today:** `env_credentials.py` (generate / persist / load / delete per-env creds), `sanitizer.py` (two-tier script runner), `docker_ops/env_ops.py` (`_create_pg_role`, post-clone ownership fixup), `docker_ops/system_ops.py` (shared DB, role helpers), `server.py` (`_inject_db_password` — bootstrap superuser secret)
 
 ## Context
 
@@ -101,6 +101,24 @@ surfaced:
   inherits ownership for DDL. (The current code keeps an explicit
   schema/table/sequence/view `ALTER OWNER` sweep plus a signaling-sequence drop.)
 
+A later hardening closed the **shared-superuser** gap flagged in Context point 1
+— the part the per-env role decision left untouched, since the superuser is still
+needed for admin operations:
+
+- `#74` (2026-06-17) — **auto-generate the shared superuser password.** The
+  bundled `oduflow.toml` no longer ships a hardcoded `password = "odoo"`; on first
+  init the bootstrap injects a random `secrets.token_urlsafe(24)` into the
+  generated config's `[database]` section, so every install gets a unique
+  superuser secret instead of a published default. The trade-off chosen was to
+  keep the secret in the instance's own `oduflow.toml`
+  ([[0016-configuration-model]]) rather than a sidecar credentials file — the
+  config is already the single source of truth, loaded each start, and generating
+  at config-creation time means an existing user config is never rewritten. An
+  explicit `[database].password` still overrides, and pre-existing installs (whose
+  volume was initialised under `odoo`) are left untouched, so it is fully backward
+  compatible. The matching admin connections rely on local trust auth inside the
+  container, so they were unaffected by the change.
+
 ## History
 
 - `cd0b9ec` (2026-02-24) — two-tier sanitization: drop hardcoded built-in queries;
@@ -116,3 +134,6 @@ surfaced:
 - `4f729b1` (2026-03-02) — **delete** mail servers (`fetchmail_server`,
   `ir_mail_server`) instead of merely disabling them; disabling still let Odoo
   send in some cases.
+- `#74` (2026-06-17) — auto-generate the shared PostgreSQL superuser password
+  on first init; the bundled `oduflow.toml` ships without a hardcoded password and
+  the bootstrap injects a random secret into the generated config (see Evolution).
