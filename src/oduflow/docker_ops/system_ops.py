@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import tarfile
 import time
+from importlib.metadata import PackageNotFoundError, version
 
 import docker
 from docker import DockerClient
@@ -28,6 +29,14 @@ _PACKAGE_ROOT = pathlib.Path(__file__).resolve().parents[1]
 _BUNDLED_PG_CONF = _PACKAGE_ROOT / "templates" / "postgresql.conf"
 _BUNDLED_ODOO_CONF = _PACKAGE_ROOT / "templates" / "odoo.conf"
 _BUNDLED_SANITIZE_DIR = _PACKAGE_ROOT / "templates"
+
+
+def _get_oduflow_version() -> str:
+    """Return the installed package version."""
+    try:
+        return version("oduflow")
+    except PackageNotFoundError:
+        return "dev"
 
 
 def _get_etc_dir() -> pathlib.Path:
@@ -411,7 +420,7 @@ def init_system(
     settings: Settings,
 ) -> dict[str, str]:
     client = get_client()
-    logger.info("Initializing system")
+    logger.info("Initializing system (version %s)", _get_oduflow_version())
 
     system_labels = {settings.managed_label: "true", settings.system_label: "true"}
 
