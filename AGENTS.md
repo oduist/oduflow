@@ -109,6 +109,33 @@ Before making any code changes, always:
 
 Do NOT write or modify any code until the user explicitly approves the plan.
 
+## Record Architectural Decisions
+
+When we add a **new architectural decision or a significant new capability**
+(not a bugfix, refactor, copy tweak, or other minor change), record it as a
+**decision record** in `specs/`.
+
+- **What counts:** a new pillar or a meaningful shift in how the system works —
+  a new subsystem, a change to the runtime/orchestration/tenancy/auth model, a
+  new major MCP capability, a delivery-mode change, etc. If you're unsure whether
+  it's "macro" enough, it probably isn't — skip it.
+- **Source of truth:** write the record **from the conversation/decisions that
+  produced the change** — the *why*, the forces and trade-offs, and the *what*
+  at a macro level. Do not transcribe code or list every file; capture the
+  reasoning a future reader needs, not the diff.
+- **Format:** one Markdown file per decision, ADR-style, named
+  `NNNN-short-slug.md`. Follow the shape of the existing records: a header block
+  (Status · Type · First introduced · Key code) then Context · Decision · How it
+  works (macro) · Consequences · (Evolution) · History (commit pointers). Keep it
+  to roughly a page — macro altitude, not implementation detail. Link related
+  records with `[[NNNN-slug]]`.
+- **Numbering:** records are numbered **chronologically** by when the decision
+  was first made. A genuinely new decision is the latest in time, so it simply
+  takes the next free number. Add a row to `specs/README.md` (the chronological
+  index).
+- **When:** add the record as part of the same change/PR that introduces the
+  capability, so the rationale is captured while it's fresh.
+
 ## Env
 
 If you run into any missing python dependency errors, try running your command with source .venv/bin/activate
