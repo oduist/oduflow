@@ -105,7 +105,7 @@ A later hardening closed the **shared-superuser** gap flagged in Context point 1
 — the part the per-env role decision left untouched, since the superuser is still
 needed for admin operations:
 
-- `29ecd0f` (2026-06-17) — **auto-generate the shared superuser password.** The
+- `#74` (2026-06-17) — **auto-generate the shared superuser password.** The
   bundled `oduflow.toml` no longer ships a hardcoded `password = "odoo"`; on first
   init the bootstrap injects a random `secrets.token_urlsafe(24)` into the
   generated config's `[database]` section, so every install gets a unique
@@ -134,6 +134,6 @@ needed for admin operations:
 - `4f729b1` (2026-03-02) — **delete** mail servers (`fetchmail_server`,
   `ir_mail_server`) instead of merely disabling them; disabling still let Odoo
   send in some cases.
-- `29ecd0f` (2026-06-17) — auto-generate the shared PostgreSQL superuser password
+- `#74` (2026-06-17) — auto-generate the shared PostgreSQL superuser password
   on first init; the bundled `oduflow.toml` ships without a hardcoded password and
   the bootstrap injects a random secret into the generated config (see Evolution).
