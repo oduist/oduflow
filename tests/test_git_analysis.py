@@ -60,6 +60,21 @@ class TestClassifyChanges:
         result = classify_changes(files, "/tmp")
         assert result["action"] == "restart"
 
+    def test_odoo_conf_restart(self):
+        result = classify_changes([".oduflow/odoo.conf"], "/tmp")
+        assert result["action"] == "restart"
+        assert result["details"]["restart_required"] == [".oduflow/odoo.conf"]
+
+    def test_odoo_conf_plus_hot_reload_files_restart(self):
+        files = [
+            ".oduflow/odoo.conf",
+            "sale/views/sale_order.xml",
+            "web/static/src/js/app.js",
+        ]
+        result = classify_changes(files, "/tmp")
+        assert result["action"] == "restart"
+        assert result["details"]["restart_required"] == [".oduflow/odoo.conf"]
+
     def test_security_xml(self):
         files = ["sale/security/ir.model.access.csv"]
         result = classify_changes(files, "/tmp")
@@ -96,6 +111,16 @@ class TestClassifyChanges:
         result = classify_changes(files, "/tmp")
         assert result["action"] == "upgrade"
         assert "sale" in result["modules_to_upgrade"]
+
+    def test_upgrade_beats_odoo_conf_restart(self):
+        files = [
+            ".oduflow/odoo.conf",
+            "sale/security/sale_security.xml",
+        ]
+        result = classify_changes(files, "/tmp")
+        assert result["action"] == "upgrade"
+        assert "sale" in result["modules_to_upgrade"]
+        assert result["details"]["restart_required"] == [".oduflow/odoo.conf"]
 
     def test_manifest_version_change(self, tmp_path):
         module_dir = tmp_path / "sale"

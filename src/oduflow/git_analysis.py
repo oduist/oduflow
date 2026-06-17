@@ -17,6 +17,7 @@ def _trace(msg: str, *args: object) -> None:
 
 
 MANIFEST_KEYS_WITH_FILES = ("data", "demo", "assets", "qweb")
+RESTART_REQUIRED_PATHS = {".oduflow/odoo.conf"}
 
 _FIELD_RE = re.compile(r"^\s*\w+\s*=\s*fields\..*", re.MULTILINE)
 _VIEW_TAG_RE = re.compile(r"<(tree|list|form)\b([^>]*)/?>")
@@ -146,6 +147,10 @@ def _is_data_path(file_path: str) -> bool:
     return "/data/" in f"/{file_path}/" or file_path.startswith("data/")
 
 
+def _requires_restart_path(file_path: str) -> bool:
+    return file_path.replace(os.sep, "/") in RESTART_REQUIRED_PATHS
+
+
 def classify_changes(
     changed_files: list[str], repo_path: str, base_ref: str = "HEAD~1"
 ) -> dict:
@@ -163,6 +168,7 @@ def classify_changes(
                 "xml_security": [...],   # xml in security/
                 "manifest_upgrade": [...], # modules needing upgrade due to manifest
                 "js_changed": [...],
+                "restart_required": [...],
             }
         }
     """
@@ -181,12 +187,23 @@ def classify_changes(
     xml_hot = []
     xml_security = []
     js_changed = []
+    restart_required = []
     modules_to_upgrade: set[str] = set()
     modules_to_install: set[str] = set()
 
     for f in changed_files:
         ext = os.path.splitext(f)[1].lower()
         module = _get_module_name(f, repo_path)
+
+        if _requires_restart_path(f):
+            restart_required.append(f)
+            _trace(
+                "  file=%s ext=%s module=%s -> restart-required config",
+                f,
+                ext,
+                module,
+            )
+            continue
 
         if os.path.basename(f) == "__manifest__.py" and module:
             manifest_action = _check_manifest_changes(f, module, repo_path, base_ref)
@@ -225,7 +242,11 @@ def classify_changes(
                     module,
                 )
             else:
-                if module and module not in modules_to_install and _check_xml_view_attr_changes(f, repo_path, base_ref):
+                if (
+                    module
+                    and module not in modules_to_install
+                    and _check_xml_view_attr_changes(f, repo_path, base_ref)
+                ):
                     modules_to_upgrade.add(module)
                     _trace(
                         "  file=%s ext=.xml module=%s -> view attr changed, UPGRADE",
@@ -234,7 +255,9 @@ def classify_changes(
                     )
                 else:
                     xml_hot.append(f)
-                    _trace("  file=%s ext=.xml module=%s -> hot-reload XML", f, module)
+                    _trace(
+                        "  file=%s ext=.xml module=%s -> hot-reload XML", f, module
+                    )
             continue
 
         if ext == ".js":
@@ -253,6 +276,7 @@ def classify_changes(
         "manifest_upgrade": sorted(modules_to_upgrade),
         "manifest_install": sorted(modules_to_install),
         "js_changed": js_changed,
+        "restart_required": restart_required,
     }
 
     if modules_to_install or modules_to_upgrade:
@@ -270,9 +294,10 @@ def classify_changes(
             "details": details,
         }
 
-    if py_changed:
+    if py_changed or restart_required:
         _trace(
-            "classify_changes RESULT: action=restart (Python files changed, no field/manifest changes)"
+            "classify_changes RESULT: action=restart "
+            "(Python or restart-required config changed)"
         )
         return {
             "action": "restart",
@@ -367,12 +392,16 @@ def shallow_classify(changed_files: list[str], repo_path: str = "") -> dict:
     xml_hot: list[str] = []
     xml_security: list[str] = []
     js_changed: list[str] = []
+    restart_required: list[str] = []
     modules_to_upgrade: set[str] = set()
 
     for f in changed_files:
         ext = os.path.splitext(f)[1].lower()
         module = _get_module_name(f, repo_path)
 
+        if _requires_restart_path(f):
+            restart_required.append(f)
+            continue
         if os.path.basename(f) == "__manifest__.py" and module:
             modules_to_upgrade.add(module)
             continue
@@ -396,6 +425,7 @@ def shallow_classify(changed_files: list[str], repo_path: str = "") -> dict:
         "manifest_upgrade": sorted(modules_to_upgrade),
         "manifest_install": [],
         "js_changed": js_changed,
+        "restart_required": restart_required,
     }
 
     if modules_to_upgrade:
@@ -405,7 +435,7 @@ def shallow_classify(changed_files: list[str], repo_path: str = "") -> dict:
             "modules_to_upgrade": sorted(modules_to_upgrade),
             "details": details,
         }
-    if py_changed:
+    if py_changed or restart_required:
         return {
             "action": "restart",
             "modules_to_upgrade": [],
@@ -463,7 +493,7 @@ def guardrail_warnings(
         )
     if recommended.get("action") == "restart" and not do_restart and not requested:
         warnings.append(
-            "Python code changed — a restart is recommended; an XML/JS-only refresh "
-            "won't reload it."
+            "Python code or runtime config changed — a restart is recommended; "
+            "an XML/JS-only refresh won't reload it."
         )
     return warnings

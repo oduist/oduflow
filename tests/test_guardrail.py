@@ -12,6 +12,11 @@ class TestShallowClassify:
         r = shallow_classify(["sale/models/sale.py"])
         assert r["action"] == "restart"
 
+    def test_odoo_conf_restart(self):
+        r = shallow_classify([".oduflow/odoo.conf"])
+        assert r["action"] == "restart"
+        assert r["details"]["restart_required"] == [".oduflow/odoo.conf"]
+
     def test_security_xml_upgrade(self):
         r = shallow_classify(["sale/security/groups.xml"])
         assert r["action"] == "upgrade"
@@ -47,6 +52,11 @@ class TestRecommend:
         # restart (field changes are undetectable) — shallow path.
         r = recommend(["sale/models/sale.py"], "/tmp/does-not-exist", None)
         assert r["action"] == "restart"
+
+    def test_no_base_ref_odoo_conf_restart(self):
+        r = recommend([".oduflow/odoo.conf"], "/tmp/does-not-exist", None)
+        assert r["action"] == "restart"
+        assert r["details"]["restart_required"] == [".oduflow/odoo.conf"]
 
     def test_no_base_ref_security_upgrade(self):
         r = recommend(["sale/security/groups.xml"], "/tmp/does-not-exist", None)
