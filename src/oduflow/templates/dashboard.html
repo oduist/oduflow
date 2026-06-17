@@ -311,6 +311,7 @@
     margin-bottom: 10px;
   }
   .env-meta strong { color: var(--text); font-weight: 500; font-family: var(--font-mono); font-size: var(--text-xs); }
+  .repo-links { display: inline-flex; align-items: center; gap: 2px; }
   .repo-link {
     display: inline-flex;
     align-items: center;
@@ -322,7 +323,6 @@
     text-decoration: none;
     transition: background 0.15s, color 0.15s;
     vertical-align: middle;
-    margin-left: 4px;
   }
   .repo-link:hover { background: var(--subtle); color: var(--accent); }
   .repo-link svg { width: 14px; height: 14px; }
@@ -1731,26 +1731,31 @@ function renderEnvironments(envs, force) {
       ? '<div class="env-url"><a href="' + esc(env.url) + '" target="_blank">' + esc(env.url) + '</a></div>'
       : '';
 
+    // PRs and commits belong to the branch, so these links live next to the
+    // branch name in the header rather than trailing the (long) repo URL.
+    const repoLinksHtml = (function() {
+      if (!env.repo_url) return '';
+      var rh = repoHttpUrl(env.repo_url);
+      if (!rh) return '';
+      var branch = env.git_branch || env.branch || '';
+      var prsUrl = rh + (isGitlab(rh) ? '/-/merge_requests' : '/pulls');
+      var commitsUrl = rh + (isGitlab(rh) ? '/-/commits/' : '/commits/') + encodeURIComponent(branch);
+      return '<span class="repo-links">' +
+        '<a class="repo-link" href="' + esc(prsUrl) + '" target="_blank" title="Pull Requests">' +
+          '<svg viewBox="0 0 16 16" fill="currentColor"><path d="M5 3.254V3.25a.75.75 0 110-.005v.009zM11 13.75a.75.75 0 110-1.5.75.75 0 010 1.5zm-6 0a.75.75 0 110-1.5.75.75 0 010 1.5zM5.75 9.5a.75.75 0 01-.75-.75v-5a.75.75 0 011.5 0v5a.75.75 0 01-.75.75zm5.5 4a2.25 2.25 0 10-1.5-3.937V7.875a1.25 1.25 0 00-1.25-1.25H6.75a.75.75 0 010-1.5H8.5a2.75 2.75 0 012.75 2.75v1.688a2.25 2.25 0 100 3.937zM5.75 15a2.25 2.25 0 100-4.5 2.25 2.25 0 000 4.5z"/></svg>' +
+        '</a>' +
+        '<a class="repo-link" href="' + esc(commitsUrl) + '" target="_blank" title="Commits">' +
+          '<svg viewBox="0 0 16 16" fill="currentColor"><path d="M10.5 7.75a2.5 2.5 0 11-5 0 2.5 2.5 0 015 0zm1.43.75a4.002 4.002 0 01-7.86 0H.75a.75.75 0 010-1.5h3.32a4.002 4.002 0 017.86 0h3.32a.75.75 0 010 1.5h-3.32z"/></svg>' +
+        '</a>' +
+      '</span>';
+    })();
+
     const metaHtml = (env.odoo_image || env.repo_url || env.db_name || env.template_name)
       ? '<div class="env-meta">' +
           (env.db_name ? '<span>DB: <strong class="copy-db" role="button" tabindex="0" title="Copy database name" aria-label="Copy database name" onclick="copyToClipboard(\'' + esc(env.db_name).replace(/'/g, "\\'") + '\')">' + esc(env.db_name) + '</strong></span>' : '') +
           (env.template_name && env.template_name !== 'none' ? '<span>Template: <strong>' + esc(env.template_name) + '</strong></span>' : '') +
           (env.odoo_image ? '<span>Image: <strong>' + esc(env.odoo_image) + '</strong></span>' : '') +
-          (env.repo_url ? '<span>Repo: <strong>' + esc(env.repo_url) + '</strong>' +
-            (function() {
-              var rh = repoHttpUrl(env.repo_url);
-              if (!rh) return '';
-              var branch = env.git_branch || env.branch || '';
-              var prsUrl = rh + (isGitlab(rh) ? '/-/merge_requests' : '/pulls');
-              var commitsUrl = rh + (isGitlab(rh) ? '/-/commits/' : '/commits/') + encodeURIComponent(branch);
-              return '<a class="repo-link" href="' + esc(prsUrl) + '" target="_blank" title="Pull Requests">' +
-                '<svg viewBox="0 0 16 16" fill="currentColor"><path d="M5 3.254V3.25a.75.75 0 110-.005v.009zM11 13.75a.75.75 0 110-1.5.75.75 0 010 1.5zm-6 0a.75.75 0 110-1.5.75.75 0 010 1.5zM5.75 9.5a.75.75 0 01-.75-.75v-5a.75.75 0 011.5 0v5a.75.75 0 01-.75.75zm5.5 4a2.25 2.25 0 10-1.5-3.937V7.875a1.25 1.25 0 00-1.25-1.25H6.75a.75.75 0 010-1.5H8.5a2.75 2.75 0 012.75 2.75v1.688a2.25 2.25 0 100 3.937zM5.75 15a2.25 2.25 0 100-4.5 2.25 2.25 0 000 4.5z"/></svg>' +
-              '</a>' +
-              '<a class="repo-link" href="' + esc(commitsUrl) + '" target="_blank" title="Commits">' +
-                '<svg viewBox="0 0 16 16" fill="currentColor"><path d="M10.5 7.75a2.5 2.5 0 11-5 0 2.5 2.5 0 015 0zm1.43.75a4.002 4.002 0 01-7.86 0H.75a.75.75 0 010-1.5h3.32a4.002 4.002 0 017.86 0h3.32a.75.75 0 010 1.5h-3.32z"/></svg>' +
-              '</a>';
-            })() +
-          '</span>' : '') +
+          (env.repo_url ? '<span>Repo: <strong>' + esc(env.repo_url) + '</strong></span>' : '') +
           (env.created_at ? '<span>Created: <strong>' + formatDate(env.created_at) + '</strong></span>' : '') +
           (env.last_activity ? '<span title="Last MCP call or dashboard action for this environment">Active: <strong>' + formatDate(env.last_activity) + '</strong></span>' : '') +
           (env.stopped_at ? '<span>Stopped: <strong>' + formatDate(env.stopped_at) + (env.auto_stopped ? ' (auto)' : '') + '</strong></span>' : '') +
@@ -1775,6 +1780,7 @@ function renderEnvironments(envs, force) {
             ' aria-label="Select ' + esc(env.branch) + '"></label>' +
           '<span class="branch-name">' + esc(env.branch) + '</span>' +
           (env.git_branch && env.git_branch !== env.branch ? '<span class="git-branch">⎇ ' + esc(env.git_branch) + '</span>' : '') +
+          repoLinksHtml +
           '<span class="badge ' + badgeClass(env.status) + '"' +
             (env.status === 'partial' ? ' title="' + env.containers.filter(function(c) { return c.status === 'running'; }).length + ' of ' + env.containers.length + ' containers running"' : '') +
             '>' + esc(env.status) + '</span>' +
