@@ -731,6 +731,24 @@ def _build_routes(
             logger.exception("Unexpected error in api_templates")
             return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
 
+    def api_template_delete(request: Request) -> JSONResponse:
+        name = request.path_params["name"]
+        team = _get_ui_team(request)
+        try:
+            locks.acquire_team(team.team_id)
+        except BusyError as e:
+            return _error_response(e)
+        try:
+            result = system_ops.delete_template(get_settings(), team, name)
+            return JSONResponse({"ok": True, "result": result})
+        except FlowError as e:
+            return _error_response(e)
+        except Exception as e:
+            logger.exception("Unexpected error in api_template_delete")
+            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+        finally:
+            locks.release_team(team.team_id)
+
     def api_services(request: Request) -> JSONResponse:
         try:
             services = service_ops.list_services(get_settings(), _get_ui_team(request))
@@ -1575,6 +1593,9 @@ def _build_routes(
         Route("/api/license", api_license, methods=["GET"]),
         Route("/api/license/activate", api_license_activate, methods=["POST"]),
         Route("/api/templates", api_templates, methods=["GET"]),
+        Route(
+            "/api/templates/{name}/delete", api_template_delete, methods=["POST"]
+        ),
         Route("/api/environments", api_list, methods=["GET"]),
         Route("/api/environments/create", api_create, methods=["POST"]),
         Route("/api/stats", api_stats, methods=["GET"]),

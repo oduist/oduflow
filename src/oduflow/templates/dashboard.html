@@ -2360,6 +2360,27 @@ async function loadTemplates() {
   }
 }
 
+async function doDeleteTemplate(name) {
+  if (!(await confirmDialog({
+    title: 'Remove template',
+    message: 'Permanently remove the template "' + name + '"? This drops its template database and deletes its filestore and SQL dump from disk. Environments already created from it are unaffected.',
+    confirmLabel: 'Remove template',
+    danger: true
+  }))) return;
+  try {
+    var r = await fetch(API_TEMPLATES + '/' + encodeURIComponent(name) + '/delete', { method: 'POST' });
+    var data = await r.json();
+    if (data.ok) {
+      showToast('Template "' + name + '" removed');
+      await loadTemplates();
+    } else {
+      showToast(data.error || 'Remove failed', true);
+    }
+  } catch (e) {
+    showToast('Connection error: ' + e.message, true);
+  }
+}
+
 function renderTemplates(templates) {
   var el = document.getElementById('tpl-list');
   if (!templates || templates.length === 0) {
@@ -2403,6 +2424,7 @@ function renderTemplates(templates) {
         '<div class="tpl-head-right">' +
           '<div class="tpl-meta">' + dbTag + sqlTag + fsTag + modeTag + sizeHtml + '</div>' +
           '<button class="btn-create btn-sm" onclick="openCreateFromTemplate(\'' + escAttr(t.template_name) + '\')">+ New Env</button>' +
+          '<button class="btn btn-delete btn-sm" onclick="doDeleteTemplate(\'' + escAttr(t.template_name) + '\')">Remove</button>' +
         '</div>' +
       '</div>' +
       metaHtml +
