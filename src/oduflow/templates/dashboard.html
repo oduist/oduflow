@@ -703,14 +703,16 @@
     display: inline-block;
     padding: 2px 8px;
     border-radius: 12px;
+    border: 1px solid transparent;
     font-size: var(--text-2xs);
     font-weight: 600;
     text-transform: uppercase;
     letter-spacing: 0.5px;
     white-space: nowrap;
   }
-  .tag-ok { background: color-mix(in oklab, var(--green) 15%, transparent); color: var(--green); }
-  .tag-missing { background: color-mix(in oklab, var(--red) 15%, transparent); color: var(--red); }
+  .tag-ok      { background: color-mix(in oklab, var(--green) 10%, transparent);    color: var(--green);    border: 1px solid color-mix(in oklab, var(--green) 22%, transparent); }
+  .tag-missing { background: color-mix(in oklab, var(--red) 14%, transparent);      color: var(--red);      border: 1px solid color-mix(in oklab, var(--red) 28%, transparent); }
+  .tag-neutral { background: color-mix(in oklab, var(--text-dim) 12%, transparent); color: var(--text-dim); border: 1px solid color-mix(in oklab, var(--text-dim) 24%, transparent); }
   .form-group select {
     width: 100%;
     padding: 8px 10px;
@@ -2398,8 +2400,8 @@ function renderTemplates(templates) {
       ? '<span class="tag tag-ok" title="Filestore snapshot (attachments) is present">Filestore</span>'
       : '<span class="tag tag-missing" title="No filestore snapshot">No Filestore</span>';
     var modeTag = t.use_overlay
-      ? '<span class="tag tag-ok" title="Filestore cloning mode: copy-on-write via fuse-overlayfs">Overlay</span>'
-      : '<span class="tag tag-ok" title="Filestore cloning mode: plain copy">Copy</span>';
+      ? '<span class="tag tag-neutral" title="Filestore cloning mode: copy-on-write via fuse-overlayfs">Overlay</span>'
+      : '<span class="tag tag-neutral" title="Filestore cloning mode: plain copy">Copy</span>';
     var sizeHtml = '';
     if (t.filestore_size_mb != null || t.dump_size_mb != null) {
       var fmtSize = function(mb) {
