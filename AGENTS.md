@@ -157,8 +157,15 @@ When preparing a new release, update the product version before creating the tag
 2. Update `docs/changelog.md` so the top section is titled with the new version and includes the release notes for the changes being published.
 3. Commit and push those version/changelog changes to `main`.
 4. Create the annotated tag (for example `git tag -a vX.Y.Z -m "vX.Y.Z"`) on the final `main` commit and push the tag.
+5. **Publish a GitHub Release for that tag — this is the step that actually ships the package.** The PyPI publishing workflow (`.github/workflows/publish.yml`) triggers on `release: [published]`, **not** on the tag push, so a pushed tag with no published GitHub Release never reaches PyPI. Create the release from the existing tag, using a short human-readable **title** (a descriptive phrase, not the version number — for example `Light UI scheme. Bigger fonts.`) and that version's `docs/changelog.md` section, copied **verbatim**, as the body:
 
-Do not create or move a release tag until the version bump and changelog commit is already on `main`; the PyPI publishing workflow reads the package version from the tagged commit.
+   ```bash
+   # Extract this version's changelog section (everything between its heading and the previous release's):
+   awk 'NR>1 && /^## vPREV$/{exit} /^## vX.Y.Z$/{f=1} f' docs/changelog.md > /tmp/release-notes.md
+   gh release create vX.Y.Z --title "<short phrase>" --notes-file /tmp/release-notes.md --latest --verify-tag
+   ```
+
+Do not create or move a release tag until the version bump and changelog commit is already on `main`: the publish workflow builds from the tagged commit, so its `pyproject.toml` version must already be correct. Remember that publishing is gated on the GitHub Release (step 5) — a tag alone does not publish.
 
 ## Publishing Docker Image
 
