@@ -1,5 +1,31 @@
 # Changelog
 
+## v1.51.0
+
+### Features
+
+- **Auto-generated DB superuser password** — on a fresh install the bootstrap injects a random `secrets.token_urlsafe(24)` password into the generated `oduflow.toml` `[database]` section, so every install gets a unique PostgreSQL superuser secret. The bundled template no longer ships the hardcoded `password = "odoo"`; an explicit `[database].password` still overrides, and existing configs are never rewritten. (#74)
+- **Auto-tuned PostgreSQL config** — first-time system init now generates `postgresql.conf` from the host's detected CPU/RAM (new `pg_tune.py`) instead of copying a static file hardcoded for "2 vCPU / 4 GB / HDD". The tuning is lean and SSD-oriented for a host running many lightweight single-user Odoo environments (e.g. `shared_buffers` ≈ 10% of RAM, floored at 128 MB and capped at 1 GB); the generated file is marked `# KEEP` so `oduflow upgrade` never overwrites it, and falls back to the static bundled config on any failure. The template `db_maxconn` was lowered from 16 to 8. (#67)
+- **Restart on repo `odoo.conf` changes** — changes to the repository-level `odoo.conf` now trigger an environment restart during `pull_and_apply`. (#69)
+- **Version logging on init** — the Oduflow version is now logged during system initialization. (#70)
+
+### Dashboard
+
+- **Remove templates** — each card in the Templates tab gains a Remove action (with a danger confirm dialog), wired to a new `POST /api/templates/{name}/delete` endpoint. (#76)
+- **Wider logs modal + wrap toggle** — the logs modal now fills 80vw instead of being capped at ~900px, and a new "Wrap" toggle switches long log lines (tracebacks, SQL) between no-wrap and soft-wrap to avoid horizontal scrolling. (#75)
+- **Calmer template badges** — the Templates tab's readiness badges are toned down (lower-saturation green fill plus a hairline border) and the `Copy`/`Overlay` mode badge is now a neutral gray chip rather than a success-green one, ending the eye-straining "wall of green". (#77)
+- **Branch-header commit & PR links** — the Pull Requests and Commits icon-links moved from the variable-length Repo URL line into the card header next to the branch name, giving them a stable, easy-to-find position. (#73)
+- **Copyable container names** — running-environment container names are now click-to-copy via the existing clipboard affordance.
+- **Stopped status + service env vars** — environments whose containers are all stopped now report a distinct "stopped" status (amber) instead of "partial", and the redundant exited-container row is dropped; service environment variables moved out of the card into an "Info" modal that lists the real (unmasked) `KEY=value` pairs. (#66)
+
+### Bug Fixes
+
+- **`oduflow call` async tools** — the CLI `call` subcommand printed `<coroutine object ...>` (and a "coroutine was never awaited" warning) for tools wrapped by `@handle_errors`; their awaitable results are now run to completion via `asyncio.run()`. Sync tools are unaffected. (#68)
+
+### Documentation
+
+- **Architectural decision records** — the project's macro-level decisions were reconstructed from git history into ADR-style records under `specs/` (0001–0022) with a chronological index, and a "Record Architectural Decisions" rule was added to `AGENTS.md` so future decisions are captured alongside the change that introduces them. (#72)
+
 ## v1.50.5
 
 ### Features
