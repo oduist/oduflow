@@ -1637,6 +1637,49 @@ def _detect_local_changes(
     return None, changed
 
 
+def _reapply_odoo_conf(
+    settings: Settings,
+    team: TeamSettings,
+    env_name: str,
+    container: Any,
+) -> bool:
+    """Reconstruct ``/etc/odoo/odoo.conf`` inside *container*.
+
+    Resolves the base config (repo ``.oduflow/odoo.conf`` takes priority over the
+    instance-level conf), regenerates the merged conf with *container*'s current
+    extra-addons paths, and copies it into the container. Returns ``True`` if a
+    conf was applied, ``False`` if no base config exists.
+
+    The container reads ``/etc/odoo/odoo.conf`` as a *copy* made at create/update
+    time — a plain restart reuses the stale copy, so this must run before a
+    restart whenever the source ``odoo.conf`` changed.
+    """
+    repo_path = get_repo_path(env_name, team.workspaces_dir)
+    workspace_path = get_workspace_path(env_name, team.workspaces_dir)
+    repo_odoo_conf = os.path.join(repo_path, ".oduflow", "odoo.conf")
+    if os.path.isfile(repo_odoo_conf):
+        base_conf_path = repo_odoo_conf
+    elif _resolve_instance_conf("odoo.conf", team.data_dir).exists():
+        base_conf_path = str(_resolve_instance_conf("odoo.conf", team.data_dir))
+    else:
+        return False
+
+    from oduflow.extra_addons import generate_odoo_conf, resolve_main_addons_path
+
+    extra_addons_json = (container.labels or {}).get("oduflow.extra_addons", "")
+    extra_container_paths: list[str] = []
+    if extra_addons_json:
+        extra_dict = _normalize_extra_addons(json.loads(extra_addons_json))
+        extra_container_paths = [f"/mnt/extra-addons-{rn}" for rn in extra_dict]
+    generated_conf = os.path.join(workspace_path, "odoo.conf")
+    main_addons_path = resolve_main_addons_path(repo_path)
+    generate_odoo_conf(
+        base_conf_path, generated_conf, extra_container_paths, main_addons_path
+    )
+    _copy_file_to_container(container, generated_conf, "/etc/odoo")
+    return True
+
+
 def _apply_actions(
     client: DockerClient,
     settings: Settings,
@@ -1648,6 +1691,7 @@ def _apply_actions(
     to_upgrade: list[str],
     do_restart: bool,
     changed_files: list[str],
+    config_changed: bool = False,
 ) -> dict[str, Any]:
     """Run install/upgrade/restart and build the result dict (shared by the
     explicit and auto paths of :func:`pull_environment`)."""
@@ -1672,7 +1716,10 @@ def _apply_actions(
             messages.append(f"Upgraded modules: {','.join(to_upgrade)}")
             if res.get("output"):
                 odoo_output_parts.append(res["output"])
-        client.containers.get(odoo_container_name).restart()
+        container = client.containers.get(odoo_container_name)
+        if config_changed and _reapply_odoo_conf(settings, team, env_name, container):
+            messages.append("Reapplied odoo.conf.")
+        container.restart()
         messages.append("Container restarted.")
         logger.info(
             "Container restarted after module update", extra={"env_name": env_name}
@@ -1688,12 +1735,20 @@ def _apply_actions(
         }
 
     if do_restart:
-        client.containers.get(odoo_container_name).restart()
+        container = client.containers.get(odoo_container_name)
+        reapplied = config_changed and _reapply_odoo_conf(
+            settings, team, env_name, container
+        )
+        container.restart()
         logger.info("Container restarted", extra={"env_name": env_name})
         return {
             "action": "restart",
             "changed_files": changed_files,
-            "message": "Container restarted.",
+            "message": (
+                "Reapplied odoo.conf and restarted container."
+                if reapplied
+                else "Container restarted."
+            ),
         }
 
     if changed_files:
@@ -1808,6 +1863,10 @@ def pull_environment(
         if all_changed
         else {"action": "none", "modules_to_install": [], "modules_to_upgrade": []}
     )
+    # A changed .oduflow/odoo.conf must be reconstructed and re-copied into the
+    # container before any restart (a plain restart reuses the stale copy).
+    details = recommended.get("details")
+    config_changed = isinstance(details, dict) and bool(details.get("restart_required"))
 
     warnings: list[str] = []
     if explicit:
@@ -1852,6 +1911,7 @@ def pull_environment(
         to_upgrade=to_upgrade,
         do_restart=do_restart,
         changed_files=all_changed,
+        config_changed=config_changed,
     )
     if warnings:
         result["warnings"] = warnings
@@ -2052,32 +2112,10 @@ def update_environment(
 
     new_container = client.containers.run(**run_kwargs)
 
-    # Copy odoo.conf into the container (same resolution logic as create)
+    # Regenerate and copy odoo.conf into the new container (repo .oduflow/ takes
+    # priority over the instance conf; extra-addons paths merged from labels).
     repo_path = get_repo_path(env_name, team.workspaces_dir)
-    workspace_path = get_workspace_path(env_name, team.workspaces_dir)
-    repo_odoo_conf = os.path.join(repo_path, ".oduflow", "odoo.conf")
-    if os.path.isfile(repo_odoo_conf):
-        base_conf_path: str | None = repo_odoo_conf
-    elif _resolve_instance_conf("odoo.conf", team.data_dir).exists():
-        base_conf_path = str(_resolve_instance_conf("odoo.conf", team.data_dir))
-    else:
-        base_conf_path = None
-
-    if base_conf_path:
-        from oduflow.extra_addons import generate_odoo_conf, resolve_main_addons_path
-
-        extra_addons_json = labels.get("oduflow.extra_addons", "")
-        extra_container_paths: list[str] = []
-        if extra_addons_json:
-            parsed = json.loads(extra_addons_json)
-            extra_dict = _normalize_extra_addons(parsed)
-            extra_container_paths = [f"/mnt/extra-addons-{rn}" for rn in extra_dict]
-        generated_conf = os.path.join(workspace_path, "odoo.conf")
-        main_addons_path = resolve_main_addons_path(repo_path)
-        generate_odoo_conf(
-            base_conf_path, generated_conf, extra_container_paths, main_addons_path
-        )
-        _copy_file_to_container(new_container, generated_conf, "/etc/odoo")
+    _reapply_odoo_conf(settings, team, env_name, new_container)
 
     # ------------------------------------------------------------------
     # 5. Re-install apt packages and pip requirements

@@ -1,3 +1,4 @@
+import json
 import os
 
 import pytest
@@ -1112,3 +1113,137 @@ class TestGetLogs:
 
         assert "log line 1" in output
         container.logs.assert_called_with(tail=50, stdout=True, stderr=True)
+
+
+class TestApplyActionsConf:
+    """A changed ``.oduflow/odoo.conf`` must be reconstructed before a restart.
+
+    PR #69 only triggered a plain restart, which reuses the stale
+    ``/etc/odoo/odoo.conf`` copy and never picks up the new config.
+    """
+
+    @staticmethod
+    def _client_with_container():
+        client = MagicMock()
+        container = MagicMock()
+        client.containers.get.return_value = container
+        return client, container
+
+    @patch("oduflow.docker_ops.env_ops._reapply_odoo_conf", return_value=True)
+    def test_restart_reapplies_conf_when_config_changed(self, mock_reapply):
+        client, container = self._client_with_container()
+        result = env_ops._apply_actions(
+            client,
+            TEST_SETTINGS,
+            TEST_TEAM,
+            "feature/x",
+            "oduflow-feature-x-odoo",
+            to_install=[],
+            to_upgrade=[],
+            do_restart=True,
+            changed_files=[".oduflow/odoo.conf"],
+            config_changed=True,
+        )
+        mock_reapply.assert_called_once_with(
+            TEST_SETTINGS, TEST_TEAM, "feature/x", container
+        )
+        container.restart.assert_called_once()
+        assert result["action"] == "restart"
+        assert "odoo.conf" in result["message"]
+
+    @patch("oduflow.docker_ops.env_ops._reapply_odoo_conf")
+    def test_restart_skips_conf_when_only_python(self, mock_reapply):
+        client, container = self._client_with_container()
+        result = env_ops._apply_actions(
+            client,
+            TEST_SETTINGS,
+            TEST_TEAM,
+            "feature/x",
+            "oduflow-feature-x-odoo",
+            to_install=[],
+            to_upgrade=[],
+            do_restart=True,
+            changed_files=["sale/models/sale.py"],
+            config_changed=False,
+        )
+        mock_reapply.assert_not_called()
+        container.restart.assert_called_once()
+        assert result["message"] == "Container restarted."
+
+    @patch(
+        "oduflow.docker_ops.odoo_ops.upgrade_odoo_modules",
+        return_value={"exit_code": 0, "output": "upgraded"},
+    )
+    @patch("oduflow.docker_ops.env_ops._reapply_odoo_conf", return_value=True)
+    def test_upgrade_also_reapplies_conf(self, mock_reapply, mock_upgrade):
+        client, container = self._client_with_container()
+        result = env_ops._apply_actions(
+            client,
+            TEST_SETTINGS,
+            TEST_TEAM,
+            "feature/x",
+            "oduflow-feature-x-odoo",
+            to_install=[],
+            to_upgrade=["sale"],
+            do_restart=False,
+            changed_files=[".oduflow/odoo.conf", "sale/security/groups.xml"],
+            config_changed=True,
+        )
+        mock_upgrade.assert_called_once()
+        mock_reapply.assert_called_once()
+        container.restart.assert_called_once()
+        assert result["action"] == "upgrade"
+        assert "Reapplied odoo.conf." in result["message"]
+
+
+class TestReapplyOdooConf:
+    @patch("oduflow.docker_ops.env_ops._copy_file_to_container")
+    @patch(
+        "oduflow.extra_addons.generate_odoo_conf",
+        return_value="/tmp/flow-test/workspaces/feature-x/odoo.conf",
+    )
+    @patch("oduflow.docker_ops.env_ops.os.path.isfile", return_value=True)
+    def test_uses_repo_conf_and_copies(self, mock_isfile, mock_gen, mock_copy):
+        container = MagicMock()
+        container.labels = {}
+        applied = env_ops._reapply_odoo_conf(
+            TEST_SETTINGS, TEST_TEAM, "feature/x", container
+        )
+        assert applied is True
+        base_arg, _generated, extra_arg, main_addons = mock_gen.call_args[0]
+        assert base_arg.endswith("/.oduflow/odoo.conf")
+        assert extra_arg == []
+        assert main_addons == "/mnt/extra-addons"
+        mock_copy.assert_called_once()
+        assert mock_copy.call_args[0][0] is container
+        assert mock_copy.call_args[0][2] == "/etc/odoo"
+
+    @patch("oduflow.docker_ops.env_ops._copy_file_to_container")
+    @patch(
+        "oduflow.extra_addons.generate_odoo_conf",
+        return_value="/tmp/flow-test/workspaces/feature-x/odoo.conf",
+    )
+    @patch("oduflow.docker_ops.env_ops.os.path.isfile", return_value=True)
+    def test_merges_extra_addons_paths(self, mock_isfile, mock_gen, mock_copy):
+        container = MagicMock()
+        container.labels = {"oduflow.extra_addons": json.dumps({"enterprise": "17.0"})}
+        env_ops._reapply_odoo_conf(TEST_SETTINGS, TEST_TEAM, "feature/x", container)
+        _base, _generated, extra_arg, _main = mock_gen.call_args[0]
+        assert extra_arg == ["/mnt/extra-addons-enterprise"]
+
+    @patch("oduflow.docker_ops.env_ops._copy_file_to_container")
+    @patch("oduflow.docker_ops.env_ops._resolve_instance_conf")
+    @patch("oduflow.docker_ops.env_ops.os.path.isfile", return_value=False)
+    def test_returns_false_when_no_base_conf(
+        self, mock_isfile, mock_resolve, mock_copy
+    ):
+        inst = MagicMock()
+        inst.exists.return_value = False
+        mock_resolve.return_value = inst
+        container = MagicMock()
+        container.labels = {}
+        applied = env_ops._reapply_odoo_conf(
+            TEST_SETTINGS, TEST_TEAM, "feature/x", container
+        )
+        assert applied is False
+        mock_copy.assert_not_called()
