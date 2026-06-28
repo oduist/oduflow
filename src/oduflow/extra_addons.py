@@ -473,8 +473,23 @@ def pull_extra_worktree(
     return old_head, changed
 
 
+def resolve_main_addons_path(repo_path: str) -> str:
+    """Container addons path for the main repo.
+
+    Odoo scans addons_path non-recursively, so when a repo keeps its modules in
+    a top-level ``addons/`` directory, point Odoo at ``/mnt/extra-addons/addons``
+    instead of the repo root.
+    """
+    if os.path.isdir(os.path.join(repo_path, "addons")):
+        return "/mnt/extra-addons/addons"
+    return "/mnt/extra-addons"
+
+
 def generate_odoo_conf(
-    base_conf_path: str, output_path: str, extra_paths: list[str]
+    base_conf_path: str,
+    output_path: str,
+    extra_paths: list[str],
+    main_addons_path: str = "/mnt/extra-addons",
 ) -> str:
     parser = configparser.RawConfigParser()
     parser.optionxform = str
@@ -482,6 +497,10 @@ def generate_odoo_conf(
 
     existing = parser.get("options", "addons_path", fallback="/mnt/extra-addons")
     parts = [p.strip() for p in existing.split(",") if p.strip()]
+    # Repo keeps modules in addons/ → point at that subdir, not the repo root.
+    parts = [main_addons_path if p == "/mnt/extra-addons" else p for p in parts]
+    if main_addons_path not in parts:
+        parts.insert(0, main_addons_path)
     for p in extra_paths:
         if p not in parts:
             parts.append(p)
