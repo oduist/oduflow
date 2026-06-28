@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Bug Fixes
+
+- **Repo `odoo.conf` changes now actually apply** — a changed `.oduflow/odoo.conf` is now reconstructed (merged `addons_path`, stripped `db_*`) and copied into the container before the restart during `pull_and_apply`. Previously (#69) it only triggered a plain restart, which reused the stale `/etc/odoo/odoo.conf` copy and silently ignored the new config; the regeneration only ever ran on a full `update_environment` recreate.
+
 ## v1.51.0
 
 ### Features
