@@ -2723,6 +2723,7 @@ function renderServices(services) {
         '<span>Image: <strong>' + esc(svc.image) + '</strong></span>' +
         '<span>Container: <strong>' + esc(svc.container_name) + '</strong>' + containerStatsHtml(svc.container_name) + '</span>' +
         (svc.port ? '<span>Port: <strong>' + svc.port + '</strong></span>' : '') +
+        (svc.created_at ? '<span>Created: <strong>' + formatDate(svc.created_at) + '</strong></span>' : '') +
       '</div>' +
       urlHtml +
       volHtml +

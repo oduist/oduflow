@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import datetime
 import logging
 import re
 
@@ -86,6 +87,9 @@ def create_service(
         "oduflow.managed": "true",
         "oduflow.team": team.team_id,
         "oduflow.service": name,
+        "oduflow.created_at": datetime.datetime.now(
+            datetime.timezone.utc
+        ).isoformat(),
     }
 
     run_kwargs: dict = {
@@ -315,6 +319,8 @@ def _describe_service_container(
         "volumes": svc_volumes,
         "cap_add": svc_cap_add,
         "privileged": svc_privileged,
+        "created_at": container.labels.get("oduflow.created_at", "")
+        or container.attrs.get("Created", ""),
     }
 
 
