@@ -568,36 +568,46 @@ def _build_routes(
             locks.release_env(branch)
 
     async def api_create(request: Request) -> JSONResponse:
+        import json as _json
+
         try:
-            import json as _json
-
             body = await request.json()
-            env_name = (body.get("env_name") or "").strip()
-            repo_url = (body.get("repo_url") or "").strip()
-            odoo_image = (body.get("odoo_image") or "").strip()
-            git_user = (body.get("git_user") or "").strip()
-            template_name_raw = (body.get("template_name") or "").strip()
-            extra_addons_raw = body.get("extra_addons")
-            auto_install_raw = (body.get("auto_install_modules") or "").strip()
-            env_vars_raw = (body.get("env_vars") or "").strip()
-            env_vars = None
-            if env_vars_raw:
-                import re
+        except Exception:
+            return JSONResponse(
+                {"ok": False, "error": "Invalid JSON body."}, status_code=400
+            )
 
-                env_vars = dict(
-                    item.split("=", 1)
-                    for item in re.split(r"[\n,]+", env_vars_raw)
-                    if "=" in item
-                )
-            if not env_name:
-                return JSONResponse(
-                    {"ok": False, "error": "env_name is required."},
-                    status_code=400,
-                )
-            try:
-                locks.acquire_env(env_name)
-            except BusyError as e:
-                return _error_response(e)
+        env_name = (body.get("env_name") or "").strip()
+        repo_url = (body.get("repo_url") or "").strip()
+        odoo_image = (body.get("odoo_image") or "").strip()
+        git_user = (body.get("git_user") or "").strip()
+        template_name_raw = (body.get("template_name") or "").strip()
+        extra_addons_raw = body.get("extra_addons")
+        auto_install_raw = (body.get("auto_install_modules") or "").strip()
+        env_vars_raw = (body.get("env_vars") or "").strip()
+        env_vars = None
+        if env_vars_raw:
+            import re
+
+            env_vars = dict(
+                item.split("=", 1)
+                for item in re.split(r"[\n,]+", env_vars_raw)
+                if "=" in item
+            )
+        if not env_name:
+            return JSONResponse(
+                {"ok": False, "error": "env_name is required."},
+                status_code=400,
+            )
+
+        # Acquire the env lock in its own try so a BusyError returns WITHOUT
+        # entering the try/finally below — otherwise the finally would release a
+        # lock that another in-flight request holds (issue #42).
+        try:
+            locks.acquire_env(env_name)
+        except BusyError as e:
+            return _error_response(e)
+        try:
             resolved_template: str | None
             if not template_name_raw or template_name_raw.lower() == "none":
                 resolved_template = None
