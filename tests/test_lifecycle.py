@@ -321,7 +321,9 @@ def test_ensure_running_starts_stopped_env(monkeypatch, tmp_path):
 
     started: list[str] = []
     monkeypatch.setattr(env_ops, "get_client", lambda: FakeClient())
-    monkeypatch.setattr(env_ops, "start_environment", lambda s, n: started.append(n))
+    monkeypatch.setattr(
+        env_ops, "start_environment", lambda s, n, t=None: started.append(n)
+    )
 
     settings = _settings(tmp_path)
     assert env_ops.ensure_running(settings, "env-x") is True
@@ -343,11 +345,11 @@ def test_wake_for_work_starts_and_notes(monkeypatch, tmp_path):
     settings = _settings(tmp_path)
     activity.mark_stopped(team, "env-x", by="auto")
 
-    monkeypatch.setattr(env_ops, "ensure_running", lambda s, n: True)
+    monkeypatch.setattr(env_ops, "ensure_running", lambda s, n, t=None: True)
     note = server._wake_for_work(settings, team, "env-x")
     assert note == "Note: environment was stopped; started it for this call.\n"
     rec = activity.get_all(team)["env-x"]
     assert "stopped_at" not in rec  # the stopped clock is cleared
 
-    monkeypatch.setattr(env_ops, "ensure_running", lambda s, n: False)
+    monkeypatch.setattr(env_ops, "ensure_running", lambda s, n, t=None: False)
     assert server._wake_for_work(settings, team, "env-x") == ""

@@ -394,8 +394,9 @@ def _build_routes(
     def api_start(request: Request) -> JSONResponse:
         branch = request.path_params["branch"]
         try:
-            result = env_ops.start_environment(get_settings(), branch)
-            activity.mark_started(_get_ui_team(request), branch)
+            team = _get_ui_team(request)
+            result = env_ops.start_environment(get_settings(), branch, team)
+            activity.mark_started(team, branch)
             return JSONResponse({"ok": True, "result": result})
         except FlowError as e:
             return _error_response(e)
@@ -419,8 +420,9 @@ def _build_routes(
     def api_restart(request: Request) -> JSONResponse:
         branch = request.path_params["branch"]
         try:
-            result = env_ops.restart_environment(get_settings(), branch)
-            activity.mark_started(_get_ui_team(request), branch)
+            team = _get_ui_team(request)
+            result = env_ops.restart_environment(get_settings(), branch, team)
+            activity.mark_started(team, branch)
             return JSONResponse({"ok": True, "result": result})
         except FlowError as e:
             return _error_response(e)
@@ -710,7 +712,11 @@ def _build_routes(
         container = request.query_params.get("container", "")
         try:
             logs = get_environment_logs(
-                get_settings(), branch, n_lines=n, container_name=container
+                get_settings(),
+                branch,
+                n_lines=n,
+                container_name=container,
+                team=_get_ui_team(request),
             )
             return JSONResponse({"ok": True, "logs": logs})
         except FlowError as e:

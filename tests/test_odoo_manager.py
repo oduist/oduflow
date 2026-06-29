@@ -879,6 +879,7 @@ class TestDeleteEnvironment:
         mock_docker_client,
     ):
         container = MagicMock()
+        container.labels = {"oduflow.team": "1"}
         mock_docker_client.containers.get.return_value = container
 
         env_ops.delete_environment(TEST_SETTINGS, TEST_TEAM, "feature/payments")
@@ -933,12 +934,24 @@ class TestRestartEnvironment:
 class TestStopEnvironment:
     def test_stop(self, mock_docker_client):
         container = MagicMock()
+        container.labels = {"oduflow.team": "1"}
         mock_docker_client.containers.get.return_value = container
 
         result = env_ops.stop_environment(TEST_SETTINGS, TEST_TEAM, "main")
 
         assert "oduflow-main-odoo" in result["stopped"]
         container.stop.assert_called_once()
+
+    def test_stop_rejects_other_team_container(self, mock_docker_client):
+        # Container names are not team-namespaced; a caller scoped to team 1
+        # must not stop a container labelled for team 2 (issue #39).
+        container = MagicMock()
+        container.labels = {"oduflow.team": "2"}
+        mock_docker_client.containers.get.return_value = container
+
+        with pytest.raises(NotFoundError, match="does not exist"):
+            env_ops.stop_environment(TEST_SETTINGS, TEST_TEAM, "main")
+        container.stop.assert_not_called()
 
 
 class TestStartEnvironment:

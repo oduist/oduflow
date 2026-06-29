@@ -1212,7 +1212,13 @@ def delete_environment(
 
     container_exists = True
     try:
-        client.containers.get(odoo_container_name)
+        existing = client.containers.get(odoo_container_name)
+        # Container names are not team-namespaced; never stop/remove a container
+        # that belongs to another team (issue #39). Treat it as absent so this
+        # team's own DB/workspace/port are still cleaned up.
+        label = existing.labels.get(settings.team_label)
+        if label is not None and label != team.team_id:
+            container_exists = False
     except docker.errors.NotFound:
         container_exists = False
 
@@ -1391,7 +1397,9 @@ def wait_for_odoo_ready(
     return False
 
 
-def ensure_running(settings: Settings, env_name: str) -> bool:
+def ensure_running(
+    settings: Settings, env_name: str, team: TeamSettings | None = None
+) -> bool:
     """Start the environment's Odoo container if it is stopped.
 
     Returns True when a start was needed (the caller may want to tell the
@@ -1405,23 +1413,47 @@ def ensure_running(settings: Settings, env_name: str) -> bool:
         raise NotFoundError(
             f"Environment '{env_name}' does not exist. Use create_environment first."
         )
+    _assert_team_owns(container, settings, team, env_name)
     if container.status == "running":
         return False
-    start_environment(settings, env_name)
+    start_environment(settings, env_name, team)
     return True
 
 
-def restart_environment(settings: Settings, env_name: str) -> dict[str, str]:
+def _assert_team_owns(
+    container: Any, settings: Settings, team: TeamSettings | None, env_name: str
+) -> None:
+    """Reject operating on a container that belongs to another team.
+
+    Container names are not team-namespaced, so without this check a caller
+    scoped to one team could start/stop/restart/delete or read logs of another
+    team's identically-named environment (issue #39). The NotFound message is
+    reused so the existence of another team's env is not disclosed. Skipped when
+    team is None (internal callers that have no team in scope).
+    """
+    if team is None:
+        return
+    label = container.labels.get(settings.team_label)
+    if label is not None and label != team.team_id:
+        raise NotFoundError(
+            f"Environment '{env_name}' does not exist. Use create_environment first."
+        )
+
+
+def restart_environment(
+    settings: Settings, env_name: str, team: TeamSettings | None = None
+) -> dict[str, str]:
     client = get_client()
     odoo_container_name = get_resource_name(env_name, "odoo", settings.prefix)
 
     try:
         odoo_container = client.containers.get(odoo_container_name)
-        odoo_container.restart()
     except docker.errors.NotFound:
         raise NotFoundError(
             f"Environment '{env_name}' does not exist. Use create_environment first."
         )
+    _assert_team_owns(odoo_container, settings, team, env_name)
+    odoo_container.restart()
 
     logger.info("Environment restarted", extra={"env_name": env_name})
     return {"odoo_container": odoo_container_name}
@@ -1439,18 +1471,21 @@ def stop_environment(
 
     try:
         odoo_container = client.containers.get(odoo_container_name)
-        odoo_container.stop()
     except docker.errors.NotFound:
         raise NotFoundError(
             f"Environment '{env_name}' does not exist. Use create_environment first."
         )
+    _assert_team_owns(odoo_container, settings, team, env_name)
+    odoo_container.stop()
 
     activity.mark_stopped(team, env_name, by="manual")
     logger.info("Environment stopped", extra={"env_name": env_name})
     return {"odoo_container": odoo_container_name, "stopped": [odoo_container_name]}
 
 
-def start_environment(settings: Settings, env_name: str) -> dict[str, str]:
+def start_environment(
+    settings: Settings, env_name: str, team: TeamSettings | None = None
+) -> dict[str, str]:
     client = get_client()
     odoo_container_name = get_resource_name(env_name, "odoo", settings.prefix)
 
@@ -1467,12 +1502,13 @@ def start_environment(settings: Settings, env_name: str) -> dict[str, str]:
 
     try:
         odoo_container = client.containers.get(odoo_container_name)
-        odoo_container.start()
-        started.append(odoo_container_name)
     except docker.errors.NotFound:
         raise NotFoundError(
             f"Environment '{env_name}' does not exist. Use create_environment first."
         )
+    _assert_team_owns(odoo_container, settings, team, env_name)
+    odoo_container.start()
+    started.append(odoo_container_name)
 
     logger.info("Environment started", extra={"env_name": env_name})
     return {"odoo_container": odoo_container_name, "started": started}

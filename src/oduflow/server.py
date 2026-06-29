@@ -225,7 +225,7 @@ def _wake_for_work(
     """Container-level tools start a stopped environment instead of failing:
     with auto-stop, 'stopped' is a routine state, not an error. Returns the
     one-line note to prepend to the tool response ('' if already running)."""
-    if env_ops.ensure_running(settings, env_name):
+    if env_ops.ensure_running(settings, env_name, team):
         activity.mark_started(team, env_name)
         return f"Note: environment was stopped; started it {purpose}.\n"
     return ""
@@ -1021,7 +1021,8 @@ def get_environment_logs(
         level: Filter by Odoo log level. One of: "ERROR", "WARNING", "CRITICAL". Returns only lines containing the specified level marker. Can be combined with grep.
     """
     output = odoo_ops.get_environment_logs(
-        _get_settings(), env_name, n_lines, grep=grep, level=level
+        _get_settings(), env_name, n_lines, grep=grep, level=level,
+        team=_resolve_team(ctx),
     )
     return f"Recent logs for {env_name}:\n\n{_ANSI_RE.sub('', output)}"
 
@@ -1037,8 +1038,9 @@ def restart_environment(env_name: str, wait: bool = True, ctx: Context = None) -
         wait: Wait for Odoo to become ready after restart (default True). Polls /web/health every 2 seconds for up to 120 seconds.
     """
     settings = _get_settings()
-    result = env_ops.restart_environment(settings, env_name)
-    activity.mark_started(_resolve_team(ctx), env_name)
+    team = _resolve_team(ctx)
+    result = env_ops.restart_environment(settings, env_name, team)
+    activity.mark_started(team, env_name)
     lines = [
         "Environment restarted successfully!",
         f"Odoo Container: {result['odoo_container']}",
@@ -1198,7 +1200,7 @@ def start_environment(env_name: str, wait: bool = True, ctx: Context = None) -> 
     """
     settings = _get_settings()
     team = _resolve_team(ctx)
-    result = env_ops.start_environment(settings, env_name)
+    result = env_ops.start_environment(settings, env_name, team)
     activity.mark_started(team, env_name)
     lines = [
         "Environment started successfully!",
@@ -1445,7 +1447,7 @@ def install_odoo_modules(env_name: str, modules: str, ctx: Context = None) -> st
     modules_str = ", ".join(result["modules"])
     output = result.get("output", "")
     if exit_code == 0:
-        env_ops.restart_environment(settings, env_name)
+        env_ops.restart_environment(settings, env_name, team)
         header = f"{woke}Success. Modules installed: {modules_str}. Container restarted. Exit code: 0."
     else:
         header = f"{woke}Error. Modules: {modules_str}. Exit code: {exit_code}."
