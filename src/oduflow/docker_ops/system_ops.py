@@ -284,9 +284,12 @@ def _create_pg_role(
         f"ALTER ROLE \"{username}\" WITH LOGIN PASSWORD '{safe_pw}';",
     )
     _exec_sql(client, settings, f'ALTER DATABASE "{db_name}" OWNER TO "{username}";')
-    # Grant membership in the superuser role so the env role inherits
-    # ownership of all existing objects (needed for DDL during module upgrades).
-    _exec_sql(client, settings, f'GRANT "{settings.db_user}" TO "{username}";')
+    # Ensure the env role is NOT a member of the superuser role. Ownership of
+    # template objects (needed for DDL during module upgrades) is handled by the
+    # per-object reassignment in create_environment instead; superuser-role
+    # membership would let the env role SET ROLE to superuser — a cross-tenant
+    # RCE (#40). The REVOKE also de-escalates roles created before this change.
+    _exec_sql(client, settings, f'REVOKE "{settings.db_user}" FROM "{username}";')
     logger.info("Created/ensured PG role '%s' for database '%s'", username, db_name)
 
 

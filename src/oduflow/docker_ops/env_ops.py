@@ -851,13 +851,17 @@ def create_environment(
     )
 
     if template_name is not None:
-        # Transfer ownership of every object in the public schema to the
-        # new per-environment role.  DDL operations (ALTER TABLE) require
-        # ownership — GRANT ALL only covers DML.  We cannot use
-        # REASSIGN OWNED BY "<superuser>" because PostgreSQL refuses to
-        # reassign system objects owned by that role.  Instead we iterate
-        # over tables, sequences, and views individually.
+        # A template DB's objects are owned by the superuser that created the
+        # template. DDL during module upgrades requires ownership, so reassign
+        # every object that superuser still owns to the per-environment role.
+        # This replaces granting the env role membership in the superuser role,
+        # which would let it SET ROLE to superuser (cross-tenant RCE, #40).
+        # Odoo connects as the env role and never SET ROLEs, so per-object
+        # ownership — not role membership — is what actually enables its DDL.
+        # Linked (SERIAL/identity) sequences are skipped: they follow their
+        # table's owner automatically.
         new_user = env_creds["pg_user"]
+        old_user = settings.db_user
         _exec_sql(
             client,
             settings,
@@ -867,17 +871,40 @@ def create_environment(
         _exec_sql(
             client,
             settings,
-            "DO $$ DECLARE r RECORD; BEGIN "
-            "FOR r IN SELECT tablename FROM pg_tables WHERE schemaname = 'public' LOOP "
-            f"EXECUTE 'ALTER TABLE public.' || quote_ident(r.tablename) || ' OWNER TO \"{new_user}\"'; "
-            "END LOOP; "
-            "FOR r IN SELECT sequence_name FROM information_schema.sequences WHERE sequence_schema = 'public' LOOP "
-            f"EXECUTE 'ALTER SEQUENCE public.' || quote_ident(r.sequence_name) || ' OWNER TO \"{new_user}\"'; "
-            "END LOOP; "
-            "FOR r IN SELECT viewname FROM pg_views WHERE schemaname = 'public' LOOP "
-            f"EXECUTE 'ALTER VIEW public.' || quote_ident(r.viewname) || ' OWNER TO \"{new_user}\"'; "
-            "END LOOP; "
-            "END $$;",
+            rf"""
+            DO $$
+            DECLARE r RECORD;
+            BEGIN
+              FOR r IN SELECT n.nspname FROM pg_namespace n JOIN pg_roles o ON n.nspowner = o.oid
+                       WHERE o.rolname = '{old_user}'
+                         AND n.nspname NOT LIKE 'pg\_%' AND n.nspname <> 'information_schema'
+              LOOP EXECUTE format('ALTER SCHEMA %I OWNER TO %I', r.nspname, '{new_user}'); END LOOP;
+
+              FOR r IN SELECT c.relkind AS kind, n.nspname AS sch, c.relname AS rel
+                       FROM pg_class c
+                       JOIN pg_namespace n ON c.relnamespace = n.oid
+                       JOIN pg_roles o ON c.relowner = o.oid
+                       WHERE o.rolname = '{old_user}'
+                         AND n.nspname NOT LIKE 'pg\_%' AND n.nspname <> 'information_schema'
+                         AND c.relkind IN ('r', 'p', 'S', 'v', 'm', 'f')
+                         AND NOT (c.relkind = 'S' AND EXISTS (
+                             SELECT 1 FROM pg_depend d
+                             WHERE d.classid = 'pg_class'::regclass AND d.objid = c.oid
+                               AND d.refclassid = 'pg_class'::regclass AND d.deptype IN ('a', 'i')))
+              LOOP EXECUTE format('ALTER %s %I.%I OWNER TO %I',
+                   CASE r.kind WHEN 'S' THEN 'SEQUENCE' WHEN 'v' THEN 'VIEW'
+                               WHEN 'm' THEN 'MATERIALIZED VIEW' WHEN 'f' THEN 'FOREIGN TABLE'
+                               ELSE 'TABLE' END, r.sch, r.rel, '{new_user}'); END LOOP;
+
+              FOR r IN SELECT p.oid::regprocedure AS sig
+                       FROM pg_proc p
+                       JOIN pg_namespace n ON p.pronamespace = n.oid
+                       JOIN pg_roles o ON p.proowner = o.oid
+                       WHERE o.rolname = '{old_user}'
+                         AND n.nspname NOT LIKE 'pg\_%' AND n.nspname <> 'information_schema'
+              LOOP EXECUTE format('ALTER ROUTINE %s OWNER TO %I', r.sig, '{new_user}'); END LOOP;
+            END $$;
+            """,
             db=env_db,
         )
 
