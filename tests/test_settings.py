@@ -6,7 +6,8 @@ class TestSettings:
     def test_lifecycle_defaults(self):
         s = Settings(teams={"1": TeamSettings(team_id="1")})
         assert s.auto_stop_hours == 48
-        assert s.auto_delete_hours == 72
+        # auto-delete is destructive, so it is opt-in (disabled by default).
+        assert s.auto_delete_hours == 0
 
     def test_lifecycle_from_toml(self, tmp_path):
         toml = tmp_path / "oduflow.toml"

@@ -171,4 +171,12 @@ def start_reaper(
         settings.auto_delete_hours,
         int(interval),
     )
+    if settings.auto_delete_hours > 0:
+        logger.warning(
+            "auto_delete_hours=%d is ENABLED: unprotected environments stopped "
+            "for longer than %dh will be PERMANENTLY DELETED (database and "
+            "workspace). Set [lifecycle] auto_delete_hours = 0 to disable.",
+            settings.auto_delete_hours,
+            settings.auto_delete_hours,
+        )
     return thread

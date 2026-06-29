@@ -105,9 +105,11 @@ class Settings:
 
     # Lifecycle: automatic stop of idle environments and cleanup of stopped
     # ones (see oduflow.reaper). 0 disables either behavior. Protected
-    # environments are always exempt.
+    # environments are always exempt. auto-delete is DESTRUCTIVE (drops the
+    # database and workspace), so it is opt-in (defaults to 0); auto-stop is
+    # non-destructive and enabled by default.
     auto_stop_hours: int = 48
-    auto_delete_hours: int = 72
+    auto_delete_hours: int = 0
 
     # Shared Docker resource names
     shared_network: str = "oduflow-net"
@@ -308,7 +310,7 @@ class Settings:
             base_data_dir=base_data_dir,
             overlay_threshold_mb=int(storage.get("overlay_threshold_mb", 50)),
             auto_stop_hours=int(lifecycle.get("auto_stop_hours", 48)),
-            auto_delete_hours=int(lifecycle.get("auto_delete_hours", 72)),
+            auto_delete_hours=int(lifecycle.get("auto_delete_hours", 0)),
             oauth_base_url=str(oauth.get("oauth_base_url", "")).strip(),
             etc_dir=etc_dir,
             toml_path=path,
