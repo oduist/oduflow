@@ -1510,10 +1510,13 @@ def cleanup_orphans(
     for entry in orphan_workspaces:
         entry_path = os.path.join(team.workspaces_dir, entry)
         try:
-            # Unmount any overlay before removing
+            # Unmount any overlay before removing. _unmount_filestore needs the
+            # TeamSettings (it reads team.workspaces_dir); passing the global
+            # Settings here raised AttributeError on every orphan, so cleanup
+            # silently removed nothing.
             from oduflow.docker_ops.env_ops import _unmount_filestore
 
-            _unmount_filestore(entry, settings)
+            _unmount_filestore(entry, team)
             shutil.rmtree(entry_path)
             removed_workspaces.append(entry)
             logger.info("Removed orphan workspace %s", entry_path)
