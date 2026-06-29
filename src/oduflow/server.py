@@ -33,7 +33,7 @@ from oduflow.docker_ops import (
 )
 from oduflow import activity, git_ops, reaper
 from oduflow import settings as settings_module
-from oduflow.errors import FlowError
+from oduflow.errors import FlowError, PrerequisiteNotMetError
 from oduflow.locking import LockManager
 from oduflow.output_cache import OutputCache, CachedOutput
 from oduflow.settings import Settings, TeamSettings, find_toml
@@ -3082,7 +3082,7 @@ def _get_version() -> str:
 # =============================================================================
 
 
-def main() -> None:
+def _run_cli() -> None:
     """Entry point for the Oduflow MCP server."""
     parser = argparse.ArgumentParser(
         prog="oduflow", description="Oduflow — Odoo dev environment manager"
@@ -3501,6 +3501,19 @@ def _build_auth(settings: Settings):  # type: ignore[no-untyped-def]
 
     logger.warning("HTTP auth DISABLED (no auth_token or oauth_base_url set)")
     return None
+
+
+def main() -> None:
+    """CLI entry point: run the server/command and translate a missing
+    prerequisite (e.g. Docker daemon unreachable) into a friendly process exit
+    instead of a traceback. get_client() raises PrerequisiteNotMetError rather
+    than SystemExit so the long-running server can recover; here at the CLI
+    boundary we convert it to an exit code."""
+    try:
+        _run_cli()
+    except PrerequisiteNotMetError as exc:
+        print(f"\n❌ {exc}", file=sys.stderr)
+        sys.exit(1)
 
 
 if __name__ == "__main__":

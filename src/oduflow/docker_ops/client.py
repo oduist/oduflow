@@ -4,6 +4,8 @@ import os
 import docker
 from docker import DockerClient
 
+from oduflow.errors import PrerequisiteNotMetError
+
 logger = logging.getLogger("oduflow")
 
 _uid_gid_cache: dict[str, str] = {}
@@ -12,12 +14,15 @@ _uid_gid_cache: dict[str, str] = {}
 def get_client() -> DockerClient:
     try:
         return docker.from_env()
-    except docker.errors.DockerException:
-        raise SystemExit(
-            "\n❌ Cannot connect to Docker.\n"
-            "   Please make sure Docker is installed and running.\n"
-            "   https://docs.docker.com/get-docker/\n"
-        )
+    except docker.errors.DockerException as exc:
+        # Raise a FlowError (not SystemExit/BaseException) so @handle_errors and
+        # the create_environment fallback can catch it and return a clean error
+        # instead of tearing down the request task or the server loop. The CLI
+        # entry point translates this into a friendly process exit.
+        raise PrerequisiteNotMetError(
+            "Cannot connect to Docker. Please make sure Docker is installed "
+            "and running. https://docs.docker.com/get-docker/"
+        ) from exc
 
 
 def get_odoo_uid_gid(client: DockerClient, image: str) -> str:
