@@ -195,6 +195,26 @@ class Settings:
                     f"{team.port_range_start}-{team.port_range_end}"
                 )
 
+        # Validate that team port ranges do not overlap. The default range is
+        # identical for every team, so two teams that never set an explicit
+        # port_range would draw host ports from the same pool and collide.
+        ranges = sorted(
+            (
+                (t.port_range_start, t.port_range_end, t.team_id)
+                for t in self.teams.values()
+            ),
+            key=lambda r: r[0],
+        )
+        for (a_start, a_end, a_id), (b_start, b_end, b_id) in zip(ranges, ranges[1:]):
+            # Ranges are half-open [start, end); they overlap when the next
+            # range starts before the previous one ends.
+            if b_start < a_end:
+                raise ValueError(
+                    f"Teams '{a_id}' and '{b_id}' have overlapping port ranges "
+                    f"({a_start}-{a_end} and {b_start}-{b_end}). "
+                    "Set a distinct [team.*] port_range for each team."
+                )
+
         # Validate uniqueness of auth tokens
         tokens = [t.auth_token for t in self.teams.values() if t.auth_token]
         if len(tokens) != len(set(tokens)):

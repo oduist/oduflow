@@ -39,6 +39,22 @@ class TestSettings:
         with pytest.raises(ValueError, match="invalid port range"):
             s.validate()
 
+    def test_validate_overlapping_port_ranges(self):
+        # Two teams left on the default (identical) range would draw host ports
+        # from the same pool — issue #46.
+        t1 = TeamSettings(team_id="1", port_range_start=50000, port_range_end=50100)
+        t2 = TeamSettings(team_id="2", port_range_start=50050, port_range_end=50150)
+        s = Settings(teams={"1": t1, "2": t2})
+        with pytest.raises(ValueError, match="overlapping port ranges"):
+            s.validate()
+
+    def test_validate_adjacent_port_ranges_ok(self):
+        # Half-open ranges that merely touch at the boundary do not overlap.
+        t1 = TeamSettings(team_id="1", port_range_start=50000, port_range_end=50100)
+        t2 = TeamSettings(team_id="2", port_range_start=50100, port_range_end=50200)
+        s = Settings(teams={"1": t1, "2": t2})
+        s.validate()
+
     def test_frozen(self):
         s = Settings()
         with pytest.raises(AttributeError):
