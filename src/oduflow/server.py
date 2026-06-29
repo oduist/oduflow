@@ -2738,6 +2738,28 @@ def _inject_db_password(toml_text: str, password: str) -> str:
     return "\n".join(out) + "\n"
 
 
+def _inject_auth_token(toml_text: str, token: str) -> str:
+    """Replace the empty ``auth_token = ""`` in a freshly bootstrapped
+    oduflow.toml with a generated MCP token, so a fresh HTTP install is
+    authenticated by default. Only the first empty auth_token (team 1) is set;
+    existing user configs are never rewritten.
+    """
+    replacement = f'auth_token = "{token}"'
+    out: list[str] = []
+    injected = False
+    for raw in toml_text.splitlines():
+        if not injected and raw.split("#", 1)[0].strip() == 'auth_token = ""':
+            indent = raw[: len(raw) - len(raw.lstrip())]
+            comment = raw.split("#", 1)[1].strip() if "#" in raw else ""
+            out.append(
+                f"{indent}{replacement}" + (f"  # {comment}" if comment else "")
+            )
+            injected = True
+        else:
+            out.append(raw)
+    return "\n".join(out) + "\n"
+
+
 def _run_reload_template(
     settings: Settings, team: TeamSettings, template_name: str, dump_path: str = ""
 ) -> None:
@@ -3284,8 +3306,9 @@ def _run_cli() -> None:
     logging.getLogger("docker").setLevel(logging.WARNING)
     logging.getLogger("docket").setLevel(logging.WARNING)
 
-    # Bootstrap: if no config exists, create it from the bundled default
-    # with an auto-generated PostgreSQL superuser password.
+    # Bootstrap: if no config exists, create it from the bundled default with an
+    # auto-generated PostgreSQL password and a random MCP auth_token, so a fresh
+    # install is authenticated by default even over HTTP (#37).
     try:
         find_toml()
     except FileNotFoundError:
@@ -3298,12 +3321,22 @@ def _run_cli() -> None:
         os.makedirs(dest_dir, exist_ok=True)
         bundled = pathlib.Path(__file__).resolve().parent / "templates" / "oduflow.toml"
         dest = os.path.join(dest_dir, "oduflow.toml")
+        generated_token = secrets.token_urlsafe(24)
         rendered = _inject_db_password(
             bundled.read_text(encoding="utf-8"), secrets.token_urlsafe(24)
         )
+        rendered = _inject_auth_token(rendered, generated_token)
         with open(dest, "w", encoding="utf-8") as f:
             f.write(rendered)
-        logger.info("Config created: %s (auto-generated DB password)", dest)
+        logger.info(
+            "Config created: %s (auto-generated DB password and MCP auth_token)",
+            dest,
+        )
+        logger.info(
+            "Generated MCP auth_token for team 1: %s "
+            "(use as Bearer token / OAuth client_id+secret)",
+            generated_token,
+        )
 
     global _settings
     _settings = _get_settings()
@@ -3443,6 +3476,29 @@ def _start_http() -> None:
     port = settings.port
 
     auth = _build_auth(settings)
+
+    # Fail closed: never serve the MCP tool surface (run_odoo_command,
+    # run_db_query, privileged service creation, …) unauthenticated by accident
+    # (#37). A fresh install bootstraps a random auth_token; reaching here with
+    # no auth means the operator cleared it, which must be explicit.
+    if auth is None and not settings.allow_insecure_http:
+        raise PrerequisiteNotMetError(
+            "Refusing to start the HTTP transport with no MCP authentication: "
+            "set a [team.*] auth_token (or oauth_base_url) in oduflow.toml. To "
+            "run unauthenticated on purpose (e.g. behind your own auth proxy), "
+            "set [server] allow_insecure_http = true."
+        )
+    if auth is None:
+        logger.warning(
+            "HTTP transport starting WITHOUT authentication "
+            "(allow_insecure_http=true) — the full MCP tool surface is open."
+        )
+    if host not in ("127.0.0.1", "::1", "localhost"):
+        logger.warning(
+            "Binding %s on all/non-loopback interface — ensure a firewall and "
+            "TLS-terminating reverse proxy are in front of Oduflow.",
+            host,
+        )
 
     app = create_streamable_http_app(mcp, "/mcp", auth=auth, stateless_http=True)
 

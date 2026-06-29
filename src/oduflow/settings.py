@@ -90,6 +90,10 @@ class Settings:
     trace: bool = False
     disable_telemetry: bool = False
     allow_local_path: bool = True
+    # Allow starting the HTTP transport with no MCP authentication. Off by
+    # default so /mcp is never served unauthenticated by accident (#37); set
+    # true only when fronting Oduflow with your own auth proxy.
+    allow_insecure_http: bool = False
 
     # Routing
     routing_mode: str = "port"
@@ -314,6 +318,7 @@ class Settings:
             trace=trace,
             disable_telemetry=bool(server.get("disable_telemetry", False)),
             allow_local_path=bool(server.get("allow_local_path", True)),
+            allow_insecure_http=bool(server.get("allow_insecure_http", False)),
             routing_mode=str(routing.get("mode", "port")).strip().lower(),
             acme_email=str(routing.get("acme_email", "")).strip(),
             db_user=str(database.get("user", "odoo")),

@@ -62,3 +62,25 @@ def test_rendered_template_loads_via_settings(tmp_path):
     settings = Settings.from_toml(str(dest))
     assert settings.db_password == "live-secret-42"
     assert settings.db_user == "odoo"
+
+
+def test_inject_auth_token_sets_team_token(tmp_path):
+    from oduflow.server import _inject_auth_token
+
+    bundled = (
+        pathlib.Path(__file__).resolve().parents[1]
+        / "src"
+        / "oduflow"
+        / "templates"
+        / "oduflow.toml"
+    )
+    text = bundled.read_text(encoding="utf-8")
+    # Template ships with an empty auth_token.
+    assert tomllib.loads(text)["team"]["1"]["auth_token"] == ""
+
+    rendered = _inject_auth_token(text, "tok-generated-xyz")
+    data = tomllib.loads(rendered)
+    assert data["team"]["1"]["auth_token"] == "tok-generated-xyz"
+    # ui_password is untouched; only the first empty auth_token is replaced.
+    assert data["team"]["1"]["ui_password"] == ""
+    assert rendered.count("auth_token =") == 1

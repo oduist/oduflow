@@ -680,3 +680,41 @@ class TestRestoreServiceTool:
         assert kwargs["privileged"] is False
         assert kwargs["host_mode"] is False
         assert kwargs["volumes"] is None
+
+
+class TestHttpFailClosed:
+    def test_start_http_refuses_without_auth(self):
+        # Issue #37: HTTP transport must not serve /mcp unauthenticated.
+        from oduflow import server
+        from oduflow.errors import PrerequisiteNotMetError
+
+        settings = Settings(
+            host="127.0.0.1",
+            teams={"1": TeamSettings(team_id="1")},
+            allow_insecure_http=False,
+        )
+        with (
+            patch.object(server, "_get_settings", return_value=settings),
+            patch.object(server, "_build_auth", return_value=None),
+        ):
+            with pytest.raises(PrerequisiteNotMetError, match="HTTP transport"):
+                server._start_http()
+
+    def test_start_http_allows_insecure_with_flag(self):
+        from oduflow import server
+
+        settings = Settings(
+            host="127.0.0.1",
+            teams={"1": TeamSettings(team_id="1")},
+            allow_insecure_http=True,
+        )
+        with (
+            patch.object(server, "_get_settings", return_value=settings),
+            patch.object(server, "_build_auth", return_value=None),
+            patch("fastmcp.server.http.create_streamable_http_app"),
+            patch("oduflow.web_ui.mount_web_ui"),
+            patch("oduflow.reaper.start_reaper"),
+            patch("uvicorn.run") as mock_uvicorn,
+        ):
+            server._start_http()
+            mock_uvicorn.assert_called_once()
