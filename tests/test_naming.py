@@ -1,3 +1,5 @@
+import pytest
+
 from oduflow.naming import (
     slugify_branch,
     get_db_name,
@@ -6,6 +8,7 @@ from oduflow.naming import (
     get_workspace_path,
     get_repo_path,
     get_filestore_paths,
+    validate_template_name,
 )
 
 
@@ -130,3 +133,36 @@ class TestGetTemplateDbName:
             get_template_db_name("myproject-v17", team_id="3")
             == "oduflow_template_3_myproject-v17"
         )
+
+    @pytest.mark.parametrize(
+        "bad",
+        [
+            "../etc",
+            "client/../prod",
+            "/abs",
+            "client/",  # trailing slash -> empty segment
+            "..",
+            ".",
+            ".hidden",
+            "a b",  # whitespace
+            "a;b",
+            "a'b",
+            'a"b',
+            "a`b",
+            "x'; DROP DATABASE oduflow_1_main; --",
+            "",
+            "a" * 64,  # too long
+        ],
+    )
+    def test_rejects_dangerous_names(self, bad):
+        # Path-traversal / SQL-identifier break-out must be refused (issue #38).
+        with pytest.raises(ValueError, match="Invalid template name"):
+            get_template_db_name(bad)
+        with pytest.raises(ValueError, match="Invalid template name"):
+            validate_template_name(bad)
+
+    @pytest.mark.parametrize(
+        "good", ["prod", "client/prod", "myproject-v17", "v17.0", "a", "A_b-c.d"]
+    )
+    def test_accepts_valid_names(self, good):
+        assert validate_template_name(good) == good

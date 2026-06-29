@@ -44,6 +44,11 @@ class TeamSettings:
         return os.path.join(self.data_dir, "shared_repos")
 
     def get_template_dir(self, template_name: str) -> str:
+        # Reject names that could escape the templates directory (path
+        # traversal) before they reach rmtree / file writes.
+        from oduflow.naming import validate_template_name
+
+        validate_template_name(template_name)
         return os.path.join(self.data_dir, "templates", template_name)
 
     def get_template_sql_path(self, template_name: str) -> str:
