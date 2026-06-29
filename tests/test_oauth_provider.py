@@ -122,10 +122,22 @@ class TestOduflowOAuthProvider:
         provider = OduflowOAuthProvider(_settings())
         client = _run(provider.get_client("tok-a"))
         assert client is not None
-        # Any redirect_uri the client sends must be accepted, since the
-        # /token exchange is gated by client_secret.
-        result = client.validate_redirect_uri(AnyUrl("https://claude.ai/some/cb"))
-        assert str(result) == "https://claude.ai/some/cb"
+        # Legitimate MCP callbacks are accepted: https (claude.ai) and loopback
+        # http (IDEs).
+        assert str(
+            client.validate_redirect_uri(AnyUrl("https://claude.ai/some/cb"))
+        ) == "https://claude.ai/some/cb"
+        assert client.validate_redirect_uri(AnyUrl("http://127.0.0.1:8976/cb"))
+
+    def test_redirect_uri_rejects_dangerous_and_cleartext(self):
+        from pydantic import AnyUrl
+        from mcp.shared.auth import InvalidRedirectUriError
+
+        provider = OduflowOAuthProvider(_settings())
+        client = _run(provider.get_client("tok-a"))
+        # Cleartext http to a non-loopback host would leak the auth code.
+        with pytest.raises(InvalidRedirectUriError):
+            client.validate_redirect_uri(AnyUrl("http://evil.example/cb"))
 
     def test_well_known_route_exposed(self):
         provider = OduflowOAuthProvider(_settings())

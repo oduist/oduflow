@@ -29,20 +29,40 @@ from oduflow.settings import Settings
 logger = logging.getLogger("oduflow")
 
 
+# Schemes that are never a legitimate OAuth callback and could turn the
+# authorization redirect into an XSS / data-exfil primitive.
+_DANGEROUS_REDIRECT_SCHEMES = {"javascript", "data", "vbscript", "file"}
+_LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "::1", "[::1]"}
+
+
 class _FlexibleClient(OAuthClientInformationFull):
-    """Client info that accepts any redirect_uri at /authorize time.
+    """Client info that accepts the varied callback URLs MCP clients use.
 
     Preregistered clients have ``client_id == client_secret == auth_token``;
-    the secret-bearing /token exchange already proves identity, so we let
-    MCP clients (claude.ai, IDEs, etc.) bring whatever callback URL they use.
+    the secret-bearing /token exchange already proves identity, so we let MCP
+    clients (claude.ai over https, IDEs over loopback or a custom scheme) bring
+    their own callback — but we still reject callbacks that are never legitimate:
+    dangerous schemes (javascript:, data:, …) and cleartext http:// to a
+    non-loopback host (which would leak the authorization code in the clear).
     """
 
     def validate_redirect_uri(self, redirect_uri: AnyUrl | None) -> AnyUrl:
-        if redirect_uri is not None:
-            return redirect_uri
-        if self.redirect_uris:
-            return self.redirect_uris[0]
-        raise InvalidRedirectUriError("redirect_uri must be specified")
+        if redirect_uri is None:
+            if self.redirect_uris:
+                return self.redirect_uris[0]
+            raise InvalidRedirectUriError("redirect_uri must be specified")
+
+        scheme = (redirect_uri.scheme or "").lower()
+        if not scheme or scheme in _DANGEROUS_REDIRECT_SCHEMES:
+            raise InvalidRedirectUriError(
+                f"redirect_uri scheme '{scheme}' is not allowed."
+            )
+        if scheme == "http" and (redirect_uri.host or "") not in _LOOPBACK_HOSTS:
+            raise InvalidRedirectUriError(
+                "Plaintext http:// redirect_uri is only allowed for loopback "
+                "addresses; use https for remote callbacks."
+            )
+        return redirect_uri
 
 
 class OduflowOAuthProvider(InMemoryOAuthProvider):
