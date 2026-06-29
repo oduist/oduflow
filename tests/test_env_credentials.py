@@ -92,3 +92,22 @@ class TestCreateLoadDeleteCredentials:
         with open(creds_path) as f:
             stored = json.load(f)
         assert stored == creds
+
+
+class TestCredentialsFilePermissions:
+    def test_create_credentials_is_0600_and_atomic(self, tmp_path):
+        ws = str(tmp_path)
+        creds = create_credentials("main", "1", ws)
+        # Locate the written file via load (round-trips through the same path).
+        loaded = load_credentials("main", ws, "fb_user", "fb_pw")
+        assert loaded == creds
+        # Find the credentials file and check perms + no leftover temp file.
+        import glob
+
+        files = glob.glob(os.path.join(ws, "**", "env_credentials.json"), recursive=True)
+        assert files, "credentials file not written"
+        mode = os.stat(files[0]).st_mode & 0o777
+        assert mode == 0o600, oct(mode)
+        assert not glob.glob(
+            os.path.join(ws, "**", "env_credentials.json.tmp"), recursive=True
+        )

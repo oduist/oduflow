@@ -41,10 +41,7 @@ def _get_module_name(file_path: str, repo_path: str = "") -> str | None:
         return None
 
     if repo_path:
-        if os.path.basename(file_path) == "__manifest__.py":
-            dir_parts = parts[:-1]
-        else:
-            dir_parts = parts[:-1]
+        dir_parts = parts[:-1]
 
         for i in range(len(dir_parts), 0, -1):
             candidate = "/".join(dir_parts[:i])

@@ -100,7 +100,10 @@ def _resolve_team(ctx: Context | None) -> TeamSettings:
             if team:
                 return team
         except Exception:
-            pass
+            # No HTTP request in scope (e.g. stdio transport) — fall through to
+            # the single-team / default-team resolution below. Logged, not
+            # silently swallowed, so misrouting is traceable.
+            logger.debug("Host-header team resolution unavailable", exc_info=True)
     # 3. Fallback: single team or default team "1"
     if len(settings.teams) == 1:
         return next(iter(settings.teams.values()))

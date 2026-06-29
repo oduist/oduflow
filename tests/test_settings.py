@@ -9,6 +9,14 @@ class TestSettings:
         # auto-delete is destructive, so it is opt-in (disabled by default).
         assert s.auto_delete_hours == 0
 
+    def test_malformed_port_range_raises(self, tmp_path):
+        toml = tmp_path / "oduflow.toml"
+        toml.write_text(
+            '[team.1]\nhostname = "localhost"\nport_range = [50000]\n'
+        )
+        with pytest.raises(ValueError, match="port_range"):
+            Settings.from_toml(str(toml))
+
     def test_lifecycle_from_toml(self, tmp_path):
         toml = tmp_path / "oduflow.toml"
         toml.write_text(

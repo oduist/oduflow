@@ -30,8 +30,20 @@ def create_credentials(
     workspace_path = get_workspace_path(env_name, workspaces_dir)
     os.makedirs(workspace_path, exist_ok=True)
     creds_path = os.path.join(workspace_path, _CREDENTIALS_FILE)
-    with open(creds_path, "w") as f:
-        json.dump(creds, f)
+    # Atomic write with restrictive permissions: the file holds a plaintext PG
+    # password, and a crash mid-write must not leave a half-written file.
+    fd = os.open(
+        creds_path + ".tmp", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600
+    )
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(creds, f)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(creds_path + ".tmp", creds_path)
+    finally:
+        if os.path.exists(creds_path + ".tmp"):
+            os.remove(creds_path + ".tmp")
 
     logger.info(
         "Created PG credentials for environment '%s' (user=%s)", env_name, username

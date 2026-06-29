@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hmac
 import logging
 import os
 import re
@@ -150,7 +151,7 @@ class Settings:
         if not token:
             return None
         for team in self.teams.values():
-            if team.auth_token and team.auth_token == token:
+            if team.auth_token and hmac.compare_digest(team.auth_token, token):
                 return team
         return None
 
@@ -171,7 +172,7 @@ class Settings:
         if not password:
             return None
         for team in self.teams.values():
-            if team.ui_password and team.ui_password == password:
+            if team.ui_password and hmac.compare_digest(team.ui_password, password):
                 return team
         return None
 
@@ -269,11 +270,22 @@ class Settings:
             team_id = str(team_id_raw)
             team_data_dir = os.path.join(base_data_dir, f"team_{team_id}")
 
-            port_range = team_cfg.get("port_range", [50000, 50100])
-            if isinstance(port_range, list) and len(port_range) == 2:
-                port_start, port_end = int(port_range[0]), int(port_range[1])
-            else:
+            port_range = team_cfg.get("port_range")
+            if port_range is None:
                 port_start, port_end = 50000, 50100
+            elif isinstance(port_range, list) and len(port_range) == 2:
+                try:
+                    port_start, port_end = int(port_range[0]), int(port_range[1])
+                except (TypeError, ValueError) as exc:
+                    raise ValueError(
+                        f"Team '{team_id}': port_range must be two integers, "
+                        f"got {port_range!r}"
+                    ) from exc
+            else:
+                raise ValueError(
+                    f"Team '{team_id}': port_range must be [start, end], "
+                    f"got {port_range!r}"
+                )
 
             raw_hostname = str(
                 team_cfg.get("hostname", routing.get("hostname", "localhost"))
