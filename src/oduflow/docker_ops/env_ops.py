@@ -688,6 +688,30 @@ def create_environment(
     except docker.errors.NotFound:
         pass
 
+    # Different branch names can normalise to the same database name (the
+    # container name keeps case/punctuation but get_db_name slugifies). Refuse
+    # if the target DB is already owned by another live environment — otherwise
+    # the cleanup below would DROP a running environment's database (#41).
+    target_db = get_db_name(env_name, team.team_id)
+    for other in client.containers.list(
+        all=True,
+        filters={
+            "label": [
+                f"{settings.managed_label}=true",
+                f"{settings.team_label}={team.team_id}",
+            ]
+        },
+    ):
+        if other.name == odoo_container_name:
+            continue
+        other_branch = other.labels.get(settings.branch_label)
+        if other_branch and get_db_name(other_branch, team.team_id) == target_db:
+            raise ConflictError(
+                f"Environment '{env_name}' maps to database '{target_db}', which "
+                f"is already used by environment '{other_branch}'. Choose a name "
+                "that does not normalise to the same database."
+            )
+
     _cleanup_old_environment(client, settings, team, env_name)
     workspace_path = get_workspace_path(env_name, team.workspaces_dir)
     # Live-mount mode: bind-mount the agent's own checkout

@@ -253,6 +253,32 @@ class TestCreateEnvironment:
         )
         assert mock_cleanup.call_count == 2
 
+    @patch("oduflow.docker_ops.env_ops._cleanup_old_environment")
+    @patch("oduflow.docker_ops.env_ops._ensure_system_ready")
+    def test_create_refuses_db_name_collision(
+        self, mock_ready, mock_cleanup, mock_docker_client
+    ):
+        # "Feature/Foo" normalises to the same DB as a running "feature-foo";
+        # creation must be refused instead of dropping the live env's DB (#41).
+        from oduflow.errors import ConflictError
+
+        other = MagicMock()
+        other.name = "oduflow-feature-foo-odoo"
+        other.labels = {"oduflow.branch": "feature-foo"}
+        mock_docker_client.containers.get.side_effect = docker.errors.NotFound("nf")
+        mock_docker_client.containers.list.return_value = [other]
+
+        with pytest.raises(ConflictError, match="normalise to the same database"):
+            env_ops.create_environment(
+                TEST_SETTINGS,
+                TEST_TEAM,
+                "Feature/Foo",
+                "https://github.com/org/repo.git",
+                "odoo:15.0",
+            )
+        # The destructive cleanup (which drops the DB) must not run.
+        mock_cleanup.assert_not_called()
+
     @patch("oduflow.docker_ops.env_ops._db_exists", return_value=True)
     @patch("oduflow.docker_ops.env_ops._ensure_system_ready")
     def test_create_already_exists(
