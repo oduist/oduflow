@@ -31,6 +31,17 @@ _BUNDLED_ODOO_CONF = _PACKAGE_ROOT / "templates" / "odoo.conf"
 _BUNDLED_SANITIZE_DIR = _PACKAGE_ROOT / "templates"
 
 
+def _is_within_directory(directory: str, target: str) -> bool:
+    """Return True if ``target`` resolves to a path inside ``directory``.
+
+    Guards archive extraction against path traversal ("zip-slip"): a member
+    named ``../../etc/x`` would otherwise be written outside the destination.
+    """
+    directory = os.path.realpath(directory)
+    target = os.path.realpath(target)
+    return target == directory or target.startswith(directory + os.sep)
+
+
 def _get_oduflow_version() -> str:
     """Return the installed package version."""
     try:
@@ -383,6 +394,19 @@ def _extract_archive_from_container(
                 if not rel:
                     continue
                 member.name = rel
+                # Reject members that escape dest_dir via traversal or an
+                # absolute/symlink target (defence in depth; source is our own
+                # template-builder container).
+                if not _is_within_directory(dest_dir, os.path.join(dest_dir, rel)):
+                    logger.warning("Skipping unsafe archive member: %s", rel)
+                    continue
+                if member.issym() or member.islnk():
+                    link_target = os.path.join(dest_dir, os.path.dirname(rel))
+                    if not _is_within_directory(
+                        dest_dir, os.path.join(link_target, member.linkname)
+                    ):
+                        logger.warning("Skipping unsafe link member: %s", rel)
+                        continue
                 tar.extract(member, dest_dir)
                 if not member.isdir():
                     extracted += 1
@@ -1316,6 +1340,13 @@ def import_from_odoo(
                     if rel.startswith("checklist/"):
                         continue
                     target = os.path.join(template_filestore_path, rel)
+                    # Reject any member that escapes the filestore dir (zip-slip).
+                    if not _is_within_directory(template_filestore_path, target):
+                        logger.warning(
+                            "Skipping unsafe archive member outside filestore: %s",
+                            member,
+                        )
+                        continue
                     if member.endswith("/"):
                         os.makedirs(target, exist_ok=True)
                     else:
