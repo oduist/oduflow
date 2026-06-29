@@ -1855,7 +1855,11 @@ def pull_environment(
     * **auto** — otherwise fall back to ``classify_changes`` in git mode or
       path-only ``shallow_classify`` in live-mount mode.
     """
-    from oduflow.git_analysis import guardrail_warnings, recommend
+    from oduflow.git_analysis import (
+        guardrail_warnings,
+        merge_recommendations,
+        recommend,
+    )
     from oduflow.git_ops import pull_repo
 
     client = get_client()
@@ -1878,9 +1882,14 @@ def pull_environment(
         )
 
     # --- 1. Sync code + detect changed files and a diff base ---
+    # Each (repo_path, base_ref, files) unit is classified against its OWN repo
+    # and old HEAD; extra-addon worktrees must not be classified against the main
+    # repo's tree or their changes are misread (issue #51).
+    classify_units: list[tuple[str, str | None, list[str]]] = []
     if is_local:
         _trace("pull_environment(%s): live-mount, detecting local changes", env_name)
         base_ref, all_changed = _detect_local_changes(repo_path, env_name, team)
+        classify_units.append((repo_path, base_ref, all_changed))
     else:
         _trace("pull_environment(%s): git pull started", env_name)
         git_branch = container_obj.labels.get("oduflow.git_branch", env_name)
@@ -1888,6 +1897,7 @@ def pull_environment(
             repo_path, git_branch, cred_file=team.git_credentials_file()
         )
         base_ref = old_head
+        classify_units.append((repo_path, old_head, changed_files))
 
         extra_changed_files: list[str] = []
         try:
@@ -1906,10 +1916,13 @@ def pull_environment(
                 wt_path = os.path.join(extra_dir, repo_name)
                 if not os.path.isdir(wt_path):
                     continue
-                _extra_old, extra_files = pull_extra_worktree(
+                extra_old, extra_files = pull_extra_worktree(
                     team, repo_name, branch, wt_path
                 )
                 extra_changed_files.extend(extra_files)
+                if extra_files:
+                    # Classify this worktree against its own path + old HEAD.
+                    classify_units.append((wt_path, extra_old, extra_files))
         all_changed = changed_files + extra_changed_files
 
     _trace(
@@ -1922,7 +1935,9 @@ def pull_environment(
     # --- 2. Determine actions: explicit (agent-driven) vs auto (classify) ---
     explicit = bool(install) or bool(upgrade) or restart
     recommended = (
-        recommend(all_changed, repo_path, base_ref)
+        merge_recommendations(
+            recommend(files, rp, ref) for rp, ref, files in classify_units if files
+        )
         if all_changed
         else {"action": "none", "modules_to_install": [], "modules_to_upgrade": []}
     )
