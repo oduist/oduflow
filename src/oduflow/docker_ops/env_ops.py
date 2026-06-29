@@ -1045,7 +1045,21 @@ def create_environment(
             )
         )
 
-    container = client.containers.run(**run_kwargs)
+    try:
+        container = client.containers.run(**run_kwargs)
+    except Exception:
+        # The serving container failed to start (e.g. an invalid container name
+        # derived from the branch, or a host-port bind conflict). Roll back the
+        # resources created so far — database, role, filestore mount, workspace
+        # and the allocated port — so they are not left orphaned (#49).
+        logger.error(
+            "containers.run failed for '%s'; rolling back partial environment",
+            env_name,
+        )
+        if settings.routing_mode == "port":
+            release_port(team.port_registry_path, env_name)
+        _cleanup_old_environment(client, settings, team, env_name)
+        raise
 
     if odoo_conf_to_copy:
         _copy_file_to_container(container, odoo_conf_to_copy, "/etc/odoo")
@@ -2077,6 +2091,25 @@ def update_environment(
             except (KeyError, IndexError, ValueError, TypeError):
                 pass
 
+    # Validate the target image is available BEFORE removing the old container,
+    # so a bad or unreachable image does not leave the env with no container
+    # at all (#49). If the pull fails, fall back to a local copy; if there is
+    # none, abort with the existing environment left untouched.
+    image_updated = False
+    try:
+        logger.info("Pulling image %s", odoo_image)
+        new_image_obj = client.images.pull(odoo_image)
+        image_updated = bool(old_digest) and new_image_obj.id != old_digest
+    except Exception as exc:
+        logger.warning("Could not pull image %s: %s", odoo_image, exc)
+        try:
+            client.images.get(odoo_image)
+        except docker.errors.ImageNotFound:
+            raise PrerequisiteNotMetError(
+                f"Image '{odoo_image}' could not be pulled and is not available "
+                "locally; leaving the existing environment untouched."
+            ) from exc
+
     logger.info(
         "Updating environment – stopping old container",
         extra={"env_name": env_name, "container": odoo_container_name},
@@ -2179,14 +2212,6 @@ def update_environment(
         run_kwargs["command"] = command
     if settings.routing_mode == "port" and host_port is not None:
         run_kwargs["ports"] = {"8069/tcp": host_port}
-
-    image_updated = False
-    try:
-        logger.info("Pulling image %s", odoo_image)
-        new_image_obj = client.images.pull(odoo_image)
-        image_updated = bool(old_digest) and new_image_obj.id != old_digest
-    except Exception as exc:
-        logger.warning("Could not pull image %s, using local copy: %s", odoo_image, exc)
 
     new_container = client.containers.run(**run_kwargs)
 
