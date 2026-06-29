@@ -52,6 +52,11 @@ def validate_repo_url(repo_url: str) -> None:
             f"Only HTTPS repository URLs are supported (got {parsed.scheme or 'unknown'}://). "
             "Use format: https://github.com/owner/repo.git"
         )
+    # SSRF guard: refuse loopback / link-local (cloud metadata) / unspecified
+    # hosts. Internal RFC1918 git servers stay allowed (allow_private=True).
+    from oduflow.url_safety import assert_allowed_host
+
+    assert_allowed_host(parsed.hostname, allow_private=True)
 
 
 def _parse_authenticated_url(repo_url: str) -> tuple[str, str, str, str]:

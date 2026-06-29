@@ -76,7 +76,7 @@ class TestCreateEnvironmentTool:
             "create_environment",
             branch="main",
             template_name="none",
-            repo_url="https://repo.url",
+            repo_url="https://8.8.8.8/repo.git",
             odoo_image="odoo:17.0",
         )
         assert "Environment provisioned successfully!" in result
@@ -95,7 +95,7 @@ class TestCreateEnvironmentTool:
             "create_environment",
             branch="main",
             template_name="none",
-            repo_url="https://repo.url",
+            repo_url="https://8.8.8.8/repo.git",
             odoo_image="odoo:17.0",
             env_vars="FOO=bar,BAZ=qux",
         )
@@ -117,7 +117,7 @@ class TestCreateEnvironmentTool:
             "create_environment",
             branch="main",
             template_name="none",
-            repo_url="https://repo.url",
+            repo_url="https://8.8.8.8/repo.git",
             odoo_image="odoo:17.0",
         )
         assert mock_create.call_args.kwargs["env_vars"] is None

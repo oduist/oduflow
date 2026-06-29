@@ -1218,7 +1218,13 @@ def import_from_odoo(
     import urllib.parse
     import zipfile
 
+    from oduflow.url_safety import assert_allowed_url
+
     base = odoo_url.rstrip("/")
+
+    # SSRF guard: importing a DB from a URL is a clearly-external operation, so
+    # block loopback, the cloud metadata endpoint, and internal RFC1918 hosts.
+    assert_allowed_url(base, allow_private=False)
 
     # 1. Resolve database name
     if not db_name:
