@@ -37,11 +37,19 @@ def _load_presets(team: TeamSettings) -> dict:
 
 
 def _save_presets(team: TeamSettings, data: dict) -> None:
-    """Persist *data* to the presets JSON file, creating parent dirs if needed."""
+    """Persist *data* to the presets JSON file, creating parent dirs if needed.
+
+    Writes atomically (temp file + os.replace) so a crash mid-write cannot leave
+    a truncated file that _load_presets would discard as corrupt.
+    """
     path = _presets_path(team)
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w", encoding="utf-8") as fh:
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
         json.dump(data, fh, indent=2)
+        fh.flush()
+        os.fsync(fh.fileno())
+    os.replace(tmp, path)
 
 
 def save_preset(

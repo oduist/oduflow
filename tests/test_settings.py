@@ -6,7 +6,16 @@ class TestSettings:
     def test_lifecycle_defaults(self):
         s = Settings(teams={"1": TeamSettings(team_id="1")})
         assert s.auto_stop_hours == 48
-        assert s.auto_delete_hours == 72
+        # auto-delete is destructive, so it is opt-in (disabled by default).
+        assert s.auto_delete_hours == 0
+
+    def test_malformed_port_range_raises(self, tmp_path):
+        toml = tmp_path / "oduflow.toml"
+        toml.write_text(
+            '[team.1]\nhostname = "localhost"\nport_range = [50000]\n'
+        )
+        with pytest.raises(ValueError, match="port_range"):
+            Settings.from_toml(str(toml))
 
     def test_lifecycle_from_toml(self, tmp_path):
         toml = tmp_path / "oduflow.toml"
@@ -38,6 +47,22 @@ class TestSettings:
         s = Settings(teams={"1": team})
         with pytest.raises(ValueError, match="invalid port range"):
             s.validate()
+
+    def test_validate_overlapping_port_ranges(self):
+        # Two teams left on the default (identical) range would draw host ports
+        # from the same pool — issue #46.
+        t1 = TeamSettings(team_id="1", port_range_start=50000, port_range_end=50100)
+        t2 = TeamSettings(team_id="2", port_range_start=50050, port_range_end=50150)
+        s = Settings(teams={"1": t1, "2": t2})
+        with pytest.raises(ValueError, match="overlapping port ranges"):
+            s.validate()
+
+    def test_validate_adjacent_port_ranges_ok(self):
+        # Half-open ranges that merely touch at the boundary do not overlap.
+        t1 = TeamSettings(team_id="1", port_range_start=50000, port_range_end=50100)
+        t2 = TeamSettings(team_id="2", port_range_start=50100, port_range_end=50200)
+        s = Settings(teams={"1": t1, "2": t2})
+        s.validate()
 
     def test_frozen(self):
         s = Settings()

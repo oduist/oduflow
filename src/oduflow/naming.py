@@ -2,6 +2,37 @@ import os
 import re
 from urllib.parse import urlparse, urlunparse
 
+# A template name becomes both a filesystem path (templates/<name>, where "/"
+# denotes a sub-directory) and, with "/" replaced by "-", part of a PostgreSQL
+# database identifier. "/" is therefore allowed as a segment separator, but each
+# segment must start with an alphanumeric (which rules out "." and ".." — i.e.
+# path traversal) and contain only [a-zA-Z0-9_.-] (which rules out quotes,
+# semicolons and whitespace — i.e. SQL-identifier break-out).
+_TEMPLATE_SEGMENT_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_.-]*$")
+
+
+def validate_template_name(template_name: str) -> str:
+    """Validate a template name and return it unchanged.
+
+    Raises ValueError if the name could escape the templates directory or break
+    out of a SQL identifier. Enforced at the two derivation chokepoints
+    (get_template_db_name and TeamSettings.get_template_dir), so every entry
+    point — MCP tools, web UI, CLI — is covered.
+    """
+    name = template_name or ""
+    segments = name.split("/")
+    if (
+        not name
+        or len(name) > 63
+        or not all(_TEMPLATE_SEGMENT_RE.match(seg) for seg in segments)
+    ):
+        raise ValueError(
+            f"Invalid template name '{template_name}': each '/'-separated "
+            "segment must start with a letter or digit and contain only "
+            "[a-zA-Z0-9_.-] (max 63 chars total)."
+        )
+    return name
+
 
 def slugify_branch(env_name: str) -> str:
     slug = env_name.replace("/", "-")
@@ -35,6 +66,9 @@ def get_env_hostname(env_name: str, hostname: str) -> str:
 
 
 def get_template_db_name(template_name: str, team_id: str = "1") -> str:
+    # validate_template_name guarantees the (slugified) name cannot break out of
+    # the double-quoted SQL identifier this is interpolated into.
+    validate_template_name(template_name)
     slug = template_name.replace("/", "-")
     return f"oduflow_template_{team_id}_{slug}"
 

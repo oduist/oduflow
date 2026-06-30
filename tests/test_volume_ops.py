@@ -308,22 +308,39 @@ class TestResolveVolumeBinds:
             volume_ops.resolve_volume_binds(TEST_TEAM, mounts)
 
     def test_resolve_external_volume(self, mock_docker_client):
-        """External volume is used as-is when managed name doesn't exist."""
+        """A genuinely external (non-Oduflow) volume is used as-is when the
+        team-scoped name doesn't exist."""
 
         def _get(name):
-            if name == "oduflow-vol-1-oduflow-traefik-acme":
+            if name == "oduflow-vol-1-my-external-data":
                 raise docker.errors.NotFound("nf")
             return MagicMock()  # original name exists
 
         mock_docker_client.volumes.get.side_effect = _get
 
         mounts = [
-            {"volume": "oduflow-traefik-acme", "mount_path": "/acme", "mode": "ro"}
+            {"volume": "my-external-data", "mount_path": "/data", "mode": "ro"}
         ]
         result = volume_ops.resolve_volume_binds(TEST_TEAM, mounts)
 
-        assert "oduflow-traefik-acme" in result
-        assert result["oduflow-traefik-acme"] == {"bind": "/acme", "mode": "ro"}
+        assert "my-external-data" in result
+        assert result["my-external-data"] == {"bind": "/data", "mode": "ro"}
+
+    @pytest.mark.parametrize(
+        "reserved",
+        ["oduflow-db-data", "oduflow-traefik-acme", "oduflow-vol-2-secret"],
+    )
+    def test_resolve_rejects_reserved_oduflow_volume(
+        self, mock_docker_client, reserved
+    ):
+        """Raw-name fallback must never reach an Oduflow-managed volume — the
+        shared DB data, a system volume, or another team's volume (issue #40)."""
+        # The team-scoped lookup misses, so the code falls back to the raw name.
+        mock_docker_client.volumes.get.side_effect = docker.errors.NotFound("nf")
+
+        mounts = [{"volume": reserved, "mount_path": "/x", "mode": "rw"}]
+        with pytest.raises(NotFoundError, match="reserved"):
+            volume_ops.resolve_volume_binds(TEST_TEAM, mounts)
 
     def test_resolve_empty(self, mock_docker_client):
         result = volume_ops.resolve_volume_binds(TEST_TEAM, [])

@@ -5,6 +5,7 @@ import logging
 import os
 import re
 import subprocess
+from collections.abc import Iterable
 
 from oduflow import settings
 
@@ -41,10 +42,7 @@ def _get_module_name(file_path: str, repo_path: str = "") -> str | None:
         return None
 
     if repo_path:
-        if os.path.basename(file_path) == "__manifest__.py":
-            dir_parts = parts[:-1]
-        else:
-            dir_parts = parts[:-1]
+        dir_parts = parts[:-1]
 
         for i in range(len(dir_parts), 0, -1):
             candidate = "/".join(dir_parts[:i])
@@ -459,6 +457,64 @@ def recommend(changed_files: list[str], repo_path: str, base_ref: str | None) ->
     if base_ref:
         return classify_changes(changed_files, repo_path, base_ref=base_ref)
     return shallow_classify(changed_files, repo_path)
+
+
+# Most → least disruptive. Used to pick the overall action when merging the
+# per-repo recommendations of the main repo and each extra-addon worktree.
+_ACTION_PRIORITY = {"none": 0, "refresh": 1, "restart": 2, "upgrade": 3, "install": 4}
+
+_DETAIL_LIST_KEYS = (
+    "xml_hot",
+    "xml_security",
+    "manifest_upgrade",
+    "manifest_install",
+    "js_changed",
+)
+
+
+def merge_recommendations(recs: Iterable[dict]) -> dict:
+    """Combine several :func:`recommend` results (one per repo/worktree).
+
+    The main repo and each extra-addon worktree are classified against their own
+    tree, so their recommendations must be merged: the overall action is the
+    most disruptive one, module lists are unioned, and ``restart_required`` is
+    OR-ed across all details (issue #51).
+    """
+    recs = [r for r in recs if r]
+    if not recs:
+        return {"action": "none", "modules_to_install": [], "modules_to_upgrade": []}
+
+    action = max(
+        (r.get("action", "none") for r in recs),
+        key=lambda a: _ACTION_PRIORITY.get(a, 0),
+    )
+    install = sorted(
+        {m for r in recs for m in r.get("modules_to_install", []) or []}
+    )
+    upgrade = sorted(
+        {m for r in recs for m in r.get("modules_to_upgrade", []) or []}
+    )
+
+    details: dict = {}
+    for key in _DETAIL_LIST_KEYS:
+        merged: list[str] = []
+        for r in recs:
+            d = r.get("details")
+            if isinstance(d, dict):
+                merged.extend(d.get(key, []) or [])
+        if merged:
+            details[key] = sorted(set(merged))
+    details["restart_required"] = any(
+        isinstance(r.get("details"), dict) and r["details"].get("restart_required")
+        for r in recs
+    )
+
+    return {
+        "action": action,
+        "modules_to_install": install,
+        "modules_to_upgrade": upgrade,
+        "details": details,
+    }
 
 
 def guardrail_warnings(

@@ -33,7 +33,7 @@ from oduflow.docker_ops import (
 )
 from oduflow import activity, git_ops, reaper
 from oduflow import settings as settings_module
-from oduflow.errors import FlowError
+from oduflow.errors import FlowError, PrerequisiteNotMetError
 from oduflow.locking import LockManager
 from oduflow.output_cache import OutputCache, CachedOutput
 from oduflow.settings import Settings, TeamSettings, find_toml
@@ -100,7 +100,10 @@ def _resolve_team(ctx: Context | None) -> TeamSettings:
             if team:
                 return team
         except Exception:
-            pass
+            # No HTTP request in scope (e.g. stdio transport) — fall through to
+            # the single-team / default-team resolution below. Logged, not
+            # silently swallowed, so misrouting is traceable.
+            logger.debug("Host-header team resolution unavailable", exc_info=True)
     # 3. Fallback: single team or default team "1"
     if len(settings.teams) == 1:
         return next(iter(settings.teams.values()))
@@ -222,7 +225,7 @@ def _wake_for_work(
     """Container-level tools start a stopped environment instead of failing:
     with auto-stop, 'stopped' is a routine state, not an error. Returns the
     one-line note to prepend to the tool response ('' if already running)."""
-    if env_ops.ensure_running(settings, env_name):
+    if env_ops.ensure_running(settings, env_name, team):
         activity.mark_started(team, env_name)
         return f"Note: environment was stopped; started it {purpose}.\n"
     return ""
@@ -1018,7 +1021,8 @@ def get_environment_logs(
         level: Filter by Odoo log level. One of: "ERROR", "WARNING", "CRITICAL". Returns only lines containing the specified level marker. Can be combined with grep.
     """
     output = odoo_ops.get_environment_logs(
-        _get_settings(), env_name, n_lines, grep=grep, level=level
+        _get_settings(), env_name, n_lines, grep=grep, level=level,
+        team=_resolve_team(ctx),
     )
     return f"Recent logs for {env_name}:\n\n{_ANSI_RE.sub('', output)}"
 
@@ -1034,8 +1038,9 @@ def restart_environment(env_name: str, wait: bool = True, ctx: Context = None) -
         wait: Wait for Odoo to become ready after restart (default True). Polls /web/health every 2 seconds for up to 120 seconds.
     """
     settings = _get_settings()
-    result = env_ops.restart_environment(settings, env_name)
-    activity.mark_started(_resolve_team(ctx), env_name)
+    team = _resolve_team(ctx)
+    result = env_ops.restart_environment(settings, env_name, team)
+    activity.mark_started(team, env_name)
     lines = [
         "Environment restarted successfully!",
         f"Odoo Container: {result['odoo_container']}",
@@ -1195,7 +1200,7 @@ def start_environment(env_name: str, wait: bool = True, ctx: Context = None) -> 
     """
     settings = _get_settings()
     team = _resolve_team(ctx)
-    result = env_ops.start_environment(settings, env_name)
+    result = env_ops.start_environment(settings, env_name, team)
     activity.mark_started(team, env_name)
     lines = [
         "Environment started successfully!",
@@ -1442,7 +1447,7 @@ def install_odoo_modules(env_name: str, modules: str, ctx: Context = None) -> st
     modules_str = ", ".join(result["modules"])
     output = result.get("output", "")
     if exit_code == 0:
-        env_ops.restart_environment(settings, env_name)
+        env_ops.restart_environment(settings, env_name, team)
         header = f"{woke}Success. Modules installed: {modules_str}. Container restarted. Exit code: 0."
     else:
         header = f"{woke}Error. Modules: {modules_str}. Exit code: {exit_code}."
@@ -2733,6 +2738,28 @@ def _inject_db_password(toml_text: str, password: str) -> str:
     return "\n".join(out) + "\n"
 
 
+def _inject_auth_token(toml_text: str, token: str) -> str:
+    """Replace the empty ``auth_token = ""`` in a freshly bootstrapped
+    oduflow.toml with a generated MCP token, so a fresh HTTP install is
+    authenticated by default. Only the first empty auth_token (team 1) is set;
+    existing user configs are never rewritten.
+    """
+    replacement = f'auth_token = "{token}"'
+    out: list[str] = []
+    injected = False
+    for raw in toml_text.splitlines():
+        if not injected and raw.split("#", 1)[0].strip() == 'auth_token = ""':
+            indent = raw[: len(raw) - len(raw.lstrip())]
+            comment = raw.split("#", 1)[1].strip() if "#" in raw else ""
+            out.append(
+                f"{indent}{replacement}" + (f"  # {comment}" if comment else "")
+            )
+            injected = True
+        else:
+            out.append(raw)
+    return "\n".join(out) + "\n"
+
+
 def _run_reload_template(
     settings: Settings, team: TeamSettings, template_name: str, dump_path: str = ""
 ) -> None:
@@ -3082,7 +3109,7 @@ def _get_version() -> str:
 # =============================================================================
 
 
-def main() -> None:
+def _run_cli() -> None:
     """Entry point for the Oduflow MCP server."""
     parser = argparse.ArgumentParser(
         prog="oduflow", description="Oduflow — Odoo dev environment manager"
@@ -3279,8 +3306,9 @@ def main() -> None:
     logging.getLogger("docker").setLevel(logging.WARNING)
     logging.getLogger("docket").setLevel(logging.WARNING)
 
-    # Bootstrap: if no config exists, create it from the bundled default
-    # with an auto-generated PostgreSQL superuser password.
+    # Bootstrap: if no config exists, create it from the bundled default with an
+    # auto-generated PostgreSQL password and a random MCP auth_token, so a fresh
+    # install is authenticated by default even over HTTP (#37).
     try:
         find_toml()
     except FileNotFoundError:
@@ -3293,12 +3321,22 @@ def main() -> None:
         os.makedirs(dest_dir, exist_ok=True)
         bundled = pathlib.Path(__file__).resolve().parent / "templates" / "oduflow.toml"
         dest = os.path.join(dest_dir, "oduflow.toml")
+        generated_token = secrets.token_urlsafe(24)
         rendered = _inject_db_password(
             bundled.read_text(encoding="utf-8"), secrets.token_urlsafe(24)
         )
+        rendered = _inject_auth_token(rendered, generated_token)
         with open(dest, "w", encoding="utf-8") as f:
             f.write(rendered)
-        logger.info("Config created: %s (auto-generated DB password)", dest)
+        logger.info(
+            "Config created: %s (auto-generated DB password and MCP auth_token)",
+            dest,
+        )
+        logger.info(
+            "Generated MCP auth_token for team 1: %s "
+            "(use as Bearer token / OAuth client_id+secret)",
+            generated_token,
+        )
 
     global _settings
     _settings = _get_settings()
@@ -3439,6 +3477,29 @@ def _start_http() -> None:
 
     auth = _build_auth(settings)
 
+    # Fail closed: never serve the MCP tool surface (run_odoo_command,
+    # run_db_query, privileged service creation, …) unauthenticated by accident
+    # (#37). A fresh install bootstraps a random auth_token; reaching here with
+    # no auth means the operator cleared it, which must be explicit.
+    if auth is None and not settings.allow_insecure_http:
+        raise PrerequisiteNotMetError(
+            "Refusing to start the HTTP transport with no MCP authentication: "
+            "set a [team.*] auth_token (or oauth_base_url) in oduflow.toml. To "
+            "run unauthenticated on purpose (e.g. behind your own auth proxy), "
+            "set [server] allow_insecure_http = true."
+        )
+    if auth is None:
+        logger.warning(
+            "HTTP transport starting WITHOUT authentication "
+            "(allow_insecure_http=true) — the full MCP tool surface is open."
+        )
+    if host not in ("127.0.0.1", "::1", "localhost"):
+        logger.warning(
+            "Binding %s on all/non-loopback interface — ensure a firewall and "
+            "TLS-terminating reverse proxy are in front of Oduflow.",
+            host,
+        )
+
     app = create_streamable_http_app(mcp, "/mcp", auth=auth, stateless_http=True)
 
     reaper.start_reaper(_get_settings, _locks)
@@ -3501,6 +3562,19 @@ def _build_auth(settings: Settings):  # type: ignore[no-untyped-def]
 
     logger.warning("HTTP auth DISABLED (no auth_token or oauth_base_url set)")
     return None
+
+
+def main() -> None:
+    """CLI entry point: run the server/command and translate a missing
+    prerequisite (e.g. Docker daemon unreachable) into a friendly process exit
+    instead of a traceback. get_client() raises PrerequisiteNotMetError rather
+    than SystemExit so the long-running server can recover; here at the CLI
+    boundary we convert it to an exit code."""
+    try:
+        _run_cli()
+    except PrerequisiteNotMetError as exc:
+        print(f"\n❌ {exc}", file=sys.stderr)
+        sys.exit(1)
 
 
 if __name__ == "__main__":

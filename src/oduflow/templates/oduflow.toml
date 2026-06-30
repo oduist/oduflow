@@ -3,6 +3,7 @@
 host = "0.0.0.0"
 port = 8000
 allow_local_path = true        # allow live-mount (bind local checkout) workflows
+# allow_insecure_http = false  # serve HTTP /mcp with NO auth (only behind your own proxy)
 # trace = false                    # verbose tracing for git analysis & env ops
 
 # ── Routing ───────────────────────────────────────────
@@ -42,6 +43,6 @@ overlay_threshold_mb = 50         # filestore size limit for overlay vs copy
 
 [team.1]
 hostname = "localhost"            # port: http://{hostname}:{port}, traefik: https://{slug}.{hostname}
-auth_token = ""                   # MCP bearer token / OAuth client_id+secret (empty = auth disabled)
+auth_token = ""                   # MCP bearer token / OAuth client_id+secret (auto-generated on first run; HTTP refuses to start if empty)
 ui_password = ""                  # Web UI password (empty = UI open)
 port_range = [50000, 50100]       # port range for Odoo containers

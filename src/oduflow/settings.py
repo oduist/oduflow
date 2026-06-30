@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hmac
 import logging
 import os
 import re
@@ -44,6 +45,11 @@ class TeamSettings:
         return os.path.join(self.data_dir, "shared_repos")
 
     def get_template_dir(self, template_name: str) -> str:
+        # Reject names that could escape the templates directory (path
+        # traversal) before they reach rmtree / file writes.
+        from oduflow.naming import validate_template_name
+
+        validate_template_name(template_name)
         return os.path.join(self.data_dir, "templates", template_name)
 
     def get_template_sql_path(self, template_name: str) -> str:
@@ -84,6 +90,10 @@ class Settings:
     trace: bool = False
     disable_telemetry: bool = False
     allow_local_path: bool = True
+    # Allow starting the HTTP transport with no MCP authentication. Off by
+    # default so /mcp is never served unauthenticated by accident (#37); set
+    # true only when fronting Oduflow with your own auth proxy.
+    allow_insecure_http: bool = False
 
     # Routing
     routing_mode: str = "port"
@@ -100,9 +110,11 @@ class Settings:
 
     # Lifecycle: automatic stop of idle environments and cleanup of stopped
     # ones (see oduflow.reaper). 0 disables either behavior. Protected
-    # environments are always exempt.
+    # environments are always exempt. auto-delete is DESTRUCTIVE (drops the
+    # database and workspace), so it is opt-in (defaults to 0); auto-stop is
+    # non-destructive and enabled by default.
     auto_stop_hours: int = 48
-    auto_delete_hours: int = 72
+    auto_delete_hours: int = 0
 
     # Shared Docker resource names
     shared_network: str = "oduflow-net"
@@ -143,7 +155,7 @@ class Settings:
         if not token:
             return None
         for team in self.teams.values():
-            if team.auth_token and team.auth_token == token:
+            if team.auth_token and hmac.compare_digest(team.auth_token, token):
                 return team
         return None
 
@@ -164,7 +176,7 @@ class Settings:
         if not password:
             return None
         for team in self.teams.values():
-            if team.ui_password and team.ui_password == password:
+            if team.ui_password and hmac.compare_digest(team.ui_password, password):
                 return team
         return None
 
@@ -193,6 +205,26 @@ class Settings:
                 raise ValueError(
                     f"Team '{team.team_id}': invalid port range "
                     f"{team.port_range_start}-{team.port_range_end}"
+                )
+
+        # Validate that team port ranges do not overlap. The default range is
+        # identical for every team, so two teams that never set an explicit
+        # port_range would draw host ports from the same pool and collide.
+        ranges = sorted(
+            (
+                (t.port_range_start, t.port_range_end, t.team_id)
+                for t in self.teams.values()
+            ),
+            key=lambda r: r[0],
+        )
+        for (a_start, a_end, a_id), (b_start, b_end, b_id) in zip(ranges, ranges[1:]):
+            # Ranges are half-open [start, end); they overlap when the next
+            # range starts before the previous one ends.
+            if b_start < a_end:
+                raise ValueError(
+                    f"Teams '{a_id}' and '{b_id}' have overlapping port ranges "
+                    f"({a_start}-{a_end} and {b_start}-{b_end}). "
+                    "Set a distinct [team.*] port_range for each team."
                 )
 
         # Validate uniqueness of auth tokens
@@ -242,11 +274,22 @@ class Settings:
             team_id = str(team_id_raw)
             team_data_dir = os.path.join(base_data_dir, f"team_{team_id}")
 
-            port_range = team_cfg.get("port_range", [50000, 50100])
-            if isinstance(port_range, list) and len(port_range) == 2:
-                port_start, port_end = int(port_range[0]), int(port_range[1])
-            else:
+            port_range = team_cfg.get("port_range")
+            if port_range is None:
                 port_start, port_end = 50000, 50100
+            elif isinstance(port_range, list) and len(port_range) == 2:
+                try:
+                    port_start, port_end = int(port_range[0]), int(port_range[1])
+                except (TypeError, ValueError) as exc:
+                    raise ValueError(
+                        f"Team '{team_id}': port_range must be two integers, "
+                        f"got {port_range!r}"
+                    ) from exc
+            else:
+                raise ValueError(
+                    f"Team '{team_id}': port_range must be [start, end], "
+                    f"got {port_range!r}"
+                )
 
             raw_hostname = str(
                 team_cfg.get("hostname", routing.get("hostname", "localhost"))
@@ -275,6 +318,7 @@ class Settings:
             trace=trace,
             disable_telemetry=bool(server.get("disable_telemetry", False)),
             allow_local_path=bool(server.get("allow_local_path", True)),
+            allow_insecure_http=bool(server.get("allow_insecure_http", False)),
             routing_mode=str(routing.get("mode", "port")).strip().lower(),
             acme_email=str(routing.get("acme_email", "")).strip(),
             db_user=str(database.get("user", "odoo")),
@@ -283,7 +327,7 @@ class Settings:
             base_data_dir=base_data_dir,
             overlay_threshold_mb=int(storage.get("overlay_threshold_mb", 50)),
             auto_stop_hours=int(lifecycle.get("auto_stop_hours", 48)),
-            auto_delete_hours=int(lifecycle.get("auto_delete_hours", 72)),
+            auto_delete_hours=int(lifecycle.get("auto_delete_hours", 0)),
             oauth_base_url=str(oauth.get("oauth_base_url", "")).strip(),
             etc_dir=etc_dir,
             toml_path=path,

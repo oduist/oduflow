@@ -108,6 +108,7 @@ def get_environment_logs(
     grep: str = "",
     level: str = "",
     container_name: str = "",
+    team: TeamSettings | None = None,
 ) -> str:
     client = get_client()
     if container_name:
@@ -127,14 +128,22 @@ def get_environment_logs(
 
     try:
         container = client.containers.get(target_container_name)
-        logs = container.logs(tail=fetch_lines, stdout=True, stderr=True)
-        logs_str = logs.decode("utf-8") if isinstance(logs, bytes) else str(logs)
     except docker.errors.NotFound:
         if container_name:
             raise NotFoundError(f"Container '{container_name}' does not exist.")
         raise NotFoundError(
             f"Environment '{env_name}' does not exist. Use create_environment first."
         )
+    # Container names are not team-namespaced: don't expose another team's logs
+    # (issue #39). Skipped when team is None (internal callers).
+    if team is not None:
+        label = container.labels.get(settings.team_label)
+        if label is not None and label != team.team_id:
+            raise NotFoundError(
+                f"Environment '{env_name}' does not exist. Use create_environment first."
+            )
+    logs = container.logs(tail=fetch_lines, stdout=True, stderr=True)
+    logs_str = logs.decode("utf-8") if isinstance(logs, bytes) else str(logs)
 
     if grep or level:
         lines = logs_str.splitlines()

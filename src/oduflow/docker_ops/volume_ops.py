@@ -266,10 +266,19 @@ def resolve_volume_binds(
         try:
             client.volumes.get(docker_name)
         except docker.errors.NotFound:
-            # Try the original name as-is (external / non-managed volume)
+            # Fall back to an external (non-Oduflow) volume mounted by its raw
+            # name. Never allow raw access to an Oduflow-managed volume — the
+            # shared Postgres data volume (oduflow-db-data), another team's
+            # oduflow-vol-* volume, or a system volume (oduflow-traefik-*):
+            # mounting one would be a cross-tenant / host escape (issue #40).
+            raw = mount["volume"]
+            if raw.startswith("oduflow-"):
+                raise NotFoundError(
+                    f"Volume '{raw}' is reserved and cannot be mounted directly."
+                )
             try:
-                client.volumes.get(mount["volume"])
-                docker_name = mount["volume"]
+                client.volumes.get(raw)
+                docker_name = raw
             except docker.errors.NotFound:
                 raise NotFoundError(
                     f"Volume '{mount['volume']}' not found. Create it first."

@@ -31,6 +31,17 @@ _BUNDLED_ODOO_CONF = _PACKAGE_ROOT / "templates" / "odoo.conf"
 _BUNDLED_SANITIZE_DIR = _PACKAGE_ROOT / "templates"
 
 
+def _is_within_directory(directory: str, target: str) -> bool:
+    """Return True if ``target`` resolves to a path inside ``directory``.
+
+    Guards archive extraction against path traversal ("zip-slip"): a member
+    named ``../../etc/x`` would otherwise be written outside the destination.
+    """
+    directory = os.path.realpath(directory)
+    target = os.path.realpath(target)
+    return target == directory or target.startswith(directory + os.sep)
+
+
 def _get_oduflow_version() -> str:
     """Return the installed package version."""
     try:
@@ -273,9 +284,12 @@ def _create_pg_role(
         f"ALTER ROLE \"{username}\" WITH LOGIN PASSWORD '{safe_pw}';",
     )
     _exec_sql(client, settings, f'ALTER DATABASE "{db_name}" OWNER TO "{username}";')
-    # Grant membership in the superuser role so the env role inherits
-    # ownership of all existing objects (needed for DDL during module upgrades).
-    _exec_sql(client, settings, f'GRANT "{settings.db_user}" TO "{username}";')
+    # Ensure the env role is NOT a member of the superuser role. Ownership of
+    # template objects (needed for DDL during module upgrades) is handled by the
+    # per-object reassignment in create_environment instead; superuser-role
+    # membership would let the env role SET ROLE to superuser — a cross-tenant
+    # RCE (#40). The REVOKE also de-escalates roles created before this change.
+    _exec_sql(client, settings, f'REVOKE "{settings.db_user}" FROM "{username}";')
     logger.info("Created/ensured PG role '%s' for database '%s'", username, db_name)
 
 
@@ -383,6 +397,19 @@ def _extract_archive_from_container(
                 if not rel:
                     continue
                 member.name = rel
+                # Reject members that escape dest_dir via traversal or an
+                # absolute/symlink target (defence in depth; source is our own
+                # template-builder container).
+                if not _is_within_directory(dest_dir, os.path.join(dest_dir, rel)):
+                    logger.warning("Skipping unsafe archive member: %s", rel)
+                    continue
+                if member.issym() or member.islnk():
+                    link_target = os.path.join(dest_dir, os.path.dirname(rel))
+                    if not _is_within_directory(
+                        dest_dir, os.path.join(link_target, member.linkname)
+                    ):
+                        logger.warning("Skipping unsafe link member: %s", rel)
+                        continue
                 tar.extract(member, dest_dir)
                 if not member.isdir():
                     extracted += 1
@@ -1194,7 +1221,13 @@ def import_from_odoo(
     import urllib.parse
     import zipfile
 
+    from oduflow.url_safety import assert_allowed_url
+
     base = odoo_url.rstrip("/")
+
+    # SSRF guard: importing a DB from a URL is a clearly-external operation, so
+    # block loopback, the cloud metadata endpoint, and internal RFC1918 hosts.
+    assert_allowed_url(base, allow_private=False)
 
     # 1. Resolve database name
     if not db_name:
@@ -1316,6 +1349,13 @@ def import_from_odoo(
                     if rel.startswith("checklist/"):
                         continue
                     target = os.path.join(template_filestore_path, rel)
+                    # Reject any member that escapes the filestore dir (zip-slip).
+                    if not _is_within_directory(template_filestore_path, target):
+                        logger.warning(
+                            "Skipping unsafe archive member outside filestore: %s",
+                            member,
+                        )
+                        continue
                     if member.endswith("/"):
                         os.makedirs(target, exist_ok=True)
                     else:
@@ -1510,10 +1550,13 @@ def cleanup_orphans(
     for entry in orphan_workspaces:
         entry_path = os.path.join(team.workspaces_dir, entry)
         try:
-            # Unmount any overlay before removing
+            # Unmount any overlay before removing. _unmount_filestore needs the
+            # TeamSettings (it reads team.workspaces_dir); passing the global
+            # Settings here raised AttributeError on every orphan, so cleanup
+            # silently removed nothing.
             from oduflow.docker_ops.env_ops import _unmount_filestore
 
-            _unmount_filestore(entry, settings)
+            _unmount_filestore(entry, team)
             shutil.rmtree(entry_path)
             removed_workspaces.append(entry)
             logger.info("Removed orphan workspace %s", entry_path)

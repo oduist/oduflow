@@ -688,6 +688,30 @@ def create_environment(
     except docker.errors.NotFound:
         pass
 
+    # Different branch names can normalise to the same database name (the
+    # container name keeps case/punctuation but get_db_name slugifies). Refuse
+    # if the target DB is already owned by another live environment — otherwise
+    # the cleanup below would DROP a running environment's database (#41).
+    target_db = get_db_name(env_name, team.team_id)
+    for other in client.containers.list(
+        all=True,
+        filters={
+            "label": [
+                f"{settings.managed_label}=true",
+                f"{settings.team_label}={team.team_id}",
+            ]
+        },
+    ):
+        if other.name == odoo_container_name:
+            continue
+        other_branch = other.labels.get(settings.branch_label)
+        if other_branch and get_db_name(other_branch, team.team_id) == target_db:
+            raise ConflictError(
+                f"Environment '{env_name}' maps to database '{target_db}', which "
+                f"is already used by environment '{other_branch}'. Choose a name "
+                "that does not normalise to the same database."
+            )
+
     _cleanup_old_environment(client, settings, team, env_name)
     workspace_path = get_workspace_path(env_name, team.workspaces_dir)
     # Live-mount mode: bind-mount the agent's own checkout
@@ -851,13 +875,17 @@ def create_environment(
     )
 
     if template_name is not None:
-        # Transfer ownership of every object in the public schema to the
-        # new per-environment role.  DDL operations (ALTER TABLE) require
-        # ownership — GRANT ALL only covers DML.  We cannot use
-        # REASSIGN OWNED BY "<superuser>" because PostgreSQL refuses to
-        # reassign system objects owned by that role.  Instead we iterate
-        # over tables, sequences, and views individually.
+        # A template DB's objects are owned by the superuser that created the
+        # template. DDL during module upgrades requires ownership, so reassign
+        # every object that superuser still owns to the per-environment role.
+        # This replaces granting the env role membership in the superuser role,
+        # which would let it SET ROLE to superuser (cross-tenant RCE, #40).
+        # Odoo connects as the env role and never SET ROLEs, so per-object
+        # ownership — not role membership — is what actually enables its DDL.
+        # Linked (SERIAL/identity) sequences are skipped: they follow their
+        # table's owner automatically.
         new_user = env_creds["pg_user"]
+        old_user = settings.db_user
         _exec_sql(
             client,
             settings,
@@ -867,17 +895,40 @@ def create_environment(
         _exec_sql(
             client,
             settings,
-            "DO $$ DECLARE r RECORD; BEGIN "
-            "FOR r IN SELECT tablename FROM pg_tables WHERE schemaname = 'public' LOOP "
-            f"EXECUTE 'ALTER TABLE public.' || quote_ident(r.tablename) || ' OWNER TO \"{new_user}\"'; "
-            "END LOOP; "
-            "FOR r IN SELECT sequence_name FROM information_schema.sequences WHERE sequence_schema = 'public' LOOP "
-            f"EXECUTE 'ALTER SEQUENCE public.' || quote_ident(r.sequence_name) || ' OWNER TO \"{new_user}\"'; "
-            "END LOOP; "
-            "FOR r IN SELECT viewname FROM pg_views WHERE schemaname = 'public' LOOP "
-            f"EXECUTE 'ALTER VIEW public.' || quote_ident(r.viewname) || ' OWNER TO \"{new_user}\"'; "
-            "END LOOP; "
-            "END $$;",
+            rf"""
+            DO $$
+            DECLARE r RECORD;
+            BEGIN
+              FOR r IN SELECT n.nspname FROM pg_namespace n JOIN pg_roles o ON n.nspowner = o.oid
+                       WHERE o.rolname = '{old_user}'
+                         AND n.nspname NOT LIKE 'pg\_%' AND n.nspname <> 'information_schema'
+              LOOP EXECUTE format('ALTER SCHEMA %I OWNER TO %I', r.nspname, '{new_user}'); END LOOP;
+
+              FOR r IN SELECT c.relkind AS kind, n.nspname AS sch, c.relname AS rel
+                       FROM pg_class c
+                       JOIN pg_namespace n ON c.relnamespace = n.oid
+                       JOIN pg_roles o ON c.relowner = o.oid
+                       WHERE o.rolname = '{old_user}'
+                         AND n.nspname NOT LIKE 'pg\_%' AND n.nspname <> 'information_schema'
+                         AND c.relkind IN ('r', 'p', 'S', 'v', 'm', 'f')
+                         AND NOT (c.relkind = 'S' AND EXISTS (
+                             SELECT 1 FROM pg_depend d
+                             WHERE d.classid = 'pg_class'::regclass AND d.objid = c.oid
+                               AND d.refclassid = 'pg_class'::regclass AND d.deptype IN ('a', 'i')))
+              LOOP EXECUTE format('ALTER %s %I.%I OWNER TO %I',
+                   CASE r.kind WHEN 'S' THEN 'SEQUENCE' WHEN 'v' THEN 'VIEW'
+                               WHEN 'm' THEN 'MATERIALIZED VIEW' WHEN 'f' THEN 'FOREIGN TABLE'
+                               ELSE 'TABLE' END, r.sch, r.rel, '{new_user}'); END LOOP;
+
+              FOR r IN SELECT p.oid::regprocedure AS sig
+                       FROM pg_proc p
+                       JOIN pg_namespace n ON p.pronamespace = n.oid
+                       JOIN pg_roles o ON p.proowner = o.oid
+                       WHERE o.rolname = '{old_user}'
+                         AND n.nspname NOT LIKE 'pg\_%' AND n.nspname <> 'information_schema'
+              LOOP EXECUTE format('ALTER ROUTINE %s OWNER TO %I', r.sig, '{new_user}'); END LOOP;
+            END $$;
+            """,
             db=env_db,
         )
 
@@ -1018,7 +1069,21 @@ def create_environment(
             )
         )
 
-    container = client.containers.run(**run_kwargs)
+    try:
+        container = client.containers.run(**run_kwargs)
+    except Exception:
+        # The serving container failed to start (e.g. an invalid container name
+        # derived from the branch, or a host-port bind conflict). Roll back the
+        # resources created so far — database, role, filestore mount, workspace
+        # and the allocated port — so they are not left orphaned (#49).
+        logger.error(
+            "containers.run failed for '%s'; rolling back partial environment",
+            env_name,
+        )
+        if settings.routing_mode == "port":
+            release_port(team.port_registry_path, env_name)
+        _cleanup_old_environment(client, settings, team, env_name)
+        raise
 
     if odoo_conf_to_copy:
         _copy_file_to_container(container, odoo_conf_to_copy, "/etc/odoo")
@@ -1185,7 +1250,13 @@ def delete_environment(
 
     container_exists = True
     try:
-        client.containers.get(odoo_container_name)
+        existing = client.containers.get(odoo_container_name)
+        # Container names are not team-namespaced; never stop/remove a container
+        # that belongs to another team (issue #39). Treat it as absent so this
+        # team's own DB/workspace/port are still cleaned up.
+        label = existing.labels.get(settings.team_label)
+        if label is not None and label != team.team_id:
+            container_exists = False
     except docker.errors.NotFound:
         container_exists = False
 
@@ -1364,7 +1435,9 @@ def wait_for_odoo_ready(
     return False
 
 
-def ensure_running(settings: Settings, env_name: str) -> bool:
+def ensure_running(
+    settings: Settings, env_name: str, team: TeamSettings | None = None
+) -> bool:
     """Start the environment's Odoo container if it is stopped.
 
     Returns True when a start was needed (the caller may want to tell the
@@ -1378,23 +1451,47 @@ def ensure_running(settings: Settings, env_name: str) -> bool:
         raise NotFoundError(
             f"Environment '{env_name}' does not exist. Use create_environment first."
         )
+    _assert_team_owns(container, settings, team, env_name)
     if container.status == "running":
         return False
-    start_environment(settings, env_name)
+    start_environment(settings, env_name, team)
     return True
 
 
-def restart_environment(settings: Settings, env_name: str) -> dict[str, str]:
+def _assert_team_owns(
+    container: Any, settings: Settings, team: TeamSettings | None, env_name: str
+) -> None:
+    """Reject operating on a container that belongs to another team.
+
+    Container names are not team-namespaced, so without this check a caller
+    scoped to one team could start/stop/restart/delete or read logs of another
+    team's identically-named environment (issue #39). The NotFound message is
+    reused so the existence of another team's env is not disclosed. Skipped when
+    team is None (internal callers that have no team in scope).
+    """
+    if team is None:
+        return
+    label = container.labels.get(settings.team_label)
+    if label is not None and label != team.team_id:
+        raise NotFoundError(
+            f"Environment '{env_name}' does not exist. Use create_environment first."
+        )
+
+
+def restart_environment(
+    settings: Settings, env_name: str, team: TeamSettings | None = None
+) -> dict[str, str]:
     client = get_client()
     odoo_container_name = get_resource_name(env_name, "odoo", settings.prefix)
 
     try:
         odoo_container = client.containers.get(odoo_container_name)
-        odoo_container.restart()
     except docker.errors.NotFound:
         raise NotFoundError(
             f"Environment '{env_name}' does not exist. Use create_environment first."
         )
+    _assert_team_owns(odoo_container, settings, team, env_name)
+    odoo_container.restart()
 
     logger.info("Environment restarted", extra={"env_name": env_name})
     return {"odoo_container": odoo_container_name}
@@ -1412,18 +1509,21 @@ def stop_environment(
 
     try:
         odoo_container = client.containers.get(odoo_container_name)
-        odoo_container.stop()
     except docker.errors.NotFound:
         raise NotFoundError(
             f"Environment '{env_name}' does not exist. Use create_environment first."
         )
+    _assert_team_owns(odoo_container, settings, team, env_name)
+    odoo_container.stop()
 
     activity.mark_stopped(team, env_name, by="manual")
     logger.info("Environment stopped", extra={"env_name": env_name})
     return {"odoo_container": odoo_container_name, "stopped": [odoo_container_name]}
 
 
-def start_environment(settings: Settings, env_name: str) -> dict[str, str]:
+def start_environment(
+    settings: Settings, env_name: str, team: TeamSettings | None = None
+) -> dict[str, str]:
     client = get_client()
     odoo_container_name = get_resource_name(env_name, "odoo", settings.prefix)
 
@@ -1440,12 +1540,13 @@ def start_environment(settings: Settings, env_name: str) -> dict[str, str]:
 
     try:
         odoo_container = client.containers.get(odoo_container_name)
-        odoo_container.start()
-        started.append(odoo_container_name)
     except docker.errors.NotFound:
         raise NotFoundError(
             f"Environment '{env_name}' does not exist. Use create_environment first."
         )
+    _assert_team_owns(odoo_container, settings, team, env_name)
+    odoo_container.start()
+    started.append(odoo_container_name)
 
     logger.info("Environment started", extra={"env_name": env_name})
     return {"odoo_container": odoo_container_name, "started": started}
@@ -1792,7 +1893,11 @@ def pull_environment(
     * **auto** — otherwise fall back to ``classify_changes`` in git mode or
       path-only ``shallow_classify`` in live-mount mode.
     """
-    from oduflow.git_analysis import guardrail_warnings, recommend
+    from oduflow.git_analysis import (
+        guardrail_warnings,
+        merge_recommendations,
+        recommend,
+    )
     from oduflow.git_ops import pull_repo
 
     client = get_client()
@@ -1815,9 +1920,14 @@ def pull_environment(
         )
 
     # --- 1. Sync code + detect changed files and a diff base ---
+    # Each (repo_path, base_ref, files) unit is classified against its OWN repo
+    # and old HEAD; extra-addon worktrees must not be classified against the main
+    # repo's tree or their changes are misread (issue #51).
+    classify_units: list[tuple[str, str | None, list[str]]] = []
     if is_local:
         _trace("pull_environment(%s): live-mount, detecting local changes", env_name)
         base_ref, all_changed = _detect_local_changes(repo_path, env_name, team)
+        classify_units.append((repo_path, base_ref, all_changed))
     else:
         _trace("pull_environment(%s): git pull started", env_name)
         git_branch = container_obj.labels.get("oduflow.git_branch", env_name)
@@ -1825,6 +1935,7 @@ def pull_environment(
             repo_path, git_branch, cred_file=team.git_credentials_file()
         )
         base_ref = old_head
+        classify_units.append((repo_path, old_head, changed_files))
 
         extra_changed_files: list[str] = []
         try:
@@ -1843,10 +1954,13 @@ def pull_environment(
                 wt_path = os.path.join(extra_dir, repo_name)
                 if not os.path.isdir(wt_path):
                     continue
-                _extra_old, extra_files = pull_extra_worktree(
+                extra_old, extra_files = pull_extra_worktree(
                     team, repo_name, branch, wt_path
                 )
                 extra_changed_files.extend(extra_files)
+                if extra_files:
+                    # Classify this worktree against its own path + old HEAD.
+                    classify_units.append((wt_path, extra_old, extra_files))
         all_changed = changed_files + extra_changed_files
 
     _trace(
@@ -1859,7 +1973,9 @@ def pull_environment(
     # --- 2. Determine actions: explicit (agent-driven) vs auto (classify) ---
     explicit = bool(install) or bool(upgrade) or restart
     recommended = (
-        recommend(all_changed, repo_path, base_ref)
+        merge_recommendations(
+            recommend(files, rp, ref) for rp, ref, files in classify_units if files
+        )
         if all_changed
         else {"action": "none", "modules_to_install": [], "modules_to_upgrade": []}
     )
@@ -1999,6 +2115,25 @@ def update_environment(
             except (KeyError, IndexError, ValueError, TypeError):
                 pass
 
+    # Validate the target image is available BEFORE removing the old container,
+    # so a bad or unreachable image does not leave the env with no container
+    # at all (#49). If the pull fails, fall back to a local copy; if there is
+    # none, abort with the existing environment left untouched.
+    image_updated = False
+    try:
+        logger.info("Pulling image %s", odoo_image)
+        new_image_obj = client.images.pull(odoo_image)
+        image_updated = bool(old_digest) and new_image_obj.id != old_digest
+    except Exception as exc:
+        logger.warning("Could not pull image %s: %s", odoo_image, exc)
+        try:
+            client.images.get(odoo_image)
+        except docker.errors.ImageNotFound:
+            raise PrerequisiteNotMetError(
+                f"Image '{odoo_image}' could not be pulled and is not available "
+                "locally; leaving the existing environment untouched."
+            ) from exc
+
     logger.info(
         "Updating environment – stopping old container",
         extra={"env_name": env_name, "container": odoo_container_name},
@@ -2101,14 +2236,6 @@ def update_environment(
         run_kwargs["command"] = command
     if settings.routing_mode == "port" and host_port is not None:
         run_kwargs["ports"] = {"8069/tcp": host_port}
-
-    image_updated = False
-    try:
-        logger.info("Pulling image %s", odoo_image)
-        new_image_obj = client.images.pull(odoo_image)
-        image_updated = bool(old_digest) and new_image_obj.id != old_digest
-    except Exception as exc:
-        logger.warning("Could not pull image %s, using local copy: %s", odoo_image, exc)
 
     new_container = client.containers.run(**run_kwargs)
 

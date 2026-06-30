@@ -540,3 +540,50 @@ class TestExtractFieldLines:
     def test_no_fields(self):
         source = "def create(self, vals):\n    return super().create(vals)\n"
         assert _extract_field_lines(source) == set()
+
+
+class TestMergeRecommendations:
+    def test_empty(self):
+        from oduflow.git_analysis import merge_recommendations
+
+        assert merge_recommendations([]) == {
+            "action": "none",
+            "modules_to_install": [],
+            "modules_to_upgrade": [],
+        }
+
+    def test_picks_most_disruptive_action_and_unions_modules(self):
+        from oduflow.git_analysis import merge_recommendations
+
+        main = {
+            "action": "restart",
+            "modules_to_install": [],
+            "modules_to_upgrade": [],
+            "details": {"restart_required": True},
+        }
+        extra = {
+            "action": "install",
+            "modules_to_install": ["enterprise_mod"],
+            "modules_to_upgrade": ["other"],
+            "details": {"restart_required": False},
+        }
+        merged = merge_recommendations([main, extra])
+        # install (from the extra-addon repo) outranks restart (from the main repo)
+        assert merged["action"] == "install"
+        assert merged["modules_to_install"] == ["enterprise_mod"]
+        assert merged["modules_to_upgrade"] == ["other"]
+        assert merged["details"]["restart_required"] is True
+
+    def test_upgrade_in_extra_addon_not_lost(self):
+        from oduflow.git_analysis import merge_recommendations
+
+        main = {"action": "none", "modules_to_install": [], "modules_to_upgrade": []}
+        extra = {
+            "action": "upgrade",
+            "modules_to_install": [],
+            "modules_to_upgrade": ["sale_enterprise"],
+            "details": {"restart_required": False},
+        }
+        merged = merge_recommendations([main, extra])
+        assert merged["action"] == "upgrade"
+        assert merged["modules_to_upgrade"] == ["sale_enterprise"]

@@ -187,6 +187,98 @@ class TestCreateEnvironment:
         assert mock_docker_client.containers.run.call_count == 2
         mock_alloc.assert_called_once()
 
+    @patch("oduflow.docker_ops.env_ops.release_port")
+    @patch("oduflow.docker_ops.env_ops._cleanup_old_environment")
+    @patch(
+        "oduflow.extra_addons.generate_odoo_conf",
+        return_value="/tmp/flow-test/workspaces/feature-payments/odoo.conf",
+    )
+    @patch("oduflow.docker_ops.env_ops._copy_file_to_container")
+    @patch("oduflow.docker_ops.env_ops._create_pg_role")
+    @patch(
+        "oduflow.docker_ops.env_ops.create_credentials",
+        return_value={"pg_user": "u_1_feature-payments", "pg_password": "test-pw"},
+    )
+    @patch("oduflow.docker_ops.env_ops._ensure_system_ready")
+    @patch("oduflow.docker_ops.env_ops.get_odoo_uid_gid", return_value="100:101")
+    @patch("oduflow.docker_ops.env_ops._exec_sql")
+    @patch("oduflow.docker_ops.env_ops._db_exists", return_value=True)
+    @patch("oduflow.docker_ops.env_ops._mount_filestore")
+    @patch("oduflow.docker_ops.env_ops._get_used_ports", return_value=set())
+    @patch("oduflow.docker_ops.env_ops.allocate_port", return_value=50000)
+    @patch("oduflow.docker_ops.env_ops.subprocess.run")
+    @patch("oduflow.docker_ops.env_ops.os.chmod")
+    @patch("oduflow.docker_ops.env_ops.os.makedirs")
+    @patch("oduflow.docker_ops.env_ops.os.path.exists", return_value=False)
+    def test_create_rolls_back_on_run_failure(
+        self,
+        mock_exists,
+        mock_makedirs,
+        mock_chmod,
+        mock_run,
+        mock_alloc,
+        mock_used,
+        mock_mount,
+        mock_db_exists,
+        mock_sql,
+        mock_uid_gid,
+        mock_ready,
+        mock_creds,
+        mock_role,
+        mock_copy_conf,
+        mock_gen_conf,
+        mock_cleanup,
+        mock_release_port,
+        mock_docker_client,
+    ):
+        # Reach the serving containers.run, then fail it (e.g. bad image / port
+        # bind) and assert the partially-created resources are rolled back (#49).
+        mock_docker_client.containers.get.side_effect = docker.errors.NotFound("nf")
+        mock_docker_client.containers.run.side_effect = RuntimeError("bind failed")
+
+        with pytest.raises(RuntimeError, match="bind failed"):
+            env_ops.create_environment(
+                TEST_SETTINGS,
+                TEST_TEAM,
+                "feature/payments",
+                "https://github.com/org/repo.git",
+                "odoo:15.0",
+                template_name="base",
+            )
+
+        # Rollback: the allocated port is released and the environment teardown
+        # runs (in addition to the pre-create cleanup at the top of the function).
+        mock_release_port.assert_called_once_with(
+            TEST_TEAM.port_registry_path, "feature/payments"
+        )
+        assert mock_cleanup.call_count == 2
+
+    @patch("oduflow.docker_ops.env_ops._cleanup_old_environment")
+    @patch("oduflow.docker_ops.env_ops._ensure_system_ready")
+    def test_create_refuses_db_name_collision(
+        self, mock_ready, mock_cleanup, mock_docker_client
+    ):
+        # "Feature/Foo" normalises to the same DB as a running "feature-foo";
+        # creation must be refused instead of dropping the live env's DB (#41).
+        from oduflow.errors import ConflictError
+
+        other = MagicMock()
+        other.name = "oduflow-feature-foo-odoo"
+        other.labels = {"oduflow.branch": "feature-foo"}
+        mock_docker_client.containers.get.side_effect = docker.errors.NotFound("nf")
+        mock_docker_client.containers.list.return_value = [other]
+
+        with pytest.raises(ConflictError, match="normalise to the same database"):
+            env_ops.create_environment(
+                TEST_SETTINGS,
+                TEST_TEAM,
+                "Feature/Foo",
+                "https://github.com/org/repo.git",
+                "odoo:15.0",
+            )
+        # The destructive cleanup (which drops the DB) must not run.
+        mock_cleanup.assert_not_called()
+
     @patch("oduflow.docker_ops.env_ops._db_exists", return_value=True)
     @patch("oduflow.docker_ops.env_ops._ensure_system_ready")
     def test_create_already_exists(
@@ -803,6 +895,26 @@ class TestUpdateEnvironment:
         assert result["image_updated"] is True
         assert result["env_vars"] == {"FOO": "new"}
 
+    def test_update_aborts_when_image_unavailable(self, mock_docker_client):
+        # Image can't be pulled and isn't local: abort WITHOUT removing the old
+        # container, so the env is never left with no container (#49).
+        from oduflow.errors import PrerequisiteNotMetError
+
+        container = self._make_container()
+        mock_docker_client.containers.get.return_value = container
+        mock_docker_client.images.pull.side_effect = RuntimeError("network down")
+        mock_docker_client.images.get.side_effect = docker.errors.ImageNotFound("nf")
+
+        with pytest.raises(PrerequisiteNotMetError, match="could not be pulled"):
+            env_ops.update_environment(
+                TEST_SETTINGS, TEST_TEAM, "main", image_override="odoo:99.0"
+            )
+
+        # The existing container must be left running.
+        container.stop.assert_not_called()
+        container.remove.assert_not_called()
+        mock_docker_client.containers.run.assert_not_called()
+
     @patch(
         "oduflow.docker_ops.env_ops._install_pip_requirements", return_value=(False, "")
     )
@@ -879,6 +991,7 @@ class TestDeleteEnvironment:
         mock_docker_client,
     ):
         container = MagicMock()
+        container.labels = {"oduflow.team": "1"}
         mock_docker_client.containers.get.return_value = container
 
         env_ops.delete_environment(TEST_SETTINGS, TEST_TEAM, "feature/payments")
@@ -933,12 +1046,24 @@ class TestRestartEnvironment:
 class TestStopEnvironment:
     def test_stop(self, mock_docker_client):
         container = MagicMock()
+        container.labels = {"oduflow.team": "1"}
         mock_docker_client.containers.get.return_value = container
 
         result = env_ops.stop_environment(TEST_SETTINGS, TEST_TEAM, "main")
 
         assert "oduflow-main-odoo" in result["stopped"]
         container.stop.assert_called_once()
+
+    def test_stop_rejects_other_team_container(self, mock_docker_client):
+        # Container names are not team-namespaced; a caller scoped to team 1
+        # must not stop a container labelled for team 2 (issue #39).
+        container = MagicMock()
+        container.labels = {"oduflow.team": "2"}
+        mock_docker_client.containers.get.return_value = container
+
+        with pytest.raises(NotFoundError, match="does not exist"):
+            env_ops.stop_environment(TEST_SETTINGS, TEST_TEAM, "main")
+        container.stop.assert_not_called()
 
 
 class TestStartEnvironment:

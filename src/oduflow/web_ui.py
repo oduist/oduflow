@@ -9,6 +9,8 @@ import logging
 import os
 import pathlib
 import secrets
+import threading
+import time
 
 from itsdangerous import BadData, URLSafeTimedSerializer
 from starlette.requests import HTTPConnection, Request
@@ -288,10 +290,52 @@ def _guide_title(filepath: str) -> str:
     return os.path.basename(filepath).replace("_", " ").replace(".md", "").title()
 
 
+class _LoginRateLimiter:
+    """Best-effort in-memory throttle for failed logins (issue #56).
+
+    Tracks failed attempts per client IP in a sliding window; once the threshold
+    is reached the IP is locked out for the rest of the window. A successful
+    login clears the IP. The dashboard runs in a single uvicorn process, so an
+    in-memory store is sufficient.
+    """
+
+    def __init__(self, max_attempts: int = 10, window_seconds: int = 300) -> None:
+        self.max_attempts = max_attempts
+        self.window = window_seconds
+        self._failures: dict[str, list[float]] = {}
+        self._lock = threading.Lock()
+
+    def _prune(self, key: str, now: float) -> None:
+        cutoff = now - self.window
+        kept = [t for t in self._failures.get(key, []) if t > cutoff]
+        if kept:
+            self._failures[key] = kept
+        else:
+            self._failures.pop(key, None)
+
+    def is_limited(self, key: str) -> bool:
+        with self._lock:
+            now = time.monotonic()
+            self._prune(key, now)
+            return len(self._failures.get(key, [])) >= self.max_attempts
+
+    def record_failure(self, key: str) -> None:
+        with self._lock:
+            now = time.monotonic()
+            self._failures.setdefault(key, []).append(now)
+            self._prune(key, now)
+
+    def clear(self, key: str) -> None:
+        with self._lock:
+            self._failures.pop(key, None)
+
+
 def _build_routes(
     get_settings: "callable",
     locks: LockManager,
 ) -> list[Route]:
+    # Per-app so test apps and real deployments don't share failure counters.
+    login_limiter = _LoginRateLimiter()
 
     def _set_session_cookie(
         response: Response, team: TeamSettings, request: Request
@@ -324,12 +368,20 @@ def _build_routes(
         if token and _check_cookie_token(token, settings) is not None:
             return RedirectResponse("/", status_code=302)
         if request.method == "POST":
+            client_ip = request.client.host if request.client else "unknown"
+            if login_limiter.is_limited(client_ip):
+                return HTMLResponse(
+                    _render_login("Too many failed attempts. Try again later."),
+                    status_code=429,
+                )
             password = await _read_login_password(request)
             team = settings.get_team_by_ui_password(password) if password else None
             if team is not None:
+                login_limiter.clear(client_ip)
                 response: Response = RedirectResponse("/", status_code=303)
                 _set_session_cookie(response, team, request)
                 return response
+            login_limiter.record_failure(client_ip)
             return HTMLResponse(_render_login("Invalid password."), status_code=401)
         return HTMLResponse(_render_login())
 
@@ -394,8 +446,9 @@ def _build_routes(
     def api_start(request: Request) -> JSONResponse:
         branch = request.path_params["branch"]
         try:
-            result = env_ops.start_environment(get_settings(), branch)
-            activity.mark_started(_get_ui_team(request), branch)
+            team = _get_ui_team(request)
+            result = env_ops.start_environment(get_settings(), branch, team)
+            activity.mark_started(team, branch)
             return JSONResponse({"ok": True, "result": result})
         except FlowError as e:
             return _error_response(e)
@@ -419,8 +472,9 @@ def _build_routes(
     def api_restart(request: Request) -> JSONResponse:
         branch = request.path_params["branch"]
         try:
-            result = env_ops.restart_environment(get_settings(), branch)
-            activity.mark_started(_get_ui_team(request), branch)
+            team = _get_ui_team(request)
+            result = env_ops.restart_environment(get_settings(), branch, team)
+            activity.mark_started(team, branch)
             return JSONResponse({"ok": True, "result": result})
         except FlowError as e:
             return _error_response(e)
@@ -568,36 +622,46 @@ def _build_routes(
             locks.release_env(branch)
 
     async def api_create(request: Request) -> JSONResponse:
+        import json as _json
+
         try:
-            import json as _json
-
             body = await request.json()
-            env_name = (body.get("env_name") or "").strip()
-            repo_url = (body.get("repo_url") or "").strip()
-            odoo_image = (body.get("odoo_image") or "").strip()
-            git_user = (body.get("git_user") or "").strip()
-            template_name_raw = (body.get("template_name") or "").strip()
-            extra_addons_raw = body.get("extra_addons")
-            auto_install_raw = (body.get("auto_install_modules") or "").strip()
-            env_vars_raw = (body.get("env_vars") or "").strip()
-            env_vars = None
-            if env_vars_raw:
-                import re
+        except Exception:
+            return JSONResponse(
+                {"ok": False, "error": "Invalid JSON body."}, status_code=400
+            )
 
-                env_vars = dict(
-                    item.split("=", 1)
-                    for item in re.split(r"[\n,]+", env_vars_raw)
-                    if "=" in item
-                )
-            if not env_name:
-                return JSONResponse(
-                    {"ok": False, "error": "env_name is required."},
-                    status_code=400,
-                )
-            try:
-                locks.acquire_env(env_name)
-            except BusyError as e:
-                return _error_response(e)
+        env_name = (body.get("env_name") or "").strip()
+        repo_url = (body.get("repo_url") or "").strip()
+        odoo_image = (body.get("odoo_image") or "").strip()
+        git_user = (body.get("git_user") or "").strip()
+        template_name_raw = (body.get("template_name") or "").strip()
+        extra_addons_raw = body.get("extra_addons")
+        auto_install_raw = (body.get("auto_install_modules") or "").strip()
+        env_vars_raw = (body.get("env_vars") or "").strip()
+        env_vars = None
+        if env_vars_raw:
+            import re
+
+            env_vars = dict(
+                item.split("=", 1)
+                for item in re.split(r"[\n,]+", env_vars_raw)
+                if "=" in item
+            )
+        if not env_name:
+            return JSONResponse(
+                {"ok": False, "error": "env_name is required."},
+                status_code=400,
+            )
+
+        # Acquire the env lock in its own try so a BusyError returns WITHOUT
+        # entering the try/finally below — otherwise the finally would release a
+        # lock that another in-flight request holds (issue #42).
+        try:
+            locks.acquire_env(env_name)
+        except BusyError as e:
+            return _error_response(e)
+        try:
             resolved_template: str | None
             if not template_name_raw or template_name_raw.lower() == "none":
                 resolved_template = None
@@ -700,7 +764,11 @@ def _build_routes(
         container = request.query_params.get("container", "")
         try:
             logs = get_environment_logs(
-                get_settings(), branch, n_lines=n, container_name=container
+                get_settings(),
+                branch,
+                n_lines=n,
+                container_name=container,
+                team=_get_ui_team(request),
             )
             return JSONResponse({"ok": True, "logs": logs})
         except FlowError as e:
