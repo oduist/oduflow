@@ -1738,7 +1738,7 @@ function applyStats() {
     var btn = storageRefreshing[branch]
       ? '<span class="spinner" aria-hidden="true"></span>'
       : '<button class="stat-refresh" onclick="refreshStorage(\'' + escAttr(branch) + '\')" ' +
-          'title="' + (s ? 'Recompute DB and disk usage (measured ' + escAttr(formatDate(s.computed_at)) + ')' : 'Compute DB and disk usage') + '" ' +
+          'title="' + (s ? 'Recompute DB and disk usage (measured ' + esc(relTime(s.computed_at)) + ')' : 'Compute DB and disk usage') + '" ' +
           'aria-label="Recompute DB and disk usage">' + REFRESH_SVG + '</button>';
     el.innerHTML =
       '<span>DB size <span class="stat-val">' + (s ? fmtBytes(s.db_bytes) : '—') + '</span></span>' +
@@ -2045,19 +2045,24 @@ function escAttr(s) {
   return (s || '').replace(/\\/g, '\\\\').replace(/'/g, "\\'");
 }
 
+// Plain-text relative time ("just now", "5m ago"). Safe for attribute
+// values (via esc); formatDate below wraps it in markup — never use
+// formatDate inside an attribute.
+function relTime(iso) {
+  var d = new Date(iso);
+  var diff = Date.now() - d.getTime();
+  if (diff < 0 || diff < 60000) return 'just now';
+  if (diff < 3600000) return Math.floor(diff / 60000) + 'm ago';
+  if (diff < 86400000) return Math.floor(diff / 3600000) + 'h ago';
+  if (diff < 30 * 86400000) return Math.floor(diff / 86400000) + 'd ago';
+  return d.toLocaleDateString();
+}
+
 function formatDate(iso) {
   if (!iso) return '';
   try {
     var d = new Date(iso);
-    var full = d.toLocaleString();
-    var diff = Date.now() - d.getTime();
-    var rel;
-    if (diff < 0 || diff < 60000) rel = 'just now';
-    else if (diff < 3600000) rel = Math.floor(diff / 60000) + 'm ago';
-    else if (diff < 86400000) rel = Math.floor(diff / 3600000) + 'h ago';
-    else if (diff < 30 * 86400000) rel = Math.floor(diff / 86400000) + 'd ago';
-    else rel = d.toLocaleDateString();
-    return '<span title="' + esc(full) + '">' + esc(rel) + '</span>';
+    return '<span title="' + esc(d.toLocaleString()) + '">' + esc(relTime(iso)) + '</span>';
   }
   catch(e) { return esc(iso); }
 }
