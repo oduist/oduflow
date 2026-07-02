@@ -4,7 +4,7 @@ A team's disk quota (``[team.*] disk_quota_gb``) is enforced by the kernel,
 not by walking directories: when ``base_data_dir`` lives on an XFS filesystem
 mounted with ``prjquota``, each team gets a filesystem *project* spanning its
 two directory trees — ``team_{id}/`` (workspaces, filestores, template dumps)
-and ``pg_tablespaces/team_{id}/`` (its PostgreSQL databases, see ADR 0024).
+and ``pg_tablespaces/team_{id}/`` (its PostgreSQL databases, see ADR 0026).
 Project quotas attach to the project ID rather than a single subtree, so one
 ``bhard`` limit covers the client's files and databases together, and writes
 beyond it fail instantly with ENOSPC.

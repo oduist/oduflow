@@ -1596,6 +1596,157 @@ def import_from_odoo(
     }
 
 
+def extract_filestore_tar(tar_path: str, dest_dir: str) -> int:
+    """Extract a tar stream into ``dest_dir``.
+
+    Members that would escape the destination (zip-slip) or are not regular
+    files/dirs are skipped. Returns the number of files written.
+    """
+    os.makedirs(dest_dir, exist_ok=True)
+    written = 0
+    with tarfile.open(tar_path, "r:*") as tf:
+        for member in tf:
+            target = os.path.join(dest_dir, member.name)
+            if not _is_within_directory(dest_dir, target):
+                logger.warning(
+                    "Skipping unsafe tar member outside filestore: %s", member.name
+                )
+                continue
+            if member.isdir():
+                os.makedirs(target, exist_ok=True)
+            elif member.isfile():
+                os.makedirs(os.path.dirname(target), exist_ok=True)
+                src = tf.extractfile(member)
+                if src is None:
+                    continue
+                with src, open(target, "wb") as dst:
+                    shutil.copyfileobj(src, dst)
+                written += 1
+            # symlinks/devices/etc. are intentionally ignored — Odoo filestores
+            # contain only regular files and directories.
+    return written
+
+
+def extract_filestore_chunk(tar_path: str, filestore_dir: str, chunk: str) -> int:
+    """Atomically extract one filestore hash-dir tar (``<chunk>/...``) into
+    ``filestore_dir``.
+
+    The tar is unpacked into a temporary sibling directory first and the chunk
+    is moved into place with a rename only once extraction completed, so a
+    truncated/corrupt upload never leaves a half-extracted ``<chunk>/`` behind —
+    resume (which treats a present chunk dir as complete) stays truthful.
+    Returns the number of files written.
+    """
+    os.makedirs(filestore_dir, exist_ok=True)
+    tmp_root = os.path.join(filestore_dir, f".incoming_{chunk}")
+    if os.path.exists(tmp_root):
+        shutil.rmtree(tmp_root)
+    try:
+        written = extract_filestore_tar(tar_path, tmp_root)
+        extracted = os.path.join(tmp_root, chunk)
+        if not os.path.isdir(extracted):
+            raise ExternalCommandError(
+                "import filestore",
+                1,
+                f"Archive does not contain the expected '{chunk}/' directory",
+            )
+        final = os.path.join(filestore_dir, chunk)
+        if os.path.exists(final):
+            shutil.rmtree(final)
+        os.rename(extracted, final)
+    finally:
+        if os.path.exists(tmp_root):
+            shutil.rmtree(tmp_root)
+    return written
+
+
+def finalize_imported_template(
+    settings: Settings,
+    team: TeamSettings,
+    template_name: str,
+    staging_dir: str,
+) -> dict[str, object]:
+    """Promote a fully-staged push import into the live template and load it.
+
+    The push-based Odoo.sh import uploads into ``staging_dir`` (metadata.json,
+    dump.sql.gz, filestore/); nothing touches the live template until now.
+    This mirrors the tail of :func:`import_from_odoo`: within the overlay
+    remount guard (live envs keep their upper deltas), swap the staged
+    filestore/dump/metadata into the template directory, chown the filestore
+    for the odoo user, then refresh sizes and restore the dump into the
+    template DB. The staging directory is removed on success.
+    """
+    from oduflow.docker_ops import env_ops
+
+    staged_meta = os.path.join(staging_dir, "metadata.json")
+    staged_dump = os.path.join(staging_dir, "dump.sql.gz")
+    staged_fs = os.path.join(staging_dir, "filestore")
+    if not os.path.isfile(staged_meta) or not os.path.isfile(staged_dump):
+        raise PrerequisiteNotMetError(
+            "Manifest and SQL dump must be uploaded before finalize."
+        )
+    try:
+        with open(staged_meta) as f:
+            major_version = str(json.load(f).get("odoo_version") or "")
+    except (OSError, ValueError):
+        major_version = ""
+
+    client = get_client()
+    tpl_dir = team.get_template_dir(template_name)
+    template_filestore_path = team.get_template_filestore_path(template_name)
+
+    with env_ops.remount_template_overlays(
+        client, settings, team, template_name
+    ) as remount:
+        os.makedirs(tpl_dir, exist_ok=True)
+
+        # Swap filestore (the overlay lower layer) while envs are unmounted.
+        if os.path.exists(template_filestore_path):
+            shutil.rmtree(template_filestore_path)
+        if os.path.isdir(staged_fs):
+            os.rename(staged_fs, template_filestore_path)
+        else:
+            os.makedirs(template_filestore_path, exist_ok=True)
+
+        # Swap dump: drop stale dumps under other names so
+        # get_template_sql_path resolves to the new gzip'd SQL dump.
+        for stale in ("dump.pgdump", "dump.sql", "dump.pgdump.gz", "dump.sql.gz"):
+            stale_path = os.path.join(tpl_dir, stale)
+            if os.path.isfile(stale_path):
+                os.remove(stale_path)
+        os.rename(staged_dump, os.path.join(tpl_dir, "dump.sql.gz"))
+        os.replace(staged_meta, team.get_template_metadata_path(template_name))
+
+        if major_version:
+            try:
+                uid_gid = get_odoo_uid_gid(client, f"odoo:{major_version}")
+                uid_str, gid_str = uid_gid.split(":")
+                chown_recursive(
+                    template_filestore_path,
+                    int(uid_str),
+                    int(gid_str),
+                    client,
+                    f"odoo:{major_version}",
+                )
+                logger.info("Template filestore chowned to %s", uid_gid)
+            except Exception as exc:  # noqa: BLE001 - chown is best-effort
+                logger.warning("Could not chown template filestore: %s", exc)
+
+    _update_template_sizes(team, settings, template_name)
+    result = reload_template(settings, team, template_name=template_name)
+
+    shutil.rmtree(staging_dir, ignore_errors=True)
+
+    return {
+        "status": "imported",
+        "template_name": template_name,
+        "template_db": result["template_db"],
+        "restore_seconds": result.get("restore_seconds", 0),
+        "affected_envs": remount.affected,
+        "remount_failures": remount.failures,
+    }
+
+
 def cleanup_orphans(
     settings: Settings, team: TeamSettings, dry_run: bool = True
 ) -> dict:

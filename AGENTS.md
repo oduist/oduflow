@@ -169,9 +169,21 @@ When preparing a new release, update the product version before creating the tag
 
 Do not create or move a release tag until the version bump and changelog commit is already on `main`: the publish workflow builds from the tagged commit, so its `pyproject.toml` version must already be correct. Remember that publishing is gated on the GitHub Release (step 5) — a tag alone does not publish.
 
+Publishing the GitHub Release also triggers the **Docker image** workflow (`.github/workflows/docker.yml`, same `release: [published]` event), which builds and pushes `oduist/oduflow:<VERSION>` and `oduist/oduflow:latest` to Docker Hub automatically. No separate manual `docker push` is required — see the next section.
+
 ## Publishing Docker Image
 
-When asked to publish a Docker image, build and push to Docker Hub:
+The Docker image is published **automatically** by `.github/workflows/docker.yml`
+on every published GitHub Release (`release: [published]` — the same trigger as
+the PyPI publish). It uses `docker/build-push-action` with Buildx/QEMU to build
+`linux/amd64` + `linux/arm64` and pushes `oduist/oduflow:<VERSION>` (version from
+the release git tag) plus `oduist/oduflow:latest` (skipped for pre-releases) to
+Docker Hub. This requires the `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN` repo
+secrets (a Docker Hub access token with Read & Write scope, not the account
+password).
+
+So a normal release needs no manual Docker step. The manual build/push below is a
+**fallback** for re-publishing an image out of band (or building locally):
 
 ```bash
 # Read version from pyproject.toml, then:

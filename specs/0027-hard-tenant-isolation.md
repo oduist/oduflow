@@ -1,4 +1,4 @@
-# 0025 — Hard tenant isolation: per-team networks, resource limits, disk quotas
+# 0027 — Hard tenant isolation: per-team networks, resource limits, disk quotas
 
 **Status:** Adopted
 **Type:** Architecture
@@ -33,7 +33,7 @@ Make the container, network, and filesystem layers enforce the team boundary:
   plus a pids ceiling (fork bombs). CPU is deliberately uncapped — it is
   compressible and the kernel scheduler already arbitrates contention.
 - **Disk quota enforcement** for `disk_quota_gb` via XFS project quotas
-  (`quotas.py`): the team dir and its PG tablespace ([[0024-per-team-pg-tablespaces]])
+  (`quotas.py`): the team dir and its PG tablespace ([[0026-per-team-pg-tablespaces]])
   share one project ID, so a single kernel-enforced `bhard` limit covers the
   client's files and databases. On filesystems without project-quota support
   enforcement is off with one startup warning — usage stays visible via the
@@ -43,7 +43,7 @@ Make the container, network, and filesystem layers enforce the team boundary:
 
 - `ensure_team_network` is idempotent and called from system init and every
   environment/service creation; it creates the network and attaches infra.
-- Startup migrations ([[0023-startup-data-migrations]]) convert existing
+- Startup migrations ([[0025-startup-data-migrations]]) convert existing
   installs live: `0003-per-team-networks` connects each managed container to
   its team network and disconnects it from the shared one (no restarts;
   established DB connections re-establish over the team network), removing a
@@ -74,4 +74,4 @@ Make the container, network, and filesystem layers enforce the team boundary:
 
 - Completes the multi-tenant hosting pass started with DB quotas / strict
   HTTP resolution, naming v2 (`0001`, `0002` migrations), and
-  [[0024-per-team-pg-tablespaces]].
+  [[0026-per-team-pg-tablespaces]].

@@ -1,4 +1,4 @@
-# 0023 — Startup data migrations (Odoo-style upgrade steps)
+# 0025 — Startup data migrations (Odoo-style upgrade steps)
 
 **Status:** Adopted
 **Type:** Architecture

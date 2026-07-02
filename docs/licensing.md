@@ -1,15 +1,23 @@
 # Licensing
 
-Oduflow is source-available under the [Polyform Noncommercial License 1.0.0](https://github.com/oduist/oduflow/blob/main/LICENSE). Commercial use requires a license.
+Oduflow is source-available under the [Business Source License 1.1](https://github.com/oduist/oduflow/blob/main/LICENSE) (BUSL-1.1).
+
+- **Free forever for non-commercial use**: evaluation, education, academic research, personal and hobby projects, non-profits.
+- **Commercial use requires a paid license** in one of three tiers (below).
+- Standard BUSL mechanics: each release converts to the open-source **MPL 2.0** four years after publication.
 
 ## License Types
 
-| Type | Label | Description |
+| Type | Label | Who needs it |
 |---|---|---|
-| `unlicensed` | UNLICENSED — NON-COMMERCIAL USE ONLY | Default when no license key is installed |
-| `individual` | Licensed to individual | Personal commercial license |
-| `business` | Licensed to company (internal use only) | Company license for internal use |
-| `integrator` | Licensed to Odoo integrator | License for Odoo integrators and consultancies |
+| `unlicensed` | UNLICENSED — NON-COMMERCIAL USE ONLY | Default when no license key is installed; fine for evaluation, education, and other non-commercial use |
+| `individual` | Licensed to individual | One natural person (freelancer, sole developer) using Oduflow commercially on their own account |
+| `business` | Licensed to company (internal use only) | A company using Oduflow internally, for its own Odoo systems |
+| `integrator` | Licensed to Odoo integrator | A person or company using Oduflow to deliver Odoo services (implementation, development, support, hosting) to clients |
+
+### Business vs. Integrator
+
+The test is whose Odoo systems you point Oduflow at. If the environments you develop, test, and operate serve your own organization, a Business license covers you. If they belong to, or are used by, your clients — you are an integrator and need an Integrator license, regardless of company size.
 
 ## Installing a License
 

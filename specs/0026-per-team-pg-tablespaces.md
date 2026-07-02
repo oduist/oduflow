@@ -1,4 +1,4 @@
-# 0024 — Per-team PostgreSQL tablespaces
+# 0026 — Per-team PostgreSQL tablespaces
 
 **Status:** Adopted
 **Type:** Architecture
@@ -44,7 +44,7 @@ Give every team its **own PostgreSQL tablespace**, with its files under a
   blocks) creates the PG container with the `/tablespaces` mount.
 - `ensure_team_tablespace` creates the host dir, fixes ownership to the
   `postgres` OS user inside the container, and issues `CREATE TABLESPACE`.
-- Startup migration `0002-team-pg-tablespaces` ([[0023-startup-data-migrations]])
+- Startup migration `0002-team-pg-tablespaces` ([[0025-startup-data-migrations]])
   converts existing installs: recreates the PG container once if the mount is
   missing (data volume persists; seconds of downtime at startup), then
   `ALTER DATABASE ... SET TABLESPACE` per team database — blocking reconnects
@@ -68,4 +68,4 @@ Give every team its **own PostgreSQL tablespace**, with its files under a
 
 - Follows the naming-v2 hardening (`0001-team-scoped-container-names`) in the
   multi-tenant hosting pass; see [[0014-team-based-multi-tenancy]] and
-  [[0023-startup-data-migrations]].
+  [[0025-startup-data-migrations]].

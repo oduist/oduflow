@@ -428,17 +428,33 @@
   .btn-logs:hover, .btn-logs:focus-visible { border-color: var(--accent); color: var(--accent); background: color-mix(in oklab, var(--accent) 10%, transparent); }
   .btn-protect:hover, .btn-protect:focus-visible { border-color: var(--yellow); color: var(--yellow); background: color-mix(in oklab, var(--yellow) 10%, transparent); }
   .btn-create {
-    background: var(--accent);
-    color: var(--accent-fg);
-    border: 1px solid var(--accent);
+    background: var(--surface);
+    color: var(--text);
+    border: 1px solid var(--border);
     padding: 6px 14px;
     border-radius: var(--radius);
     cursor: pointer;
     font-size: var(--text-sm);
     font-weight: 600;
+    transition: border-color 0.15s, color 0.15s, background 0.15s;
   }
-  .btn-create.danger { background: var(--red); border-color: var(--red); }
-  .btn-create:hover { opacity: 0.85; }
+  .btn-create:hover, .btn-create:focus-visible {
+    border-color: var(--accent);
+    color: var(--accent);
+    background: color-mix(in oklab, var(--accent) 10%, transparent);
+  }
+  /* Destructive confirm keeps a solid red fill — the moment of choice stays loud. */
+  .btn-create.danger {
+    background: var(--red);
+    border-color: var(--red);
+    color: var(--accent-fg);
+  }
+  .btn-create.danger:hover, .btn-create.danger:focus-visible {
+    opacity: 0.85;
+    background: var(--red);
+    border-color: var(--red);
+    color: var(--accent-fg);
+  }
   .btn-create:disabled { opacity: 0.4; cursor: not-allowed; }
   .btn.danger { color: var(--red); }
   .btn.danger:hover, .btn.danger:focus-visible { border-color: var(--red); background: color-mix(in oklab, var(--red) 10%, transparent); }
@@ -1008,6 +1024,9 @@
 </div>
 
 <div id="tab-templates" class="tab-content">
+  <div class="tab-toolbar">
+    <button class="btn-create" onclick="openImportOdooModal()">Import from Odoo.sh</button>
+  </div>
   <div id="tpl-list"></div>
 </div>
 
@@ -1310,6 +1329,36 @@
       <div class="form-actions">
         <button class="btn" onclick="closeCreateVolumeModal()">Cancel</button>
         <button class="btn-create" id="vol-submit" onclick="submitCreateVolume()">Create</button>
+      </div>
+    </div>
+  </div>
+</div>
+<div class="modal-overlay" id="import-odoo-modal" onclick="closeImportOdooModal(event)">
+  <div class="modal modal-sm">
+    <div class="modal-header">
+      <h2>Import from Odoo.sh</h2>
+      <button class="modal-close" onclick="closeImportOdooModal()">&times;</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-error" id="import-odoo-error"></div>
+      <div id="import-odoo-form">
+        <div class="form-group">
+          <label for="import-tpl-name">Template name</label>
+          <input type="text" id="import-tpl-name" placeholder="e.g. zipfit-prod">
+          <div class="hint">Restores an Odoo.sh daily backup (database + filestore) into a new template of this name.</div>
+        </div>
+        <div class="form-actions">
+          <button class="btn" onclick="closeImportOdooModal()">Cancel</button>
+          <button class="btn-create" id="import-odoo-submit" onclick="submitImportOdoo()">Generate command</button>
+        </div>
+      </div>
+      <div id="import-odoo-result" style="display:none;">
+        <div class="hint" style="margin-top:0;">Run this inside your Odoo.sh <strong>production</strong> shell. The token is valid for 15 minutes.</div>
+        <pre id="import-odoo-command"></pre>
+        <div class="form-actions">
+          <button class="btn" onclick="closeImportOdooModal()">Close</button>
+          <button class="btn-create" onclick="copyImportOdooCommand()">Copy command</button>
+        </div>
       </div>
     </div>
   </div>
@@ -2449,6 +2498,65 @@ async function doDeleteTemplate(name) {
     }
   } catch (e) {
     showToast('Connection error: ' + e.message, true);
+  }
+}
+
+function openImportOdooModal() {
+  document.getElementById('import-tpl-name').value = '';
+  var errEl = document.getElementById('import-odoo-error');
+  errEl.style.display = 'none';
+  errEl.textContent = '';
+  document.getElementById('import-odoo-form').style.display = '';
+  document.getElementById('import-odoo-result').style.display = 'none';
+  document.getElementById('import-odoo-command').textContent = '';
+  document.getElementById('import-odoo-submit').disabled = false;
+  document.getElementById('import-odoo-submit').textContent = 'Generate command';
+  showModal('import-odoo-modal');
+  document.getElementById('import-tpl-name').focus();
+}
+
+function closeImportOdooModal(event) {
+  if (event && event.target !== event.currentTarget) return;
+  hideModal('import-odoo-modal');
+}
+
+function copyImportOdooCommand() {
+  copyToClipboard(document.getElementById('import-odoo-command').textContent, 'Command copied');
+}
+
+async function submitImportOdoo() {
+  var name = document.getElementById('import-tpl-name').value.trim();
+  var errEl = document.getElementById('import-odoo-error');
+  if (!name) {
+    errEl.textContent = 'Template name is required.';
+    errEl.style.display = 'block';
+    return;
+  }
+  errEl.style.display = 'none';
+  var btn = document.getElementById('import-odoo-submit');
+  btn.disabled = true;
+  btn.textContent = 'Generating...';
+  try {
+    var r = await fetch(API_TEMPLATES + '/import-token', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ template_name: name })
+    });
+    var data = await r.json();
+    if (data.ok) {
+      document.getElementById('import-odoo-command').textContent = data.command;
+      document.getElementById('import-odoo-form').style.display = 'none';
+      document.getElementById('import-odoo-result').style.display = '';
+    } else {
+      errEl.textContent = data.error || 'Failed to generate command';
+      errEl.style.display = 'block';
+    }
+  } catch (e) {
+    errEl.textContent = 'Connection error: ' + e.message;
+    errEl.style.display = 'block';
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Generate command';
   }
 }
 
