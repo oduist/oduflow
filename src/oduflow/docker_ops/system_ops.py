@@ -1432,6 +1432,92 @@ def import_from_odoo(
     }
 
 
+def extract_filestore_tar(tar_path: str, dest_dir: str) -> int:
+    """Extract a tar stream (one Odoo filestore hash-dir) into ``dest_dir``.
+
+    Used by the push-based Odoo.sh import: the client streams ``tar -C
+    <filestore> -cf - <chunk>`` per top-level hash directory, and this unpacks
+    it into the template's ``filestore/``. Members that would escape the
+    destination (zip-slip) or are not regular files/dirs are skipped. Returns
+    the number of files written.
+    """
+    os.makedirs(dest_dir, exist_ok=True)
+    written = 0
+    with tarfile.open(tar_path, "r:*") as tf:
+        for member in tf:
+            target = os.path.join(dest_dir, member.name)
+            if not _is_within_directory(dest_dir, target):
+                logger.warning(
+                    "Skipping unsafe tar member outside filestore: %s", member.name
+                )
+                continue
+            if member.isdir():
+                os.makedirs(target, exist_ok=True)
+            elif member.isfile():
+                os.makedirs(os.path.dirname(target), exist_ok=True)
+                src = tf.extractfile(member)
+                if src is None:
+                    continue
+                with src, open(target, "wb") as dst:
+                    shutil.copyfileobj(src, dst)
+                written += 1
+            # symlinks/devices/etc. are intentionally ignored — Odoo filestores
+            # contain only regular files and directories.
+    return written
+
+
+def finalize_imported_template(
+    settings: Settings,
+    team: TeamSettings,
+    template_name: str,
+    *,
+    major_version: str = "",
+) -> dict[str, object]:
+    """Load an already-staged template (dump + filestore + metadata on disk).
+
+    The push-based Odoo.sh import uploads the pieces incrementally, so by the
+    time this runs the template directory already contains ``dump.sql.gz``,
+    ``filestore/`` and ``metadata.json``. This mirrors the tail of
+    :func:`import_from_odoo`: chown the filestore for the odoo user, remount
+    live overlay envs against the new lower (non-destructive), refresh sizes,
+    then restore the dump into the template DB.
+    """
+    from oduflow.docker_ops import env_ops
+
+    client = get_client()
+    template_filestore_path = team.get_template_filestore_path(template_name)
+
+    with env_ops.remount_template_overlays(
+        client, settings, team, template_name
+    ) as remount:
+        if major_version:
+            try:
+                uid_gid = get_odoo_uid_gid(client, f"odoo:{major_version}")
+                uid_str, gid_str = uid_gid.split(":")
+                chown_recursive(
+                    template_filestore_path,
+                    int(uid_str),
+                    int(gid_str),
+                    client,
+                    f"odoo:{major_version}",
+                )
+                logger.info("Template filestore chowned to %s", uid_gid)
+            except Exception as exc:  # noqa: BLE001 - chown is best-effort
+                logger.warning("Could not chown template filestore: %s", exc)
+
+    _update_template_sizes(team, settings, template_name)
+    result = reload_template(settings, team, template_name=template_name)
+
+    return {
+        "status": "imported",
+        "template_name": template_name,
+        "template_db": result["template_db"],
+        "restore_seconds": result.get("restore_seconds", 0),
+        "affected_envs": remount.affected,
+        "remount_failures": remount.failures,
+    }
+
+
 def cleanup_orphans(
     settings: Settings, team: TeamSettings, dry_run: bool = True
 ) -> dict:
