@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import pathlib
+import re
 import secrets
 import threading
 import time
@@ -32,6 +33,7 @@ from oduflow.docker_ops import (
     volume_ops,
 )
 from oduflow import activity
+from oduflow import import_tokens
 from oduflow.docker_ops.odoo_ops import get_environment_logs
 from oduflow.docker_ops.stats import get_container_stats, get_system_stats
 from oduflow.errors import BusyError, FlowError, NotFoundError
@@ -46,8 +48,14 @@ _AUTH_COOKIE = "oduflow_ui_auth"
 # Reachable without authentication: the login flow and static brand assets
 # (so the login page can render its logo/favicon/fonts). /static/ serves only
 # vetted extensions from the packaged assets dir (fonts, icons, xterm).
-_PUBLIC_PATHS = frozenset({"/login", "/logout", "/favicon.ico", "/logo.png"})
-_PUBLIC_PREFIXES = ("/static/",)
+# /import-odoo.sh (the Odoo.sh client script) and the /api/templates/import/*
+# ingest endpoints authenticate with a short-lived import token, not the UI
+# password, so they bypass Basic auth. NOTE: /api/templates/import-token (which
+# mints the token) is deliberately NOT public — it stays behind the UI login.
+_PUBLIC_PATHS = frozenset(
+    {"/login", "/logout", "/favicon.ico", "/logo.png", "/import-odoo.sh"}
+)
+_PUBLIC_PREFIXES = ("/static/", "/api/templates/import/")
 _SESSION_SALT = "oduflow.ui-auth.v1"
 _SESSION_MAX_AGE = 7 * 24 * 3600  # 7 days
 _SECRET_FILENAME = ".ui_session_secret"
@@ -813,6 +821,253 @@ def _build_routes(
             return _error_response(e)
         except Exception as e:
             logger.exception("Unexpected error in api_template_delete")
+            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+        finally:
+            locks.release_team(team.team_id)
+
+    # --- Import from Odoo.sh (push-based template ingest) ------------------
+
+    def _import_token_value(request: Request) -> str:
+        """Read the import token from an Authorization: Bearer header (preferred,
+        keeps it out of URLs/logs) or a ?token= query param as a fallback."""
+        auth = request.headers.get("authorization", "")
+        if auth.startswith("Bearer "):
+            return auth[len("Bearer ") :].strip()
+        return request.query_params.get("token", "").strip()
+
+    def _resolve_import_token(
+        request: Request,
+    ) -> tuple[TeamSettings, dict[str, object]]:
+        return import_tokens.load_token(get_settings(), _import_token_value(request))
+
+    def _import_progress(team: TeamSettings, template_name: str) -> dict[str, object]:
+        """Derive upload progress from what is staged on disk, not from the
+        token — so a re-run (even with a fresh token after the old one expired)
+        resumes from what already landed instead of restarting."""
+        tpl_dir = team.get_template_dir(template_name)  # validates the name
+        manifest = os.path.isfile(team.get_template_metadata_path(template_name))
+        dump = os.path.isfile(os.path.join(tpl_dir, "dump.sql.gz"))
+        fs_dir = team.get_template_filestore_path(template_name)
+        chunks: list[str] = []
+        if os.path.isdir(fs_dir):
+            # A chunk directory exists only after its tar was received in full
+            # and extracted, so its presence means that chunk is complete.
+            for entry in os.listdir(fs_dir):
+                if (
+                    re.fullmatch(r"[0-9a-f]{2}", entry) or entry == "checklist"
+                ) and os.path.isdir(os.path.join(fs_dir, entry)):
+                    chunks.append(entry)
+        return {
+            "manifest": manifest,
+            "dump": dump,
+            "filestore_chunks": sorted(chunks),
+        }
+
+    def import_odoo_script(request: Request) -> Response:
+        script = (_TEMPLATE_DIR / "import-odoo.sh").read_text(encoding="utf-8")
+        return Response(
+            script,
+            media_type="text/x-shellscript; charset=utf-8",
+            headers={"Cache-Control": "no-store"},
+        )
+
+    async def api_import_token(request: Request) -> JSONResponse:
+        """Mint a short-lived import token for a target template (UI-authed)."""
+        team = _get_ui_team(request)
+        try:
+            body = await request.body()
+            data = json.loads(body or b"{}")
+            template_name = str((data or {}).get("template_name") or "").strip()
+            if not template_name:
+                return JSONResponse(
+                    {"ok": False, "error": "template_name is required"},
+                    status_code=400,
+                )
+            from oduflow.naming import validate_template_name
+
+            validate_template_name(template_name)
+            record = import_tokens.create_token(team, template_name)
+        except ValueError as e:
+            return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
+        except Exception as e:
+            logger.exception("Unexpected error in api_import_token")
+            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+
+        base = str(request.base_url).rstrip("/")
+        command = (
+            f"curl -sSf {base}/import-odoo.sh | bash -s -- "
+            f"--server {base} --token {record['token']}"
+        )
+        return JSONResponse(
+            {
+                "ok": True,
+                "token": record["token"],
+                "template_name": template_name,
+                "expires_at": record["expires_at"],
+                "command": command,
+            }
+        )
+
+    def api_import_status(request: Request) -> JSONResponse:
+        try:
+            team, record = _resolve_import_token(request)
+            progress = _import_progress(team, str(record["template_name"]))
+        except FlowError as e:
+            return _error_response(e)
+        except ValueError as e:  # invalid template name
+            return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
+        return JSONResponse(
+            {
+                "ok": True,
+                "template_name": record["template_name"],
+                "progress": progress,
+                "expires_at": record["expires_at"],
+            }
+        )
+
+    async def api_import_manifest(request: Request) -> JSONResponse:
+        try:
+            team, record = _resolve_import_token(request)
+        except FlowError as e:
+            return _error_response(e)
+        body = await request.body()
+        try:
+            manifest = json.loads(body or b"{}")
+        except ValueError:
+            return JSONResponse(
+                {"ok": False, "error": "Invalid manifest JSON"}, status_code=400
+            )
+
+        template_name = str(record["template_name"])
+        branch = str(manifest.get("odoo_branch") or "").strip()  # e.g. "18.0"
+        metadata = {
+            "odoo_image": f"odoo:{branch}" if branch else "",
+            "repo_url": "",
+            "source": "odoo.sh",
+            "source_db": manifest.get("name", ""),
+            "source_revision": manifest.get("revision", ""),
+            "source_repository": manifest.get("repository", ""),
+            "odoo_version": branch,
+            "modules": manifest.get("installed_modules", {}),
+            "backup_datetime_utc": manifest.get("backup_datetime_utc", ""),
+        }
+        try:
+            tpl_dir = team.get_template_dir(template_name)
+            os.makedirs(tpl_dir, exist_ok=True)
+            with open(team.get_template_metadata_path(template_name), "w") as f:
+                json.dump(metadata, f, indent=2)
+        except ValueError as e:  # invalid template name
+            return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
+        return JSONResponse({"ok": True})
+
+    async def api_import_dump(request: Request) -> JSONResponse:
+        try:
+            team, record = _resolve_import_token(request)
+        except FlowError as e:
+            return _error_response(e)
+        template_name = str(record["template_name"])
+        try:
+            tpl_dir = team.get_template_dir(template_name)
+        except ValueError as e:
+            return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
+        os.makedirs(tpl_dir, exist_ok=True)
+        # Drop any stale dump under other names so get_template_sql_path resolves
+        # to the gzip'd SQL dump we are about to write.
+        for stale in ("dump.pgdump", "dump.sql", "dump.pgdump.gz"):
+            stale_path = os.path.join(tpl_dir, stale)
+            if os.path.isfile(stale_path):
+                os.remove(stale_path)
+        dest = os.path.join(tpl_dir, "dump.sql.gz")
+        tmp = f"{dest}.part"
+        try:
+            with open(tmp, "wb") as f:
+                async for chunk in request.stream():
+                    f.write(chunk)
+            os.replace(tmp, dest)
+        except Exception as e:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+            logger.exception("Failed to receive dump for template %s", template_name)
+            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+        return JSONResponse({"ok": True})
+
+    async def api_import_filestore(request: Request) -> JSONResponse:
+        try:
+            team, record = _resolve_import_token(request)
+        except FlowError as e:
+            return _error_response(e)
+        chunk = request.query_params.get("chunk", "").strip()
+        if not re.fullmatch(r"[0-9a-f]{2}|checklist", chunk):
+            return JSONResponse(
+                {"ok": False, "error": f"Invalid filestore chunk '{chunk}'"},
+                status_code=400,
+            )
+        template_name = str(record["template_name"])
+        try:
+            tpl_dir = team.get_template_dir(template_name)
+        except ValueError as e:
+            return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
+        fs_dir = team.get_template_filestore_path(template_name)
+        os.makedirs(tpl_dir, exist_ok=True)
+        tmp_tar = os.path.join(tpl_dir, f".chunk_{chunk}.tar")
+        try:
+            with open(tmp_tar, "wb") as f:
+                async for data in request.stream():
+                    f.write(data)
+            system_ops.extract_filestore_tar(tmp_tar, fs_dir)
+        except Exception as e:
+            logger.exception(
+                "Failed to receive filestore chunk %s for %s", chunk, template_name
+            )
+            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+        finally:
+            if os.path.exists(tmp_tar):
+                os.remove(tmp_tar)
+        return JSONResponse({"ok": True})
+
+    def api_import_finalize(request: Request) -> JSONResponse:
+        try:
+            team, record = _resolve_import_token(request)
+        except FlowError as e:
+            return _error_response(e)
+        template_name = str(record["template_name"])
+        try:
+            progress = _import_progress(team, template_name)
+        except ValueError as e:  # invalid template name
+            return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
+        if not progress["manifest"] or not progress["dump"]:
+            return JSONResponse(
+                {
+                    "ok": False,
+                    "error": "Manifest and SQL dump must be uploaded before finalize.",
+                },
+                status_code=400,
+            )
+        # The Odoo image major (e.g. "18.0") drives the filestore chown; read it
+        # from the staged metadata so finalize does not depend on token state.
+        major_version = ""
+        try:
+            with open(team.get_template_metadata_path(template_name)) as f:
+                major_version = str(json.load(f).get("odoo_version") or "")
+        except (OSError, ValueError):
+            pass
+        try:
+            locks.acquire_team(team.team_id)
+        except BusyError as e:
+            return _error_response(e)
+        try:
+            result = system_ops.finalize_imported_template(
+                get_settings(),
+                team,
+                template_name,
+                major_version=major_version,
+            )
+            import_tokens.invalidate(team, str(record["token"]))
+            return JSONResponse({"ok": True, "result": result})
+        except FlowError as e:
+            return _error_response(e)
+        except Exception as e:
+            logger.exception("Unexpected error in api_import_finalize")
             return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
         finally:
             locks.release_team(team.team_id)
@@ -1661,9 +1916,16 @@ def _build_routes(
         Route("/api/license", api_license, methods=["GET"]),
         Route("/api/license/activate", api_license_activate, methods=["POST"]),
         Route("/api/templates", api_templates, methods=["GET"]),
+        Route("/import-odoo.sh", import_odoo_script, methods=["GET"]),
+        Route("/api/templates/import-token", api_import_token, methods=["POST"]),
+        Route("/api/templates/import/status", api_import_status, methods=["GET"]),
+        Route("/api/templates/import/manifest", api_import_manifest, methods=["POST"]),
+        Route("/api/templates/import/dump", api_import_dump, methods=["POST"]),
         Route(
-            "/api/templates/{name}/delete", api_template_delete, methods=["POST"]
+            "/api/templates/import/filestore", api_import_filestore, methods=["POST"]
         ),
+        Route("/api/templates/import/finalize", api_import_finalize, methods=["POST"]),
+        Route("/api/templates/{name}/delete", api_template_delete, methods=["POST"]),
         Route("/api/environments", api_list, methods=["GET"]),
         Route("/api/environments/create", api_create, methods=["POST"]),
         Route("/api/stats", api_stats, methods=["GET"]),
