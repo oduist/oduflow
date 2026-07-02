@@ -95,9 +95,21 @@ echo ">> Importing '$DB' into Oduflow at $SERVER"
 
 STATUS_FILE="$(mktemp)"
 trap 'rm -f "$STATUS_FILE"' EXIT
-if ! curl -fsS -H "$AUTH" "${API}/status" -o "$STATUS_FILE" 2>/dev/null; then
+if ! curl -sS --fail-with-body -H "$AUTH" "${API}/status" -o "$STATUS_FILE" 2>/dev/null; then
     echo "ERROR: could not reach $SERVER or token is invalid/expired." >&2
+    [ -s "$STATUS_FILE" ] && { echo "       Server said:" >&2; head -c 300 "$STATUS_FILE" >&2; echo >&2; }
     echo "       Generate a fresh token from the dashboard and retry." >&2
+    exit 4
+fi
+
+# Hard gate: the status body must be Oduflow's JSON with ok=true. Anything
+# else (a proxy page, a redirect body, an HTML error) means the uploads
+# would go nowhere — abort NOW instead of "uploading" gigabytes into a 3xx.
+if [ -z "$(json_field "$STATUS_FILE" 'd.get("ok") and 1 or ""')" ]; then
+    echo "ERROR: unexpected response from ${API}/status:" >&2
+    head -c 300 "$STATUS_FILE" >&2; echo >&2
+    echo "       Check that --server points at your Oduflow dashboard URL" >&2
+    echo "       (https, no proxy pages in between), then retry." >&2
     exit 4
 fi
 
@@ -212,7 +224,15 @@ if ! curl -sS --fail-with-body -H "$AUTH" -X POST "${API}/finalize" -o "$RESULT_
 fi
 
 python3 -c 'import sys,json
-d=json.load(open(sys.argv[1]))
+raw = open(sys.argv[1], "rb").read().decode("utf-8", "replace")
+try:
+    d = json.loads(raw)
+except ValueError:
+    print(">> ERROR: unexpected finalize response (not Oduflow JSON):")
+    print("   " + (raw[:300].strip() or "(empty body)"))
+    print("   The import may still be finishing server-side — check the")
+    print("   Templates tab in the dashboard before retrying.")
+    sys.exit(1)
 if not d.get("ok"):
     print(">> ERROR:", d.get("error","unknown error")); sys.exit(1)
 r=d.get("result",{})
