@@ -33,6 +33,11 @@ def _no_db_quota(monkeypatch):
     monkeypatch.setattr(
         "oduflow.docker_ops.env_ops.check_db_quota", lambda *a, **kw: None
     )
+    # Tablespace provisioning is covered by tests/test_tablespaces.py.
+    monkeypatch.setattr(
+        "oduflow.docker_ops.env_ops.ensure_team_tablespace",
+        lambda *a, **kw: "oduflow_team_1",
+    )
 
 
 @pytest.fixture

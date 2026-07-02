@@ -20,7 +20,7 @@ from oduflow.errors import (
     NotFoundError,
     PrerequisiteNotMetError,
 )
-from oduflow.naming import get_db_name, get_template_db_name
+from oduflow.naming import get_db_name, get_tablespace_name, get_template_db_name
 from oduflow.settings import Settings, TeamSettings
 
 logger = logging.getLogger("oduflow")
@@ -467,6 +467,105 @@ def _extract_archive_from_container(
         os.remove(tmp_path)
 
 
+_PG_TABLESPACES_MOUNT = "/tablespaces"
+
+
+def _pg_tablespaces_host_dir(settings: Settings) -> str:
+    return os.path.join(settings.base_data_dir, "pg_tablespaces")
+
+
+def _ensure_pg_container(
+    client: DockerClient, settings: Settings, system_labels: dict[str, str]
+) -> None:
+    """Start (or create) the shared PostgreSQL container.
+
+    Mounts only the dedicated pg_tablespaces directory into the container —
+    never the whole data dir: PostgreSQL has no business seeing team
+    workspaces or credentials. Per-team tablespace directories are created
+    inside this one mount, so adding a team never requires recreating the
+    container (see ensure_team_tablespace).
+    """
+    try:
+        db_container = client.containers.get(settings.shared_db_container)
+        if db_container.status != "running":
+            db_container.start()
+        return
+    except docker.errors.NotFound:
+        pass
+
+    tablespaces_dir = _pg_tablespaces_host_dir(settings)
+    os.makedirs(tablespaces_dir, exist_ok=True)
+    client.containers.run(
+        settings.postgres_image,
+        name=settings.shared_db_container,
+        detach=True,
+        network=settings.shared_network,
+        volumes={
+            settings.shared_db_volume: {
+                "bind": "/var/lib/postgresql/data",
+                "mode": "rw",
+            },
+            str(_resolve_conf("postgresql.conf")): {
+                "bind": "/etc/postgresql/postgresql.conf",
+                "mode": "ro",
+            },
+            tablespaces_dir: {"bind": _PG_TABLESPACES_MOUNT, "mode": "rw"},
+        },
+        command=["postgres", "-c", "config_file=/etc/postgresql/postgresql.conf"],
+        environment={
+            "POSTGRES_USER": settings.db_user,
+            "POSTGRES_PASSWORD": settings.db_password,
+        },
+        labels=system_labels,
+        restart_policy={"Name": "unless-stopped"},
+    )
+    logger.info("Created container %s", settings.shared_db_container)
+
+
+def ensure_team_tablespace(
+    client: DockerClient, settings: Settings, team: TeamSettings
+) -> str:
+    """Ensure the team's PostgreSQL tablespace exists; return its name.
+
+    The tablespace lives in base_data_dir/pg_tablespaces/team_{id} on the
+    host. Hosting setups assign this directory the same XFS project ID as
+    team_{id}/, so one disk quota covers the team's files AND its databases.
+    Idempotent and cheap (one catalog query) — called before every
+    CREATE DATABASE.
+    """
+    ts_name = get_tablespace_name(team.team_id)
+    exists = _exec_sql(
+        client,
+        settings,
+        f"SELECT 1 FROM pg_tablespace WHERE spcname = '{ts_name}';",
+    )
+    if exists.strip() == "1":
+        return ts_name
+
+    host_dir = os.path.join(_pg_tablespaces_host_dir(settings), f"team_{team.team_id}")
+    os.makedirs(host_dir, exist_ok=True)
+    target = f"{_PG_TABLESPACES_MOUNT}/team_{team.team_id}"
+    container = client.containers.get(settings.shared_db_container)
+    # PostgreSQL requires the location to be owned by its OS user (postgres,
+    # regardless of POSTGRES_USER) with private permissions.
+    for cmd in (["chown", "postgres:postgres", target], ["chmod", "700", target]):
+        exit_code, output = container.exec_run(cmd, user="root")
+        if exit_code != 0:
+            out = (
+                output.decode("utf-8", errors="replace")
+                if isinstance(output, bytes)
+                else str(output)
+            )
+            raise ExternalCommandError(cmd[0], exit_code, out)
+    _exec_sql(
+        client,
+        settings,
+        f"CREATE TABLESPACE \"{ts_name}\" LOCATION '{target}';",
+    )
+    logger.info("Created tablespace %s at %s", ts_name, target)
+    return ts_name
+
+
 def _ensure_iptables_accept(client: DockerClient, network_name: str) -> None:
     try:
         net = client.networks.get(network_name)
@@ -516,35 +615,7 @@ def init_system(
         client.volumes.create(settings.shared_db_volume, labels=system_labels)
         logger.info("Created volume %s", settings.shared_db_volume)
 
-    try:
-        db_container = client.containers.get(settings.shared_db_container)
-        if db_container.status != "running":
-            db_container.start()
-    except docker.errors.NotFound:
-        client.containers.run(
-            settings.postgres_image,
-            name=settings.shared_db_container,
-            detach=True,
-            network=settings.shared_network,
-            volumes={
-                settings.shared_db_volume: {
-                    "bind": "/var/lib/postgresql/data",
-                    "mode": "rw",
-                },
-                str(_resolve_conf("postgresql.conf")): {
-                    "bind": "/etc/postgresql/postgresql.conf",
-                    "mode": "ro",
-                },
-            },
-            command=["postgres", "-c", "config_file=/etc/postgresql/postgresql.conf"],
-            environment={
-                "POSTGRES_USER": settings.db_user,
-                "POSTGRES_PASSWORD": settings.db_password,
-            },
-            labels=system_labels,
-            restart_policy={"Name": "unless-stopped"},
-        )
-        logger.info("Created container %s", settings.shared_db_container)
+    _ensure_pg_container(client, settings, system_labels)
 
     _wait_pg_ready(client, settings)
 
@@ -579,7 +650,8 @@ def reload_template(
         _exec_sql(client, settings, f'DROP DATABASE "{tpl_db}" WITH (FORCE);')
         logger.info("Dropped template DB %s", tpl_db)
 
-    _exec_sql(client, settings, f'CREATE DATABASE "{tpl_db}";')
+    ts_name = ensure_team_tablespace(client, settings, team)
+    _exec_sql(client, settings, f'CREATE DATABASE "{tpl_db}" TABLESPACE "{ts_name}";')
 
     db_container = client.containers.get(settings.shared_db_container)
     tmp_name = os.path.basename(resolved_dump)
@@ -759,35 +831,7 @@ def init_template(
         client.volumes.create(settings.shared_db_volume, labels=system_labels)
         logger.info("Created volume %s", settings.shared_db_volume)
 
-    try:
-        db_container = client.containers.get(settings.shared_db_container)
-        if db_container.status != "running":
-            db_container.start()
-    except docker.errors.NotFound:
-        client.containers.run(
-            settings.postgres_image,
-            name=settings.shared_db_container,
-            detach=True,
-            network=settings.shared_network,
-            volumes={
-                settings.shared_db_volume: {
-                    "bind": "/var/lib/postgresql/data",
-                    "mode": "rw",
-                },
-                str(_resolve_conf("postgresql.conf")): {
-                    "bind": "/etc/postgresql/postgresql.conf",
-                    "mode": "ro",
-                },
-            },
-            command=["postgres", "-c", "config_file=/etc/postgresql/postgresql.conf"],
-            environment={
-                "POSTGRES_USER": settings.db_user,
-                "POSTGRES_PASSWORD": settings.db_password,
-            },
-            labels=system_labels,
-            restart_policy={"Name": "unless-stopped"},
-        )
-        logger.info("Created container %s", settings.shared_db_container)
+    _ensure_pg_container(client, settings, system_labels)
 
     _wait_pg_ready(client, settings)
 

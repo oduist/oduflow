@@ -108,6 +108,100 @@ def _migrate_team_scoped_names(settings: Settings) -> None:
             logger.info("Renamed container %s -> %s", name, new_name)
 
 
+def _migrate_team_pg_tablespaces(settings: Settings) -> None:
+    """Move every team's databases into a per-team PostgreSQL tablespace.
+
+    Tablespace files live under ``base_data_dir/pg_tablespaces/team_{id}`` on
+    the host, so a filesystem project quota can cover a team's databases
+    together with its data dir. Steps:
+
+    1. If the PG container lacks the ``/tablespaces`` mount, recreate it once
+       (the data volume persists; seconds of downtime at startup).
+    2. Ensure each team's tablespace exists.
+    3. ``ALTER DATABASE ... SET TABLESPACE`` for every team database that is
+       not already there, blocking reconnects during the move
+       (``ALLOW_CONNECTIONS false`` + terminate). Odoo containers reconnect
+       on their own afterwards. Time is proportional to database size.
+
+    Idempotent: already-moved databases are skipped, so a partial run
+    resumes where it stopped.
+    """
+    import docker
+
+    from oduflow.docker_ops import system_ops
+    from oduflow.docker_ops.client import get_client
+    from oduflow.naming import get_tablespace_name
+
+    client = get_client()
+    try:
+        pg = client.containers.get(settings.shared_db_container)
+    except docker.errors.NotFound:
+        # No PG container: nothing to move. Fresh infrastructure is created
+        # with the mount, and databases are placed on creation.
+        return
+
+    has_mount = any(
+        m.get("Destination") == system_ops._PG_TABLESPACES_MOUNT
+        for m in pg.attrs.get("Mounts", [])
+    )
+    if not has_mount:
+        logger.info(
+            "Recreating %s with the tablespaces mount (data volume persists)",
+            settings.shared_db_container,
+        )
+        pg.stop()
+        pg.remove()
+        system_labels = {
+            settings.managed_label: "true",
+            settings.system_label: "true",
+        }
+        system_ops._ensure_pg_container(client, settings, system_labels)
+    system_ops._wait_pg_ready(client, settings)
+
+    rows = system_ops._exec_sql(
+        client,
+        settings,
+        "SELECT d.datname, COALESCE(t.spcname, '') FROM pg_database d "
+        "LEFT JOIN pg_tablespace t ON d.dattablespace = t.oid "
+        "WHERE NOT d.datistemplate;",
+    )
+    db_tablespaces = {}
+    for line in rows.splitlines():
+        name, _, spc = line.partition("|")
+        if name:
+            db_tablespaces[name] = spc
+
+    for team_id, team in settings.teams.items():
+        ts_name = get_tablespace_name(team_id)
+        system_ops.ensure_team_tablespace(client, settings, team)
+        prefixes = (f"oduflow_{team_id}_", f"oduflow_template_{team_id}_")
+        for db, current in sorted(db_tablespaces.items()):
+            if not db.startswith(prefixes) or current == ts_name:
+                continue
+            logger.info("Moving database %s to tablespace %s", db, ts_name)
+            system_ops._exec_sql(
+                client, settings, f'ALTER DATABASE "{db}" WITH ALLOW_CONNECTIONS false;'
+            )
+            system_ops._exec_sql(
+                client,
+                settings,
+                "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
+                f"WHERE datname = '{db}';",
+            )
+            try:
+                system_ops._exec_sql(
+                    client,
+                    settings,
+                    f'ALTER DATABASE "{db}" SET TABLESPACE "{ts_name}";',
+                )
+            finally:
+                system_ops._exec_sql(
+                    client,
+                    settings,
+                    f'ALTER DATABASE "{db}" WITH ALLOW_CONNECTIONS true;',
+                )
+
+
 # Append-only registry, executed in list order. Ids are recorded in
 # migrations.json once applied; reordering or renaming entries would re-run
 # or skip steps on existing installs.
@@ -119,6 +213,14 @@ MIGRATIONS: list[Migration] = [
             "(oduflow-{team}-{env}-{type}, oduflow-{team}-svc-{name})"
         ),
         apply=_migrate_team_scoped_names,
+    ),
+    Migration(
+        id="0002-team-pg-tablespaces",
+        description=(
+            "Move each team's databases into a per-team PostgreSQL tablespace "
+            "under base_data_dir/pg_tablespaces/team_{id}"
+        ),
+        apply=_migrate_team_pg_tablespaces,
     ),
 ]
 

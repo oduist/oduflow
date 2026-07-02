@@ -24,6 +24,7 @@ from oduflow.docker_ops.system_ops import (
     _exec_sql,
     _resolve_instance_conf,
     check_db_quota,
+    ensure_team_tablespace,
 )
 from oduflow.env_credentials import create_credentials, load_credentials
 from oduflow.errors import (
@@ -865,18 +866,19 @@ def create_environment(
             container_path = f"/mnt/extra-addons-{repo_name}"
             extra_mount_paths.append((wt_path, container_path))
 
+    ts_name = ensure_team_tablespace(client, settings, team)
     if template_name is not None:
         tpl_db = get_template_db_name(template_name, team.team_id)
         _exec_sql(
             client,
             settings,
-            f'CREATE DATABASE "{env_db}" TEMPLATE "{tpl_db}";',
+            f'CREATE DATABASE "{env_db}" TEMPLATE "{tpl_db}" TABLESPACE "{ts_name}";',
         )
     else:
         _exec_sql(
             client,
             settings,
-            f'CREATE DATABASE "{env_db}";',
+            f'CREATE DATABASE "{env_db}" TABLESPACE "{ts_name}";',
         )
 
     env_creds = create_credentials(env_name, team.team_id, team.workspaces_dir)

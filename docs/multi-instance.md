@@ -78,6 +78,27 @@ disk_quota_gb = 0     # default: 0 (off)
   Enforcement is not wired up yet; setting a non-zero value only logs a
   warning today.
 
+## Per-Team PostgreSQL Tablespaces
+
+Each team's databases (environments and templates) live in a dedicated
+PostgreSQL tablespace, `oduflow_team_{id}`, whose files sit under
+`{data_dir}/pg_tablespaces/team_{id}/` on the host. Only that
+`pg_tablespaces/` directory is mounted into the PostgreSQL container — never
+the rest of the data dir.
+
+This makes a team's disk consumption one visible number: assign
+`team_{id}/` and `pg_tablespaces/team_{id}/` the same XFS project ID and a
+single project quota covers the team's files *and* its databases. WAL stays
+in the shared `PGDATA`, so a team hitting its quota gets aborted
+transactions, not a server-wide outage.
+
+Existing installs are converted automatically on server start (startup
+migration `0002-team-pg-tablespaces`): the PostgreSQL container is recreated
+once with the new mount (its data volume persists), then each team database
+is physically moved with `ALTER DATABASE ... SET TABLESPACE`. Expect the
+first start after the upgrade to take time proportional to the total
+database size.
+
 ## Shared vs. Per-Team Resources
 
 | Resource | Scope |

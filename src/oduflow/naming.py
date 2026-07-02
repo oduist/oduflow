@@ -78,6 +78,12 @@ def get_env_hostname(env_name: str, hostname: str) -> str:
     return f"{slug}.{hostname}"
 
 
+def get_tablespace_name(team_id: str) -> str:
+    """PostgreSQL tablespace holding all of the team's databases (its files
+    live under base_data_dir/pg_tablespaces/team_{id} on the host)."""
+    return f"oduflow_team_{team_id}"
+
+
 def get_template_db_name(template_name: str, team_id: str = "1") -> str:
     # validate_template_name guarantees the (slugified) name cannot break out of
     # the double-quoted SQL identifier this is interpolated into.
