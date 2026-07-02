@@ -139,9 +139,10 @@ A near-monochrome blue-black field carrying one saturated brand blue, with a
 tight categorical signal palette for environment and service state.
 
 ### Primary
-- **Console Blue** (`oklch(0.6 0.2 260)`): The single accent. Primary action
-  buttons, active tab indicator, focus rings, links, selected state. Carries
-  ≤15% of any screen; its rarity is what makes it read as confident.
+- **Console Blue** (`oklch(0.6 0.2 260)`): The single accent. Active tab
+  indicator, focus rings, links, selected state, and the hover/focus reveal on
+  primary and Sync/Logs actions — not a resting button fill. Carries ≤15% of any
+  screen; its rarity is what makes it read as confident.
 
 ### Secondary (Signal palette)
 Categorical state and channel colors. Each names one meaning; they never mix
@@ -184,7 +185,9 @@ decoratively within an element.
 
 ### Named Rules
 **The One Light Rule.** Console Blue is the only brand accent that carries
-weight; ≤15% of any screen. Do not introduce a second "primary".
+weight; ≤15% of any screen. Do not introduce a second "primary". Even the
+primary action is neutral at rest and reveals the blue only on intent
+(hover/focus), so the accent stays scarce and confident.
 
 **The Channel Rule.** Signal colors are categorical. A color may mark a state
 or a capability channel; a surface never gets a signal color "for variety".
@@ -302,8 +305,13 @@ be traced against a dimmed page, it is missing one of the two.
 ### Buttons
 - **Shape:** Gently rounded (`0.425rem`, the `md` radius), compact
   (`0.3125rem 0.875rem` padding), label weight 600.
-- **Primary:** Console Blue fill, near-white text. One per view/modal (Create,
-  Activate). Hover deepens the fill; no glow at dashboard density.
+- **Primary (Create / Activate):** the quiet primary — neutral at rest like the
+  outline action (Surface fill, hairline border, Ink text), set apart only by
+  its heavier weight (600) and the larger `lg` radius, not by a resting fill. It
+  reveals its intent on hover/focus: Console Blue border + text + 10% Console
+  Blue tint, same as Sync/Logs. One per view/modal. The destructive confirm is
+  the sole exception — it keeps a solid Alert Red fill so the moment of choice
+  stays loud.
 - **Outline (default action):** Transparent fill, hairline border, Ink text.
   Hover: border and text shift to the action's semantic color.
 - **Semantic on intent:** action buttons are neutral at rest (hairline

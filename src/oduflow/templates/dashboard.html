@@ -428,17 +428,33 @@
   .btn-logs:hover, .btn-logs:focus-visible { border-color: var(--accent); color: var(--accent); background: color-mix(in oklab, var(--accent) 10%, transparent); }
   .btn-protect:hover, .btn-protect:focus-visible { border-color: var(--yellow); color: var(--yellow); background: color-mix(in oklab, var(--yellow) 10%, transparent); }
   .btn-create {
-    background: var(--accent);
-    color: var(--accent-fg);
-    border: 1px solid var(--accent);
+    background: var(--surface);
+    color: var(--text);
+    border: 1px solid var(--border);
     padding: 6px 14px;
     border-radius: var(--radius);
     cursor: pointer;
     font-size: var(--text-sm);
     font-weight: 600;
+    transition: border-color 0.15s, color 0.15s, background 0.15s;
   }
-  .btn-create.danger { background: var(--red); border-color: var(--red); }
-  .btn-create:hover { opacity: 0.85; }
+  .btn-create:hover, .btn-create:focus-visible {
+    border-color: var(--accent);
+    color: var(--accent);
+    background: color-mix(in oklab, var(--accent) 10%, transparent);
+  }
+  /* Destructive confirm keeps a solid red fill — the moment of choice stays loud. */
+  .btn-create.danger {
+    background: var(--red);
+    border-color: var(--red);
+    color: var(--accent-fg);
+  }
+  .btn-create.danger:hover, .btn-create.danger:focus-visible {
+    opacity: 0.85;
+    background: var(--red);
+    border-color: var(--red);
+    color: var(--accent-fg);
+  }
   .btn-create:disabled { opacity: 0.4; cursor: not-allowed; }
   .btn.danger { color: var(--red); }
   .btn.danger:hover, .btn.danger:focus-visible { border-color: var(--red); background: color-mix(in oklab, var(--red) 10%, transparent); }
