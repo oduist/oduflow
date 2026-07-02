@@ -10,6 +10,7 @@ allow_local_path = true        # allow live-mount (bind local checkout) workflow
 [routing]
 mode = "port"                   # "port" | "traefik"
 # acme_email = "admin@example.com"  # required for traefik
+# hostname = "localhost"           # default hostname for teams that don't set their own
 
 # ── Database ──────────────────────────────────────────
 [database]
@@ -21,6 +22,13 @@ image = "postgres:15"
 [storage]
 # data_dir = "/srv/oduflow"       # default: /srv/oduflow or ~/.oduflow/data
 overlay_threshold_mb = 50         # filestore size limit for overlay vs copy
+
+# ── Lifecycle ─────────────────────────────────────────
+# Automatic management of idle/stopped environments (0 disables either behavior).
+# Protected environments are always exempt.
+[lifecycle]
+auto_stop_hours = 48              # stop idle environments after N hours (non-destructive)
+auto_delete_hours = 0             # delete stopped environments after N hours (DESTRUCTIVE; opt-in)
 
 # ── OAuth (optional) ──────────────────────────────────
 # Set oauth_base_url to the public URL of this Oduflow instance to enable
