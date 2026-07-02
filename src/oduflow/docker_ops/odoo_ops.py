@@ -141,12 +141,11 @@ def get_environment_logs(
         )
     # Defence in depth on top of team-scoped names: never expose another
     # team's logs even if a name resolves unexpectedly (issue #39).
-    if team is not None:
-        label = container.labels.get(settings.team_label)
-        if label is not None and label != team.team_id:
-            raise NotFoundError(
-                f"Environment '{env_name}' does not exist. Use create_environment first."
-            )
+    label = container.labels.get(settings.team_label)
+    if label is not None and label != team.team_id:
+        raise NotFoundError(
+            f"Environment '{env_name}' does not exist. Use create_environment first."
+        )
     logs = container.logs(tail=fetch_lines, stdout=True, stderr=True)
     logs_str = logs.decode("utf-8") if isinstance(logs, bytes) else str(logs)
 
