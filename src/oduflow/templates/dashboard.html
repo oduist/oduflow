@@ -616,6 +616,18 @@
     color: var(--text-dim);
   }
   .container-stats .stat-val { color: var(--text); font-weight: 500; }
+  .env-storage { margin-left: 0; align-items: center; }
+  .stat-refresh {
+    background: none;
+    border: none;
+    padding: 0;
+    display: inline-flex;
+    color: var(--text-dim);
+    cursor: pointer;
+    border-radius: var(--radius-sm);
+  }
+  .stat-refresh svg { width: 13px; height: 13px; }
+  .stat-refresh:hover { color: var(--accent); }
   .system-bar {
     position: fixed;
     bottom: 0;
@@ -1440,6 +1452,10 @@ const MIN_INTERVAL = 5;
 let refreshInterval = 60;
 let refreshTimer = null;
 let containerStatsMap = {};
+// Per-environment DB/disk sizes: cached server-side, recomputed only via the
+// per-card refresh button (walking a filestore is too slow for the poll loop).
+let envStorageMap = {};
+let storageRefreshing = {};
 let cachedTemplates = [];
 let cachedEnvs = [];
 let cachedServices = [];
@@ -1696,6 +1712,17 @@ function _tickBusy() {
   });
 }
 
+function fmtBytes(b) {
+  if (b == null) return '—';
+  if (b >= 1024 * 1024 * 1024) return (b / (1024 * 1024 * 1024)).toFixed(1) + ' GB';
+  if (b >= 1024 * 1024) return (b / (1024 * 1024)).toFixed(1) + ' MB';
+  return Math.round(b / 1024) + ' KB';
+}
+
+var REFRESH_SVG =
+  '<svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">' +
+  '<path d="M8 3a5 5 0 104.546 2.914.75.75 0 011.364-.626A6.5 6.5 0 118 1.5v-1a.25.25 0 01.427-.177l2.25 2.25a.25.25 0 010 .354l-2.25 2.25A.25.25 0 018 5V3z"/></svg>';
+
 function applyStats() {
   document.querySelectorAll('[data-stats-for]').forEach(function(el) {
     var s = containerStatsMap[el.getAttribute('data-stats-for')];
@@ -1705,6 +1732,38 @@ function applyStats() {
       '<span>RAM <span class="stat-val">' + s.mem_usage_mb + ' MB</span> ' +
         usageBar(s.mem_percent) + '</span>';
   });
+  document.querySelectorAll('[data-storage-for]').forEach(function(el) {
+    var branch = el.getAttribute('data-storage-for');
+    var s = envStorageMap[branch];
+    var btn = storageRefreshing[branch]
+      ? '<span class="spinner" aria-hidden="true"></span>'
+      : '<button class="stat-refresh" onclick="refreshStorage(\'' + escAttr(branch) + '\')" ' +
+          'title="' + (s ? 'Recompute DB and disk usage (measured ' + escAttr(formatDate(s.computed_at)) + ')' : 'Compute DB and disk usage') + '" ' +
+          'aria-label="Recompute DB and disk usage">' + REFRESH_SVG + '</button>';
+    el.innerHTML =
+      '<span>DB size <span class="stat-val">' + (s ? fmtBytes(s.db_bytes) : '—') + '</span></span>' +
+      '<span>Disk <span class="stat-val">' + (s ? fmtBytes(s.disk_bytes) : '—') + '</span></span>' +
+      btn;
+  });
+}
+
+async function refreshStorage(branch) {
+  if (storageRefreshing[branch]) return;
+  storageRefreshing[branch] = true;
+  applyStats();
+  try {
+    const r = await fetch(API + '/' + encodeURIComponent(branch) + '/storage/refresh', { method: 'POST' });
+    const data = await r.json();
+    if (data.ok) {
+      envStorageMap[branch] = data.storage;
+    } else {
+      showToast(data.error || 'Failed to measure usage', true);
+    }
+  } catch (e) {
+    showToast('Failed to measure usage: ' + e, true);
+  }
+  delete storageRefreshing[branch];
+  applyStats();
 }
 
 function renderEnvironments(envs, force) {
@@ -1831,7 +1890,11 @@ function renderEnvironments(envs, force) {
       urlHtml +
       metaHtml +
       extraHtml +
-      (containerHtml ? '<div class="containers">' + containerHtml + '</div>' : '') +
+      // The storage span renders even when everything is stopped: DB/disk
+      // usage is exactly what you check before cleaning up idle environments.
+      '<div class="containers">' + containerHtml +
+        '<span class="container-stats env-storage" data-storage-for="' + esc(env.branch) + '"></span>' +
+      '</div>' +
     '</div>';
   }).join('');
 
@@ -2082,6 +2145,7 @@ async function loadStats() {
 
     containerStatsMap = {};
     (data.containers || []).forEach(c => { containerStatsMap[c.name] = c; });
+    envStorageMap = (data.storage && data.storage.envs) || {};
 
     const sys = data.system;
     document.getElementById('sys-cpu').innerHTML =

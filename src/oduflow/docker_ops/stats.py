@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
@@ -7,9 +8,11 @@ import subprocess
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime, timezone
 from typing import Any
 
 from oduflow.docker_ops.client import get_client
+from oduflow.naming import get_db_name, get_filestore_paths, get_workspace_path
 from oduflow.settings import Settings, TeamSettings
 
 logger = logging.getLogger("oduflow")
@@ -283,3 +286,141 @@ def get_system_stats() -> dict[str, Any]:
         )
 
     return result
+
+
+# ── Storage stats: DB + disk usage per environment and per team ──────────────
+#
+# Walking a filestore is far too slow for the dashboard polling loop, so these
+# numbers are computed only on demand (the per-environment refresh button, or
+# the team-wide REST refresh) and cached in team_data_dir/storage_stats.json.
+# The same cache is the data source for external billing/quota tooling: an
+# operator script can POST /api/usage/refresh per team and read the totals
+# without touching Docker or PostgreSQL itself.
+
+_STORAGE_CACHE_FILE = "storage_stats.json"
+
+
+def _utcnow_iso() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _storage_cache_path(team: TeamSettings) -> str:
+    return os.path.join(team.data_dir, _STORAGE_CACHE_FILE)
+
+
+def read_storage_cache(team: TeamSettings) -> dict[str, Any]:
+    """Return the cached storage stats: {"envs": {name: entry}, "team": entry|None}."""
+    try:
+        with open(_storage_cache_path(team)) as f:
+            data = json.load(f)
+        if isinstance(data, dict):
+            return {"envs": data.get("envs", {}), "team": data.get("team")}
+    except FileNotFoundError:
+        pass
+    except Exception:
+        logger.debug("Unreadable storage stats cache", exc_info=True)
+    return {"envs": {}, "team": None}
+
+
+def _write_storage_cache(team: TeamSettings, cache: dict[str, Any]) -> None:
+    path = _storage_cache_path(team)
+    os.makedirs(team.data_dir, exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(cache, f, indent=2)
+        f.write("\n")
+    os.replace(tmp, path)
+
+
+def _dir_size_bytes(path: str, skip_dirs: set[str] | None = None) -> int:
+    """Sum file sizes under ``path``, pruning any directory in ``skip_dirs``."""
+    skip = skip_dirs or set()
+    total = 0
+    for dirpath, dirnames, filenames in os.walk(path, onerror=lambda e: None):
+        dirnames[:] = [d for d in dirnames if os.path.join(dirpath, d) not in skip]
+        for name in filenames:
+            try:
+                total += os.lstat(os.path.join(dirpath, name)).st_size
+            except OSError:
+                continue
+    return total
+
+
+def _env_merged_filestore_skip(env_name: str, team: TeamSettings) -> set[str]:
+    """The overlay's merged view includes the template's read-only lower layer;
+    only the upper layer is data this environment actually adds, so the merged
+    mountpoint is excluded from disk sizing (it would also double-count the
+    upper layer)."""
+    paths = get_filestore_paths(env_name, team.workspaces_dir)
+    if os.path.isdir(paths["upper"]):
+        return {paths["merged"]}
+    return set()
+
+
+def _env_db_size_bytes(settings: Settings, team: TeamSettings, env_name: str) -> int:
+    from oduflow.docker_ops.system_ops import _exec_sql
+
+    db_name = get_db_name(env_name, team.team_id)
+    out = _exec_sql(
+        get_client(),
+        settings,
+        "SELECT COALESCE((SELECT pg_database_size(datname) FROM pg_database "
+        f"WHERE datname = '{db_name}'), 0);",
+    )
+    return int(out) if out.strip().isdigit() else 0
+
+
+def compute_env_storage(
+    settings: Settings, team: TeamSettings, env_name: str
+) -> dict[str, Any]:
+    """Measure one environment: database size (one catalog query) and workspace
+    disk size (full walk — seconds on large filestores, hence the cache)."""
+    workspace = get_workspace_path(env_name, team.workspaces_dir)
+    disk = 0
+    if os.path.isdir(workspace):
+        disk = _dir_size_bytes(workspace, _env_merged_filestore_skip(env_name, team))
+    return {
+        "db_bytes": _env_db_size_bytes(settings, team, env_name),
+        "disk_bytes": disk,
+        "computed_at": _utcnow_iso(),
+    }
+
+
+def refresh_env_storage(
+    settings: Settings, team: TeamSettings, env_name: str
+) -> dict[str, Any]:
+    """Recompute one environment's storage entry and persist it in the cache."""
+    entry = compute_env_storage(settings, team, env_name)
+    cache = read_storage_cache(team)
+    cache["envs"][env_name] = entry
+    _write_storage_cache(team, cache)
+    return entry
+
+
+def refresh_team_storage(settings: Settings, team: TeamSettings) -> dict[str, Any]:
+    """Recompute storage for every environment plus team totals.
+
+    The team disk total covers the whole team data dir (workspaces, templates,
+    shared repos, dumps) minus overlay merged views; the team DB total is the
+    same single pg_database catalog query the quota check uses. This is the
+    entry point external billing tooling calls per team.
+    """
+    from oduflow.docker_ops import env_ops
+    from oduflow.docker_ops.system_ops import get_team_db_usage_bytes
+
+    env_names = [e["env_name"] for e in env_ops.list_environments(settings, team)]
+    envs = {name: compute_env_storage(settings, team, name) for name in env_names}
+
+    skip: set[str] = set()
+    for name in env_names:
+        skip |= _env_merged_filestore_skip(name, team)
+    cache = {
+        "envs": envs,
+        "team": {
+            "db_bytes": get_team_db_usage_bytes(get_client(), settings, team.team_id),
+            "disk_bytes": _dir_size_bytes(team.data_dir, skip),
+            "computed_at": _utcnow_iso(),
+        },
+    }
+    _write_storage_cache(team, cache)
+    return cache
