@@ -23,7 +23,11 @@ from oduflow.docker_ops.system_ops import (
     _drop_pg_role,
     _exec_sql,
     _resolve_instance_conf,
+    check_db_quota,
+    ensure_team_tablespace,
+    ensure_team_network,
 )
+from oduflow.docker_ops.stats import default_env_limits
 from oduflow.env_credentials import create_credentials, load_credentials
 from oduflow.errors import (
     ConflictError,
@@ -38,6 +42,7 @@ from oduflow.naming import (
     get_env_hostname,
     get_filestore_paths,
     get_repo_path,
+    get_team_network_name,
     get_resource_name,
     get_template_db_name,
     get_workspace_path,
@@ -351,7 +356,9 @@ def remount_template_overlays(
         if not os.path.ismount(merged):
             continue
 
-        container_name = get_resource_name(env_name, "odoo", settings.prefix)
+        container_name = get_resource_name(
+            env_name, "odoo", settings.prefix, team.team_id
+        )
         image = env.get("odoo_image") or "odoo:19.0"
         was_running = False
         try:
@@ -533,7 +540,9 @@ def _cleanup_old_environment(
     team: TeamSettings,
     env_name: str,
 ) -> None:
-    odoo_container_name = get_resource_name(env_name, "odoo", settings.prefix)
+    odoo_container_name = get_resource_name(
+        env_name, "odoo", settings.prefix, team.team_id
+    )
     try:
         old = client.containers.get(odoo_container_name)
         old.stop()
@@ -575,6 +584,7 @@ def _cleanup_old_environment(
 def _init_empty_database(
     client: DockerClient,
     settings: Settings,
+    team: TeamSettings,
     odoo_image: str,
     env_db: str,
     odoo_env: dict,
@@ -592,7 +602,7 @@ def _init_empty_database(
     the pg catalog). ``-i base`` is explicit, so it works regardless of whether
     the image build auto-initializes an empty DB on plain ``-d``.
     """
-    init_name = get_resource_name(env_name, "odoo-init", settings.prefix)
+    init_name = get_resource_name(env_name, "odoo-init", settings.prefix, team.team_id)
     try:
         client.containers.get(init_name).remove(force=True)
     except docker.errors.NotFound:
@@ -602,7 +612,8 @@ def _init_empty_database(
         image=odoo_image,
         name=init_name,
         detach=True,
-        network=settings.shared_network,
+        network=get_team_network_name(team.team_id, settings.prefix),
+        **default_env_limits(),
         environment=odoo_env,
         volumes=odoo_volumes,
         command=f"odoo -d {env_db} -i base --stop-after-init --no-http",
@@ -668,7 +679,9 @@ def create_environment(
 
     _ensure_system_ready(client, settings, team, template_name)
 
-    odoo_container_name = get_resource_name(env_name, "odoo", settings.prefix)
+    odoo_container_name = get_resource_name(
+        env_name, "odoo", settings.prefix, team.team_id
+    )
     try:
         existing = client.containers.get(odoo_container_name)
         if existing.status == "running":
@@ -712,6 +725,9 @@ def create_environment(
                 "that does not normalise to the same database."
             )
 
+    check_db_quota(client, settings, team)
+    ensure_team_network(client, settings, team)
+
     _cleanup_old_environment(client, settings, team, env_name)
     workspace_path = get_workspace_path(env_name, team.workspaces_dir)
     # Live-mount mode: bind-mount the agent's own checkout
@@ -754,7 +770,7 @@ def create_environment(
 
     if settings.routing_mode == "traefik":
         slug = slugify_branch(env_name)
-        traefik_router = f"oduflow-{slug}"
+        traefik_router = f"oduflow-{team.team_id}-{slug}"
         traefik_host = get_env_hostname(env_name, team.hostname)
         labels.update(
             {
@@ -764,6 +780,9 @@ def create_environment(
                 f"traefik.http.routers.{traefik_router}.tls": "true",
                 f"traefik.http.routers.{traefik_router}.tls.certresolver": "letsencrypt",
                 f"traefik.http.services.{traefik_router}.loadbalancer.server.port": "8069",
+                "traefik.docker.network": get_team_network_name(
+                    team.team_id, settings.prefix
+                ),
             }
         )
 
@@ -855,18 +874,19 @@ def create_environment(
             container_path = f"/mnt/extra-addons-{repo_name}"
             extra_mount_paths.append((wt_path, container_path))
 
+    ts_name = ensure_team_tablespace(client, settings, team)
     if template_name is not None:
         tpl_db = get_template_db_name(template_name, team.team_id)
         _exec_sql(
             client,
             settings,
-            f'CREATE DATABASE "{env_db}" TEMPLATE "{tpl_db}";',
+            f'CREATE DATABASE "{env_db}" TEMPLATE "{tpl_db}" TABLESPACE "{ts_name}";',
         )
     else:
         _exec_sql(
             client,
             settings,
-            f'CREATE DATABASE "{env_db}";',
+            f'CREATE DATABASE "{env_db}" TABLESPACE "{ts_name}";',
         )
 
     env_creds = create_credentials(env_name, team.team_id, team.workspaces_dir)
@@ -1035,7 +1055,8 @@ def create_environment(
         image=odoo_image,
         name=odoo_container_name,
         detach=True,
-        network=settings.shared_network,
+        network=get_team_network_name(team.team_id, settings.prefix),
+        **default_env_limits(),
         environment=odoo_env,
         labels=labels,
         volumes=odoo_volumes,
@@ -1065,7 +1086,14 @@ def create_environment(
         )
         setup_logs.append(
             _init_empty_database(
-                client, settings, odoo_image, env_db, odoo_env, odoo_volumes, env_name
+                client,
+                settings,
+                team,
+                odoo_image,
+                env_db,
+                odoo_env,
+                odoo_volumes,
+                env_name,
             )
         )
 
@@ -1180,7 +1208,7 @@ def protect_environment(
 ) -> dict[str, Any]:
     """Mark environment as protected by creating .protected marker file."""
     client = get_client()
-    container_name = get_resource_name(env_name, "odoo", settings.prefix)
+    container_name = get_resource_name(env_name, "odoo", settings.prefix, team.team_id)
     try:
         client.containers.get(container_name)
     except docker.errors.NotFound:
@@ -1197,7 +1225,7 @@ def unprotect_environment(
 ) -> dict[str, Any]:
     """Remove protection from environment by deleting .protected marker file."""
     client = get_client()
-    container_name = get_resource_name(env_name, "odoo", settings.prefix)
+    container_name = get_resource_name(env_name, "odoo", settings.prefix, team.team_id)
     try:
         client.containers.get(container_name)
     except docker.errors.NotFound:
@@ -1219,7 +1247,7 @@ def set_note(
 ) -> dict[str, Any]:
     """Set or clear a note for an environment."""
     client = get_client()
-    container_name = get_resource_name(env_name, "odoo", settings.prefix)
+    container_name = get_resource_name(env_name, "odoo", settings.prefix, team.team_id)
     try:
         client.containers.get(container_name)
     except docker.errors.NotFound:
@@ -1244,16 +1272,18 @@ def delete_environment(
             f"Environment '{env_name}' is protected. Unprotect it before deleting."
         )
     client = get_client()
-    odoo_container_name = get_resource_name(env_name, "odoo", settings.prefix)
+    odoo_container_name = get_resource_name(
+        env_name, "odoo", settings.prefix, team.team_id
+    )
     env_db = get_db_name(env_name, team.team_id)
     workspace_path = get_workspace_path(env_name, team.workspaces_dir)
 
     container_exists = True
     try:
         existing = client.containers.get(odoo_container_name)
-        # Container names are not team-namespaced; never stop/remove a container
-        # that belongs to another team (issue #39). Treat it as absent so this
-        # team's own DB/workspace/port are still cleaned up.
+        # Defence in depth on top of team-scoped names: never stop/remove a
+        # container that belongs to another team (issue #39). Treat it as
+        # absent so this team's own DB/workspace/port are still cleaned up.
         label = existing.labels.get(settings.team_label)
         if label is not None and label != team.team_id:
             container_exists = False
@@ -1435,16 +1465,16 @@ def wait_for_odoo_ready(
     return False
 
 
-def ensure_running(
-    settings: Settings, env_name: str, team: TeamSettings | None = None
-) -> bool:
+def ensure_running(settings: Settings, env_name: str, team: TeamSettings) -> bool:
     """Start the environment's Odoo container if it is stopped.
 
     Returns True when a start was needed (the caller may want to tell the
     agent the environment was woken up), False when it was already running.
     """
     client = get_client()
-    odoo_container_name = get_resource_name(env_name, "odoo", settings.prefix)
+    odoo_container_name = get_resource_name(
+        env_name, "odoo", settings.prefix, team.team_id
+    )
     try:
         container = client.containers.get(odoo_container_name)
     except docker.errors.NotFound:
@@ -1463,11 +1493,11 @@ def _assert_team_owns(
 ) -> None:
     """Reject operating on a container that belongs to another team.
 
-    Container names are not team-namespaced, so without this check a caller
-    scoped to one team could start/stop/restart/delete or read logs of another
-    team's identically-named environment (issue #39). The NotFound message is
-    reused so the existence of another team's env is not disclosed. Skipped when
-    team is None (internal callers that have no team in scope).
+    Defence in depth on top of team-scoped container names (issue #39): even
+    if a name unexpectedly resolves across teams, the team label must match.
+    The NotFound message is reused so the existence of another team's env is
+    not disclosed. Skipped when team is None (internal callers that have no
+    team in scope).
     """
     if team is None:
         return
@@ -1479,10 +1509,12 @@ def _assert_team_owns(
 
 
 def restart_environment(
-    settings: Settings, env_name: str, team: TeamSettings | None = None
+    settings: Settings, env_name: str, team: TeamSettings
 ) -> dict[str, str]:
     client = get_client()
-    odoo_container_name = get_resource_name(env_name, "odoo", settings.prefix)
+    odoo_container_name = get_resource_name(
+        env_name, "odoo", settings.prefix, team.team_id
+    )
 
     try:
         odoo_container = client.containers.get(odoo_container_name)
@@ -1505,7 +1537,9 @@ def stop_environment(
             f"Environment '{env_name}' is protected. Unprotect it before stopping."
         )
     client = get_client()
-    odoo_container_name = get_resource_name(env_name, "odoo", settings.prefix)
+    odoo_container_name = get_resource_name(
+        env_name, "odoo", settings.prefix, team.team_id
+    )
 
     try:
         odoo_container = client.containers.get(odoo_container_name)
@@ -1522,10 +1556,12 @@ def stop_environment(
 
 
 def start_environment(
-    settings: Settings, env_name: str, team: TeamSettings | None = None
+    settings: Settings, env_name: str, team: TeamSettings
 ) -> dict[str, str]:
     client = get_client()
-    odoo_container_name = get_resource_name(env_name, "odoo", settings.prefix)
+    odoo_container_name = get_resource_name(
+        env_name, "odoo", settings.prefix, team.team_id
+    )
 
     try:
         db_container = client.containers.get(settings.shared_db_container)
@@ -1558,7 +1594,9 @@ def get_environment_info(
     from oduflow.docker_ops.stats import _get_one_container_stats
 
     client = get_client()
-    odoo_container_name = get_resource_name(env_name, "odoo", settings.prefix)
+    odoo_container_name = get_resource_name(
+        env_name, "odoo", settings.prefix, team.team_id
+    )
 
     result: dict[str, Any] = {
         "env_name": env_name,
@@ -1678,7 +1716,9 @@ def _local_snapshot_path(env_name: str, team: TeamSettings) -> str:
     )
 
 
-def _load_local_snapshot(env_name: str, team: TeamSettings) -> dict[str, dict[str, int]]:
+def _load_local_snapshot(
+    env_name: str, team: TeamSettings
+) -> dict[str, dict[str, int]]:
     snap_path = _local_snapshot_path(env_name, team)
     if not os.path.isfile(snap_path):
         return {}
@@ -1901,7 +1941,9 @@ def pull_environment(
     from oduflow.git_ops import pull_repo
 
     client = get_client()
-    odoo_container_name = get_resource_name(env_name, "odoo", settings.prefix)
+    odoo_container_name = get_resource_name(
+        env_name, "odoo", settings.prefix, team.team_id
+    )
 
     try:
         container_obj = client.containers.get(odoo_container_name)
@@ -2055,7 +2097,9 @@ def update_environment(
     comes from the image itself.
     """
     client = get_client()
-    odoo_container_name = get_resource_name(env_name, "odoo", settings.prefix)
+    odoo_container_name = get_resource_name(
+        env_name, "odoo", settings.prefix, team.team_id
+    )
 
     # ------------------------------------------------------------------
     # 1. Look up existing container and extract its configuration
@@ -2226,7 +2270,8 @@ def update_environment(
         image=odoo_image,
         name=odoo_container_name,
         detach=True,
-        network=settings.shared_network,
+        network=get_team_network_name(team.team_id, settings.prefix),
+        **default_env_limits(),
         environment=env_dict,
         labels=labels,
         volumes=volumes,

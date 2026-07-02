@@ -124,9 +124,10 @@ class TestOduflowOAuthProvider:
         assert client is not None
         # Legitimate MCP callbacks are accepted: https (claude.ai) and loopback
         # http (IDEs).
-        assert str(
-            client.validate_redirect_uri(AnyUrl("https://claude.ai/some/cb"))
-        ) == "https://claude.ai/some/cb"
+        assert (
+            str(client.validate_redirect_uri(AnyUrl("https://claude.ai/some/cb")))
+            == "https://claude.ai/some/cb"
+        )
         assert client.validate_redirect_uri(AnyUrl("http://127.0.0.1:8976/cb"))
 
     def test_redirect_uri_rejects_dangerous_and_cleartext(self):

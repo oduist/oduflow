@@ -46,9 +46,22 @@ def get_db_name(env_name: str, team_id: str = "1") -> str:
 
 
 def get_resource_name(
-    env_name: str, resource_type: str, prefix: str = "oduflow-"
+    env_name: str, resource_type: str, prefix: str, team_id: str
 ) -> str:
-    return f"{prefix}{env_name.replace('/', '-')}-{resource_type}"
+    """Docker container name for an environment resource.
+
+    Team-scoped (naming v2): two teams using the same branch name must never
+    collide on — or worse, operate on — each other's containers. Existing
+    containers are renamed to this scheme by startup migration
+    0001-team-scoped-container-names.
+    """
+    return f"{prefix}{team_id}-{env_name.replace('/', '-')}-{resource_type}"
+
+
+def get_service_container_name(name: str, prefix: str, team_id: str) -> str:
+    """Docker container name for an auxiliary service (team-scoped, see
+    get_resource_name)."""
+    return f"{prefix}{team_id}-svc-{name}"
 
 
 def get_workspace_path(env_name: str, workspaces_dir: str) -> str:
@@ -63,6 +76,20 @@ def get_env_hostname(env_name: str, hostname: str) -> str:
     slug = slugify_branch(env_name).replace("_", "-")
     slug = re.sub(r"-+", "-", slug).strip("-")
     return f"{slug}.{hostname}"
+
+
+def get_team_network_name(team_id: str, prefix: str = "oduflow-") -> str:
+    """The team's isolated Docker network. Environment and service containers
+    join only this network; shared infrastructure (PostgreSQL, Traefik) is
+    additionally attached to every team network, so tenants can reach the
+    infra but never each other."""
+    return f"{prefix}{team_id}-net"
+
+
+def get_tablespace_name(team_id: str) -> str:
+    """PostgreSQL tablespace holding all of the team's databases (its files
+    live under base_data_dir/pg_tablespaces/team_{id} on the host)."""
+    return f"oduflow_team_{team_id}"
 
 
 def get_template_db_name(template_name: str, team_id: str = "1") -> str:

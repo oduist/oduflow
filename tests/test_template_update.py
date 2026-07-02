@@ -81,8 +81,8 @@ def _build(tmp_path, envs, mounted_envs, statuses=None):
         env_dicts.append(
             {"env_name": env_name, "template_name": tpl, "odoo_image": "odoo:17.0"}
         )
-        mapping[get_resource_name(env_name, "odoo", settings.prefix)] = FakeContainer(
-            status=statuses.get(env_name, "running")
+        mapping[get_resource_name(env_name, "odoo", settings.prefix, team.team_id)] = (
+            FakeContainer(status=statuses.get(env_name, "running"))
         )
         if env_name in mounted_envs:
             mounted.add(paths["merged"])
@@ -100,8 +100,9 @@ def _patched(team, env_dicts, mounted):
     mount_mock = MagicMock()
     with (
         patch.object(env_ops, "list_environments", return_value=env_dicts),
-        patch.object(env_ops, "_unmount_filestore", side_effect=fake_unmount)
-        as unmount_mock,
+        patch.object(
+            env_ops, "_unmount_filestore", side_effect=fake_unmount
+        ) as unmount_mock,
         patch.object(env_ops, "_mount_filestore", mount_mock),
         patch("os.path.ismount", side_effect=lambda p: p in mounted),
     ):
@@ -150,9 +151,7 @@ class TestRemountTemplateOverlays:
 
         # Delta removed, upper dir recreated empty.
         assert not os.path.exists(_marker(team, "env1"))
-        assert os.path.isdir(
-            get_filestore_paths("env1", team.workspaces_dir)["upper"]
-        )
+        assert os.path.isdir(get_filestore_paths("env1", team.workspaces_dir)["upper"])
         assert mount_mock.call_count == 1
 
     def test_skips_other_template_and_unmounted(self, tmp_path):
@@ -212,7 +211,7 @@ class TestRemountTemplateOverlays:
         # Still unmounted + remounted, but never started back up.
         assert unmount_mock.call_count == 1
         assert mount_mock.call_count == 1
-        container = mapping[get_resource_name("env1", "odoo", settings.prefix)]
+        container = mapping[get_resource_name("env1", "odoo", settings.prefix, "1")]
         assert container.start_calls == 0
 
     def test_partial_unmount_failure_isolated(self, tmp_path):

@@ -114,8 +114,7 @@ def _needs_system(scenario: dict) -> bool:
 
 def _needs_main_environment(scenario: dict) -> bool:
     return (
-        scenario.get("needs_env", False)
-        or scenario.get("tool") == "delete_environment"
+        scenario.get("needs_env", False) or scenario.get("tool") == "delete_environment"
     )
 
 

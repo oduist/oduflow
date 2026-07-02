@@ -76,9 +76,7 @@ def record_startup(etc_dir: str, version: str, disable_telemetry: bool) -> str:
     return instance_id
 
 
-def record_env_created(
-    instance_id: str, version: str, disable_telemetry: bool
-) -> None:
+def record_env_created(instance_id: str, version: str, disable_telemetry: bool) -> None:
     """Record an env_created event."""
     if disable_telemetry or not instance_id:
         return

@@ -199,9 +199,7 @@ def test_login_rate_limited_after_repeated_failures():
     # Issue #56: the login endpoint must throttle brute-force attempts.
     client = TestClient(_full_app(_settings()))
     for _ in range(10):
-        resp = client.post(
-            "/login", data={"password": "nope"}, follow_redirects=False
-        )
+        resp = client.post("/login", data={"password": "nope"}, follow_redirects=False)
         assert resp.status_code == 401
     # The 11th attempt (and beyond) is locked out, even with the right password.
     resp = client.post("/login", data={"password": _PW}, follow_redirects=False)
@@ -256,9 +254,7 @@ def test_api_license_activate_uses_settings_etc_dir(tmp_path, monkeypatch):
             email="ada@example.com",
         )
 
-    monkeypatch.setattr(
-        web_ui, "install_license_from_text", install_license_from_text
-    )
+    monkeypatch.setattr(web_ui, "install_license_from_text", install_license_from_text)
     settings = _settings(etc_dir=str(tmp_path / "conf"))
     client = TestClient(_full_app(settings))
 

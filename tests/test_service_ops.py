@@ -3,7 +3,7 @@ import docker
 from unittest.mock import MagicMock, patch
 
 from oduflow.docker_ops import service_ops, system_ops
-from oduflow.errors import ConflictError, NotFoundError, PrerequisiteNotMetError
+from oduflow.errors import ConflictError, NotFoundError
 from oduflow.settings import Settings, TeamSettings
 
 TEST_TEAM = TeamSettings(
@@ -20,6 +20,17 @@ TEST_SETTINGS = Settings(
     db_password="odoo",
     teams={"1": TEST_TEAM},
 )
+
+
+@pytest.fixture(autouse=True)
+def _fake_team_network(monkeypatch):
+    # Network provisioning is covered by tests/test_team_networks.py; here it
+    # would only consume the mocked docker client's side_effect iterators.
+    monkeypatch.setattr(
+        "oduflow.docker_ops.system_ops.ensure_team_network",
+        lambda client, settings, team: f"oduflow-{team.team_id}-net",
+    )
+
 
 TRAEFIK_TEAM = TeamSettings(
     team_id="1",
@@ -65,14 +76,14 @@ class TestCreateService:
         )
 
         assert result["name"] == "redis"
-        assert result["container_name"] == "oduflow-svc-redis"
+        assert result["container_name"] == "oduflow-1-svc-redis"
         assert result["url"] == "http://localhost:6379"
         assert result["image"] == "redis:7"
 
         run_kwargs = mock_docker_client.containers.run.call_args
-        assert run_kwargs[1]["name"] == "oduflow-svc-redis"
+        assert run_kwargs[1]["name"] == "oduflow-1-svc-redis"
         assert run_kwargs[1]["image"] == "redis:7"
-        assert run_kwargs[1]["network"] == "oduflow-net"
+        assert run_kwargs[1]["network"] == "oduflow-1-net"
         assert run_kwargs[1]["ports"] == {"6379/tcp": 6379}
         assert run_kwargs[1]["labels"]["oduflow.managed"] == "true"
         assert run_kwargs[1]["labels"]["oduflow.service"] == "redis"
@@ -98,12 +109,12 @@ class TestCreateService:
         labels = run_kwargs[1]["labels"]
         assert labels["traefik.enable"] == "true"
         assert (
-            labels["traefik.http.routers.oduflow-svc-meilisearch.rule"]
+            labels["traefik.http.routers.oduflow-1-svc-meilisearch.rule"]
             == "Host(`meilisearch.example.com`)"
         )
         assert (
             labels[
-                "traefik.http.services.oduflow-svc-meilisearch.loadbalancer.server.port"
+                "traefik.http.services.oduflow-1-svc-meilisearch.loadbalancer.server.port"
             ]
             == "7700"
         )
@@ -127,7 +138,7 @@ class TestCreateService:
         assert result["url"] == "https://my-redis.example.com"
         labels = mock_docker_client.containers.run.call_args[1]["labels"]
         assert (
-            labels["traefik.http.routers.oduflow-svc-redis.rule"]
+            labels["traefik.http.routers.oduflow-1-svc-redis.rule"]
             == "Host(`my-redis.example.com`)"
         )
 
@@ -172,26 +183,16 @@ class TestCreateService:
 
         mock_docker_client.containers.run.assert_not_called()
 
-    def test_create_network_missing(self, mock_docker_client):
-        mock_docker_client.networks.get.side_effect = docker.errors.NotFound("nf")
-
-        with pytest.raises(PrerequisiteNotMetError, match="not initialized"):
-            service_ops.create_service(
-                TEST_SETTINGS, TEST_TEAM, "redis", "redis:7", 6379
-            )
-
-        mock_docker_client.containers.run.assert_not_called()
-
 
 class TestDeleteService:
     def test_delete(self, mock_docker_client):
         container = MagicMock()
         mock_docker_client.containers.get.return_value = container
 
-        result = service_ops.delete_service(TEST_SETTINGS, "redis")
+        result = service_ops.delete_service(TEST_SETTINGS, TEST_TEAM, "redis")
 
         assert result["name"] == "redis"
-        assert result["container_name"] == "oduflow-svc-redis"
+        assert result["container_name"] == "oduflow-1-svc-redis"
         container.stop.assert_called_once()
         container.remove.assert_called_once_with(v=True)
 
@@ -199,7 +200,7 @@ class TestDeleteService:
         mock_docker_client.containers.get.side_effect = docker.errors.NotFound("nf")
 
         with pytest.raises(NotFoundError, match="Service 'redis' not found"):
-            service_ops.delete_service(TEST_SETTINGS, "redis")
+            service_ops.delete_service(TEST_SETTINGS, TEST_TEAM, "redis")
 
 
 class TestListServices:
@@ -209,7 +210,7 @@ class TestListServices:
             "oduflow.managed": "true",
             "oduflow.service": "redis",
         }
-        container.name = "oduflow-svc-redis"
+        container.name = "oduflow-1-svc-redis"
         container.status = "running"
         container.image.tags = ["redis:7"]
         container.attrs = {
@@ -225,7 +226,7 @@ class TestListServices:
         assert len(result) == 1
         svc = result[0]
         assert svc["name"] == "redis"
-        assert svc["container_name"] == "oduflow-svc-redis"
+        assert svc["container_name"] == "oduflow-1-svc-redis"
         assert svc["image"] == "redis:7"
         assert svc["status"] == "running"
         assert svc["port"] == 6379
@@ -239,10 +240,10 @@ class TestListServices:
             "oduflow.managed": "true",
             "oduflow.service": "meili",
             "traefik.enable": "true",
-            "traefik.http.routers.oduflow-svc-meili.rule": "Host(`meili.example.com`)",
-            "traefik.http.services.oduflow-svc-meili.loadbalancer.server.port": "7700",
+            "traefik.http.routers.oduflow-1-svc-meili.rule": "Host(`meili.example.com`)",
+            "traefik.http.services.oduflow-1-svc-meili.loadbalancer.server.port": "7700",
         }
-        container.name = "oduflow-svc-meili"
+        container.name = "oduflow-1-svc-meili"
         container.status = "running"
         container.image.tags = ["getmeili/meilisearch:v1.6"]
         container.attrs = {"Config": {"Env": []}}
@@ -275,7 +276,7 @@ class TestListServices:
     def test_list_env_var_filtering(self, mock_docker_client):
         container = MagicMock()
         container.labels = {"oduflow.managed": "true", "oduflow.service": "meili"}
-        container.name = "oduflow-svc-meili"
+        container.name = "oduflow-1-svc-meili"
         container.status = "running"
         container.image.tags = ["getmeili/meilisearch:v1.6"]
         container.attrs = {
@@ -307,7 +308,7 @@ class TestListServices:
         """When image.tags is empty, fall back to Config.Image."""
         container = MagicMock()
         container.labels = {"oduflow.managed": "true", "oduflow.service": "redis"}
-        container.name = "oduflow-svc-redis"
+        container.name = "oduflow-1-svc-redis"
         container.status = "running"
         container.image.tags = []
         container.attrs = {
@@ -324,7 +325,7 @@ class TestListServices:
         """Port key exists but no host mappings."""
         container = MagicMock()
         container.labels = {"oduflow.managed": "true", "oduflow.service": "redis"}
-        container.name = "oduflow-svc-redis"
+        container.name = "oduflow-1-svc-redis"
         container.status = "exited"
         container.image.tags = ["redis:7"]
         container.attrs = {
@@ -374,12 +375,15 @@ class TestUpdateService:
             ],
         }
 
-        with patch(
-            "oduflow.docker_ops.service_ops.service_presets.get_preset",
-            return_value=preset,
-        ), patch(
-            "oduflow.docker_ops.service_ops.volume_ops.resolve_volume_binds",
-            return_value={"vol1": {"bind": "/acme", "mode": "ro"}},
+        with (
+            patch(
+                "oduflow.docker_ops.service_ops.service_presets.get_preset",
+                return_value=preset,
+            ),
+            patch(
+                "oduflow.docker_ops.service_ops.volume_ops.resolve_volume_binds",
+                return_value={"vol1": {"bind": "/acme", "mode": "ro"}},
+            ),
         ):
             result = service_ops.update_service(TEST_SETTINGS, TEST_TEAM, "redis")
 
@@ -417,13 +421,16 @@ class TestUpdateService:
             "volumes": volumes,
         }
 
-        with patch(
-            "oduflow.docker_ops.service_ops.service_presets.get_preset",
-            return_value=preset,
-        ), patch(
-            "oduflow.docker_ops.service_ops.volume_ops.resolve_volume_binds",
-            return_value={"vol1": {"bind": "/acme", "mode": "ro"}},
-        ) as mock_resolve:
+        with (
+            patch(
+                "oduflow.docker_ops.service_ops.service_presets.get_preset",
+                return_value=preset,
+            ),
+            patch(
+                "oduflow.docker_ops.service_ops.volume_ops.resolve_volume_binds",
+                return_value={"vol1": {"bind": "/acme", "mode": "ro"}},
+            ) as mock_resolve,
+        ):
             service_ops.update_service(TEST_SETTINGS, TEST_TEAM, "redis")
             mock_resolve.assert_called_once_with(TEST_TEAM, volumes)
 
@@ -434,9 +441,7 @@ class TestUpdateService:
             labels={"oduflow.managed": "true", "oduflow.service": "redis"},
             attrs={
                 "NetworkSettings": {
-                    "Ports": {
-                        "6379/tcp": [{"HostIp": "0.0.0.0", "HostPort": "6379"}]
-                    }
+                    "Ports": {"6379/tcp": [{"HostIp": "0.0.0.0", "HostPort": "6379"}]}
                 },
                 "Config": {
                     "Env": ["REDIS_PASSWORD=secret", "PATH=/usr/bin", "HOME=/root"]
@@ -475,8 +480,8 @@ class TestUpdateService:
             labels={
                 "oduflow.managed": "true",
                 "oduflow.service": "meili",
-                "traefik.http.routers.oduflow-svc-meili.rule": "Host(`meili.example.com`)",
-                "traefik.http.services.oduflow-svc-meili.loadbalancer.server.port": "7700",
+                "traefik.http.routers.oduflow-1-svc-meili.rule": "Host(`meili.example.com`)",
+                "traefik.http.services.oduflow-1-svc-meili.loadbalancer.server.port": "7700",
             },
             attrs={"Config": {"Env": ["MEILI_MASTER_KEY=abc"]}},
         )
@@ -500,9 +505,7 @@ class TestUpdateService:
             "oduflow.docker_ops.service_ops.service_presets.get_preset",
             return_value=preset,
         ):
-            result = service_ops.update_service(
-                TRAEFIK_SETTINGS, TRAEFIK_TEAM, "meili"
-            )
+            result = service_ops.update_service(TRAEFIK_SETTINGS, TRAEFIK_TEAM, "meili")
 
         assert result["url"] == "https://meili.example.com"
         mock_docker_client.images.pull.assert_any_call("getmeili/meilisearch:v1.6")
@@ -510,7 +513,7 @@ class TestUpdateService:
         run_kwargs = mock_docker_client.containers.run.call_args
         labels = run_kwargs[1]["labels"]
         assert (
-            labels["traefik.http.routers.oduflow-svc-meili.rule"]
+            labels["traefik.http.routers.oduflow-1-svc-meili.rule"]
             == "Host(`meili.example.com`)"
         )
 
@@ -610,9 +613,7 @@ class TestUpdateService:
             "oduflow.docker_ops.service_ops.service_presets.get_preset",
             return_value=preset,
         ):
-            result = service_ops.update_service(
-                TRAEFIK_SETTINGS, TRAEFIK_TEAM, "meili"
-            )
+            result = service_ops.update_service(TRAEFIK_SETTINGS, TRAEFIK_TEAM, "meili")
 
         assert result["image_updated"] is False
         assert result["url"] == "https://meili.example.com"
@@ -1002,7 +1003,7 @@ class TestUpdateService:
 class TestGetServiceInfo:
     def _make_container(self, image_tags, image_id, labels, attrs, status="running"):
         container = MagicMock()
-        container.name = labels.get("__name") or "oduflow-svc-redis"
+        container.name = labels.get("__name") or "oduflow-1-svc-redis"
         container.image.tags = image_tags
         container.image.id = image_id
         container.labels = {k: v for k, v in labels.items() if k != "__name"}
@@ -1015,7 +1016,7 @@ class TestGetServiceInfo:
             image_tags=["redis:7"],
             image_id="sha256:abc123def456",
             labels={
-                "__name": "oduflow-svc-redis",
+                "__name": "oduflow-1-svc-redis",
                 "oduflow.managed": "true",
                 "oduflow.service": "redis",
             },
@@ -1027,9 +1028,7 @@ class TestGetServiceInfo:
                     ]
                 },
                 "NetworkSettings": {
-                    "Ports": {
-                        "6379/tcp": [{"HostIp": "0.0.0.0", "HostPort": "6379"}]
-                    }
+                    "Ports": {"6379/tcp": [{"HostIp": "0.0.0.0", "HostPort": "6379"}]}
                 },
                 "Mounts": [
                     {
@@ -1053,7 +1052,7 @@ class TestGetServiceInfo:
             info = service_ops.get_service_info(TEST_SETTINGS, TEST_TEAM, "redis")
 
         assert info["name"] == "redis"
-        assert info["container_name"] == "oduflow-svc-redis"
+        assert info["container_name"] == "oduflow-1-svc-redis"
         assert info["image"] == "redis:7"
         assert info["image_digest"] == "sha256:abc123def456"
         assert info["status"] == "running"
@@ -1075,11 +1074,11 @@ class TestGetServiceInfo:
             image_tags=["getmeili/meilisearch:v1.6"],
             image_id="sha256:meili123",
             labels={
-                "__name": "oduflow-svc-meili",
+                "__name": "oduflow-1-svc-meili",
                 "oduflow.managed": "true",
                 "oduflow.service": "meili",
-                "traefik.http.routers.oduflow-svc-meili.rule": "Host(`meili.example.com`)",
-                "traefik.http.services.oduflow-svc-meili.loadbalancer.server.port": "7700",
+                "traefik.http.routers.oduflow-1-svc-meili.rule": "Host(`meili.example.com`)",
+                "traefik.http.services.oduflow-1-svc-meili.loadbalancer.server.port": "7700",
             },
             attrs={
                 "Config": {"Env": ["MEILI_MASTER_KEY=abc"]},
@@ -1095,9 +1094,7 @@ class TestGetServiceInfo:
             "oduflow.docker_ops.service_ops.service_presets.get_preset",
             side_effect=NotFoundError("no preset"),
         ):
-            info = service_ops.get_service_info(
-                TRAEFIK_SETTINGS, TRAEFIK_TEAM, "meili"
-            )
+            info = service_ops.get_service_info(TRAEFIK_SETTINGS, TRAEFIK_TEAM, "meili")
 
         assert info["hostname"] == "meili.example.com"
         assert info["url"] == "https://meili.example.com"
@@ -1111,7 +1108,7 @@ class TestGetServiceInfo:
             service_ops.get_service_info(TEST_SETTINGS, TEST_TEAM, "redis")
 
     def test_get_service_info_not_managed(self, mock_docker_client):
-        """A container with name oduflow-svc-X but no oduflow.service label is rejected."""
+        """A container with name oduflow-1-svc-X but no oduflow.service label is rejected."""
         container = self._make_container(
             image_tags=["redis:7"],
             image_id="sha256:abc",
@@ -1137,7 +1134,7 @@ class TestGetServiceLogs:
         )
         mock_docker_client.containers.get.return_value = container
 
-        output = service_ops.get_service_logs(TEST_SETTINGS, "redis", 50)
+        output = service_ops.get_service_logs(TEST_SETTINGS, TEST_TEAM, "redis", 50)
 
         assert "log line 1" in output
         assert "log line 2" in output
@@ -1148,7 +1145,7 @@ class TestGetServiceLogs:
         container.logs.return_value = b"line"
         mock_docker_client.containers.get.return_value = container
 
-        service_ops.get_service_logs(TEST_SETTINGS, "redis")
+        service_ops.get_service_logs(TEST_SETTINGS, TEST_TEAM, "redis")
 
         container.logs.assert_called_with(tail=100, timestamps=True)
 
@@ -1156,14 +1153,14 @@ class TestGetServiceLogs:
         mock_docker_client.containers.get.side_effect = docker.errors.NotFound("nf")
 
         with pytest.raises(NotFoundError, match="Service 'redis' not found"):
-            service_ops.get_service_logs(TEST_SETTINGS, "redis")
+            service_ops.get_service_logs(TEST_SETTINGS, TEST_TEAM, "redis")
 
 
 class TestDestroyBlockedByServices:
     def test_destroy_with_active_services(self, mock_docker_client):
         container = MagicMock()
         container.labels = {"oduflow.service": "redis", "oduflow.managed": "true"}
-        container.name = "oduflow-svc-redis"
+        container.name = "oduflow-1-svc-redis"
         mock_docker_client.containers.list.return_value = [container]
 
         with pytest.raises(ConflictError, match="Active environments/services exist"):

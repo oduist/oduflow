@@ -318,9 +318,7 @@ class TestResolveVolumeBinds:
 
         mock_docker_client.volumes.get.side_effect = _get
 
-        mounts = [
-            {"volume": "my-external-data", "mount_path": "/data", "mode": "ro"}
-        ]
+        mounts = [{"volume": "my-external-data", "mount_path": "/data", "mode": "ro"}]
         result = volume_ops.resolve_volume_binds(TEST_TEAM, mounts)
 
         assert "my-external-data" in result

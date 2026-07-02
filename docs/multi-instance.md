@@ -1,6 +1,6 @@
 # Multi-Team Support
 
-Oduflow supports running **multiple isolated teams** within a single server instance. Each team has its own environments, templates, services, credentials, and port registry, while sharing the Docker network and PostgreSQL container.
+Oduflow supports running **multiple isolated teams** within a single server instance. Each team has its own environments, templates, services, credentials, port registry, Docker network, and PostgreSQL tablespace; the PostgreSQL and Traefik containers are the only shared infrastructure.
 
 ## Configuration
 
@@ -49,12 +49,68 @@ When an MCP tool is called, Oduflow resolves the team using the following priori
 3. **Single team** — if only one team is configured, uses it automatically
 4. **Default** — falls back to team `"1"`
 
+Steps 3–4 apply to the stdio transport (implicit local single user) only. In
+HTTP mode a request that matches no token and no hostname is rejected, so it
+can never land in another team's context — unless `allow_insecure_http = true`
+explicitly opts out (e.g. behind your own auth proxy). HTTP mode with multiple
+teams also requires a non-empty `auth_token` for every team at startup.
+
+## Quotas
+
+Each team can carry resource quotas (`0` disables a quota):
+
+```toml
+[team.1]
+db_quota_gb = 50      # default: 50
+disk_quota_gb = 0     # default: 0 (off)
+```
+
+- `db_quota_gb` caps the combined size of the team's PostgreSQL databases —
+  environments plus templates. It is checked before operations that create a
+  *new* database (`create_environment`, `save_as_template` of a new template,
+  `import_template_from_odoo`) with a single catalog query
+  (`pg_database_size()`), so there is no per-file scanning in the hot path.
+  Replacement operations (refresh/reload of an existing template) are not
+  gated, so a team at its quota can still shrink or refresh what it has.
+- `disk_quota_gb` caps the team's disk usage — its data dir (workspaces,
+  filestores, template dumps) **plus** its PostgreSQL tablespace — enforced
+  by the kernel via XFS project quotas. Requirements: Linux, `xfsprogs`
+  installed, and the data dir on an XFS filesystem mounted with `prjquota`.
+  Both directory trees get the same project ID, so one `bhard` limit covers
+  files and databases together; writes beyond it fail with ENOSPC while the
+  rest of the machine is unaffected. On filesystems without project-quota
+  support the limit is not enforced (one warning at startup) and usage stays
+  visible via the dashboard and `/api/usage`.
+
+## Per-Team PostgreSQL Tablespaces
+
+Each team's databases (environments and templates) live in a dedicated
+PostgreSQL tablespace, `oduflow_team_{id}`, whose files sit under
+`{data_dir}/pg_tablespaces/team_{id}/` on the host. Only that
+`pg_tablespaces/` directory is mounted into the PostgreSQL container — never
+the rest of the data dir.
+
+This makes a team's disk consumption one visible number: assign
+`team_{id}/` and `pg_tablespaces/team_{id}/` the same XFS project ID and a
+single project quota covers the team's files *and* its databases. WAL stays
+in the shared `PGDATA`, so a team hitting its quota gets aborted
+transactions, not a server-wide outage.
+
+Existing installs are converted automatically on server start (startup
+migration `0002-team-pg-tablespaces`): the PostgreSQL container is recreated
+once with the new mount (its data volume persists), then each team database
+is physically moved with `ALTER DATABASE ... SET TABLESPACE`. Expect the
+first start after the upgrade to take time proportional to the total
+database size.
+
 ## Shared vs. Per-Team Resources
 
 | Resource | Scope |
 |---|---|
-| Docker network (`oduflow-net`) | Shared |
+| Infra Docker network (`oduflow-net`) | Shared (PostgreSQL, Traefik) |
+| Team Docker network (`oduflow-{team}-net`) | Per-team — env/service containers join only their team's network; shared infra is attached to every team network |
 | PostgreSQL container (`oduflow-db`) | Shared |
+| PostgreSQL tablespace (`oduflow_team_{id}`) | Per-team |
 | Traefik container (`oduflow-traefik`) | Shared |
 | Environments (workspaces, containers) | Per-team |
 | Templates (DB snapshots, filestores) | Per-team |
@@ -63,14 +119,20 @@ When an MCP tool is called, Oduflow resolves the team using the following priori
 | Port assignments | Per-team |
 | Git credentials | Per-team |
 
-## Database Naming
+## Resource Naming
 
-Databases are namespaced by team ID:
+Databases and containers are namespaced by team ID:
 
 - Environment DB: `oduflow_{team_id}_{slugified_branch}` (e.g. `oduflow_1_feature-login`)
 - Template DB: `oduflow_template_{team_id}_{template_name}` (e.g. `oduflow_template_1_default`)
+- Environment containers: `oduflow-{team_id}-{env}-{type}` (e.g. `oduflow-1-feature-login-odoo`)
+- Service containers: `oduflow-{team_id}-svc-{name}` (e.g. `oduflow-1-svc-redis`)
 
-Containers are labeled with `oduflow.team={team_id}` for filtering.
+Containers are additionally labeled with `oduflow.team={team_id}`; listing and
+filtering are label-based, and container names are team-scoped so two teams
+can use the same branch name without colliding. Containers created by older
+versions are renamed to this scheme automatically on server start (startup
+migration `0001-team-scoped-container-names`).
 
 ## CLI Team Selection
 

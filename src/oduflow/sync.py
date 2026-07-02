@@ -49,9 +49,7 @@ def sync_template_from_source(
         )
 
     # Reload template DB
-    result = system_ops.reload_template(
-        settings, team, template_name=template_name
-    )
+    result = system_ops.reload_template(settings, team, template_name=template_name)
 
     return {
         "sync_source": source,

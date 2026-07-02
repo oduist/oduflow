@@ -67,6 +67,8 @@ MCP Clients (Cursor, Claude, etc.)
         │         └── LockManager (per-branch / per-team / system) → BusyError
         ├── web_ui.py ── Starlette dashboard + REST API + Basic auth
         ├── settings.py ── @dataclass Settings, loads from oduflow.toml (TOML)
+        ├── migrations.py ── Startup data migrations (Odoo-style, applied automatically on server start)
+        ├── quotas.py ── Per-team disk quotas (XFS project quotas)
         ├── locking.py ── LockManager with per-branch, per-team, system locks
         ├── git_ops.py ── Clone, credentials, manifest parsing
         ├── git_analysis.py ── Classify changed files → action (install/upgrade/restart/nothing)

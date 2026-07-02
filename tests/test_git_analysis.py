@@ -483,9 +483,7 @@ class TestXmlViewAttrUpgrade:
         (tmp_path / "crm" / "__manifest__.py").write_text(
             "{'name': 'CRM', 'version': '17.0.1.0.0'}"
         )
-        (module_dir / "crm_lead.xml").write_text(
-            '<form string="Lead" create="false">'
-        )
+        (module_dir / "crm_lead.xml").write_text('<form string="Lead" create="false">')
 
         from unittest.mock import patch
 

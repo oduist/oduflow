@@ -104,7 +104,9 @@ class TestCredentialsFilePermissions:
         # Find the credentials file and check perms + no leftover temp file.
         import glob
 
-        files = glob.glob(os.path.join(ws, "**", "env_credentials.json"), recursive=True)
+        files = glob.glob(
+            os.path.join(ws, "**", "env_credentials.json"), recursive=True
+        )
         assert files, "credentials file not written"
         mode = os.stat(files[0]).st_mode & 0o777
         assert mode == 0o600, oct(mode)

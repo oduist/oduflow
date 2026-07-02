@@ -25,6 +25,8 @@ from starlette.routing import Route, WebSocketRoute
 from starlette.types import ASGIApp, Receive, Scope, Send
 from starlette.websockets import WebSocket
 
+from collections.abc import Callable
+
 from oduflow.docker_ops import (
     env_ops,
     service_ops,
@@ -35,7 +37,13 @@ from oduflow.docker_ops import (
 from oduflow import activity
 from oduflow import import_tokens
 from oduflow.docker_ops.odoo_ops import get_environment_logs
-from oduflow.docker_ops.stats import get_container_stats, get_system_stats
+from oduflow.docker_ops.stats import (
+    get_container_stats,
+    get_system_stats,
+    read_storage_cache,
+    refresh_env_storage,
+    refresh_team_storage,
+)
 from oduflow.errors import BusyError, FlowError, NotFoundError
 from oduflow.locking import LockManager
 from oduflow.settings import Settings, TeamSettings
@@ -171,7 +179,7 @@ def _check_cookie_token(token: str, settings: Settings) -> "TeamSettings | None"
 
 
 class BasicAuthMiddleware:
-    def __init__(self, app: ASGIApp, get_settings: "callable") -> None:
+    def __init__(self, app: ASGIApp, get_settings: Callable[[], Settings]) -> None:
         self._app = app
         self._get_settings = get_settings
 
@@ -353,7 +361,7 @@ class _LoginRateLimiter:
 
 
 def _build_routes(
-    get_settings: "callable",
+    get_settings: Callable[[], Settings],
     locks: LockManager,
 ) -> list[Route]:
     # Per-app so test apps and real deployments don't share failure counters.
@@ -599,7 +607,7 @@ def _build_routes(
             activity.touch(team, branch)
             client = _get_client()
             odoo_container_name = env_ops.get_resource_name(
-                branch, "odoo", settings.prefix
+                branch, "odoo", settings.prefix, team.team_id
             )
             try:
                 container = client.containers.get(odoo_container_name)
@@ -802,13 +810,76 @@ def _build_routes(
     def api_stats(request: Request) -> JSONResponse:
         try:
             settings = get_settings()
-            containers = get_container_stats(settings, _get_ui_team(request))
+            team = _get_ui_team(request)
+            containers = get_container_stats(settings, team)
             system = get_system_stats()
+            # Cached only — one small JSON read; recomputing storage is an
+            # explicit action (the refresh button / the refresh endpoints).
+            storage = read_storage_cache(team)
             return JSONResponse(
-                {"ok": True, "containers": containers, "system": system}
+                {
+                    "ok": True,
+                    "containers": containers,
+                    "system": system,
+                    "storage": storage,
+                }
             )
         except Exception as e:
             logger.exception("Unexpected error in api_stats")
+            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+
+    def api_storage_refresh(request: Request) -> JSONResponse:
+        branch = request.path_params["branch"]
+        try:
+            entry = refresh_env_storage(get_settings(), _get_ui_team(request), branch)
+            return JSONResponse({"ok": True, "storage": entry})
+        except FlowError as e:
+            return _error_response(e)
+        except Exception as e:
+            logger.exception("Unexpected error in api_storage_refresh")
+            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+
+    def api_usage(request: Request) -> JSONResponse:
+        """Cached per-team usage + quotas — the read side for external
+        billing/quota tooling (see api_usage_refresh for recomputation)."""
+        try:
+            team = _get_ui_team(request)
+            return JSONResponse(
+                {
+                    "ok": True,
+                    "team_id": team.team_id,
+                    "quotas": {
+                        "db_quota_gb": team.db_quota_gb,
+                        "disk_quota_gb": team.disk_quota_gb,
+                    },
+                    "usage": read_storage_cache(team),
+                }
+            )
+        except Exception as e:
+            logger.exception("Unexpected error in api_usage")
+            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+
+    def api_usage_refresh(request: Request) -> JSONResponse:
+        """Recompute storage for every environment plus team totals. Heavy
+        (walks every workspace); meant for operator tooling on a schedule."""
+        try:
+            team = _get_ui_team(request)
+            usage = refresh_team_storage(get_settings(), team)
+            return JSONResponse(
+                {
+                    "ok": True,
+                    "team_id": team.team_id,
+                    "quotas": {
+                        "db_quota_gb": team.db_quota_gb,
+                        "disk_quota_gb": team.disk_quota_gb,
+                    },
+                    "usage": usage,
+                }
+            )
+        except FlowError as e:
+            return _error_response(e)
+        except Exception as e:
+            logger.exception("Unexpected error in api_usage_refresh")
             return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
 
     def api_templates(request: Request) -> JSONResponse:
@@ -1226,7 +1297,9 @@ def _build_routes(
     def api_service_restart(request: Request) -> JSONResponse:
         name = request.path_params["name"]
         try:
-            result = service_ops.restart_service(get_settings(), name)
+            result = service_ops.restart_service(
+                get_settings(), _get_ui_team(request), name
+            )
             return JSONResponse({"ok": True, "result": result})
         except FlowError as e:
             return _error_response(e)
@@ -1242,7 +1315,9 @@ def _build_routes(
         except BusyError as e:
             return _error_response(e)
         try:
-            result = service_ops.delete_service(get_settings(), name)
+            result = service_ops.delete_service(
+                get_settings(), _get_ui_team(request), name
+            )
             return JSONResponse({"ok": True, "result": result})
         except FlowError as e:
             return _error_response(e)
@@ -1259,7 +1334,9 @@ def _build_routes(
         except (ValueError, TypeError):
             n = 200
         try:
-            logs = service_ops.get_service_logs(get_settings(), name, n)
+            logs = service_ops.get_service_logs(
+                get_settings(), _get_ui_team(request), name, n
+            )
             return JSONResponse({"ok": True, "logs": logs})
         except FlowError as e:
             return _error_response(e)
@@ -1717,7 +1794,9 @@ def _build_routes(
             settings = get_settings()
             team = _get_ui_team(websocket)
             client = _get_client()
-            container_name = get_resource_name(branch, "odoo", settings.prefix)
+            container_name = get_resource_name(
+                branch, "odoo", settings.prefix, team.team_id
+            )
             db_name = get_db_name(branch, team.team_id)
 
             try:
@@ -1941,6 +2020,13 @@ def _build_routes(
         Route("/api/environments", api_list, methods=["GET"]),
         Route("/api/environments/create", api_create, methods=["POST"]),
         Route("/api/stats", api_stats, methods=["GET"]),
+        Route("/api/usage", api_usage, methods=["GET"]),
+        Route("/api/usage/refresh", api_usage_refresh, methods=["POST"]),
+        Route(
+            "/api/environments/{branch:path}/storage/refresh",
+            api_storage_refresh,
+            methods=["POST"],
+        ),
         Route("/api/agent-guides", api_agent_guides_list, methods=["GET"]),
         Route("/api/agent-guides/{filename}", api_agent_guide_get, methods=["GET"]),
         Route("/api/environments/{branch:path}/start", api_start, methods=["POST"]),
@@ -1999,7 +2085,7 @@ def _build_routes(
 
 def mount_web_ui(
     app,
-    get_settings: "callable",
+    get_settings: Callable[[], Settings],
     locks: LockManager,
 ) -> None:
     from starlette.routing import Router

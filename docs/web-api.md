@@ -39,6 +39,7 @@ All endpoints return JSON with an `ok` field. Authentication via HTTP Basic auth
 | `GET` | `/api/environments/{branch}/logs?n=200` | Get environment logs |
 | `POST` | `/api/environments/{branch}/protect` | Protect environment from deletion |
 | `POST` | `/api/environments/{branch}/unprotect` | Remove protection from environment |
+| `POST` | `/api/environments/{branch}/storage/refresh` | Recompute the environment's DB size and workspace disk size (cached; served via `/api/stats` and `/api/usage`) |
 | `WebSocket` | `/api/environments/{branch}/terminal` | Interactive Odoo Python shell via WebSocket (used by the Web Dashboard terminal) |
 
 ### Services
@@ -64,7 +65,9 @@ All endpoints return JSON with an `ok` field. Authentication via HTTP Basic auth
 
 | Method | Endpoint | Description |
 |---|---|---|
-| `GET` | `/api/stats` | Container CPU/RAM stats + system metrics |
+| `GET` | `/api/stats` | Container CPU/RAM stats + system metrics + cached per-environment DB/disk sizes |
+| `GET` | `/api/usage` | Cached team storage usage (per environment + team totals) and the team's quotas — the read side for external billing/quota tooling |
+| `POST` | `/api/usage/refresh` | Recompute storage for every environment plus team totals (heavy: walks every workspace); returns the same payload as `GET /api/usage` |
 | `GET` | `/api/templates` | List available template profiles |
 
 ### Extra Addons

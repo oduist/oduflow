@@ -15,12 +15,18 @@ import docker
 from docker import DockerClient
 
 from oduflow.docker_ops.client import chown_recursive, get_client, get_odoo_uid_gid
+from oduflow.docker_ops.stats import default_env_limits
 from oduflow.errors import (
     ExternalCommandError,
     NotFoundError,
     PrerequisiteNotMetError,
 )
-from oduflow.naming import get_db_name, get_template_db_name
+from oduflow.naming import (
+    get_db_name,
+    get_tablespace_name,
+    get_team_network_name,
+    get_template_db_name,
+)
 from oduflow.settings import Settings, TeamSettings
 
 logger = logging.getLogger("oduflow")
@@ -200,7 +206,6 @@ def _ensure_traefik(client: DockerClient, settings: Settings) -> None:
             "--log.level=INFO",
             "--providers.docker=true",
             "--providers.docker.exposedbydefault=false",
-            f"--providers.docker.network={settings.shared_network}",
             "--providers.file.filename=/etc/traefik/dynamic/oduflow.json",
             "--providers.file.watch=true",
             "--entrypoints.web.address=:80",
@@ -261,6 +266,55 @@ def _exec_sql(
     if exit_code != 0:
         raise ExternalCommandError("psql", exit_code, result)
     return result.strip()
+
+
+def get_team_db_usage_bytes(
+    client: DockerClient, settings: Settings, team_id: str
+) -> int:
+    """Combined on-disk size of the team's PostgreSQL databases (environments
+    and templates).
+
+    One catalog query: ``pg_database_size()`` stats the database's files under
+    PGDATA (each database is one directory there) — it does not scan table
+    contents, so this is milliseconds, not a table walk. Names are filtered in
+    Python to avoid LIKE-pattern escaping of the team id.
+    """
+    rows = _exec_sql(
+        client,
+        settings,
+        "SELECT datname, pg_database_size(datname) FROM pg_database "
+        "WHERE NOT datistemplate;",
+    )
+    prefixes = (f"oduflow_{team_id}_", f"oduflow_template_{team_id}_")
+    total = 0
+    for line in rows.splitlines():
+        name, _, size = line.partition("|")
+        if name.startswith(prefixes) and size.strip().isdigit():
+            total += int(size)
+    return total
+
+
+def check_db_quota(
+    client: DockerClient, settings: Settings, team: TeamSettings
+) -> None:
+    """Raise if the team's PostgreSQL usage is at or over its ``db_quota_gb``.
+
+    Called before operations that create a *new* database (environment or
+    template); replacement operations (refresh/reload) are not gated so a
+    team at its quota can still shrink or refresh what it has. 0 disables
+    the quota.
+    """
+    if team.db_quota_gb <= 0:
+        return
+    used = get_team_db_usage_bytes(client, settings, team.team_id)
+    quota = team.db_quota_gb * 1024**3
+    if used >= quota:
+        raise PrerequisiteNotMetError(
+            f"Team '{team.team_id}' database quota exceeded: "
+            f"{used / 1024**3:.1f} GB of {team.db_quota_gb} GB used "
+            "(db_quota_gb in oduflow.toml). Delete unused environments or "
+            "templates, or raise the quota."
+        )
 
 
 def _create_pg_role(
@@ -418,6 +472,147 @@ def _extract_archive_from_container(
         os.remove(tmp_path)
 
 
+_PG_TABLESPACES_MOUNT = "/tablespaces"
+
+
+def _pg_tablespaces_host_dir(settings: Settings) -> str:
+    return os.path.join(settings.base_data_dir, "pg_tablespaces")
+
+
+def _ensure_pg_container(
+    client: DockerClient, settings: Settings, system_labels: dict[str, str]
+) -> None:
+    """Start (or create) the shared PostgreSQL container.
+
+    Mounts only the dedicated pg_tablespaces directory into the container —
+    never the whole data dir: PostgreSQL has no business seeing team
+    workspaces or credentials. Per-team tablespace directories are created
+    inside this one mount, so adding a team never requires recreating the
+    container (see ensure_team_tablespace).
+    """
+    try:
+        db_container = client.containers.get(settings.shared_db_container)
+        if db_container.status != "running":
+            db_container.start()
+        return
+    except docker.errors.NotFound:
+        pass
+
+    tablespaces_dir = _pg_tablespaces_host_dir(settings)
+    os.makedirs(tablespaces_dir, exist_ok=True)
+    client.containers.run(
+        settings.postgres_image,
+        name=settings.shared_db_container,
+        detach=True,
+        network=settings.shared_network,
+        volumes={
+            settings.shared_db_volume: {
+                "bind": "/var/lib/postgresql/data",
+                "mode": "rw",
+            },
+            str(_resolve_conf("postgresql.conf")): {
+                "bind": "/etc/postgresql/postgresql.conf",
+                "mode": "ro",
+            },
+            tablespaces_dir: {"bind": _PG_TABLESPACES_MOUNT, "mode": "rw"},
+        },
+        command=["postgres", "-c", "config_file=/etc/postgresql/postgresql.conf"],
+        environment={
+            "POSTGRES_USER": settings.db_user,
+            "POSTGRES_PASSWORD": settings.db_password,
+        },
+        labels=system_labels,
+        restart_policy={"Name": "unless-stopped"},
+    )
+    logger.info("Created container %s", settings.shared_db_container)
+
+
+def ensure_team_tablespace(
+    client: DockerClient, settings: Settings, team: TeamSettings
+) -> str:
+    """Ensure the team's PostgreSQL tablespace exists; return its name.
+
+    The tablespace lives in base_data_dir/pg_tablespaces/team_{id} on the
+    host. Hosting setups assign this directory the same XFS project ID as
+    team_{id}/, so one disk quota covers the team's files AND its databases.
+    Idempotent and cheap (one catalog query) — called before every
+    CREATE DATABASE.
+    """
+    ts_name = get_tablespace_name(team.team_id)
+    exists = _exec_sql(
+        client,
+        settings,
+        f"SELECT 1 FROM pg_tablespace WHERE spcname = '{ts_name}';",
+    )
+    if exists.strip() == "1":
+        return ts_name
+
+    host_dir = os.path.join(_pg_tablespaces_host_dir(settings), f"team_{team.team_id}")
+    os.makedirs(host_dir, exist_ok=True)
+    target = f"{_PG_TABLESPACES_MOUNT}/team_{team.team_id}"
+    container = client.containers.get(settings.shared_db_container)
+    # PostgreSQL requires the location to be owned by its OS user (postgres,
+    # regardless of POSTGRES_USER) with private permissions.
+    for cmd in (["chown", "postgres:postgres", target], ["chmod", "700", target]):
+        exit_code, output = container.exec_run(cmd, user="root")
+        if exit_code != 0:
+            out = (
+                output.decode("utf-8", errors="replace")
+                if isinstance(output, bytes)
+                else str(output)
+            )
+            raise ExternalCommandError(cmd[0], exit_code, out)
+    _exec_sql(
+        client,
+        settings,
+        f"CREATE TABLESPACE \"{ts_name}\" LOCATION '{target}';",
+    )
+    logger.info("Created tablespace %s at %s", ts_name, target)
+    return ts_name
+
+
+def ensure_team_network(
+    client: DockerClient, settings: Settings, team: TeamSettings
+) -> str:
+    """Ensure the team's isolated network exists and infra is attached to it.
+
+    Environment/service containers join only their team network, so one
+    tenant's code can never reach another tenant's containers. The shared
+    PostgreSQL container (password-protected, per-env roles) and Traefik (in
+    traefik mode) are attached to every team network — they are the only
+    cross-team surface. Idempotent and cheap.
+    """
+    net_name = get_team_network_name(team.team_id, settings.prefix)
+    try:
+        net = client.networks.get(net_name)
+    except docker.errors.NotFound:
+        net = client.networks.create(
+            net_name,
+            labels={
+                settings.managed_label: "true",
+                settings.system_label: "true",
+                settings.team_label: team.team_id,
+            },
+        )
+        logger.info("Created network %s", net_name)
+        _ensure_iptables_accept(client, net_name)
+
+    infra = [settings.shared_db_container]
+    if settings.routing_mode == "traefik":
+        infra.append(settings.traefik_container)
+    for container_name in infra:
+        try:
+            container = client.containers.get(container_name)
+        except docker.errors.NotFound:
+            continue
+        try:
+            net.connect(container)
+        except docker.errors.APIError as exc:
+            if "already exists" not in str(exc).lower():
+                raise
+    return net_name
+
+
 def _ensure_iptables_accept(client: DockerClient, network_name: str) -> None:
     try:
         net = client.networks.get(network_name)
@@ -467,37 +662,12 @@ def init_system(
         client.volumes.create(settings.shared_db_volume, labels=system_labels)
         logger.info("Created volume %s", settings.shared_db_volume)
 
-    try:
-        db_container = client.containers.get(settings.shared_db_container)
-        if db_container.status != "running":
-            db_container.start()
-    except docker.errors.NotFound:
-        client.containers.run(
-            settings.postgres_image,
-            name=settings.shared_db_container,
-            detach=True,
-            network=settings.shared_network,
-            volumes={
-                settings.shared_db_volume: {
-                    "bind": "/var/lib/postgresql/data",
-                    "mode": "rw",
-                },
-                str(_resolve_conf("postgresql.conf")): {
-                    "bind": "/etc/postgresql/postgresql.conf",
-                    "mode": "ro",
-                },
-            },
-            command=["postgres", "-c", "config_file=/etc/postgresql/postgresql.conf"],
-            environment={
-                "POSTGRES_USER": settings.db_user,
-                "POSTGRES_PASSWORD": settings.db_password,
-            },
-            labels=system_labels,
-            restart_policy={"Name": "unless-stopped"},
-        )
-        logger.info("Created container %s", settings.shared_db_container)
+    _ensure_pg_container(client, settings, system_labels)
 
     _wait_pg_ready(client, settings)
+
+    for team in settings.teams.values():
+        ensure_team_network(client, settings, team)
 
     logger.info("System initialized")
     return {"status": "initialized"}
@@ -530,7 +700,8 @@ def reload_template(
         _exec_sql(client, settings, f'DROP DATABASE "{tpl_db}" WITH (FORCE);')
         logger.info("Dropped template DB %s", tpl_db)
 
-    _exec_sql(client, settings, f'CREATE DATABASE "{tpl_db}";')
+    ts_name = ensure_team_tablespace(client, settings, team)
+    _exec_sql(client, settings, f'CREATE DATABASE "{tpl_db}" TABLESPACE "{ts_name}";')
 
     db_container = client.containers.get(settings.shared_db_container)
     tmp_name = os.path.basename(resolved_dump)
@@ -710,35 +881,7 @@ def init_template(
         client.volumes.create(settings.shared_db_volume, labels=system_labels)
         logger.info("Created volume %s", settings.shared_db_volume)
 
-    try:
-        db_container = client.containers.get(settings.shared_db_container)
-        if db_container.status != "running":
-            db_container.start()
-    except docker.errors.NotFound:
-        client.containers.run(
-            settings.postgres_image,
-            name=settings.shared_db_container,
-            detach=True,
-            network=settings.shared_network,
-            volumes={
-                settings.shared_db_volume: {
-                    "bind": "/var/lib/postgresql/data",
-                    "mode": "rw",
-                },
-                str(_resolve_conf("postgresql.conf")): {
-                    "bind": "/etc/postgresql/postgresql.conf",
-                    "mode": "ro",
-                },
-            },
-            command=["postgres", "-c", "config_file=/etc/postgresql/postgresql.conf"],
-            environment={
-                "POSTGRES_USER": settings.db_user,
-                "POSTGRES_PASSWORD": settings.db_password,
-            },
-            labels=system_labels,
-            restart_policy={"Name": "unless-stopped"},
-        )
-        logger.info("Created container %s", settings.shared_db_container)
+    _ensure_pg_container(client, settings, system_labels)
 
     _wait_pg_ready(client, settings)
 
@@ -773,7 +916,8 @@ def init_template(
         odoo_image,
         name=temp_container_name,
         detach=True,
-        network=settings.shared_network,
+        network=ensure_team_network(client, settings, team),
+        **default_env_limits(),
         environment={
             "HOST": settings.shared_db_container,
             "USER": settings.db_user,
@@ -935,6 +1079,11 @@ def publish_env_as_template(
             f"Database '{env_db}' for environment '{env_name}' not found."
         )
 
+    # Republishing an existing template replaces it (no net growth); only a
+    # brand-new template is gated by the quota.
+    if not _db_exists(client, settings, tpl_db):
+        check_db_quota(client, settings, team)
+
     _wait_pg_ready(client, settings)
     db_container = client.containers.get(settings.shared_db_container)
 
@@ -968,7 +1117,9 @@ def publish_env_as_template(
     env_paths = get_filestore_paths(env_name, team.workspaces_dir)
     branch_merged = env_paths["merged"]
     template_filestore_path = team.get_template_filestore_path(template_name)
-    source_container = get_resource_name(env_name, "odoo", settings.prefix)
+    source_container = get_resource_name(
+        env_name, "odoo", settings.prefix, team.team_id
+    )
     source_is_overlay = os.path.isdir(branch_merged) and os.path.ismount(branch_merged)
 
     # Snapshot the source env's merged filestore while it is still mounted.
@@ -1193,6 +1344,16 @@ def destroy_system(settings: Settings) -> dict[str, str]:
         pass
 
     try:
+        for extra_net in client.networks.list(
+            filters={"label": f"{settings.managed_label}=true"}
+        ):
+            if extra_net.name == settings.shared_network:
+                continue
+            try:
+                extra_net.remove()
+                removed.append(extra_net.name)
+            except docker.errors.APIError:
+                logger.warning("Could not remove network %s", extra_net.name)
         net = client.networks.get(settings.shared_network)
         net.remove()
         removed.append(settings.shared_network)
@@ -1228,6 +1389,9 @@ def import_from_odoo(
     # SSRF guard: importing a DB from a URL is a clearly-external operation, so
     # block loopback, the cloud metadata endpoint, and internal RFC1918 hosts.
     assert_allowed_url(base, allow_private=False)
+
+    # Gate on the DB quota before downloading a potentially huge backup.
+    check_db_quota(get_client(), settings, team)
 
     # 1. Resolve database name
     if not db_name:

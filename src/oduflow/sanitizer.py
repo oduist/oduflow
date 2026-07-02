@@ -52,7 +52,9 @@ def _run_scripts_from_dir(
 
     import docker as _docker
 
-    odoo_container_name = get_resource_name(env_name, "odoo", settings.prefix)
+    odoo_container_name = get_resource_name(
+        env_name, "odoo", settings.prefix, team.team_id
+    )
     try:
         container = client.containers.get(odoo_container_name)
     except _docker.errors.NotFound:

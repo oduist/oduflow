@@ -43,6 +43,9 @@ precursors).
 | [0022](0022-engineers-console-design-system.md) | 2026-06-12 | The Engineer's Console: dashboard design system + lifecycle automation |
 | [0023](0023-import-from-odoo-sh.md) | 2026-07-02 | Import a template from Odoo.sh via a push-based, resumable shell client |
 | [0024](0024-business-source-license.md) | 2026-07-02 | Relicense to Business Source License 1.1 with three commercial tiers |
+| [0025](0025-startup-data-migrations.md) | 2026-07-02 | Startup data migrations (Odoo-style upgrade steps) |
+| [0026](0026-per-team-pg-tablespaces.md) | 2026-07-02 | Per-team PostgreSQL tablespaces |
+| [0027](0027-hard-tenant-isolation.md) | 2026-07-02 | Hard tenant isolation: per-team networks, resource limits, disk quotas |
 
 ## Design docs
 
