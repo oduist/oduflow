@@ -11,16 +11,14 @@ class TestSettings:
 
     def test_malformed_port_range_raises(self, tmp_path):
         toml = tmp_path / "oduflow.toml"
-        toml.write_text(
-            '[team.1]\nhostname = "localhost"\nport_range = [50000]\n'
-        )
+        toml.write_text('[team.1]\nhostname = "localhost"\nport_range = [50000]\n')
         with pytest.raises(ValueError, match="port_range"):
             Settings.from_toml(str(toml))
 
     def test_lifecycle_from_toml(self, tmp_path):
         toml = tmp_path / "oduflow.toml"
         toml.write_text(
-            '[lifecycle]\nauto_stop_hours = 12\nauto_delete_hours = 0\n'
+            "[lifecycle]\nauto_stop_hours = 12\nauto_delete_hours = 0\n"
             '[team.1]\nhostname = "localhost"\n'
         )
         s = Settings.from_toml(str(toml))

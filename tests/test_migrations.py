@@ -109,3 +109,101 @@ def test_default_registry_ids_unique_and_sorted():
     ids = [mig.id for mig in MIGRATIONS]
     assert ids == sorted(ids)
     assert len(set(ids)) == len(ids)
+
+
+class _FakeContainer:
+    def __init__(self, name: str, labels: dict[str, str]):
+        self.name = name
+        self.labels = labels
+        self.renamed_to: str | None = None
+
+    def rename(self, new_name: str) -> None:
+        self.renamed_to = new_name
+        self.name = new_name
+
+
+class _FakeClient:
+    def __init__(self, containers: list[_FakeContainer]):
+        self._containers = containers
+
+        class _Containers:
+            def __init__(self, outer):
+                self._outer = outer
+
+            def list(self, all=True, filters=None):
+                wanted = filters["label"] if filters else []
+                result = []
+                for c in self._outer._containers:
+                    ok = True
+                    for cond in wanted:
+                        key, _, value = cond.partition("=")
+                        if c.labels.get(key) != value:
+                            ok = False
+                            break
+                    if ok:
+                        result.append(c)
+                return result
+
+        self.containers = _Containers(self)
+
+
+class TestTeamScopedNamesMigration:
+    def _run(self, monkeypatch, containers, teams=("1",)):
+        from oduflow.migrations import _migrate_team_scoped_names
+        from oduflow.settings import TeamSettings
+
+        client = _FakeClient(containers)
+        monkeypatch.setattr("oduflow.docker_ops.client.get_client", lambda: client)
+        settings = Settings(teams={t: TeamSettings(team_id=t) for t in teams})
+        _migrate_team_scoped_names(settings)
+
+    def test_renames_env_and_service_containers(self, monkeypatch):
+        env = _FakeContainer(
+            "oduflow-feature-x-odoo",
+            {
+                "oduflow.managed": "true",
+                "oduflow.team": "1",
+                "oduflow.branch": "feature/x",
+            },
+        )
+        svc = _FakeContainer(
+            "oduflow-svc-redis",
+            {
+                "oduflow.managed": "true",
+                "oduflow.team": "1",
+                "oduflow.service": "redis",
+            },
+        )
+        self._run(monkeypatch, [env, svc])
+
+        assert env.name == "oduflow-1-feature-x-odoo"
+        assert svc.name == "oduflow-1-svc-redis"
+
+    def test_idempotent_on_rerun(self, monkeypatch):
+        env = _FakeContainer(
+            "oduflow-1-main-odoo",
+            {"oduflow.managed": "true", "oduflow.team": "1", "oduflow.branch": "main"},
+        )
+        svc = _FakeContainer(
+            "oduflow-1-svc-redis",
+            {
+                "oduflow.managed": "true",
+                "oduflow.team": "1",
+                "oduflow.service": "redis",
+            },
+        )
+        self._run(monkeypatch, [env, svc])
+
+        assert env.renamed_to is None
+        assert svc.renamed_to is None
+
+    def test_unmanaged_and_foreign_containers_untouched(self, monkeypatch):
+        foreign = _FakeContainer("someone-elses-app", {})
+        other_team = _FakeContainer(
+            "oduflow-main-odoo",
+            {"oduflow.managed": "true", "oduflow.team": "2", "oduflow.branch": "main"},
+        )
+        self._run(monkeypatch, [foreign, other_team], teams=("1",))
+
+        assert foreign.renamed_to is None
+        assert other_team.renamed_to is None

@@ -256,7 +256,7 @@ class TestAgentInstructionsTool:
 
         assert result.startswith("## Current Code Delivery Mode")
         assert "Live-mount/local_path mode is active" in result
-        assert "upgrade=\"module\"" in result
+        assert 'upgrade="module"' in result
         assert "Git commits are optional" in result
 
     @patch("oduflow.docker_ops.env_ops.list_environments")
@@ -325,7 +325,7 @@ class TestCreateServiceTool:
     def test_create(self, mock_create):
         mock_create.return_value = {
             "name": "redis",
-            "container_name": "oduflow-svc-redis",
+            "container_name": "oduflow-1-svc-redis",
             "url": "http://localhost:6379",
             "image": "redis:7",
         }
@@ -334,14 +334,14 @@ class TestCreateServiceTool:
         )
         assert "Service created successfully!" in result
         assert "redis" in result
-        assert "oduflow-svc-redis" in result
+        assert "oduflow-1-svc-redis" in result
         assert "http://localhost:6379" in result
 
     @patch("oduflow.docker_ops.service_ops.create_service")
     def test_create_with_env_vars_parsing(self, mock_create):
         mock_create.return_value = {
             "name": "meili",
-            "container_name": "oduflow-svc-meili",
+            "container_name": "oduflow-1-svc-meili",
             "url": "http://localhost:7700",
             "image": "getmeili/meilisearch:v1.6",
         }
@@ -359,7 +359,7 @@ class TestCreateServiceTool:
     def test_create_empty_env_vars(self, mock_create):
         mock_create.return_value = {
             "name": "redis",
-            "container_name": "oduflow-svc-redis",
+            "container_name": "oduflow-1-svc-redis",
             "url": "http://localhost:6379",
             "image": "redis:7",
         }
@@ -375,14 +375,14 @@ class TestUpdateServiceTool:
     def test_update(self, mock_update):
         mock_update.return_value = {
             "name": "redis",
-            "container_name": "oduflow-svc-redis",
+            "container_name": "oduflow-1-svc-redis",
             "url": "http://localhost:6379",
             "image": "redis:7",
         }
         result = _get_tool_fn("update_service")(name="redis")
         assert "Service updated successfully!" in result
         assert "redis" in result
-        assert "oduflow-svc-redis" in result
+        assert "oduflow-1-svc-redis" in result
         mock_update.assert_called_once_with(
             TEST_SETTINGS,
             TEST_TEAM,
@@ -401,7 +401,7 @@ class TestUpdateServiceTool:
     def test_update_net_admin_and_privileged_mapping(self, mock_update):
         mock_update.return_value = {
             "name": "vpn",
-            "container_name": "oduflow-svc-vpn",
+            "container_name": "oduflow-1-svc-vpn",
             "url": "http://localhost:1194",
             "image": "vpn:latest",
         }
@@ -414,7 +414,7 @@ class TestUpdateServiceTool:
     def test_update_net_admin_false_clears_cap(self, mock_update):
         mock_update.return_value = {
             "name": "vpn",
-            "container_name": "oduflow-svc-vpn",
+            "container_name": "oduflow-1-svc-vpn",
             "url": "http://localhost:1194",
             "image": "vpn:latest",
         }
@@ -437,12 +437,12 @@ class TestDeleteServiceTool:
     def test_delete(self, mock_delete):
         mock_delete.return_value = {
             "name": "redis",
-            "container_name": "oduflow-svc-redis",
+            "container_name": "oduflow-1-svc-redis",
         }
         result = _get_tool_fn("delete_service")(name="redis")
         assert "deleted" in result
         assert "redis" in result
-        mock_delete.assert_called_once_with(TEST_SETTINGS, "redis")
+        mock_delete.assert_called_once_with(TEST_SETTINGS, TEST_TEAM, "redis")
 
 
 class TestListServicesTool:
@@ -451,7 +451,7 @@ class TestListServicesTool:
         mock_list.return_value = [
             {
                 "name": "redis",
-                "container_name": "oduflow-svc-redis",
+                "container_name": "oduflow-1-svc-redis",
                 "image": "redis:7",
                 "status": "running",
                 "port": 6379,
@@ -461,7 +461,7 @@ class TestListServicesTool:
         ]
         result = _call_tool("list_services")
         assert "redis" in result
-        assert "oduflow-svc-redis" in result
+        assert "oduflow-1-svc-redis" in result
         assert "redis:7" in result
         assert "6379" in result
         assert "REDIS_PASSWORD=secret" in result
@@ -480,7 +480,7 @@ class TestGetServiceLogsTool:
         result = _get_tool_fn("get_service_logs")(name="redis", n_lines=50)
         assert "log line 1" in result
         assert "service 'redis'" in result
-        mock_logs.assert_called_once_with(TEST_SETTINGS, "redis", 50)
+        mock_logs.assert_called_once_with(TEST_SETTINGS, TEST_TEAM, "redis", 50)
 
     @patch("oduflow.docker_ops.service_ops.get_service_logs")
     def test_logs_error(self, mock_logs):
@@ -615,7 +615,7 @@ class TestRestoreServiceTool:
         }
         mock_create.return_value = {
             "name": "wg",
-            "container_name": "oduflow-svc-wg",
+            "container_name": "oduflow-1-svc-wg",
             "image": "linuxserver/wireguard:latest",
             "url": "http://localhost:51820",
         }
@@ -646,7 +646,7 @@ class TestRestoreServiceTool:
         }
         mock_create.return_value = {
             "name": "dind",
-            "container_name": "oduflow-svc-dind",
+            "container_name": "oduflow-1-svc-dind",
             "image": "docker:dind",
             "url": "http://localhost:2375",
         }
@@ -669,7 +669,7 @@ class TestRestoreServiceTool:
         }
         mock_create.return_value = {
             "name": "redis",
-            "container_name": "oduflow-svc-redis",
+            "container_name": "oduflow-1-svc-redis",
             "image": "redis:7",
             "url": "http://localhost:6379",
         }

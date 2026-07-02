@@ -10,6 +10,7 @@ from oduflow.docker_ops.client import get_client
 from oduflow.docker_ops import service_presets
 from oduflow.docker_ops import volume_ops
 from oduflow.errors import ConflictError, NotFoundError, PrerequisiteNotMetError
+from oduflow.naming import get_service_container_name
 from oduflow.settings import Settings, TeamSettings
 
 logger = logging.getLogger("oduflow")
@@ -63,7 +64,7 @@ def create_service(
     privileged: bool = False,
 ) -> dict[str, str]:
     client = get_client()
-    container_name = f"oduflow-svc-{name}"
+    container_name = get_service_container_name(name, settings.prefix, team.team_id)
 
     # Check that the shared network exists (not needed for host mode)
     if not host_mode:
@@ -87,9 +88,7 @@ def create_service(
         "oduflow.managed": "true",
         "oduflow.team": team.team_id,
         "oduflow.service": name,
-        "oduflow.created_at": datetime.datetime.now(
-            datetime.timezone.utc
-        ).isoformat(),
+        "oduflow.created_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
     }
 
     run_kwargs: dict = {
@@ -176,9 +175,11 @@ def create_service(
     }
 
 
-def restart_service(settings: Settings, name: str) -> dict[str, str]:
+def restart_service(
+    settings: Settings, team: TeamSettings, name: str
+) -> dict[str, str]:
     client = get_client()
-    container_name = f"oduflow-svc-{name}"
+    container_name = get_service_container_name(name, settings.prefix, team.team_id)
 
     try:
         container = client.containers.get(container_name)
@@ -194,9 +195,9 @@ def restart_service(settings: Settings, name: str) -> dict[str, str]:
     }
 
 
-def delete_service(settings: Settings, name: str) -> dict[str, str]:
+def delete_service(settings: Settings, team: TeamSettings, name: str) -> dict[str, str]:
     client = get_client()
-    container_name = f"oduflow-svc-{name}"
+    container_name = get_service_container_name(name, settings.prefix, team.team_id)
 
     try:
         container = client.containers.get(container_name)
@@ -239,22 +240,28 @@ def _describe_service_container(
     is_host_mode = container.labels.get("oduflow.host_mode") == "true"
 
     if settings.routing_mode == "traefik":
-        rule_label = f"traefik.http.routers.oduflow-svc-{svc_name}.rule"
-        rule_value = container.labels.get(rule_label, "")
+        # Router names embed the container name, which changed with naming v2;
+        # containers created before the rename migration still carry labels
+        # with the old name. Match by label suffix instead of exact router name.
+        def _label_by_suffix(suffix: str) -> str:
+            for key, value in container.labels.items():
+                if key.startswith("traefik.http.") and key.endswith(suffix):
+                    return str(value)
+            return ""
+
+        rule_value = _label_by_suffix(".rule")
         match = re.search(r"Host\(`([^`]+)`\)", rule_value)
         if match:
             hostname = match.group(1)
             url = f"https://{hostname}"
 
         if is_host_mode:
-            url_label = f"traefik.http.services.oduflow-svc-{svc_name}.loadbalancer.server.url"
-            url_value = container.labels.get(url_label, "")
+            url_value = _label_by_suffix(".loadbalancer.server.url")
             port_match = re.search(r":(\d+)$", url_value)
             if port_match:
                 port_num = int(port_match.group(1))
         else:
-            port_label = f"traefik.http.services.oduflow-svc-{svc_name}.loadbalancer.server.port"
-            label_port = container.labels.get(port_label)
+            label_port = _label_by_suffix(".loadbalancer.server.port")
             if label_port:
                 port_num = int(label_port)
     else:
@@ -353,7 +360,7 @@ def get_service_info(settings: Settings, team: TeamSettings, name: str) -> dict:
     if the service container is missing.
     """
     client = get_client()
-    container_name = f"oduflow-svc-{name}"
+    container_name = get_service_container_name(name, settings.prefix, team.team_id)
 
     try:
         container = client.containers.get(container_name)
@@ -405,7 +412,7 @@ def update_service(
     even if the image digest has not changed.
     """
     client = get_client()
-    container_name = f"oduflow-svc-{name}"
+    container_name = get_service_container_name(name, settings.prefix, team.team_id)
 
     try:
         container = client.containers.get(container_name)
@@ -459,25 +466,26 @@ def update_service(
         hostname: str | None = None
 
         if settings.routing_mode == "traefik":
-            rule_label = f"traefik.http.routers.{container_name}.rule"
-            rule_value = container.labels.get(rule_label, "")
+            # Suffix-matched: pre-migration containers carry labels keyed by
+            # their old (team-less) container name.
+            def _label_by_suffix(suffix: str) -> str:
+                for key, value in container.labels.items():
+                    if key.startswith("traefik.http.") and key.endswith(suffix):
+                        return str(value)
+                return ""
+
+            rule_value = _label_by_suffix(".rule")
             match = re.search(r"Host\(`([^`]+)`\)", rule_value)
             if match:
                 hostname = match.group(1)
 
             if is_host_mode:
-                url_label = (
-                    f"traefik.http.services.{container_name}.loadbalancer.server.url"
-                )
-                url_value = container.labels.get(url_label, "")
+                url_value = _label_by_suffix(".loadbalancer.server.url")
                 port_match = re.search(r":(\d+)$", url_value)
                 if port_match:
                     port = int(port_match.group(1))
             else:
-                port_label = (
-                    f"traefik.http.services.{container_name}.loadbalancer.server.port"
-                )
-                label_port = container.labels.get(port_label)
+                label_port = _label_by_suffix(".loadbalancer.server.port")
                 if label_port:
                     port = int(label_port)
         else:
@@ -500,7 +508,7 @@ def update_service(
                 vol_docker_name = mount.get("Name", "")
                 prefix = f"oduflow-vol-{team.team_id}-"
                 if vol_docker_name.startswith(prefix):
-                    short_name = vol_docker_name[len(prefix):]
+                    short_name = vol_docker_name[len(prefix) :]
                     vols.append(
                         {
                             "volume": short_name,
@@ -613,9 +621,11 @@ def update_service(
     return result
 
 
-def get_service_logs(settings: Settings, name: str, lines: int = 100) -> str:
+def get_service_logs(
+    settings: Settings, team: TeamSettings, name: str, lines: int = 100
+) -> str:
     client = get_client()
-    container_name = f"oduflow-svc-{name}"
+    container_name = get_service_container_name(name, settings.prefix, team.team_id)
 
     try:
         container = client.containers.get(container_name)
@@ -627,10 +637,10 @@ def get_service_logs(settings: Settings, name: str, lines: int = 100) -> str:
 
 
 def run_command_in_service(
-    settings: Settings, name: str, command: str, user: str = "root"
+    settings: Settings, team: TeamSettings, name: str, command: str, user: str = "root"
 ) -> dict[str, object]:
     client = get_client()
-    container_name = f"oduflow-svc-{name}"
+    container_name = get_service_container_name(name, settings.prefix, team.team_id)
 
     try:
         container = client.containers.get(container_name)

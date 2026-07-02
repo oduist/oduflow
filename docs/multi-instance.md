@@ -92,14 +92,20 @@ disk_quota_gb = 0     # default: 0 (off)
 | Port assignments | Per-team |
 | Git credentials | Per-team |
 
-## Database Naming
+## Resource Naming
 
-Databases are namespaced by team ID:
+Databases and containers are namespaced by team ID:
 
 - Environment DB: `oduflow_{team_id}_{slugified_branch}` (e.g. `oduflow_1_feature-login`)
 - Template DB: `oduflow_template_{team_id}_{template_name}` (e.g. `oduflow_template_1_default`)
+- Environment containers: `oduflow-{team_id}-{env}-{type}` (e.g. `oduflow-1-feature-login-odoo`)
+- Service containers: `oduflow-{team_id}-svc-{name}` (e.g. `oduflow-1-svc-redis`)
 
-Containers are labeled with `oduflow.team={team_id}` for filtering.
+Containers are additionally labeled with `oduflow.team={team_id}`; listing and
+filtering are label-based, and container names are team-scoped so two teams
+can use the same branch name without colliding. Containers created by older
+versions are renamed to this scheme automatically on server start (startup
+migration `0001-team-scoped-container-names`).
 
 ## CLI Team Selection
 

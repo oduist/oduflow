@@ -827,8 +827,8 @@ def get_agent_instructions(ctx: Context = None) -> str:
                 "Use the local live-mount workflow for these environments:\n"
                 "1. Edit files directly in the mounted local folder; no git push is required.\n"
                 "2. Call `pull_and_apply` after edits. Prefer explicit actions when you authored the changes.\n"
-                "3. If you add/change fields, models, `_inherit`/`_name`, manifest `data`/`depends`, security/data XML, `ir.cron`, mail templates, or anything loaded into the database, call `pull_and_apply(..., upgrade=\"module\")`.\n"
-                "4. If you add a new module, call `pull_and_apply(..., install=\"module\")`.\n"
+                '3. If you add/change fields, models, `_inherit`/`_name`, manifest `data`/`depends`, security/data XML, `ir.cron`, mail templates, or anything loaded into the database, call `pull_and_apply(..., upgrade="module")`.\n'
+                '4. If you add a new module, call `pull_and_apply(..., install="module")`.\n'
                 "5. Use `restart=True` only for Python logic changes that do not require registry/schema/data updates.\n"
                 "6. Git commits are optional in live-mount mode and are not used by Oduflow to detect applied changes.\n\n"
                 "---\n\n"
@@ -1029,7 +1029,11 @@ def get_environment_logs(
         level: Filter by Odoo log level. One of: "ERROR", "WARNING", "CRITICAL". Returns only lines containing the specified level marker. Can be combined with grep.
     """
     output = odoo_ops.get_environment_logs(
-        _get_settings(), env_name, n_lines, grep=grep, level=level,
+        _get_settings(),
+        env_name,
+        n_lines,
+        grep=grep,
+        level=level,
         team=_resolve_team(ctx),
     )
     return f"Recent logs for {env_name}:\n\n{_ANSI_RE.sub('', output)}"
@@ -1527,8 +1531,11 @@ def read_file_in_odoo(
                     If omitted, returns the entire file (up to 100KB).
     """
     settings = _get_settings()
-    woke = _wake_for_work(settings, _resolve_team(ctx), env_name)
-    result = odoo_ops.read_file_in_environment(settings, env_name, path, read_range)
+    team = _resolve_team(ctx)
+    woke = _wake_for_work(settings, team, env_name)
+    result = odoo_ops.read_file_in_environment(
+        settings, team, env_name, path, read_range
+    )
     if "error" in result:
         return f"{woke}Error: {result['error']}"
     return woke + result["output"]
@@ -1567,8 +1574,11 @@ def write_file_in_odoo(
         user: OS user to own the file (default "odoo"). Use "root" for system paths.
     """
     settings = _get_settings()
-    woke = _wake_for_work(settings, _resolve_team(ctx), env_name)
-    result = odoo_ops.write_file_in_environment(settings, env_name, path, content, user)
+    team = _resolve_team(ctx)
+    woke = _wake_for_work(settings, team, env_name)
+    result = odoo_ops.write_file_in_environment(
+        settings, team, env_name, path, content, user
+    )
     return f"{woke}File written: {result['path']} ({result['size']} bytes)"
 
 
@@ -1703,9 +1713,10 @@ def search_in_odoo(
         max_results: Maximum number of matching lines to return (default 50).
     """
     settings = _get_settings()
-    woke = _wake_for_work(settings, _resolve_team(ctx), env_name)
+    team = _resolve_team(ctx)
+    woke = _wake_for_work(settings, team, env_name)
     result = odoo_ops.search_in_environment(
-        settings, env_name, pattern, path, glob, max_results
+        settings, team, env_name, pattern, path, glob, max_results
     )
     output = result["output"]
     if not output:
@@ -1775,8 +1786,11 @@ def run_odoo_command(
         user: The OS user to run the command as (default "odoo"). Use "root" for privileged operations.
     """
     settings = _get_settings()
-    woke = _wake_for_work(settings, _resolve_team(ctx), env_name)
-    result = odoo_ops.run_command_in_environment(settings, env_name, command, user)
+    team = _resolve_team(ctx)
+    woke = _wake_for_work(settings, team, env_name)
+    result = odoo_ops.run_command_in_environment(
+        settings, team, env_name, command, user
+    )
     exit_code = result["exit_code"]
     output = result.get("output", "")
     status = "Success" if exit_code == 0 else "Error"
@@ -2016,7 +2030,7 @@ def delete_service(name: str, ctx: Context = None) -> str:
     Args:
         name: The name of the service to delete.
     """
-    result = service_ops.delete_service(_get_settings(), name)
+    result = service_ops.delete_service(_get_settings(), _resolve_team(ctx), name)
     return f"Service '{result['name']}' deleted. Container '{result['container_name']}' removed."
 
 
@@ -2029,7 +2043,7 @@ def restart_service(name: str, ctx: Context = None) -> str:
     Args:
         name: The name of the service to restart (e.g. "redis", "meilisearch").
     """
-    result = service_ops.restart_service(_get_settings(), name)
+    result = service_ops.restart_service(_get_settings(), _resolve_team(ctx), name)
     return f"Service '{result['name']}' restarted."
 
 
@@ -2221,7 +2235,9 @@ def get_service_logs(name: str, n_lines: int = 100, ctx: Context = None) -> str:
         name: The name of the service.
         n_lines: Number of recent log lines to retrieve (default 100).
     """
-    output = service_ops.get_service_logs(_get_settings(), name, n_lines)
+    output = service_ops.get_service_logs(
+        _get_settings(), _resolve_team(ctx), name, n_lines
+    )
     return f"Recent logs for service '{name}':\n\n{_ANSI_RE.sub('', output)}"
 
 
@@ -2238,7 +2254,9 @@ def run_service_command(
         command: The shell command to execute (e.g. "redis-cli ping", "ls /data").
         user: The OS user to run the command as (default "root").
     """
-    result = service_ops.run_command_in_service(_get_settings(), name, command, user)
+    result = service_ops.run_command_in_service(
+        _get_settings(), _resolve_team(ctx), name, command, user
+    )
     exit_code = result["exit_code"]
     output = result.get("output", "")
     status = "Success" if exit_code == 0 else "Error"
@@ -2759,9 +2777,7 @@ def _inject_auth_token(toml_text: str, token: str) -> str:
         if not injected and raw.split("#", 1)[0].strip() == 'auth_token = ""':
             indent = raw[: len(raw) - len(raw.lstrip())]
             comment = raw.split("#", 1)[1].strip() if "#" in raw else ""
-            out.append(
-                f"{indent}{replacement}" + (f"  # {comment}" if comment else "")
-            )
+            out.append(f"{indent}{replacement}" + (f"  # {comment}" if comment else ""))
             injected = True
         else:
             out.append(raw)

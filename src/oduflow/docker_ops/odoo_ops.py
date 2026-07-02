@@ -60,7 +60,9 @@ def run_environment_tests(
     settings: Settings, team: TeamSettings, env_name: str, modules: str
 ) -> str:
     client = get_client()
-    odoo_container_name = get_resource_name(env_name, "odoo", settings.prefix)
+    odoo_container_name = get_resource_name(
+        env_name, "odoo", settings.prefix, team.team_id
+    )
     env_db = get_db_name(env_name, team.team_id)
 
     try:
@@ -108,12 +110,13 @@ def get_environment_logs(
     grep: str = "",
     level: str = "",
     container_name: str = "",
-    team: TeamSettings | None = None,
+    *,
+    team: TeamSettings,
 ) -> str:
     client = get_client()
     if container_name:
         # Only allow containers that belong to this environment.
-        env_prefix = get_resource_name(env_name, "", settings.prefix)
+        env_prefix = get_resource_name(env_name, "", settings.prefix, team.team_id)
         if not container_name.startswith(env_prefix):
             raise NotFoundError(
                 f"Container '{container_name}' does not belong to "
@@ -121,7 +124,9 @@ def get_environment_logs(
             )
         target_container_name = container_name
     else:
-        target_container_name = get_resource_name(env_name, "odoo", settings.prefix)
+        target_container_name = get_resource_name(
+            env_name, "odoo", settings.prefix, team.team_id
+        )
 
     # Fetch more lines when filtering to have meaningful results
     fetch_lines = min(n_lines * 10, 10_000) if (grep or level) else n_lines
@@ -134,8 +139,8 @@ def get_environment_logs(
         raise NotFoundError(
             f"Environment '{env_name}' does not exist. Use create_environment first."
         )
-    # Container names are not team-namespaced: don't expose another team's logs
-    # (issue #39). Skipped when team is None (internal callers).
+    # Defence in depth on top of team-scoped names: never expose another
+    # team's logs even if a name resolves unexpectedly (issue #39).
     if team is not None:
         label = container.labels.get(settings.team_label)
         if label is not None and label != team.team_id:
@@ -166,7 +171,9 @@ def _run_odoo_module_command(
         raise ValueError("At least one module name is required.")
 
     client = get_client()
-    odoo_container_name = get_resource_name(env_name, "odoo", settings.prefix)
+    odoo_container_name = get_resource_name(
+        env_name, "odoo", settings.prefix, team.team_id
+    )
     env_db = get_db_name(env_name, team.team_id)
 
     try:
@@ -211,10 +218,16 @@ _FILE_SIZE_LIMIT = 100 * 1024  # 100KB
 
 
 def read_file_in_environment(
-    settings: Settings, env_name: str, path: str, read_range: str = ""
+    settings: Settings,
+    team: TeamSettings,
+    env_name: str,
+    path: str,
+    read_range: str = "",
 ) -> dict[str, Any]:
     client = get_client()
-    odoo_container_name = get_resource_name(env_name, "odoo", settings.prefix)
+    odoo_container_name = get_resource_name(
+        env_name, "odoo", settings.prefix, team.team_id
+    )
 
     try:
         container = client.containers.get(odoo_container_name)
@@ -311,10 +324,16 @@ def read_file_in_environment(
 
 
 def run_command_in_environment(
-    settings: Settings, env_name: str, command: str, user: str = "odoo"
+    settings: Settings,
+    team: TeamSettings,
+    env_name: str,
+    command: str,
+    user: str = "odoo",
 ) -> dict[str, Any]:
     client = get_client()
-    odoo_container_name = get_resource_name(env_name, "odoo", settings.prefix)
+    odoo_container_name = get_resource_name(
+        env_name, "odoo", settings.prefix, team.team_id
+    )
 
     try:
         container = client.containers.get(odoo_container_name)
@@ -340,7 +359,9 @@ def reset_admin_password(
     settings: Settings, team: TeamSettings, env_name: str, new_password: str = "test"
 ) -> dict[str, str]:
     client = get_client()
-    odoo_container_name = get_resource_name(env_name, "odoo", settings.prefix)
+    odoo_container_name = get_resource_name(
+        env_name, "odoo", settings.prefix, team.team_id
+    )
     env_db = get_db_name(env_name, team.team_id)
 
     try:
@@ -435,7 +456,12 @@ _WRITE_FILE_LIMIT = 1_000_000  # 1 MB
 
 
 def write_file_in_environment(
-    settings: Settings, env_name: str, path: str, content: str, user: str = "odoo"
+    settings: Settings,
+    team: TeamSettings,
+    env_name: str,
+    path: str,
+    content: str,
+    user: str = "odoo",
 ) -> dict[str, Any]:
     """Write a text file inside the Odoo container via tar stream."""
     import io
@@ -447,7 +473,9 @@ def write_file_in_environment(
         )
 
     client = get_client()
-    odoo_container_name = get_resource_name(env_name, "odoo", settings.prefix)
+    odoo_container_name = get_resource_name(
+        env_name, "odoo", settings.prefix, team.team_id
+    )
 
     try:
         container = client.containers.get(odoo_container_name)
@@ -487,7 +515,9 @@ def run_odoo_shell(
     import tarfile
 
     client = get_client()
-    odoo_container_name = get_resource_name(env_name, "odoo", settings.prefix)
+    odoo_container_name = get_resource_name(
+        env_name, "odoo", settings.prefix, team.team_id
+    )
     env_db = get_db_name(env_name, team.team_id)
 
     try:
@@ -538,6 +568,7 @@ def run_odoo_shell(
 
 def search_in_environment(
     settings: Settings,
+    team: TeamSettings,
     env_name: str,
     pattern: str,
     path: str = "/mnt/extra-addons",
@@ -546,7 +577,9 @@ def search_in_environment(
 ) -> dict[str, Any]:
     """Search for a pattern in files inside the Odoo container."""
     client = get_client()
-    odoo_container_name = get_resource_name(env_name, "odoo", settings.prefix)
+    odoo_container_name = get_resource_name(
+        env_name, "odoo", settings.prefix, team.team_id
+    )
 
     try:
         container = client.containers.get(odoo_container_name)

@@ -95,7 +95,7 @@ class TestDestroySystem:
     def test_destroy_with_active_envs(self, mock_docker_client):
         container = MagicMock()
         container.labels = {"oduflow.branch": "main", "oduflow.managed": "true"}
-        container.name = "oduflow-main-odoo"
+        container.name = "oduflow-1-main-odoo"
         mock_docker_client.containers.list.return_value = [container]
 
         with pytest.raises(ConflictError, match="Active environments"):
@@ -188,7 +188,7 @@ class TestCreateEnvironment:
 
         assert result["url"] == "http://localhost:50000"
         assert result["database"] == "oduflow_1_feature-payments"
-        assert result["odoo_container"] == "oduflow-feature-payments-odoo"
+        assert result["odoo_container"] == "oduflow-1-feature-payments-odoo"
         assert mock_sql.call_count == 2
         mock_creds.assert_called_once()
         mock_role.assert_called_once()
@@ -272,7 +272,7 @@ class TestCreateEnvironment:
         from oduflow.errors import ConflictError
 
         other = MagicMock()
-        other.name = "oduflow-feature-foo-odoo"
+        other.name = "oduflow-1-feature-foo-odoo"
         other.labels = {"oduflow.branch": "feature-foo"}
         mock_docker_client.containers.get.side_effect = docker.errors.NotFound("nf")
         mock_docker_client.containers.list.return_value = [other]
@@ -1038,18 +1038,19 @@ class TestDeleteEnvironment:
 class TestRestartEnvironment:
     def test_restart(self, mock_docker_client):
         container = MagicMock()
+        container.labels = {"oduflow.team": "1"}
         mock_docker_client.containers.get.return_value = container
 
-        result = env_ops.restart_environment(TEST_SETTINGS, "main")
+        result = env_ops.restart_environment(TEST_SETTINGS, "main", TEST_TEAM)
 
-        assert result["odoo_container"] == "oduflow-main-odoo"
+        assert result["odoo_container"] == "oduflow-1-main-odoo"
         container.restart.assert_called_once()
 
     def test_restart_not_found(self, mock_docker_client):
         mock_docker_client.containers.get.side_effect = docker.errors.NotFound("nf")
 
         with pytest.raises(NotFoundError, match="does not exist"):
-            env_ops.restart_environment(TEST_SETTINGS, "main")
+            env_ops.restart_environment(TEST_SETTINGS, "main", TEST_TEAM)
 
 
 class TestStopEnvironment:
@@ -1060,7 +1061,7 @@ class TestStopEnvironment:
 
         result = env_ops.stop_environment(TEST_SETTINGS, TEST_TEAM, "main")
 
-        assert "oduflow-main-odoo" in result["stopped"]
+        assert "oduflow-1-main-odoo" in result["stopped"]
         container.stop.assert_called_once()
 
     def test_stop_rejects_other_team_container(self, mock_docker_client):
@@ -1080,6 +1081,7 @@ class TestStartEnvironment:
         db = MagicMock()
         db.status = "running"
         odoo = MagicMock()
+        odoo.labels = {"oduflow.team": "1"}
 
         def get_container(name):
             if name == "oduflow-db":
@@ -1088,9 +1090,9 @@ class TestStartEnvironment:
 
         mock_docker_client.containers.get.side_effect = get_container
 
-        result = env_ops.start_environment(TEST_SETTINGS, "main")
+        result = env_ops.start_environment(TEST_SETTINGS, "main", TEST_TEAM)
 
-        assert "oduflow-main-odoo" in result["started"]
+        assert "oduflow-1-main-odoo" in result["started"]
         odoo.start.assert_called_once()
 
 
@@ -1240,10 +1242,13 @@ class TestRunEnvironmentTests:
 class TestGetLogs:
     def test_logs(self, mock_docker_client):
         container = MagicMock()
+        container.labels = {"oduflow.team": "1"}
         container.logs.return_value = b"log line 1\nlog line 2"
         mock_docker_client.containers.get.return_value = container
 
-        output = odoo_ops.get_environment_logs(TEST_SETTINGS, "main", 50)
+        output = odoo_ops.get_environment_logs(
+            TEST_SETTINGS, "main", 50, team=TEST_TEAM
+        )
 
         assert "log line 1" in output
         container.logs.assert_called_with(tail=50, stdout=True, stderr=True)
@@ -1271,7 +1276,7 @@ class TestApplyActionsConf:
             TEST_SETTINGS,
             TEST_TEAM,
             "feature/x",
-            "oduflow-feature-x-odoo",
+            "oduflow-1-feature-x-odoo",
             to_install=[],
             to_upgrade=[],
             do_restart=True,
@@ -1293,7 +1298,7 @@ class TestApplyActionsConf:
             TEST_SETTINGS,
             TEST_TEAM,
             "feature/x",
-            "oduflow-feature-x-odoo",
+            "oduflow-1-feature-x-odoo",
             to_install=[],
             to_upgrade=[],
             do_restart=True,
@@ -1316,7 +1321,7 @@ class TestApplyActionsConf:
             TEST_SETTINGS,
             TEST_TEAM,
             "feature/x",
-            "oduflow-feature-x-odoo",
+            "oduflow-1-feature-x-odoo",
             to_install=[],
             to_upgrade=["sale"],
             do_restart=False,

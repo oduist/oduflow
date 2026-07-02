@@ -63,16 +63,18 @@ class TestGetDbName:
 
 class TestGetResourceName:
     def test_odoo(self):
-        assert get_resource_name("main", "odoo") == "oduflow-main-odoo"
+        assert (
+            get_resource_name("main", "odoo", "oduflow-", "1") == "oduflow-1-main-odoo"
+        )
 
     def test_slash_branch(self):
         assert (
-            get_resource_name("feature/payments", "odoo")
-            == "oduflow-feature-payments-odoo"
+            get_resource_name("feature/payments", "odoo", "oduflow-", "1")
+            == "oduflow-1-feature-payments-odoo"
         )
 
     def test_custom_prefix(self):
-        assert get_resource_name("main", "odoo", prefix="test-") == "test-main-odoo"
+        assert get_resource_name("main", "odoo", "test-", "2") == "test-2-main-odoo"
 
 
 class TestGetWorkspacePath:

@@ -46,9 +46,22 @@ def get_db_name(env_name: str, team_id: str = "1") -> str:
 
 
 def get_resource_name(
-    env_name: str, resource_type: str, prefix: str = "oduflow-"
+    env_name: str, resource_type: str, prefix: str, team_id: str
 ) -> str:
-    return f"{prefix}{env_name.replace('/', '-')}-{resource_type}"
+    """Docker container name for an environment resource.
+
+    Team-scoped (naming v2): two teams using the same branch name must never
+    collide on — or worse, operate on — each other's containers. Existing
+    containers are renamed to this scheme by startup migration
+    0001-team-scoped-container-names.
+    """
+    return f"{prefix}{team_id}-{env_name.replace('/', '-')}-{resource_type}"
+
+
+def get_service_container_name(name: str, prefix: str, team_id: str) -> str:
+    """Docker container name for an auxiliary service (team-scoped, see
+    get_resource_name)."""
+    return f"{prefix}{team_id}-svc-{name}"
 
 
 def get_workspace_path(env_name: str, workspaces_dir: str) -> str:

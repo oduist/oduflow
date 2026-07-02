@@ -48,10 +48,79 @@ class Migration:
     apply: Callable[[Settings], None]
 
 
+def _migrate_team_scoped_names(settings: Settings) -> None:
+    """Rename managed containers to the team-scoped naming scheme.
+
+    ``oduflow-{env}-{type}`` → ``oduflow-{team}-{env}-{type}`` and
+    ``oduflow-svc-{name}`` → ``oduflow-{team}-svc-{name}``. Docker rename
+    keeps volumes, network attachment, and restart policy; Traefik routing is
+    label-based (labels are immutable but reference no container names), so
+    nothing else changes. Idempotent: a container whose name no longer
+    matches the old scheme is skipped, so a partially-applied run resumes
+    cleanly.
+    """
+    import docker
+
+    from oduflow.docker_ops.client import get_client
+    from oduflow.naming import get_resource_name, get_service_container_name
+
+    client = get_client()
+    for team_id in settings.teams:
+        containers = client.containers.list(
+            all=True,
+            filters={
+                "label": [
+                    f"{settings.managed_label}=true",
+                    f"{settings.team_label}={team_id}",
+                ]
+            },
+        )
+        for container in containers:
+            name = container.name
+            if not name.startswith(settings.prefix):
+                continue
+            svc_name = container.labels.get("oduflow.service")
+            branch = container.labels.get(settings.branch_label)
+            if svc_name:
+                if not name.startswith(f"{settings.prefix}svc-"):
+                    continue  # already team-scoped
+                new_name = get_service_container_name(
+                    svc_name, settings.prefix, team_id
+                )
+            elif branch:
+                old_prefix = f"{settings.prefix}{branch.replace('/', '-')}-"
+                if not name.startswith(old_prefix):
+                    continue  # already team-scoped
+                resource_type = name[len(old_prefix) :]
+                new_name = get_resource_name(
+                    branch, resource_type, settings.prefix, team_id
+                )
+            else:
+                continue
+            if name == new_name:
+                continue
+            try:
+                container.rename(new_name)
+            except docker.errors.APIError as exc:
+                raise RuntimeError(
+                    f"Failed to rename container {name} -> {new_name}: {exc}"
+                ) from exc
+            logger.info("Renamed container %s -> %s", name, new_name)
+
+
 # Append-only registry, executed in list order. Ids are recorded in
 # migrations.json once applied; reordering or renaming entries would re-run
 # or skip steps on existing installs.
-MIGRATIONS: list[Migration] = []
+MIGRATIONS: list[Migration] = [
+    Migration(
+        id="0001-team-scoped-container-names",
+        description=(
+            "Rename managed containers to team-scoped names "
+            "(oduflow-{team}-{env}-{type}, oduflow-{team}-svc-{name})"
+        ),
+        apply=_migrate_team_scoped_names,
+    ),
+]
 
 
 @contextmanager

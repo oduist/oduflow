@@ -62,8 +62,9 @@ Add a **startup migrations subsystem** modeled on Odoo's:
   the rest of the multi-tenant hardening plan.
 - Upgrade cost at start is one JSON read once migrated; the registry is
   append-only, so entries are never re-run, reordered, or renamed.
-- The registry ships empty in this change; the first real entry lands together
-  with the naming-v2 work.
+- The first entry is `0001-team-scoped-container-names`: renaming every
+  managed container to the team-scoped scheme, which fixes the cross-team
+  branch-name collision the label-based listing masked.
 
 ## History
 

@@ -308,6 +308,8 @@ def test_ensure_running_starts_stopped_env(monkeypatch, tmp_path):
     state = {"status": "exited"}
 
     class FakeContainer:
+        labels = {"oduflow.team": "1"}
+
         @property
         def status(self):
             return state["status"]
@@ -326,11 +328,11 @@ def test_ensure_running_starts_stopped_env(monkeypatch, tmp_path):
     )
 
     settings = _settings(tmp_path)
-    assert env_ops.ensure_running(settings, "env-x") is True
+    assert env_ops.ensure_running(settings, "env-x", settings.teams["1"]) is True
     assert started == ["env-x"]
 
     state["status"] = "running"
-    assert env_ops.ensure_running(settings, "env-x") is False
+    assert env_ops.ensure_running(settings, "env-x", settings.teams["1"]) is False
     assert started == ["env-x"]
 
 

@@ -1022,7 +1022,9 @@ def publish_env_as_template(
     env_paths = get_filestore_paths(env_name, team.workspaces_dir)
     branch_merged = env_paths["merged"]
     template_filestore_path = team.get_template_filestore_path(template_name)
-    source_container = get_resource_name(env_name, "odoo", settings.prefix)
+    source_container = get_resource_name(
+        env_name, "odoo", settings.prefix, team.team_id
+    )
     source_is_overlay = os.path.isdir(branch_merged) and os.path.ismount(branch_merged)
 
     # Snapshot the source env's merged filestore while it is still mounted.

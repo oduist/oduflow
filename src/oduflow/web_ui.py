@@ -585,7 +585,7 @@ def _build_routes(
             activity.touch(team, branch)
             client = _get_client()
             odoo_container_name = env_ops.get_resource_name(
-                branch, "odoo", settings.prefix
+                branch, "odoo", settings.prefix, team.team_id
             )
             try:
                 container = client.containers.get(odoo_container_name)
@@ -1030,7 +1030,9 @@ def _build_routes(
     def api_service_restart(request: Request) -> JSONResponse:
         name = request.path_params["name"]
         try:
-            result = service_ops.restart_service(get_settings(), name)
+            result = service_ops.restart_service(
+                get_settings(), _get_ui_team(request), name
+            )
             return JSONResponse({"ok": True, "result": result})
         except FlowError as e:
             return _error_response(e)
@@ -1046,7 +1048,9 @@ def _build_routes(
         except BusyError as e:
             return _error_response(e)
         try:
-            result = service_ops.delete_service(get_settings(), name)
+            result = service_ops.delete_service(
+                get_settings(), _get_ui_team(request), name
+            )
             return JSONResponse({"ok": True, "result": result})
         except FlowError as e:
             return _error_response(e)
@@ -1063,7 +1067,9 @@ def _build_routes(
         except (ValueError, TypeError):
             n = 200
         try:
-            logs = service_ops.get_service_logs(get_settings(), name, n)
+            logs = service_ops.get_service_logs(
+                get_settings(), _get_ui_team(request), name, n
+            )
             return JSONResponse({"ok": True, "logs": logs})
         except FlowError as e:
             return _error_response(e)
@@ -1521,7 +1527,9 @@ def _build_routes(
             settings = get_settings()
             team = _get_ui_team(websocket)
             client = _get_client()
-            container_name = get_resource_name(branch, "odoo", settings.prefix)
+            container_name = get_resource_name(
+                branch, "odoo", settings.prefix, team.team_id
+            )
             db_name = get_db_name(branch, team.team_id)
 
             try:
