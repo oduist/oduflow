@@ -38,9 +38,8 @@ class TeamSettings:
     # Quotas; 0 disables. db_quota_gb caps the combined size of the team's
     # PostgreSQL databases (environments + templates) and is checked before
     # operations that create a new database. disk_quota_gb caps the team's
-    # data dir (workspaces, filestores, template dumps); enforcement requires
-    # filesystem project quotas (XFS prjquota) and is not wired up yet — the
-    # value is reserved and currently informational.
+    # data dir plus its PG tablespace via XFS project quotas (see quotas.py);
+    # on filesystems without project-quota support it stays informational.
     db_quota_gb: int = 50
     disk_quota_gb: int = 0
 
@@ -217,13 +216,6 @@ class Settings:
             if team.db_quota_gb < 0 or team.disk_quota_gb < 0:
                 raise ValueError(
                     f"Team '{team.team_id}': quotas must be >= 0 (0 disables)"
-                )
-            if team.disk_quota_gb > 0:
-                logger.warning(
-                    "Team '%s': disk_quota_gb is set but filesystem quota "
-                    "enforcement is not implemented yet — the value is "
-                    "informational for now.",
-                    team.team_id,
                 )
 
         # Validate that team port ranges do not overlap. The default range is

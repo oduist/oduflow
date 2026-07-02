@@ -77,7 +77,9 @@ class TestInitSystem:
         result = system_ops.init_system(TEST_SETTINGS)
 
         assert result["status"] == "initialized"
-        mock_docker_client.networks.create.assert_called_once()
+        # Shared infra network plus one isolated network per team.
+        created = [c.args[0] for c in mock_docker_client.networks.create.call_args_list]
+        assert created == ["oduflow-net", "oduflow-1-net"]
         mock_docker_client.volumes.create.assert_called_once()
 
     @patch("oduflow.docker_ops.system_ops._db_exists", return_value=True)

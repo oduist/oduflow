@@ -202,6 +202,107 @@ def _migrate_team_pg_tablespaces(settings: Settings) -> None:
                 )
 
 
+def _migrate_per_team_networks(settings: Settings) -> None:
+    """Move each team's containers to the team's isolated Docker network.
+
+    Creates ``oduflow-{team}-net`` per team (attaching the shared PostgreSQL
+    container), connects every managed env/service container to it, and
+    disconnects them from the shared network — live, no restarts.
+    Established DB connections over the old network break once; Odoo
+    reconnects via DNS on the team network. A Traefik container still
+    pinning the shared backend network via ``--providers.docker.network`` is
+    removed here and recreated by system init right after migrations (the
+    ACME volume persists); afterwards each backend's network comes from the
+    container itself. Idempotent.
+    """
+    import docker
+
+    from oduflow.docker_ops import system_ops
+    from oduflow.docker_ops.client import get_client
+
+    client = get_client()
+
+    try:
+        traefik = client.containers.get(settings.traefik_container)
+        cmd = traefik.attrs.get("Config", {}).get("Cmd") or []
+        if any(str(arg).startswith("--providers.docker.network=") for arg in cmd):
+            logger.info(
+                "Removing %s (stale --providers.docker.network); system init "
+                "recreates it",
+                settings.traefik_container,
+            )
+            traefik.stop()
+            traefik.remove()
+    except docker.errors.NotFound:
+        pass
+
+    try:
+        shared_net = client.networks.get(settings.shared_network)
+    except docker.errors.NotFound:
+        shared_net = None
+
+    for team in settings.teams.values():
+        net_name = system_ops.ensure_team_network(client, settings, team)
+        net = client.networks.get(net_name)
+        containers = client.containers.list(
+            all=True,
+            filters={
+                "label": [
+                    f"{settings.managed_label}=true",
+                    f"{settings.team_label}={team.team_id}",
+                ]
+            },
+        )
+        for container in containers:
+            if container.labels.get(settings.system_label) == "true":
+                continue  # shared infra stays on the shared network
+            if container.attrs.get("HostConfig", {}).get("NetworkMode") == "host":
+                continue
+            networks = container.attrs.get("NetworkSettings", {}).get("Networks") or {}
+            if net_name not in networks:
+                net.connect(container)
+            if shared_net is not None and settings.shared_network in networks:
+                shared_net.disconnect(container)
+            logger.info("Moved container %s to %s", container.name, net_name)
+
+
+def _migrate_env_resource_limits(settings: Settings) -> None:
+    """Apply the default memory/pids limits to existing environment containers.
+
+    New containers get limits at creation; ``docker update`` retrofits the
+    running fleet without restarts. Best-effort per container: a failure is
+    logged and skipped (the next Update/Recreate applies limits anyway).
+    """
+    from oduflow.docker_ops.client import get_client
+    from oduflow.docker_ops.stats import default_env_limits
+
+    client = get_client()
+    limits = default_env_limits()
+    for team_id in settings.teams:
+        containers = client.containers.list(
+            all=True,
+            filters={
+                "label": [
+                    f"{settings.managed_label}=true",
+                    f"{settings.team_label}={team_id}",
+                ]
+            },
+        )
+        for container in containers:
+            # Environments only: services are operator-sized, infra is shared.
+            if not container.labels.get(settings.branch_label):
+                continue
+            try:
+                container.update(**limits)
+                logger.info("Applied resource limits to %s", container.name)
+            except Exception as exc:
+                logger.warning(
+                    "Could not apply resource limits to %s: %s",
+                    container.name,
+                    exc,
+                )
+
+
 # Append-only registry, executed in list order. Ids are recorded in
 # migrations.json once applied; reordering or renaming entries would re-run
 # or skip steps on existing installs.
@@ -221,6 +322,22 @@ MIGRATIONS: list[Migration] = [
             "under base_data_dir/pg_tablespaces/team_{id}"
         ),
         apply=_migrate_team_pg_tablespaces,
+    ),
+    Migration(
+        id="0003-per-team-networks",
+        description=(
+            "Move env/service containers to isolated per-team networks "
+            "(oduflow-{team}-net); shared infra attaches to every team network"
+        ),
+        apply=_migrate_per_team_networks,
+    ),
+    Migration(
+        id="0004-env-resource-limits",
+        description=(
+            "Apply default memory/pids limits to existing environment "
+            "containers via docker update"
+        ),
+        apply=_migrate_env_resource_limits,
     ),
 ]
 

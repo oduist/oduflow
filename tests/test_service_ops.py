@@ -3,7 +3,7 @@ import docker
 from unittest.mock import MagicMock, patch
 
 from oduflow.docker_ops import service_ops, system_ops
-from oduflow.errors import ConflictError, NotFoundError, PrerequisiteNotMetError
+from oduflow.errors import ConflictError, NotFoundError
 from oduflow.settings import Settings, TeamSettings
 
 TEST_TEAM = TeamSettings(
@@ -20,6 +20,17 @@ TEST_SETTINGS = Settings(
     db_password="odoo",
     teams={"1": TEST_TEAM},
 )
+
+
+@pytest.fixture(autouse=True)
+def _fake_team_network(monkeypatch):
+    # Network provisioning is covered by tests/test_team_networks.py; here it
+    # would only consume the mocked docker client's side_effect iterators.
+    monkeypatch.setattr(
+        "oduflow.docker_ops.system_ops.ensure_team_network",
+        lambda client, settings, team: f"oduflow-{team.team_id}-net",
+    )
+
 
 TRAEFIK_TEAM = TeamSettings(
     team_id="1",
@@ -72,7 +83,7 @@ class TestCreateService:
         run_kwargs = mock_docker_client.containers.run.call_args
         assert run_kwargs[1]["name"] == "oduflow-1-svc-redis"
         assert run_kwargs[1]["image"] == "redis:7"
-        assert run_kwargs[1]["network"] == "oduflow-net"
+        assert run_kwargs[1]["network"] == "oduflow-1-net"
         assert run_kwargs[1]["ports"] == {"6379/tcp": 6379}
         assert run_kwargs[1]["labels"]["oduflow.managed"] == "true"
         assert run_kwargs[1]["labels"]["oduflow.service"] == "redis"
@@ -166,16 +177,6 @@ class TestCreateService:
         mock_docker_client.containers.get.return_value = existing
 
         with pytest.raises(ConflictError, match="already exists"):
-            service_ops.create_service(
-                TEST_SETTINGS, TEST_TEAM, "redis", "redis:7", 6379
-            )
-
-        mock_docker_client.containers.run.assert_not_called()
-
-    def test_create_network_missing(self, mock_docker_client):
-        mock_docker_client.networks.get.side_effect = docker.errors.NotFound("nf")
-
-        with pytest.raises(PrerequisiteNotMetError, match="not initialized"):
             service_ops.create_service(
                 TEST_SETTINGS, TEST_TEAM, "redis", "redis:7", 6379
             )

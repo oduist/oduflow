@@ -47,4 +47,4 @@ auth_token = ""                   # MCP bearer token / OAuth client_id+secret (a
 ui_password = ""                  # Web UI password (empty = UI open)
 port_range = [50000, 50100]       # port range for Odoo containers
 # db_quota_gb = 50                # combined size cap for the team's PostgreSQL DBs (environments + templates); 0 = off
-# disk_quota_gb = 0               # reserved: data-dir cap via filesystem project quotas (XFS prjquota); not enforced yet
+# disk_quota_gb = 0               # cap on team files + databases via XFS project quotas (needs data dir on XFS with prjquota)

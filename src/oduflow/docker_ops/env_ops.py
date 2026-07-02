@@ -25,7 +25,9 @@ from oduflow.docker_ops.system_ops import (
     _resolve_instance_conf,
     check_db_quota,
     ensure_team_tablespace,
+    ensure_team_network,
 )
+from oduflow.docker_ops.stats import default_env_limits
 from oduflow.env_credentials import create_credentials, load_credentials
 from oduflow.errors import (
     ConflictError,
@@ -40,6 +42,7 @@ from oduflow.naming import (
     get_env_hostname,
     get_filestore_paths,
     get_repo_path,
+    get_team_network_name,
     get_resource_name,
     get_template_db_name,
     get_workspace_path,
@@ -609,7 +612,8 @@ def _init_empty_database(
         image=odoo_image,
         name=init_name,
         detach=True,
-        network=settings.shared_network,
+        network=get_team_network_name(team.team_id, settings.prefix),
+        **default_env_limits(),
         environment=odoo_env,
         volumes=odoo_volumes,
         command=f"odoo -d {env_db} -i base --stop-after-init --no-http",
@@ -722,6 +726,7 @@ def create_environment(
             )
 
     check_db_quota(client, settings, team)
+    ensure_team_network(client, settings, team)
 
     _cleanup_old_environment(client, settings, team, env_name)
     workspace_path = get_workspace_path(env_name, team.workspaces_dir)
@@ -775,6 +780,9 @@ def create_environment(
                 f"traefik.http.routers.{traefik_router}.tls": "true",
                 f"traefik.http.routers.{traefik_router}.tls.certresolver": "letsencrypt",
                 f"traefik.http.services.{traefik_router}.loadbalancer.server.port": "8069",
+                "traefik.docker.network": get_team_network_name(
+                    team.team_id, settings.prefix
+                ),
             }
         )
 
@@ -1047,7 +1055,8 @@ def create_environment(
         image=odoo_image,
         name=odoo_container_name,
         detach=True,
-        network=settings.shared_network,
+        network=get_team_network_name(team.team_id, settings.prefix),
+        **default_env_limits(),
         environment=odoo_env,
         labels=labels,
         volumes=odoo_volumes,
@@ -2261,7 +2270,8 @@ def update_environment(
         image=odoo_image,
         name=odoo_container_name,
         detach=True,
-        network=settings.shared_network,
+        network=get_team_network_name(team.team_id, settings.prefix),
+        **default_env_limits(),
         environment=env_dict,
         labels=labels,
         volumes=volumes,

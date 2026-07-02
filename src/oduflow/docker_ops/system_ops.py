@@ -15,12 +15,18 @@ import docker
 from docker import DockerClient
 
 from oduflow.docker_ops.client import chown_recursive, get_client, get_odoo_uid_gid
+from oduflow.docker_ops.stats import default_env_limits
 from oduflow.errors import (
     ExternalCommandError,
     NotFoundError,
     PrerequisiteNotMetError,
 )
-from oduflow.naming import get_db_name, get_tablespace_name, get_template_db_name
+from oduflow.naming import (
+    get_db_name,
+    get_tablespace_name,
+    get_team_network_name,
+    get_template_db_name,
+)
 from oduflow.settings import Settings, TeamSettings
 
 logger = logging.getLogger("oduflow")
@@ -200,7 +206,6 @@ def _ensure_traefik(client: DockerClient, settings: Settings) -> None:
             "--log.level=INFO",
             "--providers.docker=true",
             "--providers.docker.exposedbydefault=false",
-            f"--providers.docker.network={settings.shared_network}",
             "--providers.file.filename=/etc/traefik/dynamic/oduflow.json",
             "--providers.file.watch=true",
             "--entrypoints.web.address=:80",
@@ -566,6 +571,48 @@ def ensure_team_tablespace(
     return ts_name
 
 
+def ensure_team_network(
+    client: DockerClient, settings: Settings, team: TeamSettings
+) -> str:
+    """Ensure the team's isolated network exists and infra is attached to it.
+
+    Environment/service containers join only their team network, so one
+    tenant's code can never reach another tenant's containers. The shared
+    PostgreSQL container (password-protected, per-env roles) and Traefik (in
+    traefik mode) are attached to every team network — they are the only
+    cross-team surface. Idempotent and cheap.
+    """
+    net_name = get_team_network_name(team.team_id, settings.prefix)
+    try:
+        net = client.networks.get(net_name)
+    except docker.errors.NotFound:
+        net = client.networks.create(
+            net_name,
+            labels={
+                settings.managed_label: "true",
+                settings.system_label: "true",
+                settings.team_label: team.team_id,
+            },
+        )
+        logger.info("Created network %s", net_name)
+        _ensure_iptables_accept(client, net_name)
+
+    infra = [settings.shared_db_container]
+    if settings.routing_mode == "traefik":
+        infra.append(settings.traefik_container)
+    for container_name in infra:
+        try:
+            container = client.containers.get(container_name)
+        except docker.errors.NotFound:
+            continue
+        try:
+            net.connect(container)
+        except docker.errors.APIError as exc:
+            if "already exists" not in str(exc).lower():
+                raise
+    return net_name
+
+
 def _ensure_iptables_accept(client: DockerClient, network_name: str) -> None:
     try:
         net = client.networks.get(network_name)
@@ -618,6 +665,9 @@ def init_system(
     _ensure_pg_container(client, settings, system_labels)
 
     _wait_pg_ready(client, settings)
+
+    for team in settings.teams.values():
+        ensure_team_network(client, settings, team)
 
     logger.info("System initialized")
     return {"status": "initialized"}
@@ -866,7 +916,8 @@ def init_template(
         odoo_image,
         name=temp_container_name,
         detach=True,
-        network=settings.shared_network,
+        network=ensure_team_network(client, settings, team),
+        **default_env_limits(),
         environment={
             "HOST": settings.shared_db_container,
             "USER": settings.db_user,
@@ -1293,6 +1344,16 @@ def destroy_system(settings: Settings) -> dict[str, str]:
         pass
 
     try:
+        for extra_net in client.networks.list(
+            filters={"label": f"{settings.managed_label}=true"}
+        ):
+            if extra_net.name == settings.shared_network:
+                continue
+            try:
+                extra_net.remove()
+                removed.append(extra_net.name)
+            except docker.errors.APIError:
+                logger.warning("Could not remove network %s", extra_net.name)
         net = client.networks.get(settings.shared_network)
         net.remove()
         removed.append(settings.shared_network)

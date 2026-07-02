@@ -424,3 +424,29 @@ def refresh_team_storage(settings: Settings, team: TeamSettings) -> dict[str, An
     }
     _write_storage_cache(team, cache)
     return cache
+
+
+# ── Default resource limits for environment containers ───────────────────────
+
+_GB = 1024**3
+
+
+def default_env_limits() -> dict[str, Any]:
+    """Resource limits applied to every environment container.
+
+    Auto-derived from host size — no config knobs: memory is a quarter of
+    host RAM clamped to [2 GB, 8 GB] (Odoo installs and test runs are
+    memory-hungry; the cap keeps one tenant's environment from taking the
+    machine), plus a pids ceiling against fork bombs. CPU gets no hard
+    quota: it is compressible, the kernel's fair scheduler already splits it
+    evenly under contention, and a cap would only slow work on an idle host.
+    """
+    mem = _read_memory_linux()
+    if mem is None and sys.platform == "darwin":
+        mem = _read_memory_macos()
+    total_bytes = int(mem[0] * 1024 * 1024) if mem else 0
+    if total_bytes:
+        mem_limit = min(8 * _GB, max(2 * _GB, total_bytes // 4))
+    else:
+        mem_limit = 4 * _GB
+    return {"mem_limit": mem_limit, "pids_limit": 4096}

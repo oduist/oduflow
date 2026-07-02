@@ -78,6 +78,14 @@ def get_env_hostname(env_name: str, hostname: str) -> str:
     return f"{slug}.{hostname}"
 
 
+def get_team_network_name(team_id: str, prefix: str = "oduflow-") -> str:
+    """The team's isolated Docker network. Environment and service containers
+    join only this network; shared infrastructure (PostgreSQL, Traefik) is
+    additionally attached to every team network, so tenants can reach the
+    infra but never each other."""
+    return f"{prefix}{team_id}-net"
+
+
 def get_tablespace_name(team_id: str) -> str:
     """PostgreSQL tablespace holding all of the team's databases (its files
     live under base_data_dir/pg_tablespaces/team_{id} on the host)."""

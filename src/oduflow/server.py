@@ -31,7 +31,7 @@ from oduflow.docker_ops import (
     volume_file_ops,
     volume_ops,
 )
-from oduflow import activity, git_ops, migrations, reaper
+from oduflow import activity, git_ops, migrations, quotas, reaper
 from oduflow import settings as settings_module
 from oduflow.errors import FlowError, NotFoundError, PrerequisiteNotMetError
 from oduflow.locking import LockManager
@@ -3380,6 +3380,7 @@ def _run_cli() -> None:
         # previous version left them.
         migrations.run_pending(_settings)
         _ensure_initialized(_settings)
+        quotas.apply_all(_settings)
         # Record the active transport for informational purposes.
         # local_path is gated by allow_local_path in Settings.
         settings_module.TRANSPORT = args.transport

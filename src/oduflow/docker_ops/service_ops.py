@@ -9,7 +9,7 @@ import docker
 from oduflow.docker_ops.client import get_client
 from oduflow.docker_ops import service_presets
 from oduflow.docker_ops import volume_ops
-from oduflow.errors import ConflictError, NotFoundError, PrerequisiteNotMetError
+from oduflow.errors import ConflictError, NotFoundError
 from oduflow.naming import get_service_container_name
 from oduflow.settings import Settings, TeamSettings
 
@@ -66,15 +66,12 @@ def create_service(
     client = get_client()
     container_name = get_service_container_name(name, settings.prefix, team.team_id)
 
-    # Check that the shared network exists (not needed for host mode)
+    # Services join the team's isolated network (not needed for host mode).
+    team_network = ""
     if not host_mode:
-        try:
-            client.networks.get(settings.shared_network)
-        except docker.errors.NotFound:
-            raise PrerequisiteNotMetError(
-                f"Shared network '{settings.shared_network}' not found. "
-                "System not initialized. Restart oduflow."
-            )
+        from oduflow.docker_ops.system_ops import ensure_team_network
+
+        team_network = ensure_team_network(client, settings, team)
 
     # Check for existing container
     try:
@@ -103,7 +100,7 @@ def create_service(
         run_kwargs["network_mode"] = "host"
         labels["oduflow.host_mode"] = "true"
     else:
-        run_kwargs["network"] = settings.shared_network
+        run_kwargs["network"] = team_network
 
     if settings.routing_mode == "traefik":
         if not hostname:
@@ -124,6 +121,7 @@ def create_service(
             labels[
                 f"traefik.http.services.{container_name}.loadbalancer.server.port"
             ] = str(port)
+            labels["traefik.docker.network"] = team_network
         url = f"https://{hostname}"
     else:
         if not host_mode:

@@ -85,3 +85,28 @@ def test_refresh_team_totals(mock_list, mock_sql, mock_team_db, mock_client, tmp
     # measuring, so it is not counted.
     assert cache["team"]["disk_bytes"] == 7000
     assert read_storage_cache(team)["team"] == cache["team"]
+
+
+class TestDefaultEnvLimits:
+    def _limits(self, monkeypatch, total_mb):
+        from oduflow.docker_ops import stats
+
+        monkeypatch.setattr(
+            stats, "_read_memory_linux", lambda: (total_mb, 0.0) if total_mb else None
+        )
+        monkeypatch.setattr(stats, "_read_memory_macos", lambda: None)
+        return stats.default_env_limits()
+
+    def test_quarter_of_host(self, monkeypatch):
+        assert self._limits(monkeypatch, 16 * 1024)["mem_limit"] == 4 * 1024**3
+
+    def test_floor_2gb(self, monkeypatch):
+        assert self._limits(monkeypatch, 4 * 1024)["mem_limit"] == 2 * 1024**3
+
+    def test_cap_8gb(self, monkeypatch):
+        assert self._limits(monkeypatch, 128 * 1024)["mem_limit"] == 8 * 1024**3
+
+    def test_unknown_host_fallback(self, monkeypatch):
+        limits = self._limits(monkeypatch, 0)
+        assert limits["mem_limit"] == 4 * 1024**3
+        assert limits["pids_limit"] == 4096

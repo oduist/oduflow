@@ -207,3 +207,54 @@ class TestTeamScopedNamesMigration:
 
         assert foreign.renamed_to is None
         assert other_team.renamed_to is None
+
+
+class TestResourceLimitsMigration:
+    def test_updates_env_containers_only(self, monkeypatch):
+        from oduflow.migrations import _migrate_env_resource_limits
+        from oduflow.settings import TeamSettings
+        from unittest.mock import MagicMock
+
+        env = MagicMock()
+        env.labels = {
+            "oduflow.managed": "true",
+            "oduflow.team": "1",
+            "oduflow.branch": "main",
+        }
+        svc = MagicMock()
+        svc.labels = {
+            "oduflow.managed": "true",
+            "oduflow.team": "1",
+            "oduflow.service": "redis",
+        }
+        client = MagicMock()
+        client.containers.list.return_value = [env, svc]
+        monkeypatch.setattr("oduflow.docker_ops.client.get_client", lambda: client)
+        monkeypatch.setattr(
+            "oduflow.docker_ops.stats.default_env_limits",
+            lambda: {"mem_limit": 2**31, "pids_limit": 4096},
+        )
+
+        settings = Settings(teams={"1": TeamSettings(team_id="1")})
+        _migrate_env_resource_limits(settings)
+
+        env.update.assert_called_once_with(mem_limit=2**31, pids_limit=4096)
+        svc.update.assert_not_called()
+
+    def test_update_failure_is_logged_not_fatal(self, monkeypatch):
+        from oduflow.migrations import _migrate_env_resource_limits
+        from oduflow.settings import TeamSettings
+        from unittest.mock import MagicMock
+
+        env = MagicMock()
+        env.labels = {
+            "oduflow.managed": "true",
+            "oduflow.team": "1",
+            "oduflow.branch": "main",
+        }
+        env.update.side_effect = RuntimeError("kernel says no")
+        client = MagicMock()
+        client.containers.list.return_value = [env]
+        monkeypatch.setattr("oduflow.docker_ops.client.get_client", lambda: client)
+
+        _migrate_env_resource_limits(Settings(teams={"1": TeamSettings(team_id="1")}))

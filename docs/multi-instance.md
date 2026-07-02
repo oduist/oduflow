@@ -1,6 +1,6 @@
 # Multi-Team Support
 
-Oduflow supports running **multiple isolated teams** within a single server instance. Each team has its own environments, templates, services, credentials, and port registry, while sharing the Docker network and PostgreSQL container.
+Oduflow supports running **multiple isolated teams** within a single server instance. Each team has its own environments, templates, services, credentials, port registry, Docker network, and PostgreSQL tablespace; the PostgreSQL and Traefik containers are the only shared infrastructure.
 
 ## Configuration
 
@@ -72,11 +72,15 @@ disk_quota_gb = 0     # default: 0 (off)
   (`pg_database_size()`), so there is no per-file scanning in the hot path.
   Replacement operations (refresh/reload of an existing template) are not
   gated, so a team at its quota can still shrink or refresh what it has.
-- `disk_quota_gb` is **reserved**: it will cap the team's data dir
-  (workspaces, filestores, template dumps) via filesystem project quotas,
-  which requires the data dir to live on XFS mounted with `prjquota`.
-  Enforcement is not wired up yet; setting a non-zero value only logs a
-  warning today.
+- `disk_quota_gb` caps the team's disk usage — its data dir (workspaces,
+  filestores, template dumps) **plus** its PostgreSQL tablespace — enforced
+  by the kernel via XFS project quotas. Requirements: Linux, `xfsprogs`
+  installed, and the data dir on an XFS filesystem mounted with `prjquota`.
+  Both directory trees get the same project ID, so one `bhard` limit covers
+  files and databases together; writes beyond it fail with ENOSPC while the
+  rest of the machine is unaffected. On filesystems without project-quota
+  support the limit is not enforced (one warning at startup) and usage stays
+  visible via the dashboard and `/api/usage`.
 
 ## Per-Team PostgreSQL Tablespaces
 
@@ -103,8 +107,10 @@ database size.
 
 | Resource | Scope |
 |---|---|
-| Docker network (`oduflow-net`) | Shared |
+| Infra Docker network (`oduflow-net`) | Shared (PostgreSQL, Traefik) |
+| Team Docker network (`oduflow-{team}-net`) | Per-team — env/service containers join only their team's network; shared infra is attached to every team network |
 | PostgreSQL container (`oduflow-db`) | Shared |
+| PostgreSQL tablespace (`oduflow_team_{id}`) | Per-team |
 | Traefik container (`oduflow-traefik`) | Shared |
 | Environments (workspaces, containers) | Per-team |
 | Templates (DB snapshots, filestores) | Per-team |
