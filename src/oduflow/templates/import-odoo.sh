@@ -11,7 +11,7 @@
 # and only sends the missing pieces (manifest, dump, or individual filestore
 # hash-directories).
 #
-#   curl -sSf https://YOUR-ODUFLOW/import-odoo.sh | bash -s -- \
+#   curl -sSfL https://YOUR-ODUFLOW/import-odoo.sh | bash -s -- \
 #        --server https://YOUR-ODUFLOW --token <TOKEN>
 #
 # The --token is minted by the "Import from Odoo.sh" button in the Oduflow
@@ -36,6 +36,14 @@ done
 [ -n "$SERVER" ] || { echo "ERROR: --server is required" >&2; exit 2; }
 [ -n "$TOKEN" ]  || { echo "ERROR: --token is required" >&2; exit 2; }
 SERVER="${SERVER%/}"
+
+# Resolve redirects up front (e.g. http -> https) so every upload hits the
+# final URL directly — POSTs must not rely on redirect-following, which would
+# drop the request body.
+EFFECTIVE="$(curl -fsSIL -o /dev/null -w '%{url_effective}' "${SERVER}/import-odoo.sh" 2>/dev/null || true)"
+if [ -n "$EFFECTIVE" ]; then
+    SERVER="${EFFECTIVE%/import-odoo.sh}"
+fi
 
 DB="${PGDATABASE:-}"
 [ -n "$DB" ] || {
@@ -111,8 +119,9 @@ fi
 
 if [ -z "$have_dump" ]; then
     echo ">> uploading SQL dump ($(human "$(wc -c < "$SQL_GZ")"))"
+    # -T streams from disk; --data-binary would buffer the whole file in RAM.
     curl -fsS -H "$AUTH" -H "Content-Type: application/gzip" \
-        --data-binary @"$SQL_GZ" -X POST "${API}/dump" >/dev/null
+        -T "$SQL_GZ" -X POST "${API}/dump" >/dev/null
 else
     echo ">> SQL dump already uploaded, skipping"
 fi
@@ -160,9 +169,11 @@ progress() {  # done total label
 upload_chunk() {  # name
     local c="$1" tries=0
     while :; do
+        # -T - streams the tar as it is produced (chunked transfer encoding);
+        # --data-binary @- would buffer the whole chunk in RAM first.
         if tar -C "$FS" -cf - "$c" \
             | curl -fsS -H "$AUTH" -H "Content-Type: application/x-tar" \
-                   --data-binary @- -X POST "${API}/filestore?chunk=${c}" >/dev/null; then
+                   -T - -X POST "${API}/filestore?chunk=${c}" >/dev/null; then
             return 0
         fi
         tries=$((tries + 1))
@@ -191,9 +202,12 @@ echo >&2
 echo ">> finalizing (restoring database — this can take a few minutes)…"
 RESULT_FILE="$(mktemp)"
 trap 'rm -f "$STATUS_FILE" "$RESULT_FILE"' EXIT
-if ! curl -fsS -H "$AUTH" -X POST "${API}/finalize" -o "$RESULT_FILE"; then
+# --fail-with-body keeps the server's error body on HTTP >= 400 (plain -f
+# would discard it, hiding the reason the riskiest step failed).
+if ! curl -sS --fail-with-body -H "$AUTH" -X POST "${API}/finalize" -o "$RESULT_FILE"; then
     echo "ERROR: finalize request failed:" >&2
     cat "$RESULT_FILE" >&2 || true
+    echo >&2
     exit 6
 fi
 

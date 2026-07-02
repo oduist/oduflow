@@ -66,6 +66,17 @@ class TeamSettings:
     def get_template_metadata_path(self, template_name: str) -> str:
         return os.path.join(self.get_template_dir(template_name), "metadata.json")
 
+    def get_import_staging_dir(self, template_name: str) -> str:
+        """Where a push-based Odoo.sh import stages its upload before finalize.
+
+        Kept outside ``templates/`` so a partial upload never masquerades as (or
+        clobbers) a live template; finalize swaps it into place atomically.
+        """
+        from oduflow.naming import validate_template_name
+
+        validate_template_name(template_name)
+        return os.path.join(self.data_dir, "import_staging", template_name)
+
     def list_templates(self) -> list[str]:
         templates_dir = os.path.join(self.data_dir, "templates")
         if not os.path.isdir(templates_dir):
