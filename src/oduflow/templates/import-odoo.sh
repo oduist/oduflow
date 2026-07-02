@@ -11,7 +11,7 @@
 # and only sends the missing pieces (manifest, dump, or individual filestore
 # hash-directories).
 #
-#   curl -sSf https://YOUR-ODUFLOW/import-odoo.sh | bash -s -- \
+#   curl -sSfL https://YOUR-ODUFLOW/import-odoo.sh | bash -s -- \
 #        --server https://YOUR-ODUFLOW --token <TOKEN>
 #
 # The --token is minted by the "Import from Odoo.sh" button in the Oduflow
@@ -36,6 +36,14 @@ done
 [ -n "$SERVER" ] || { echo "ERROR: --server is required" >&2; exit 2; }
 [ -n "$TOKEN" ]  || { echo "ERROR: --token is required" >&2; exit 2; }
 SERVER="${SERVER%/}"
+
+# Resolve redirects up front (e.g. http -> https) so every upload hits the
+# final URL directly — POSTs must not rely on redirect-following, which would
+# drop the request body.
+EFFECTIVE="$(curl -fsSIL -o /dev/null -w '%{url_effective}' "${SERVER}/import-odoo.sh" 2>/dev/null || true)"
+if [ -n "$EFFECTIVE" ]; then
+    SERVER="${EFFECTIVE%/import-odoo.sh}"
+fi
 
 DB="${PGDATABASE:-}"
 [ -n "$DB" ] || {
@@ -87,9 +95,21 @@ echo ">> Importing '$DB' into Oduflow at $SERVER"
 
 STATUS_FILE="$(mktemp)"
 trap 'rm -f "$STATUS_FILE"' EXIT
-if ! curl -fsS -H "$AUTH" "${API}/status" -o "$STATUS_FILE" 2>/dev/null; then
+if ! curl -sS --fail-with-body -H "$AUTH" "${API}/status" -o "$STATUS_FILE" 2>/dev/null; then
     echo "ERROR: could not reach $SERVER or token is invalid/expired." >&2
+    [ -s "$STATUS_FILE" ] && { echo "       Server said:" >&2; head -c 300 "$STATUS_FILE" >&2; echo >&2; }
     echo "       Generate a fresh token from the dashboard and retry." >&2
+    exit 4
+fi
+
+# Hard gate: the status body must be Oduflow's JSON with ok=true. Anything
+# else (a proxy page, a redirect body, an HTML error) means the uploads
+# would go nowhere — abort NOW instead of "uploading" gigabytes into a 3xx.
+if [ -z "$(json_field "$STATUS_FILE" 'd.get("ok") and 1 or ""')" ]; then
+    echo "ERROR: unexpected response from ${API}/status:" >&2
+    head -c 300 "$STATUS_FILE" >&2; echo >&2
+    echo "       Check that --server points at your Oduflow dashboard URL" >&2
+    echo "       (https, no proxy pages in between), then retry." >&2
     exit 4
 fi
 
@@ -111,8 +131,9 @@ fi
 
 if [ -z "$have_dump" ]; then
     echo ">> uploading SQL dump ($(human "$(wc -c < "$SQL_GZ")"))"
+    # -T streams from disk; --data-binary would buffer the whole file in RAM.
     curl -fsS -H "$AUTH" -H "Content-Type: application/gzip" \
-        --data-binary @"$SQL_GZ" -X POST "${API}/dump" >/dev/null
+        -T "$SQL_GZ" -X POST "${API}/dump" >/dev/null
 else
     echo ">> SQL dump already uploaded, skipping"
 fi
@@ -160,9 +181,11 @@ progress() {  # done total label
 upload_chunk() {  # name
     local c="$1" tries=0
     while :; do
+        # -T - streams the tar as it is produced (chunked transfer encoding);
+        # --data-binary @- would buffer the whole chunk in RAM first.
         if tar -C "$FS" -cf - "$c" \
             | curl -fsS -H "$AUTH" -H "Content-Type: application/x-tar" \
-                   --data-binary @- -X POST "${API}/filestore?chunk=${c}" >/dev/null; then
+                   -T - -X POST "${API}/filestore?chunk=${c}" >/dev/null; then
             return 0
         fi
         tries=$((tries + 1))
@@ -191,14 +214,25 @@ echo >&2
 echo ">> finalizing (restoring database — this can take a few minutes)…"
 RESULT_FILE="$(mktemp)"
 trap 'rm -f "$STATUS_FILE" "$RESULT_FILE"' EXIT
-if ! curl -fsS -H "$AUTH" -X POST "${API}/finalize" -o "$RESULT_FILE"; then
+# --fail-with-body keeps the server's error body on HTTP >= 400 (plain -f
+# would discard it, hiding the reason the riskiest step failed).
+if ! curl -sS --fail-with-body -H "$AUTH" -X POST "${API}/finalize" -o "$RESULT_FILE"; then
     echo "ERROR: finalize request failed:" >&2
     cat "$RESULT_FILE" >&2 || true
+    echo >&2
     exit 6
 fi
 
 python3 -c 'import sys,json
-d=json.load(open(sys.argv[1]))
+raw = open(sys.argv[1], "rb").read().decode("utf-8", "replace")
+try:
+    d = json.loads(raw)
+except ValueError:
+    print(">> ERROR: unexpected finalize response (not Oduflow JSON):")
+    print("   " + (raw[:300].strip() or "(empty body)"))
+    print("   The import may still be finishing server-side — check the")
+    print("   Templates tab in the dashboard before retrying.")
+    sys.exit(1)
 if not d.get("ok"):
     print(">> ERROR:", d.get("error","unknown error")); sys.exit(1)
 r=d.get("result",{})

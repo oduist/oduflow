@@ -48,14 +48,28 @@ _AUTH_COOKIE = "oduflow_ui_auth"
 # Reachable without authentication: the login flow and static brand assets
 # (so the login page can render its logo/favicon/fonts). /static/ serves only
 # vetted extensions from the packaged assets dir (fonts, icons, xterm).
-# /import-odoo.sh (the Odoo.sh client script) and the /api/templates/import/*
-# ingest endpoints authenticate with a short-lived import token, not the UI
-# password, so they bypass Basic auth. NOTE: /api/templates/import-token (which
-# mints the token) is deliberately NOT public — it stays behind the UI login.
+# /import-odoo.sh (the Odoo.sh client script) and the five import ingest
+# endpoints authenticate with a short-lived import token, not the UI password,
+# so they bypass Basic auth. They are listed as EXACT paths (never a prefix):
+# a prefix like "/api/templates/import/" would also expose sibling routes such
+# as /api/templates/{name}/delete with name="import" to unauthenticated calls.
+# NOTE: /api/templates/import-token (which mints the token) is deliberately NOT
+# public — it stays behind the UI login.
 _PUBLIC_PATHS = frozenset(
-    {"/login", "/logout", "/favicon.ico", "/logo.png", "/import-odoo.sh"}
+    {
+        "/login",
+        "/logout",
+        "/favicon.ico",
+        "/logo.png",
+        "/import-odoo.sh",
+        "/api/templates/import/status",
+        "/api/templates/import/manifest",
+        "/api/templates/import/dump",
+        "/api/templates/import/filestore",
+        "/api/templates/import/finalize",
+    }
 )
-_PUBLIC_PREFIXES = ("/static/", "/api/templates/import/")
+_PUBLIC_PREFIXES = ("/static/",)
 _SESSION_SALT = "oduflow.ui-auth.v1"
 _SESSION_MAX_AGE = 7 * 24 * 3600  # 7 days
 _SECRET_FILENAME = ".ui_session_secret"
@@ -841,17 +855,21 @@ def _build_routes(
         return import_tokens.load_token(get_settings(), _import_token_value(request))
 
     def _import_progress(team: TeamSettings, template_name: str) -> dict[str, object]:
-        """Derive upload progress from what is staged on disk, not from the
-        token — so a re-run (even with a fresh token after the old one expired)
-        resumes from what already landed instead of restarting."""
-        tpl_dir = team.get_template_dir(template_name)  # validates the name
-        manifest = os.path.isfile(team.get_template_metadata_path(template_name))
-        dump = os.path.isfile(os.path.join(tpl_dir, "dump.sql.gz"))
-        fs_dir = team.get_template_filestore_path(template_name)
+        """Derive upload progress from what sits in the import STAGING dir (not
+        the token, and never the live template). Disk-derived progress makes a
+        re-run resumable even with a fresh token after the old one expired;
+        reading staging (not the template) means importing over an existing
+        template re-uploads everything instead of silently "resuming" from the
+        old template's files."""
+        staging = team.get_import_staging_dir(template_name)  # validates name
+        manifest = os.path.isfile(os.path.join(staging, "metadata.json"))
+        dump = os.path.isfile(os.path.join(staging, "dump.sql.gz"))
+        fs_dir = os.path.join(staging, "filestore")
         chunks: list[str] = []
         if os.path.isdir(fs_dir):
-            # A chunk directory exists only after its tar was received in full
-            # and extracted, so its presence means that chunk is complete.
+            # A chunk directory appears only after its tar was extracted in
+            # full and atomically renamed into place (extract_filestore_chunk),
+            # so its presence means that chunk is complete.
             for entry in os.listdir(fs_dir):
                 if (
                     re.fullmatch(r"[0-9a-f]{2}", entry) or entry == "checklist"
@@ -894,8 +912,13 @@ def _build_routes(
             return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
 
         base = str(request.base_url).rstrip("/")
+        # Behind a TLS-terminating proxy request.base_url is http://; honour
+        # X-Forwarded-Proto so the pasted command never sends the Bearer token
+        # over plaintext (and -L follows any residual http->https redirect).
+        if _is_secure_request(request) and base.startswith("http://"):
+            base = "https://" + base[len("http://") :]
         command = (
-            f"curl -sSf {base}/import-odoo.sh | bash -s -- "
+            f"curl -sSfL {base}/import-odoo.sh | bash -s -- "
             f"--server {base} --token {record['token']}"
         )
         return JSONResponse(
@@ -952,9 +975,9 @@ def _build_routes(
             "backup_datetime_utc": manifest.get("backup_datetime_utc", ""),
         }
         try:
-            tpl_dir = team.get_template_dir(template_name)
-            os.makedirs(tpl_dir, exist_ok=True)
-            with open(team.get_template_metadata_path(template_name), "w") as f:
+            staging = team.get_import_staging_dir(template_name)
+            os.makedirs(staging, exist_ok=True)
+            with open(os.path.join(staging, "metadata.json"), "w") as f:
                 json.dump(metadata, f, indent=2)
         except ValueError as e:  # invalid template name
             return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
@@ -967,17 +990,11 @@ def _build_routes(
             return _error_response(e)
         template_name = str(record["template_name"])
         try:
-            tpl_dir = team.get_template_dir(template_name)
+            staging = team.get_import_staging_dir(template_name)
         except ValueError as e:
             return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
-        os.makedirs(tpl_dir, exist_ok=True)
-        # Drop any stale dump under other names so get_template_sql_path resolves
-        # to the gzip'd SQL dump we are about to write.
-        for stale in ("dump.pgdump", "dump.sql", "dump.pgdump.gz"):
-            stale_path = os.path.join(tpl_dir, stale)
-            if os.path.isfile(stale_path):
-                os.remove(stale_path)
-        dest = os.path.join(tpl_dir, "dump.sql.gz")
+        os.makedirs(staging, exist_ok=True)
+        dest = os.path.join(staging, "dump.sql.gz")
         tmp = f"{dest}.part"
         try:
             with open(tmp, "wb") as f:
@@ -1004,17 +1021,20 @@ def _build_routes(
             )
         template_name = str(record["template_name"])
         try:
-            tpl_dir = team.get_template_dir(template_name)
+            staging = team.get_import_staging_dir(template_name)
         except ValueError as e:
             return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
-        fs_dir = team.get_template_filestore_path(template_name)
-        os.makedirs(tpl_dir, exist_ok=True)
-        tmp_tar = os.path.join(tpl_dir, f".chunk_{chunk}.tar")
+        fs_dir = os.path.join(staging, "filestore")
+        os.makedirs(staging, exist_ok=True)
+        tmp_tar = os.path.join(staging, f".chunk_{chunk}.tar")
         try:
             with open(tmp_tar, "wb") as f:
                 async for data in request.stream():
                     f.write(data)
-            system_ops.extract_filestore_tar(tmp_tar, fs_dir)
+            # Atomic: the chunk dir appears in staging only after the whole tar
+            # extracted, so a truncated upload is never mistaken for a complete
+            # chunk on resume.
+            system_ops.extract_filestore_chunk(tmp_tar, fs_dir, chunk)
         except Exception as e:
             logger.exception(
                 "Failed to receive filestore chunk %s for %s", chunk, template_name
@@ -1043,14 +1063,6 @@ def _build_routes(
                 },
                 status_code=400,
             )
-        # The Odoo image major (e.g. "18.0") drives the filestore chown; read it
-        # from the staged metadata so finalize does not depend on token state.
-        major_version = ""
-        try:
-            with open(team.get_template_metadata_path(template_name)) as f:
-                major_version = str(json.load(f).get("odoo_version") or "")
-        except (OSError, ValueError):
-            pass
         try:
             locks.acquire_team(team.team_id)
         except BusyError as e:
@@ -1060,7 +1072,7 @@ def _build_routes(
                 get_settings(),
                 team,
                 template_name,
-                major_version=major_version,
+                staging_dir=team.get_import_staging_dir(template_name),
             )
             import_tokens.invalidate(team, str(record["token"]))
             return JSONResponse({"ok": True, "result": result})

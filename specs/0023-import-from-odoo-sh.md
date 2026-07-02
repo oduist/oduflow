@@ -45,26 +45,39 @@ single-purpose token** minted by a dashboard button, not the UI password.
   name and returns a ready-to-paste command. The token is one JSON file per
   team carrying only auth + the target template; it is deleted on finalize or
   expiry. A stale token left in terminal scrollback is inert.
-- **Resume is disk-derived, not token-derived.** `status` reports what is
-  actually staged in the template directory (metadata written → manifest done;
-  `dump.sql.gz` present → dump done; each hash-dir present → that chunk done,
-  since a chunk dir only appears after its tar was received in full and
-  extracted). Keeping resume state on disk rather than in the token means a
-  fresh token minted for the same template — e.g. after the first expired
-  mid-upload — still continues from what already landed.
+- **Staging directory + atomic swap.** Uploads land in
+  `<team>/import_staging/<template>/`, never in the live template. Each
+  filestore chunk is extracted into a temp sibling and renamed into staging
+  only once fully unpacked, so a truncated upload can't masquerade as a
+  complete chunk. `finalize` promotes the whole staged set into the template
+  directory inside the overlay remount guard — re-importing over an existing
+  template therefore replaces it with fresh data instead of silently
+  "resuming" from the old files, and live envs never see a half-written lower
+  layer.
+- **Resume is disk-derived, not token-derived.** `status` reports what sits in
+  the staging directory (metadata written → manifest done; `dump.sql.gz`
+  present → dump done; each hash-dir present → that chunk done). Keeping
+  resume state on disk rather than in the token means a fresh token minted for
+  the same template — e.g. after the first expired mid-upload — still
+  continues from what already landed.
 - **Client (`import-odoo.sh`).** Served unauthenticated from `/import-odoo.sh`.
   It reads `$PGDATABASE`, finds `~/backup.daily/<db>_daily.*` (erroring cleanly
-  if absent — daily backups exist only on production builds), asks the server
-  what it already has, and uploads only the missing pieces. Nothing large hits
-  disk: the filestore is `tar`-streamed **per top-level hash directory** (256
-  dirs + `checklist`) straight into the upload. It prints an aggregate
-  percentage computed from per-chunk sizes.
+  if absent — daily backups exist only on production builds), resolves any
+  http→https redirect up front (POST bodies must not rely on
+  redirect-following), asks the server what it already has, and uploads only
+  the missing pieces. Nothing large hits disk **or RAM**: the filestore is
+  `tar`-streamed **per top-level hash directory** (256 dirs + `checklist`)
+  via `curl -T` (chunked transfer), not `--data-binary` (which buffers the
+  whole payload in memory). It prints an aggregate percentage computed from
+  per-chunk sizes.
 - **Ingest endpoints.** `/api/templates/import/{status,manifest,dump,filestore,
   finalize}` authenticate by token (a `Bearer` header), so they bypass Basic
-  auth while the mint endpoint stays behind the UI login. `manifest` writes
-  `metadata.json` (Odoo image from `odoo_branch`, module list); `dump` streams
-  `dump.sql.gz`; `filestore?chunk=<hash>` unpacks one tar chunk into the
-  template filestore with a zip-slip guard; `finalize` runs the restore.
+  auth — as EXACT public paths, never a prefix, so sibling routes like
+  `/api/templates/{name}/delete` (with `name="import"`) stay behind auth. The
+  mint endpoint stays behind the UI login. `manifest` writes `metadata.json`
+  (Odoo image from `odoo_branch`, module list); `dump` streams `dump.sql.gz`;
+  `filestore?chunk=<hash>` unpacks one tar chunk (zip-slip guarded);
+  `finalize` swaps staging into the template and runs the restore.
 - **Reuse, not reinvention.** By the time `finalize` runs, the template
   directory already holds exactly what `import_from_odoo` produces
   (`dump.sql.gz` + `filestore/` + `metadata.json`), so finalize is the shared
