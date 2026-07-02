@@ -42,6 +42,7 @@ precursors).
 | [0021](0021-code-delivery-modes.md) | 2026-06-12 | Code delivery modes: `repo_url` git push vs `local_path` live-mount + `pull_and_apply` guardrail |
 | [0022](0022-engineers-console-design-system.md) | 2026-06-12 | The Engineer's Console: dashboard design system + lifecycle automation |
 | [0023](0023-import-from-odoo-sh.md) | 2026-07-02 | Import a template from Odoo.sh via a push-based, resumable shell client |
+| [0024](0024-business-source-license.md) | 2026-07-02 | Relicense to Business Source License 1.1 with three commercial tiers |
 
 ## Design docs
 

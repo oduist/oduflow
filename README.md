@@ -3,7 +3,7 @@
   <img src="https://img.shields.io/badge/Python-3.10+-blue?logo=python&logoColor=white" alt="Python 3.10+">
   <img src="https://img.shields.io/badge/Docker-Required-2496ED?logo=docker&logoColor=white" alt="Docker">
   <img src="https://img.shields.io/badge/Protocol-MCP-green" alt="MCP">
-  <img src="https://img.shields.io/badge/License-Polyform%20NC-yellow" alt="Polyform Noncommercial License">
+  <img src="https://img.shields.io/badge/License-BUSL--1.1-yellow" alt="Business Source License 1.1">
   <img src="https://img.shields.io/badge/Odoo-15.0--19.0-714B67?logo=odoo&logoColor=white" alt="Odoo">
 </p>
 
@@ -121,4 +121,4 @@ Oduflow collects anonymous usage telemetry (first startup and environment creati
 
 ## Licensing
 
-Oduflow is source-available under the [Polyform Noncommercial License 1.0.0](LICENSE). Commercial use requires a license — visit [oduflow.dev](https://oduflow.dev).
+Oduflow is source-available under the [Business Source License 1.1](LICENSE). Evaluation, educational, and other non-commercial use is free forever. Commercial use requires a paid license in one of three tiers — Individual (solo developers), Business (internal company use), or Integrator (Odoo service providers) — visit [oduflow.dev](https://oduflow.dev). Each release converts to the open-source MPL 2.0 four years after publication.

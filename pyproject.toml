@@ -6,7 +6,7 @@ authors = [
     { name = "Oduist" }
 ]
 readme = "README.md"
-license = { text = "PolyForm-Noncommercial-1.0.0" }
+license = { text = "BUSL-1.1" }
 requires-python = ">=3.10"
 keywords = ["odoo", "mcp", "docker", "development", "ci"]
 dependencies = [
