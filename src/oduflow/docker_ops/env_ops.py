@@ -1489,18 +1489,15 @@ def ensure_running(settings: Settings, env_name: str, team: TeamSettings) -> boo
 
 
 def _assert_team_owns(
-    container: Any, settings: Settings, team: TeamSettings | None, env_name: str
+    container: Any, settings: Settings, team: TeamSettings, env_name: str
 ) -> None:
     """Reject operating on a container that belongs to another team.
 
     Defence in depth on top of team-scoped container names (issue #39): even
     if a name unexpectedly resolves across teams, the team label must match.
     The NotFound message is reused so the existence of another team's env is
-    not disclosed. Skipped when team is None (internal callers that have no
-    team in scope).
+    not disclosed.
     """
-    if team is None:
-        return
     label = container.labels.get(settings.team_label)
     if label is not None and label != team.team_id:
         raise NotFoundError(

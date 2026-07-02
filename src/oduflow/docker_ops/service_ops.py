@@ -212,6 +212,20 @@ def delete_service(settings: Settings, team: TeamSettings, name: str) -> dict[st
     }
 
 
+def _traefik_label_by_suffix(labels: dict[str, str], suffix: str) -> str:
+    """Value of the traefik label ending in ``suffix``, or "".
+
+    Router/service names embed the container name, which changed with naming
+    v2; containers created before the rename migration still carry labels
+    keyed by the old name — so labels are matched by suffix, never by exact
+    router name.
+    """
+    for key, value in labels.items():
+        if key.startswith("traefik.http.") and key.endswith(suffix):
+            return str(value)
+    return ""
+
+
 def _describe_service_container(
     settings: Settings, team: TeamSettings, container
 ) -> dict:
@@ -238,28 +252,23 @@ def _describe_service_container(
     is_host_mode = container.labels.get("oduflow.host_mode") == "true"
 
     if settings.routing_mode == "traefik":
-        # Router names embed the container name, which changed with naming v2;
-        # containers created before the rename migration still carry labels
-        # with the old name. Match by label suffix instead of exact router name.
-        def _label_by_suffix(suffix: str) -> str:
-            for key, value in container.labels.items():
-                if key.startswith("traefik.http.") and key.endswith(suffix):
-                    return str(value)
-            return ""
-
-        rule_value = _label_by_suffix(".rule")
+        rule_value = _traefik_label_by_suffix(container.labels, ".rule")
         match = re.search(r"Host\(`([^`]+)`\)", rule_value)
         if match:
             hostname = match.group(1)
             url = f"https://{hostname}"
 
         if is_host_mode:
-            url_value = _label_by_suffix(".loadbalancer.server.url")
+            url_value = _traefik_label_by_suffix(
+                container.labels, ".loadbalancer.server.url"
+            )
             port_match = re.search(r":(\d+)$", url_value)
             if port_match:
                 port_num = int(port_match.group(1))
         else:
-            label_port = _label_by_suffix(".loadbalancer.server.port")
+            label_port = _traefik_label_by_suffix(
+                container.labels, ".loadbalancer.server.port"
+            )
             if label_port:
                 port_num = int(label_port)
     else:
@@ -464,26 +473,22 @@ def update_service(
         hostname: str | None = None
 
         if settings.routing_mode == "traefik":
-            # Suffix-matched: pre-migration containers carry labels keyed by
-            # their old (team-less) container name.
-            def _label_by_suffix(suffix: str) -> str:
-                for key, value in container.labels.items():
-                    if key.startswith("traefik.http.") and key.endswith(suffix):
-                        return str(value)
-                return ""
-
-            rule_value = _label_by_suffix(".rule")
+            rule_value = _traefik_label_by_suffix(container.labels, ".rule")
             match = re.search(r"Host\(`([^`]+)`\)", rule_value)
             if match:
                 hostname = match.group(1)
 
             if is_host_mode:
-                url_value = _label_by_suffix(".loadbalancer.server.url")
+                url_value = _traefik_label_by_suffix(
+                    container.labels, ".loadbalancer.server.url"
+                )
                 port_match = re.search(r":(\d+)$", url_value)
                 if port_match:
                     port = int(port_match.group(1))
             else:
-                label_port = _label_by_suffix(".loadbalancer.server.port")
+                label_port = _traefik_label_by_suffix(
+                    container.labels, ".loadbalancer.server.port"
+                )
                 if label_port:
                     port = int(label_port)
         else:

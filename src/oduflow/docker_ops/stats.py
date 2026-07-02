@@ -329,6 +329,8 @@ def _write_storage_cache(team: TeamSettings, cache: dict[str, Any]) -> None:
     with open(tmp, "w") as f:
         json.dump(cache, f, indent=2)
         f.write("\n")
+        f.flush()
+        os.fsync(f.fileno())
     os.replace(tmp, path)
 
 
