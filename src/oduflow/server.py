@@ -31,9 +31,9 @@ from oduflow.docker_ops import (
     volume_file_ops,
     volume_ops,
 )
-from oduflow import activity, git_ops, reaper
+from oduflow import activity, git_ops, migrations, reaper
 from oduflow import settings as settings_module
-from oduflow.errors import FlowError, PrerequisiteNotMetError
+from oduflow.errors import FlowError, NotFoundError, PrerequisiteNotMetError
 from oduflow.locking import LockManager
 from oduflow.output_cache import OutputCache, CachedOutput
 from oduflow.settings import Settings, TeamSettings, find_toml
@@ -104,7 +104,15 @@ def _resolve_team(ctx: Context | None) -> TeamSettings:
             # the single-team / default-team resolution below. Logged, not
             # silently swallowed, so misrouting is traceable.
             logger.debug("Host-header team resolution unavailable", exc_info=True)
-    # 3. Fallback: single team or default team "1"
+    # 3. Fallback: single team or default team "1". Only for stdio (implicit
+    # local single user) and explicitly-unauthenticated HTTP: in a hosted
+    # multi-client deployment a request that matches no token and no hostname
+    # must never silently land in another team's context.
+    if settings_module.TRANSPORT == "http" and not settings.allow_insecure_http:
+        raise NotFoundError(
+            "Cannot resolve a team for this request: no team auth token "
+            "matched and the Host header matches no [team.*] hostname."
+        )
     if len(settings.teams) == 1:
         return next(iter(settings.teams.values()))
     return settings.get_team("1")
@@ -3351,7 +3359,10 @@ def _run_cli() -> None:
     # --- Commands that need Settings --------------------------------
 
     if args.command is None:
-        # No subcommand → start the MCP server
+        # No subcommand → start the MCP server. Migrations run before init so
+        # each step sees the data dir / Docker resources exactly as the
+        # previous version left them.
+        migrations.run_pending(_settings)
         _ensure_initialized(_settings)
         # Record the active transport for informational purposes.
         # local_path is gated by allow_local_path in Settings.
@@ -3493,6 +3504,20 @@ def _start_http() -> None:
             "HTTP transport starting WITHOUT authentication "
             "(allow_insecure_http=true) — the full MCP tool surface is open."
         )
+
+    # With several teams, every team needs its own token: auth rejects a
+    # tokenless team's requests before Host-based routing, so its members
+    # would be locked out — and _resolve_team no longer falls back in HTTP
+    # mode, so misconfiguration must fail here, at startup.
+    if not settings.allow_insecure_http and len(settings.teams) > 1:
+        tokenless = sorted(
+            tid for tid, team in settings.teams.items() if not team.auth_token
+        )
+        if tokenless:
+            raise PrerequisiteNotMetError(
+                "HTTP transport with multiple teams requires an auth_token "
+                f"for every team; missing for: {', '.join(tokenless)}."
+            )
     if host not in ("127.0.0.1", "::1", "localhost"):
         logger.warning(
             "Binding %s on all/non-loopback interface — ensure a firewall and "

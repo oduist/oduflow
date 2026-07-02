@@ -46,3 +46,5 @@ hostname = "localhost"            # port: http://{hostname}:{port}, traefik: htt
 auth_token = ""                   # MCP bearer token / OAuth client_id+secret (auto-generated on first run; HTTP refuses to start if empty)
 ui_password = ""                  # Web UI password (empty = UI open)
 port_range = [50000, 50100]       # port range for Odoo containers
+# db_quota_gb = 50                # combined size cap for the team's PostgreSQL DBs (environments + templates); 0 = off
+# disk_quota_gb = 0               # reserved: data-dir cap via filesystem project quotas (XFS prjquota); not enforced yet

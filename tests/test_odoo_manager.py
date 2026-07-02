@@ -26,6 +26,15 @@ TEST_SETTINGS = Settings(
 )
 
 
+@pytest.fixture(autouse=True)
+def _no_db_quota(monkeypatch):
+    # Quota enforcement is covered by tests/test_db_quota.py; here it would
+    # only add a psql exec to every mocked create_environment call chain.
+    monkeypatch.setattr(
+        "oduflow.docker_ops.env_ops.check_db_quota", lambda *a, **kw: None
+    )
+
+
 @pytest.fixture
 def mock_docker_client():
     with (

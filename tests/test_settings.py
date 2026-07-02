@@ -192,3 +192,25 @@ class TestTeamTemplatePaths:
     def test_git_credentials_file(self):
         t = TeamSettings(team_id="1", data_dir="/srv/data")
         assert t.git_credentials_file() == "/srv/data/.git-credentials"
+
+
+class TestQuotas:
+    def test_defaults(self):
+        t = TeamSettings(team_id="1")
+        assert t.db_quota_gb == 50
+        assert t.disk_quota_gb == 0  # off until FS quota enforcement lands
+
+    def test_from_toml(self, tmp_path):
+        toml = tmp_path / "oduflow.toml"
+        toml.write_text(
+            '[team.1]\nhostname = "localhost"\ndb_quota_gb = 10\ndisk_quota_gb = 20\n'
+        )
+        s = Settings.from_toml(str(toml))
+        assert s.teams["1"].db_quota_gb == 10
+        assert s.teams["1"].disk_quota_gb == 20
+
+    def test_negative_quota_rejected(self):
+        team = TeamSettings(team_id="1", db_quota_gb=-1)
+        s = Settings(teams={"1": team})
+        with pytest.raises(ValueError, match="quotas must be >= 0"):
+            s.validate()

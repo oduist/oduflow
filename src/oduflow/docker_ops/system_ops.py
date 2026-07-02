@@ -263,6 +263,55 @@ def _exec_sql(
     return result.strip()
 
 
+def get_team_db_usage_bytes(
+    client: DockerClient, settings: Settings, team_id: str
+) -> int:
+    """Combined on-disk size of the team's PostgreSQL databases (environments
+    and templates).
+
+    One catalog query: ``pg_database_size()`` stats the database's files under
+    PGDATA (each database is one directory there) — it does not scan table
+    contents, so this is milliseconds, not a table walk. Names are filtered in
+    Python to avoid LIKE-pattern escaping of the team id.
+    """
+    rows = _exec_sql(
+        client,
+        settings,
+        "SELECT datname, pg_database_size(datname) FROM pg_database "
+        "WHERE NOT datistemplate;",
+    )
+    prefixes = (f"oduflow_{team_id}_", f"oduflow_template_{team_id}_")
+    total = 0
+    for line in rows.splitlines():
+        name, _, size = line.partition("|")
+        if name.startswith(prefixes) and size.strip().isdigit():
+            total += int(size)
+    return total
+
+
+def check_db_quota(
+    client: DockerClient, settings: Settings, team: TeamSettings
+) -> None:
+    """Raise if the team's PostgreSQL usage is at or over its ``db_quota_gb``.
+
+    Called before operations that create a *new* database (environment or
+    template); replacement operations (refresh/reload) are not gated so a
+    team at its quota can still shrink or refresh what it has. 0 disables
+    the quota.
+    """
+    if team.db_quota_gb <= 0:
+        return
+    used = get_team_db_usage_bytes(client, settings, team.team_id)
+    quota = team.db_quota_gb * 1024**3
+    if used >= quota:
+        raise PrerequisiteNotMetError(
+            f"Team '{team.team_id}' database quota exceeded: "
+            f"{used / 1024**3:.1f} GB of {team.db_quota_gb} GB used "
+            "(db_quota_gb in oduflow.toml). Delete unused environments or "
+            "templates, or raise the quota."
+        )
+
+
 def _create_pg_role(
     client: DockerClient, settings: Settings, username: str, password: str, db_name: str
 ) -> None:
@@ -935,6 +984,11 @@ def publish_env_as_template(
             f"Database '{env_db}' for environment '{env_name}' not found."
         )
 
+    # Republishing an existing template replaces it (no net growth); only a
+    # brand-new template is gated by the quota.
+    if not _db_exists(client, settings, tpl_db):
+        check_db_quota(client, settings, team)
+
     _wait_pg_ready(client, settings)
     db_container = client.containers.get(settings.shared_db_container)
 
@@ -1228,6 +1282,9 @@ def import_from_odoo(
     # SSRF guard: importing a DB from a URL is a clearly-external operation, so
     # block loopback, the cloud metadata endpoint, and internal RFC1918 hosts.
     assert_allowed_url(base, allow_private=False)
+
+    # Gate on the DB quota before downloading a potentially huge backup.
+    check_db_quota(get_client(), settings, team)
 
     # 1. Resolve database name
     if not db_name:

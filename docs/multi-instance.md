@@ -49,6 +49,35 @@ When an MCP tool is called, Oduflow resolves the team using the following priori
 3. **Single team** — if only one team is configured, uses it automatically
 4. **Default** — falls back to team `"1"`
 
+Steps 3–4 apply to the stdio transport (implicit local single user) only. In
+HTTP mode a request that matches no token and no hostname is rejected, so it
+can never land in another team's context — unless `allow_insecure_http = true`
+explicitly opts out (e.g. behind your own auth proxy). HTTP mode with multiple
+teams also requires a non-empty `auth_token` for every team at startup.
+
+## Quotas
+
+Each team can carry resource quotas (`0` disables a quota):
+
+```toml
+[team.1]
+db_quota_gb = 50      # default: 50
+disk_quota_gb = 0     # default: 0 (off)
+```
+
+- `db_quota_gb` caps the combined size of the team's PostgreSQL databases —
+  environments plus templates. It is checked before operations that create a
+  *new* database (`create_environment`, `save_as_template` of a new template,
+  `import_template_from_odoo`) with a single catalog query
+  (`pg_database_size()`), so there is no per-file scanning in the hot path.
+  Replacement operations (refresh/reload of an existing template) are not
+  gated, so a team at its quota can still shrink or refresh what it has.
+- `disk_quota_gb` is **reserved**: it will cap the team's data dir
+  (workspaces, filestores, template dumps) via filesystem project quotas,
+  which requires the data dir to live on XFS mounted with `prjquota`.
+  Enforcement is not wired up yet; setting a non-zero value only logs a
+  warning today.
+
 ## Shared vs. Per-Team Resources
 
 | Resource | Scope |

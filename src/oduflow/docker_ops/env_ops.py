@@ -23,6 +23,7 @@ from oduflow.docker_ops.system_ops import (
     _drop_pg_role,
     _exec_sql,
     _resolve_instance_conf,
+    check_db_quota,
 )
 from oduflow.env_credentials import create_credentials, load_credentials
 from oduflow.errors import (
@@ -711,6 +712,8 @@ def create_environment(
                 f"is already used by environment '{other_branch}'. Choose a name "
                 "that does not normalise to the same database."
             )
+
+    check_db_quota(client, settings, team)
 
     _cleanup_old_environment(client, settings, team, env_name)
     workspace_path = get_workspace_path(env_name, team.workspaces_dir)

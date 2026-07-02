@@ -41,6 +41,7 @@ precursors).
 | [0020](0020-authentication-oauth.md) | 2026-03-13 | Authentication for MCP HTTP: GitHub OAuth → self-hosted OAuth Authorization Server |
 | [0021](0021-code-delivery-modes.md) | 2026-06-12 | Code delivery modes: `repo_url` git push vs `local_path` live-mount + `pull_and_apply` guardrail |
 | [0022](0022-engineers-console-design-system.md) | 2026-06-12 | The Engineer's Console: dashboard design system + lifecycle automation |
+| [0023](0023-startup-data-migrations.md) | 2026-07-02 | Startup data migrations (Odoo-style upgrade steps) |
 
 ## Design docs
 

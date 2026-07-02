@@ -35,6 +35,14 @@ class TeamSettings:
     port_range_end: int = 50100
     data_dir: str = ""
     port_registry_path: str = ""
+    # Quotas; 0 disables. db_quota_gb caps the combined size of the team's
+    # PostgreSQL databases (environments + templates) and is checked before
+    # operations that create a new database. disk_quota_gb caps the team's
+    # data dir (workspaces, filestores, template dumps); enforcement requires
+    # filesystem project quotas (XFS prjquota) and is not wired up yet — the
+    # value is reserved and currently informational.
+    db_quota_gb: int = 50
+    disk_quota_gb: int = 0
 
     @property
     def workspaces_dir(self) -> str:
@@ -206,6 +214,17 @@ class Settings:
                     f"Team '{team.team_id}': invalid port range "
                     f"{team.port_range_start}-{team.port_range_end}"
                 )
+            if team.db_quota_gb < 0 or team.disk_quota_gb < 0:
+                raise ValueError(
+                    f"Team '{team.team_id}': quotas must be >= 0 (0 disables)"
+                )
+            if team.disk_quota_gb > 0:
+                logger.warning(
+                    "Team '%s': disk_quota_gb is set but filesystem quota "
+                    "enforcement is not implemented yet — the value is "
+                    "informational for now.",
+                    team.team_id,
+                )
 
         # Validate that team port ranges do not overlap. The default range is
         # identical for every team, so two teams that never set an explicit
@@ -305,6 +324,8 @@ class Settings:
                 port_range_end=port_end,
                 data_dir=team_data_dir,
                 port_registry_path=os.path.join(team_data_dir, "ports.json"),
+                db_quota_gb=int(team_cfg.get("db_quota_gb", 50)),
+                disk_quota_gb=int(team_cfg.get("disk_quota_gb", 0)),
             )
 
         trace = bool(server.get("trace", False))
