@@ -135,9 +135,7 @@ def install_license(source_path: str, etc_dir: str | None = None) -> LicenseInfo
     return info
 
 
-def install_license_from_text(
-    key_text: str, etc_dir: str | None = None
-) -> LicenseInfo:
+def install_license_from_text(key_text: str, etc_dir: str | None = None) -> LicenseInfo:
     info = _verify_license_text(key_text)
     license_path = get_license_path(etc_dir)
     os.makedirs(os.path.dirname(license_path), exist_ok=True)

@@ -253,9 +253,7 @@ def classify_changes(
                     )
                 else:
                     xml_hot.append(f)
-                    _trace(
-                        "  file=%s ext=.xml module=%s -> hot-reload XML", f, module
-                    )
+                    _trace("  file=%s ext=.xml module=%s -> hot-reload XML", f, module)
             continue
 
         if ext == ".js":
@@ -488,12 +486,8 @@ def merge_recommendations(recs: Iterable[dict]) -> dict:
         (r.get("action", "none") for r in recs),
         key=lambda a: _ACTION_PRIORITY.get(a, 0),
     )
-    install = sorted(
-        {m for r in recs for m in r.get("modules_to_install", []) or []}
-    )
-    upgrade = sorted(
-        {m for r in recs for m in r.get("modules_to_upgrade", []) or []}
-    )
+    install = sorted({m for r in recs for m in r.get("modules_to_install", []) or []})
+    upgrade = sorted({m for r in recs for m in r.get("modules_to_upgrade", []) or []})
 
     details: dict = {}
     for key in _DETAIL_LIST_KEYS:
