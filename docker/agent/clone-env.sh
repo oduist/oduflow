@@ -2,13 +2,18 @@
 # Create/refresh one environment's working checkout inside the team's agent
 # container. Invoked from the env_ops create hook via `docker exec`. Idempotent.
 #
-# Usage: clone-env.sh REPO_URL BRANCH SLUG [MCP_URL] [MCP_TOKEN] [GIT_USER]
+# Usage: clone-env.sh REPO_URL BRANCH SLUG [MCP_URL] [GIT_USER]
 #   REPO_URL    origin repo URL (no embedded creds; git creds are wired globally)
 #   BRANCH      branch to check out
 #   SLUG        filesystem-safe env slug; checkout goes to /workspace/<SLUG>
-#   MCP_URL     Oduflow MCP endpoint (optional; enables Claude's .mcp.json)
-#   MCP_TOKEN   Bearer token for the MCP endpoint (optional)
+#   MCP_URL     this environment's SCOPED Oduflow MCP endpoint (/mcp/<env>;
+#               optional; enables Claude's .mcp.json)
 #   GIT_USER    commit author for this checkout (optional; global default otherwise)
+#
+# No token argument on purpose: nothing secret is ever written to the checkout.
+# .mcp.json references ${ODUFLOW_MCP_TOKEN}, which each console/chat session
+# injects into its own `docker exec` environment with the per-environment
+# scoped token (see web_ui.ws_agent_console / ws_agent_acp).
 #
 # Full clone (not --depth 1): the agent commits and pushes. The checkout lives on
 # the persistent workspace volume, so it survives container recreation and every
@@ -22,8 +27,7 @@ REPO_URL="${1:-}"
 BRANCH="${2:-}"
 SLUG="${3:-}"
 MCP_URL="${4:-}"
-MCP_TOKEN="${5:-}"
-GIT_USER="${6:-}"
+GIT_USER="${5:-}"
 
 if [ -z "$REPO_URL" ] || [ -z "$BRANCH" ] || [ -z "$SLUG" ]; then
     log "WARNING: REPO_URL/BRANCH/SLUG required; skipping"
@@ -63,12 +67,20 @@ if [ -n "$GIT_USER" ]; then
     git -C "$DEST" config user.email "${GIT_USER}@oduflow.local"
 fi
 
-# Claude Code: project-scoped .mcp.json at the checkout root.
+# Claude Code: project-scoped .mcp.json at the checkout root. The Authorization
+# value is a ${VAR} placeholder — Claude Code expands environment variables in
+# .mcp.json, and the scoped per-env token arrives via the session's exec env.
 if [ -n "$MCP_URL" ]; then
     jq -n \
         --arg url "$MCP_URL" \
-        --arg auth "Bearer ${MCP_TOKEN}" \
-        '{mcpServers: {oduflow: {type: "http", url: $url, headers: {Authorization: $auth}}}}' \
+        '{mcpServers: {oduflow: {type: "http", url: $url, headers: {Authorization: "Bearer ${ODUFLOW_MCP_TOKEN}"}}}}' \
         > "$DEST/.mcp.json"
-    log "wrote $DEST/.mcp.json -> $MCP_URL"
+    # Not secret (a placeholder, not a token), but still a generated artifact a
+    # `git add -A` by the agent should never push. Local exclude, so the repo's
+    # own .gitignore stays untouched.
+    mkdir -p "$DEST/.git/info"
+    if ! grep -qxF '/.mcp.json' "$DEST/.git/info/exclude" 2>/dev/null; then
+        echo '/.mcp.json' >> "$DEST/.git/info/exclude"
+    fi
+    log "wrote $DEST/.mcp.json -> $MCP_URL (git-excluded)"
 fi

@@ -1238,15 +1238,36 @@ def _agent_env_vars(settings: Settings, team: TeamSettings) -> dict[str, str]:
     return env
 
 
-def _agent_config_hash(image: str, env: dict[str, str]) -> str:
+def get_agent_mcp_url(settings: Settings, env_name: str) -> str:
+    """This environment's SCOPED MCP endpoint as seen from the agent container.
+
+    The scoped ``/mcp/<env>`` endpoint + per-environment token (ADR 0028) is
+    the only Oduflow access the agent gets — the team ``auth_token`` never
+    enters the agent container. The MCP server runs on the host, reached over
+    the host gateway."""
+    from urllib.parse import quote
+
+    return (
+        f"http://host.docker.internal:{settings.port}/mcp/{quote(env_name, safe='/')}"
+    )
+
+
+def _agent_config_hash(
+    image: str, env: dict[str, str], has_git_credentials: bool
+) -> str:
     """Fingerprint of the config the agent container was created with.
 
     Stored as a container label; a mismatch on ensure means oduflow.toml
     changed (credentials, image, port), so the container is recreated. HOME
-    and /workspace are volumes — nothing is lost."""
+    and /workspace are volumes — nothing is lost. The git-credentials mount is
+    fixed at container creation, so its presence is part of the fingerprint:
+    a container created before setup_repo_auth would otherwise keep matching
+    forever and never pick up the credentials file."""
     import hashlib
 
-    payload = json.dumps([image, sorted(env.items())], separators=(",", ":"))
+    payload = json.dumps(
+        [image, sorted(env.items()), has_git_credentials], separators=(",", ":")
+    )
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
 
 
@@ -1285,19 +1306,18 @@ def _ensure_agent_container(
             except docker.errors.NotFound:
                 client.volumes.create(volume, labels=agent_labels)
 
-        # User/provider vars first, then the computed wiring vars (which must
-        # win so a custom var can never break the MCP connection). These are
-        # team-wide; the per-env repo/branch are passed to clone-env.sh at
-        # checkout time, not here.
+        # Provider/user vars only. Deliberately NO Oduflow MCP credentials
+        # here: the container-wide env is readable from any agent console
+        # (`env`, /proc/1/environ), so the team auth_token must never enter
+        # the container. Each console/chat session injects its environment's
+        # SCOPED token + /mcp/<env> URL into its own `docker exec` env instead
+        # (see web_ui.ws_agent_console / ws_agent_acp and ADR 0028).
         agent_env = dict(_agent_env_vars(settings, team))
-        agent_env.update(
-            {
-                # The MCP server runs on the host; reach it over the host gateway.
-                "ODUFLOW_MCP_URL": f"http://host.docker.internal:{settings.port}/mcp",
-                "ODUFLOW_MCP_TOKEN": team.auth_token,
-            }
+        cred_file = team.git_credentials_file()
+        has_git_credentials = os.path.isfile(cred_file)
+        config_hash = _agent_config_hash(
+            settings.agent_image, agent_env, has_git_credentials
         )
-        config_hash = _agent_config_hash(settings.agent_image, agent_env)
 
         container_name = get_agent_container_name(team.team_id, settings.prefix)
         try:
@@ -1319,12 +1339,11 @@ def _ensure_agent_container(
 
         ensure_team_network(client, settings, team)
 
-        cred_file = team.git_credentials_file()
         volumes: dict[str, dict[str, str]] = {
             home_volume: {"bind": "/root", "mode": "rw"},
             workspace_volume: {"bind": "/workspace", "mode": "rw"},
         }
-        if os.path.isfile(cred_file):
+        if has_git_credentials:
             volumes[cred_file] = {
                 "bind": "/run/oduflow/git-credentials",
                 "mode": "ro",
@@ -1381,13 +1400,15 @@ def _agent_add_env(
         container = client.containers.get(
             get_agent_container_name(team.team_id, settings.prefix)
         )
+        # The scoped per-env URL only; no token argument — the checkout's
+        # .mcp.json holds a ${ODUFLOW_MCP_TOKEN} placeholder that each session
+        # resolves from its own exec env.
         cmd = [
             "/usr/local/bin/clone-env.sh",
             repo_url,
             branch,
             slugify_branch(env_name),
-            f"http://host.docker.internal:{settings.port}/mcp",
-            team.auth_token,
+            get_agent_mcp_url(settings, env_name),
             git_user,
         ]
         exit_code, output = container.exec_run(cmd)

@@ -44,9 +44,16 @@ WebSocket↔`docker exec` bridge:
   `session/load`; chats minimize to a dock so several run in parallel.
 
 The agent never touches host files: it edits its own clone → `git push` → drives
-the environment through the Oduflow MCP server (`pull_and_apply`, tests), wired
-in-container via the team's `auth_token` against
-`http://host.docker.internal:{port}/mcp`.
+the environment through the Oduflow MCP server (`pull_and_apply`, tests). MCP
+access is **scoped and per session**: the team `auth_token` never enters the
+agent container (a console is a root shell there — anything the container
+holds, its user can read). Instead each console/chat exec injects that
+environment's per-env token ([[0028-scoped-environment-mcp-access]]) plus its
+`/mcp/<env>` URL into its own exec environment; Claude resolves them through
+`${VAR}` placeholders in the checkout's `.mcp.json` (which therefore contains
+no secret), Codex through per-session `-c mcp_servers.*` CLI overrides. A
+leaked session credential grants only the ADR-0028 dev-loop allowlist on the
+one environment the session already controls.
 
 **Configuration lives in `oduflow.toml`, not in the dashboard.** Per team:
 `agent_enabled` (default **false**), `agent_default` (claude | codex) and the
@@ -84,8 +91,17 @@ runtime state is `agent_sessions.json` (durable ACP session ids) in
 - Two new first-class development surfaces with zero new transport machinery
   and no build step; the dashboard stays a single no-CDN page.
 - A console or chat is **arbitrary code execution** in the team's agent
-  container — confined to that container, its clones, and the team's MCP
-  token; cross-team reach is blocked by per-team containers/volumes/networks.
+  container — confined to that container, its clones, and its session's
+  scoped per-env MCP token; cross-team reach is blocked by per-team
+  containers/volumes/networks. The agent cannot create/delete/stop
+  environments or touch templates/services/volumes (default-deny allowlist of
+  [[0028-scoped-environment-mcp-access]]); those stay operator actions.
+- Environments created before per-env tokens existed have no
+  `oduflow.mcp_token` label; their consoles warn and the agent works without
+  MCP until the environment is updated/recreated. The Codex ACP adapter has no
+  config-override channel yet, so Codex *chat* runs without Oduflow MCP for
+  now (the Codex CLI console is fully wired) — consistent with the adapter's
+  best-effort status below.
 - Server-level provider keys (`ANTHROPIC_API_KEY` etc.) are inherited by the
   container **only in single-team deployments**; with several teams each team
   must set its own keys in the dashboard, so an operator credential never
@@ -117,3 +133,8 @@ runtime state is `agent_sessions.json` (durable ACP session ids) in
   `[team.X.agent_env]`) with automatic container recreation on config drift;
   agent UI hidden for live-mount environments; Claude Code moved out of the
   published image to a first-start npm install (licensing).
+- 2026-07-03 — the team `auth_token` was removed from the agent container
+  entirely (review feedback: a console user could read it). Sessions now carry
+  scoped per-environment tokens from [[0028-scoped-environment-mcp-access]] in
+  their own exec env; `.mcp.json` holds a `${ODUFLOW_MCP_TOKEN}` placeholder
+  instead of a secret, and the global Codex config holds no Oduflow endpoint.

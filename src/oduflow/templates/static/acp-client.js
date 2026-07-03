@@ -14,6 +14,11 @@
   'use strict';
 
   var JSONRPC_METHOD_NOT_FOUND = -32601;
+  // Default per-request timeout. session/prompt and session/load are exempt
+  // (timeoutMs 0): a prompt resolves only when the agent's whole turn ends and
+  // a load only after the full transcript replays, so minutes are normal, not
+  // a hang. A dead connection is covered by the heartbeat + onclose, which
+  // rejects every pending request.
   var REQUEST_TIMEOUT_MS = 60000;
   var HEARTBEAT_MS = 25000; // keep NAT/proxy idle mappings warm ($/ping)
 
@@ -153,22 +158,23 @@
     this.ws.send(JSON.stringify(obj) + '\n');
   };
 
-  AcpClient.prototype._request = function (method, params) {
+  AcpClient.prototype._request = function (method, params, timeoutMs) {
     var self = this;
     var id = this._nextId++;
+    if (timeoutMs === undefined) timeoutMs = REQUEST_TIMEOUT_MS;
     return new Promise(function (resolve, reject) {
-      var timer = setTimeout(function () {
+      var timer = timeoutMs > 0 ? setTimeout(function () {
         if (self._pending[id]) {
           delete self._pending[id];
           reject(new Error('Request timed out: ' + method));
         }
-      }, REQUEST_TIMEOUT_MS);
+      }, timeoutMs) : null;
       self._pending[id] = { resolve: resolve, reject: reject, method: method, timer: timer };
       try {
         self._send({ jsonrpc: '2.0', id: id, method: method, params: params || {} });
       } catch (e) {
         delete self._pending[id];
-        clearTimeout(timer);
+        if (timer) clearTimeout(timer);
         reject(e);
       }
     });
@@ -196,13 +202,15 @@
     return this._request('session/new', { cwd: cwd, mcpServers: [] });
   };
   AcpClient.prototype.loadSession = function (sessionId, cwd) {
-    return this._request('session/load', { sessionId: sessionId, cwd: cwd, mcpServers: [] });
+    // No timeout: replaying a long transcript legitimately takes a while.
+    return this._request('session/load', { sessionId: sessionId, cwd: cwd, mcpServers: [] }, 0);
   };
   AcpClient.prototype.prompt = function (sessionId, text) {
+    // No timeout: resolves only when the agent's whole turn ends (stopReason).
     return this._request('session/prompt', {
       sessionId: sessionId,
       prompt: [{ type: 'text', text: text }]
-    });
+    }, 0);
   };
   AcpClient.prototype.cancel = function (sessionId) {
     try { this._notify('session/cancel', { sessionId: sessionId }); } catch (e) { /* closed */ }

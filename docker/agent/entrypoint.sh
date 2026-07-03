@@ -13,17 +13,23 @@
 #      the npm prefix on the persistent home volume. They are proprietary
 #      (Anthropic Commercial Terms), so the published image must not
 #      redistribute them; the container downloads them directly, once.
-#   3. Write the GLOBAL Oduflow MCP config for Codex (team endpoint/token).
+#   3. Write the base Codex config (feature flags only — NO Oduflow endpoint
+#      or token here; see the MCP note below).
 #   4. Resolve provider auth: subscription if a subscription credential is
 #      present, otherwise an API key (per provider).
 #   5. Stay alive. Per-env checkouts are created on demand by the env_ops hooks
 #      (`docker exec clone-env.sh ...`); the agent process itself is spawned on
 #      demand by the web console via `docker exec` (claude | codex).
 #
+# MCP wiring is per SESSION, not per container: the container holds no Oduflow
+# token at all (nothing in its env or on disk to read from a console). Each
+# console/chat exec injects ODUFLOW_MCP_TOKEN — the SCOPED per-environment
+# token (see ADR 0028) — plus the /mcp/<env> URL into its own environment;
+# Claude reads them through the ${VAR} placeholders in the checkout's
+# .mcp.json, Codex through `-c mcp_servers.*` CLI overrides.
+#
 # Expected environment (injected by _ensure_agent_container; team-wide):
 #   ODUFLOW_GIT_USER    credential username to match in the store (optional)
-#   ODUFLOW_MCP_URL     Oduflow MCP endpoint, e.g. http://host.docker.internal:8000/mcp
-#   ODUFLOW_MCP_TOKEN   Bearer token for the MCP endpoint (team auth_token)
 # Provider auth (subscription takes precedence over key, per provider):
 #   CLAUDE_CODE_OAUTH_TOKEN | ANTHROPIC_API_KEY   (+ optional ANTHROPIC_MODEL)
 #   OPENAI_API_KEY                                 (+ optional CODEX_MODEL)
@@ -69,28 +75,19 @@ else
     fi
 fi
 
-# --- 3. global MCP config for Codex -----------------------------------------
-# The Oduflow endpoint/token are team-wide, so one global config serves every
-# checkout. (Claude Code reads a project-scoped .mcp.json written per checkout
-# by clone-env.sh.) Streamable-HTTP MCP needs the rmcp client; auth is via
-# `bearer_token_env_var` (NOT `bearer_token`, which Codex rejects for
-# streamable_http) and only when a token is actually set.
+# --- 3. base Codex config (feature flags only) -------------------------------
+# Streamable-HTTP MCP needs the rmcp client. The Oduflow MCP server itself is
+# deliberately NOT configured here: its URL and token are per environment and
+# per session (scoped tokens, ADR 0028) and are supplied by the web console as
+# `codex -c mcp_servers.oduflow.*` overrides + the session's exec env. Keeping
+# them out of the global config means no session can see another environment's
+# credentials — and the container itself holds no MCP secret at all.
 mkdir -p "$CODEX_HOME"
-if [ -n "${ODUFLOW_MCP_URL:-}" ]; then
-    {
-        echo "[features]"
-        echo "experimental_use_rmcp_client = true"
-        echo ""
-        echo "[mcp_servers.oduflow]"
-        echo "url = \"$ODUFLOW_MCP_URL\""
-        if [ -n "${ODUFLOW_MCP_TOKEN:-}" ]; then
-            echo 'bearer_token_env_var = "ODUFLOW_MCP_TOKEN"'
-        fi
-    } > "$CODEX_HOME/config.toml"
-    log "global MCP config written for oduflow -> $ODUFLOW_MCP_URL"
-else
-    log "WARNING: ODUFLOW_MCP_URL unset; agents cannot reach environments"
-fi
+{
+    echo "[features]"
+    echo "experimental_use_rmcp_client = true"
+} > "$CODEX_HOME/config.toml"
+log "base Codex config written (MCP wiring is per session)"
 
 # --- 4a. Claude auth ---------------------------------------------------------
 # Subscription (CLAUDE_CODE_OAUTH_TOKEN) outranks a key. If the OAuth token is

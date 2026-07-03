@@ -2170,8 +2170,38 @@ def _build_routes(
                 await websocket.close(code=1011)
                 return
 
+            # SCOPED per-env MCP credentials, injected into THIS session's exec
+            # env only (never the container env): the token grants the ADR-0028
+            # allowlist for this one environment, so a console user/agent can
+            # only ever see a credential for the environment they already hold.
+            mcp_url = env_ops.get_agent_mcp_url(settings, branch)
+            try:
+                mcp_token = await asyncio.get_event_loop().run_in_executor(
+                    None, lambda: env_ops.get_env_token(settings, team, branch)
+                )
+            except Exception:
+                mcp_token = None
+            if not mcp_token:
+                await websocket.send_text(
+                    "\x1b[33mWarning: this environment has no scoped MCP token "
+                    "(created before MCP Access?) — the agent cannot drive it "
+                    "over MCP. Update or recreate the environment.\x1b[0m\r\n"
+                )
+            exec_env = {
+                "ODUFLOW_MCP_URL": mcp_url,
+                "ODUFLOW_MCP_TOKEN": mcp_token or "",
+            }
+
             if agent_type == "codex":
-                cmd = ["codex"]
+                # Codex has no project-scoped config; wire the Oduflow MCP
+                # server via CLI overrides (values are parsed as TOML).
+                cmd = [
+                    "codex",
+                    "-c",
+                    f'mcp_servers.oduflow.url="{mcp_url}"',
+                    "-c",
+                    'mcp_servers.oduflow.bearer_token_env_var="ODUFLOW_MCP_TOKEN"',
+                ]
                 if settings.agent_codex_model:
                     cmd += ["--model", settings.agent_codex_model]
             else:
@@ -2187,6 +2217,7 @@ def _build_routes(
                 stdout=True,
                 stderr=True,
                 workdir=checkout,
+                environment=exec_env,
             )["Id"]
             sock = client.api.exec_start(exec_id, detach=False, tty=True, socket=True)
             raw_sock = sock._sock
@@ -2229,9 +2260,26 @@ def _build_routes(
                 finally:
                     closed.set()
 
+            tasks = [
+                asyncio.ensure_future(docker_to_browser()),
+                asyncio.ensure_future(browser_to_docker()),
+            ]
             try:
-                await asyncio.gather(docker_to_browser(), browser_to_docker())
+                # Return as soon as EITHER side ends. Unlike ws_terminal (whose
+                # exec dies with the environment container), the agent container
+                # is long-lived: waiting for BOTH would park docker_to_browser
+                # in recv() forever after the browser closes an idle console,
+                # leaking the exec'd agent process and the executor thread.
+                await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
             finally:
+                closed.set()
+                # shutdown() reliably wakes a thread blocked in recv (a bare
+                # close() need not) and gives the agent EOF on stdin so the
+                # `docker exec` process exits instead of leaking.
+                try:
+                    raw_sock.shutdown(socket.SHUT_RDWR)
+                except Exception:
+                    pass
                 try:
                     raw_sock.close()
                 except Exception:
@@ -2240,6 +2288,13 @@ def _build_routes(
                     sock.close()
                 except Exception:
                     pass
+                try:
+                    await websocket.close()
+                except Exception:
+                    pass
+                for t in tasks:
+                    t.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
 
         except Exception as e:
             logger.exception("WebSocket agent console error for branch %s", branch)
@@ -2346,6 +2401,22 @@ def _build_routes(
                 )
                 return
 
+            # SCOPED per-env MCP credentials for THIS session only (see the
+            # matching block in ws_agent_console). Claude's adapter picks them
+            # up via the ${VAR} placeholders in the checkout's .mcp.json; the
+            # Codex adapter has no override channel yet (best-effort, per the
+            # ADR) so its chat runs without Oduflow MCP for now.
+            try:
+                mcp_token = await asyncio.get_event_loop().run_in_executor(
+                    None, lambda: env_ops.get_env_token(settings, team, branch)
+                )
+            except Exception:
+                mcp_token = None
+            exec_env = {
+                "ODUFLOW_MCP_URL": env_ops.get_agent_mcp_url(settings, branch),
+                "ODUFLOW_MCP_TOKEN": mcp_token or "",
+            }
+
             exec_id = client.api.exec_create(
                 container.id,
                 _acp_adapter_cmd(agent_type),
@@ -2354,6 +2425,7 @@ def _build_routes(
                 stdout=True,
                 stderr=True,
                 workdir=checkout,
+                environment=exec_env,
             )["Id"]
             sock = client.api.exec_start(exec_id, detach=False, tty=False, socket=True)
             raw_sock = sock._sock

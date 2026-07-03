@@ -1472,9 +1472,11 @@ class TestAgentContainer:
         assert vols["oduflow-1-agent-workspace"]["bind"] == "/workspace"
         assert any(v["bind"] == "/run/oduflow/git-credentials" for v in vols.values())
         env = kwargs["environment"]
-        # Team-wide wiring only; per-env repo/branch go to clone-env.sh.
-        assert env["ODUFLOW_MCP_URL"] == "http://host.docker.internal:8000/mcp"
-        assert env["ODUFLOW_MCP_TOKEN"] == "tok"
+        # The team auth_token must never enter the container: any console
+        # session could read it. Sessions get SCOPED per-env tokens via their
+        # own exec env instead (ADR 0028).
+        assert "ODUFLOW_MCP_TOKEN" not in env
+        assert "ODUFLOW_MCP_URL" not in env
         # Subscription wins; the API key must not be set alongside it.
         assert env["CLAUDE_CODE_OAUTH_TOKEN"] == "sub-token"
         assert "ANTHROPIC_API_KEY" not in env
@@ -1483,17 +1485,13 @@ class TestAgentContainer:
     def _existing_container(self, settings, team, monkeypatch):
         """A mocked running container carrying the CURRENT config hash."""
         env = dict(env_ops._agent_env_vars(settings, team))
-        env.update(
-            {
-                "ODUFLOW_MCP_URL": f"http://host.docker.internal:{settings.port}/mcp",
-                "ODUFLOW_MCP_TOKEN": team.auth_token,
-            }
-        )
         existing = MagicMock()
         existing.status = "running"
         existing.labels = {
             "oduflow.agent_config_hash": env_ops._agent_config_hash(
-                settings.agent_image, env
+                settings.agent_image,
+                env,
+                os.path.isfile(team.git_credentials_file()),
             )
         }
         return existing
@@ -1539,6 +1537,42 @@ class TestAgentContainer:
         mock_docker_client.containers.run.assert_called_once()
         env = mock_docker_client.containers.run.call_args.kwargs["environment"]
         assert env["OPENAI_API_KEY"] == "new-key"
+
+    def test_ensure_recreates_when_git_credentials_appear(
+        self, monkeypatch, mock_docker_client
+    ):
+        # Mounts are fixed at creation: a container created BEFORE
+        # setup_repo_auth has no credentials mount, so the file appearing later
+        # must change the fingerprint and trigger a recreate — otherwise
+        # private-repo clones fail forever.
+        monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        team = self._team()
+        s = self._settings(team=team)
+        env = dict(env_ops._agent_env_vars(s, team))
+        env.update(
+            {
+                "ODUFLOW_MCP_URL": "http://host.docker.internal:8000/mcp",
+                "ODUFLOW_MCP_TOKEN": team.auth_token,
+            }
+        )
+        existing = MagicMock()
+        existing.status = "running"
+        existing.labels = {
+            "oduflow.agent_config_hash": env_ops._agent_config_hash(
+                s.agent_image, env, False
+            )
+        }
+        mock_docker_client.volumes.get.return_value = MagicMock()
+        mock_docker_client.containers.get.return_value = existing
+
+        with patch("oduflow.docker_ops.env_ops.os.path.isfile", return_value=True):
+            env_ops._ensure_agent_container(mock_docker_client, s, team)
+
+        existing.remove.assert_called_once_with(force=True)
+        vols = mock_docker_client.containers.run.call_args.kwargs["volumes"]
+        assert any(v["bind"] == "/run/oduflow/git-credentials" for v in vols.values())
 
     def test_api_key_when_no_subscription(self, monkeypatch, mock_docker_client):
         monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
@@ -1601,7 +1635,6 @@ class TestAgentContainer:
         env = mock_docker_client.containers.run.call_args.kwargs["environment"]
         assert env["OPENAI_API_KEY"] == "from-config"  # config wins
         assert env["MY_FLAG"] == "1"
-        assert env["ODUFLOW_MCP_URL"] == "http://host.docker.internal:8000/mcp"
 
     def test_add_env_execs_clone_script(self, monkeypatch, mock_docker_client):
         monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
@@ -1630,9 +1663,10 @@ class TestAgentContainer:
         assert cmd[1] == "https://x/r.git"
         assert cmd[2] == "feature/x"
         assert cmd[3] == "feature-x"  # slugified env -> checkout dir
-        assert cmd[4] == "http://host.docker.internal:8000/mcp"
-        assert cmd[5] == "tok"
-        assert cmd[6] == "alice"
+        # The SCOPED per-env endpoint; the team auth_token is never passed.
+        assert cmd[4] == "http://host.docker.internal:8000/mcp/feature/x"
+        assert cmd[5] == "alice"
+        assert "tok" not in cmd
 
     def test_add_env_skipped_when_disabled(self, mock_docker_client):
         team = self._team(agent_enabled=False)
@@ -1680,7 +1714,8 @@ class TestAgentContainer:
         assert cmd[1] == "https://x/r.git"
         assert cmd[2] == "19.0"  # git_branch label (may differ from env name)
         assert cmd[3] == "prod"  # slug from env name -> checkout dir
-        assert cmd[6] == "alice"
+        assert cmd[4] == "http://host.docker.internal:8000/mcp/prod"
+        assert cmd[5] == "alice"
 
     def test_ensure_env_checkout_skips_repo_for_live_mount(
         self, monkeypatch, mock_docker_client
