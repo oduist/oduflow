@@ -39,6 +39,10 @@ from oduflow.errors import (
 )
 from oduflow.git_ops import RepoAuthError, git_env_for_team
 from oduflow.naming import (
+    get_agent_checkout_dir,
+    get_agent_container_name,
+    get_agent_home_volume_name,
+    get_agent_workspace_volume_name,
     get_db_name,
     get_env_hostname,
     get_filestore_paths,
@@ -1176,6 +1180,19 @@ def create_environment(
         extra={"env_name": env_name, "url": url, "container": odoo_container_name},
     )
 
+    # Add this environment's checkout to the team's agent container
+    # (best-effort; ensures the container exists; only when enabled). Live-mount
+    # environments have no repo to clone — clone-env.sh skips on an empty URL.
+    _agent_add_env(
+        client,
+        settings,
+        team,
+        env_name,
+        "" if local_mount else repo_url,
+        branch,
+        git_user,
+    )
+
     result = {
         "url": url,
         "odoo_container": odoo_container_name,
@@ -1190,6 +1207,277 @@ def create_environment(
     # Let the new env's MCP token resolve without waiting for the scan interval.
     invalidate_cache()
     return result
+
+
+def _agent_env_vars(settings: Settings, team: TeamSettings) -> dict[str, str]:
+    """Variables injected into the team's agent container.
+
+    Two sources, in order of increasing precedence:
+      1. Known provider keys present in the SERVER environment (convenient for
+         headless/prod: CLAUDE_CODE_OAUTH_TOKEN / ANTHROPIC_API_KEY /
+         OPENAI_API_KEY) — but only in single-team deployments; with several
+         teams a server-level key would leak the operator's credential into
+         every tenant's container.
+      2. The team's ``[team.X.agent_env]`` TOML table (arbitrary KEY=VALUE,
+         including those same credentials).
+
+    For Claude the OAuth token and the API key are mutually exclusive — the key
+    would silently override the subscription — so when a non-empty token is
+    present the API key is dropped.
+    """
+    env: dict[str, str] = {}
+    if len(settings.teams) == 1:
+        for key in ("CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY", "OPENAI_API_KEY"):
+            value = os.environ.get(key, "").strip()
+            if value:
+                env[key] = value
+    env.update(team.agent_env)
+
+    if env.get("CLAUDE_CODE_OAUTH_TOKEN", "").strip():
+        env.pop("ANTHROPIC_API_KEY", None)
+    return env
+
+
+def _agent_config_hash(image: str, env: dict[str, str]) -> str:
+    """Fingerprint of the config the agent container was created with.
+
+    Stored as a container label; a mismatch on ensure means oduflow.toml
+    changed (credentials, image, port), so the container is recreated. HOME
+    and /workspace are volumes — nothing is lost."""
+    import hashlib
+
+    payload = json.dumps([image, sorted(env.items())], separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
+
+
+def _ensure_agent_container(
+    client: DockerClient, settings: Settings, team: TeamSettings
+) -> None:
+    """Ensure the team's coding-agent container (best-effort, opt-in).
+
+    One container serves every environment of the team. Its HOME (auth +
+    sessions) and /workspace (one checkout per environment, at
+    /workspace/<slug>) live on persistent named volumes, so a login done once
+    survives recreation and is shared by the team's environments. Per-env
+    checkouts are created by ``_agent_add_env``; the agent reaches each
+    environment only through the Oduflow MCP server (git push ->
+    pull_and_apply). Config (oduflow.toml) is the source of truth: an existing
+    container created with a different agent config (credentials, image, port)
+    is recreated automatically. Never fatal to the caller.
+    See specs/0029-agent-console-and-chat.md.
+    """
+    if not team.agent_enabled:
+        return
+
+    try:
+        agent_labels = {
+            settings.managed_label: "true",
+            settings.system_label: "true",
+            settings.team_label: team.team_id,
+        }
+        home_volume = get_agent_home_volume_name(team.team_id, settings.prefix)
+        workspace_volume = get_agent_workspace_volume_name(
+            team.team_id, settings.prefix
+        )
+        for volume in (home_volume, workspace_volume):
+            try:
+                client.volumes.get(volume)
+            except docker.errors.NotFound:
+                client.volumes.create(volume, labels=agent_labels)
+
+        # User/provider vars first, then the computed wiring vars (which must
+        # win so a custom var can never break the MCP connection). These are
+        # team-wide; the per-env repo/branch are passed to clone-env.sh at
+        # checkout time, not here.
+        agent_env = dict(_agent_env_vars(settings, team))
+        agent_env.update(
+            {
+                # The MCP server runs on the host; reach it over the host gateway.
+                "ODUFLOW_MCP_URL": f"http://host.docker.internal:{settings.port}/mcp",
+                "ODUFLOW_MCP_TOKEN": team.auth_token,
+            }
+        )
+        config_hash = _agent_config_hash(settings.agent_image, agent_env)
+
+        container_name = get_agent_container_name(team.team_id, settings.prefix)
+        try:
+            container = client.containers.get(container_name)
+            if container.labels.get("oduflow.agent_config_hash", "") == config_hash:
+                if container.status != "running":
+                    container.start()
+                return
+            # Config changed in oduflow.toml — recreate with the new env/image.
+            # HOME and /workspace are volumes, so auth, sessions and every
+            # checkout survive.
+            logger.info(
+                "Agent config changed; recreating container",
+                extra={"container": container_name},
+            )
+            container.remove(force=True)
+        except docker.errors.NotFound:
+            pass
+
+        ensure_team_network(client, settings, team)
+
+        cred_file = team.git_credentials_file()
+        volumes: dict[str, dict[str, str]] = {
+            home_volume: {"bind": "/root", "mode": "rw"},
+            workspace_volume: {"bind": "/workspace", "mode": "rw"},
+        }
+        if os.path.isfile(cred_file):
+            volumes[cred_file] = {
+                "bind": "/run/oduflow/git-credentials",
+                "mode": "ro",
+            }
+
+        labels = dict(agent_labels)
+        labels.update(
+            {
+                "oduflow.agent": "true",
+                "oduflow.agent_config_hash": config_hash,
+                "oduflow.created_at": datetime.datetime.now(
+                    datetime.timezone.utc
+                ).isoformat(),
+            }
+        )
+
+        with contextlib.suppress(Exception):
+            client.images.pull(settings.agent_image)
+        client.containers.run(
+            image=settings.agent_image,
+            name=container_name,
+            detach=True,
+            network=get_team_network_name(team.team_id, settings.prefix),
+            environment=agent_env,
+            labels=labels,
+            volumes=volumes,
+            extra_hosts={"host.docker.internal": "host-gateway"},
+            restart_policy={"Name": "unless-stopped"},
+        )
+        logger.info("Agent container ensured", extra={"container": container_name})
+    except Exception:
+        logger.warning("Agent container ensure failed", exc_info=True)
+
+
+def _agent_add_env(
+    client: DockerClient,
+    settings: Settings,
+    team: TeamSettings,
+    env_name: str,
+    repo_url: str,
+    branch: str,
+    git_user: str,
+) -> None:
+    """Create/refresh one environment's checkout in the team's agent container.
+
+    Ensures the container exists, then execs clone-env.sh to clone/fetch the
+    branch into /workspace/<slug> and write that checkout's Claude .mcp.json.
+    Best-effort: never fatal to environment creation.
+    """
+    if not team.agent_enabled:
+        return
+    try:
+        _ensure_agent_container(client, settings, team)
+        container = client.containers.get(
+            get_agent_container_name(team.team_id, settings.prefix)
+        )
+        cmd = [
+            "/usr/local/bin/clone-env.sh",
+            repo_url,
+            branch,
+            slugify_branch(env_name),
+            f"http://host.docker.internal:{settings.port}/mcp",
+            team.auth_token,
+            git_user,
+        ]
+        exit_code, output = container.exec_run(cmd)
+        if exit_code not in (0, None):
+            detail = (
+                output.decode("utf-8", "replace")
+                if isinstance(output, (bytes, bytearray))
+                else output
+            )
+            logger.warning(
+                "Agent checkout setup for '%s' exited %s: %s",
+                env_name,
+                exit_code,
+                detail,
+            )
+    except Exception:
+        logger.warning("Agent checkout setup failed for '%s'", env_name, exc_info=True)
+
+
+def ensure_agent_env_checkout(
+    settings: Settings, team: TeamSettings, env_name: str
+) -> None:
+    """Ensure an environment's checkout exists in the team's agent container.
+
+    Clones it on demand (idempotent) by reading repo/branch/git_user from the
+    environment's Odoo container labels. Used when opening a console/chat so
+    that environments created before the agent feature — or a fresh workspace
+    volume — get their ``/workspace/<slug>`` checkout without a full recreate.
+    Best-effort.
+    """
+    if not team.agent_enabled:
+        return
+    try:
+        client = get_client()
+        odoo = client.containers.get(
+            get_resource_name(env_name, "odoo", settings.prefix, team.team_id)
+        )
+    except docker.errors.NotFound:
+        return
+    except Exception:
+        logger.warning("Agent checkout ensure failed for '%s'", env_name, exc_info=True)
+        return
+    labels = odoo.labels or {}
+    # Live-mount environments have no repo to clone from; skip (clone-env.sh
+    # would skip on the empty URL anyway).
+    repo_url = (
+        "" if labels.get("oduflow.local_path") else labels.get(settings.repo_label, "")
+    )
+    branch = labels.get("oduflow.git_branch", env_name)
+    git_user = labels.get("oduflow.git_user", "")
+    _agent_add_env(client, settings, team, env_name, repo_url, branch, git_user)
+
+
+def _agent_remove_env(
+    client: DockerClient, settings: Settings, team: TeamSettings, env_name: str
+) -> None:
+    """Remove one environment's checkout from the team's agent container.
+
+    Best-effort; the container itself keeps running (it serves other envs).
+    """
+    try:
+        container = client.containers.get(
+            get_agent_container_name(team.team_id, settings.prefix)
+        )
+    except docker.errors.NotFound:
+        return
+    except Exception:
+        logger.warning(
+            "Agent checkout removal failed for '%s'", env_name, exc_info=True
+        )
+        return
+    with contextlib.suppress(Exception):
+        container.exec_run(["rm", "-rf", get_agent_checkout_dir(env_name)])
+
+
+def _remove_agent_container(
+    client: DockerClient, settings: Settings, team: TeamSettings
+) -> None:
+    """Remove the team's agent container (best-effort).
+
+    Volumes are left intact so auth/sessions and checkouts survive.
+    """
+    try:
+        client.containers.get(
+            get_agent_container_name(team.team_id, settings.prefix)
+        ).remove(force=True)
+    except docker.errors.NotFound:
+        pass
+    except Exception:
+        logger.warning("Agent container removal failed", exc_info=True)
 
 
 def is_protected(settings: Settings, team: TeamSettings, env_name: str) -> bool:
@@ -1317,6 +1605,16 @@ def delete_environment(
     warnings: list[str] = []
 
     logger.info("Deleting environment", extra={"env_name": env_name})
+
+    _agent_remove_env(client, settings, team, env_name)
+
+    # Forget any stored ACP chat sessions for this env (host-side state, so
+    # cleared regardless of the agent container's presence) — a later env of the
+    # same name then starts a fresh conversation instead of resuming this one.
+    from oduflow import agent_sessions
+
+    with contextlib.suppress(Exception):
+        agent_sessions.clear_session(team, env_name)
 
     if settings.routing_mode == "port":
         release_port(team.port_registry_path, env_name)

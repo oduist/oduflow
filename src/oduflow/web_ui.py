@@ -10,6 +10,7 @@ import os
 import pathlib
 import re
 import secrets
+import socket
 import threading
 import time
 from urllib.parse import quote
@@ -36,6 +37,7 @@ from oduflow.docker_ops import (
     volume_ops,
 )
 from oduflow import activity
+from oduflow import agent_config
 from oduflow import import_tokens
 from oduflow.docker_ops.odoo_ops import get_environment_logs
 from oduflow.docker_ops.stats import (
@@ -319,6 +321,17 @@ def _guide_title(filepath: str) -> str:
     except Exception:
         pass
     return os.path.basename(filepath).replace("_", " ").replace(".md", "").title()
+
+
+def _acp_adapter_cmd(agent_type: str) -> list[str]:
+    """Command that starts the ACP (Agent Client Protocol) adapter for the given
+    agent inside the coder container. These speak JSON-RPC over stdio (unlike the
+    interactive CLIs the terminal console runs), which the ``ws_agent_acp`` relay
+    bridges to the browser chat. Bin names come from the packages installed in
+    ``docker/agent/Dockerfile``."""
+    if agent_type == "codex":
+        return ["codex-acp"]
+    return ["claude-code-acp"]
 
 
 class _LoginRateLimiter:
@@ -1531,6 +1544,70 @@ def _build_routes(
             logger.exception("Unexpected error in api_agent_guide_get")
             return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
 
+    def api_agent_info(request: Request) -> JSONResponse:
+        """Whether the coding agent is enabled for this team, and its default
+        type. The dashboard fetches this at boot to decide if the Agent Chat /
+        Agent CLI actions are shown at all. Configuration lives in oduflow.toml
+        ([team.X] agent_* keys); there is no runtime editing."""
+        try:
+            team = _get_ui_team(request)
+            return JSONResponse(
+                {
+                    "ok": True,
+                    "enabled": team.agent_enabled,
+                    "default": agent_config.effective_agent_default(team),
+                }
+            )
+        except Exception as e:
+            logger.exception("Unexpected error in api_agent_info")
+            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+
+    def api_agent_acp_info(request: Request) -> JSONResponse:
+        """Info the browser chat needs before connecting: the in-container
+        working dir (used as ACP ``cwd``) and the stored session id to resume
+        (or null to start fresh). See specs/0029-agent-console-and-chat.md."""
+        try:
+            from oduflow import agent_sessions
+            from oduflow.naming import get_agent_checkout_dir
+
+            branch = request.path_params["branch"]
+            team = _get_ui_team(request)
+            agent_type = agent_config.resolve_agent_type(
+                request.query_params.get("type"), team
+            )
+            return JSONResponse(
+                {
+                    "ok": True,
+                    "cwd": get_agent_checkout_dir(branch),
+                    "type": agent_type,
+                    "session_id": agent_sessions.get_session(team, branch, agent_type),
+                }
+            )
+        except Exception as e:
+            logger.exception("Unexpected error in api_agent_acp_info")
+            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+
+    async def api_agent_acp_session(request: Request) -> JSONResponse:
+        """Persist (or clear) the durable session id for this environment+agent.
+        The chat POSTs here after a ``session/new`` so the next open resumes it;
+        an empty session_id clears it (Codex on a brand-new conversation)."""
+        try:
+            from oduflow import agent_sessions
+
+            branch = request.path_params["branch"]
+            team = _get_ui_team(request)
+            body = await request.json()
+            agent_type = agent_config.resolve_agent_type(body.get("type"), team)
+            session_id = body.get("session_id")
+            if session_id:
+                agent_sessions.set_session(team, branch, agent_type, str(session_id))
+            else:
+                agent_sessions.clear_session(team, branch, agent_type)
+            return JSONResponse({"ok": True})
+        except Exception as e:
+            logger.exception("Unexpected error in api_agent_acp_session")
+            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+
     def api_license(request: Request) -> JSONResponse:
         settings = get_settings()
         info = get_license_info(settings.etc_dir)
@@ -2013,6 +2090,373 @@ def _build_routes(
             except Exception:
                 pass
 
+    async def ws_agent_console(websocket: WebSocket) -> None:
+        branch = websocket.path_params["branch"]
+        await websocket.accept()
+        try:
+            import docker as _docker
+            from oduflow.docker_ops.client import get_client as _get_client
+            from oduflow.naming import (
+                get_agent_checkout_dir,
+                get_agent_container_name,
+            )
+
+            settings = get_settings()
+            team = _get_ui_team(websocket)
+            client = _get_client()
+
+            if not team.agent_enabled:
+                await websocket.send_text(
+                    "\x1b[31mError: the coding agent is disabled for this team. "
+                    "Set agent_enabled = true in the [team."
+                    + team.team_id
+                    + "] section of oduflow.toml and restart the server.\x1b[0m\r\n"
+                )
+                await websocket.close(code=1011)
+                return
+
+            # Which agent to run (claude | codex); default from config.
+            agent_type = agent_config.resolve_agent_type(
+                websocket.query_params.get("type"), team
+            )
+
+            container_name = get_agent_container_name(team.team_id, settings.prefix)
+            try:
+                container = client.containers.get(container_name)
+            except _docker.errors.NotFound:
+                await websocket.send_text(
+                    "\x1b[31mError: agent container not found "
+                    "(it is created on server start; check the logs).\x1b[0m\r\n"
+                )
+                await websocket.close(code=1011)
+                return
+
+            if container.status != "running":
+                await websocket.send_text(
+                    "\x1b[31mError: agent container is not running\x1b[0m\r\n"
+                )
+                await websocket.close(code=1011)
+                return
+
+            # The console attaches at the environment's checkout. If it is
+            # missing (an installation upgraded to the agent feature, or a
+            # setup that failed at creation) heal it on demand by cloning from
+            # the Odoo container labels.
+            checkout = get_agent_checkout_dir(branch)
+
+            def _checkout_missing() -> bool:
+                code, _ = container.exec_run(["test", "-d", checkout])
+                return bool(code != 0)
+
+            missing = await asyncio.get_event_loop().run_in_executor(
+                None, _checkout_missing
+            )
+            if missing:
+                await asyncio.get_event_loop().run_in_executor(
+                    None,
+                    lambda: env_ops.ensure_agent_env_checkout(settings, team, branch),
+                )
+                missing = await asyncio.get_event_loop().run_in_executor(
+                    None, _checkout_missing
+                )
+            if missing:
+                await websocket.send_text(
+                    "\x1b[31mError: no checkout at "
+                    + checkout
+                    + " — could not build it automatically (live-mount "
+                    "environments have no repo to clone); recreate the "
+                    "environment or check the server logs.\x1b[0m\r\n"
+                )
+                await websocket.close(code=1011)
+                return
+
+            if agent_type == "codex":
+                cmd = ["codex"]
+                if settings.agent_codex_model:
+                    cmd += ["--model", settings.agent_codex_model]
+            else:
+                cmd = ["claude"]
+                if settings.agent_claude_model:
+                    cmd += ["--model", settings.agent_claude_model]
+
+            exec_id = client.api.exec_create(
+                container.id,
+                cmd,
+                stdin=True,
+                tty=True,
+                stdout=True,
+                stderr=True,
+                workdir=checkout,
+            )["Id"]
+            sock = client.api.exec_start(exec_id, detach=False, tty=True, socket=True)
+            raw_sock = sock._sock
+
+            loop = asyncio.get_event_loop()
+            closed = asyncio.Event()
+
+            async def docker_to_browser() -> None:
+                try:
+                    while not closed.is_set():
+                        data = await loop.run_in_executor(None, raw_sock.recv, 4096)
+                        if not data:
+                            break
+                        await websocket.send_text(
+                            data.decode("utf-8", errors="replace")
+                        )
+                except Exception:
+                    pass
+                finally:
+                    closed.set()
+
+            async def browser_to_docker() -> None:
+                try:
+                    while not closed.is_set():
+                        text = await websocket.receive_text()
+                        msg = json.loads(text)
+                        if msg.get("type") == "input":
+                            await loop.run_in_executor(
+                                None, raw_sock.sendall, msg["data"].encode("utf-8")
+                            )
+                        elif msg.get("type") == "resize":
+                            cols = msg.get("cols", 80)
+                            rows = msg.get("rows", 24)
+                            try:
+                                client.api.exec_resize(exec_id, height=rows, width=cols)
+                            except Exception:
+                                pass
+                except Exception:
+                    pass
+                finally:
+                    closed.set()
+
+            try:
+                await asyncio.gather(docker_to_browser(), browser_to_docker())
+            finally:
+                try:
+                    raw_sock.close()
+                except Exception:
+                    pass
+                try:
+                    sock.close()
+                except Exception:
+                    pass
+
+        except Exception as e:
+            logger.exception("WebSocket agent console error for branch %s", branch)
+            try:
+                await websocket.send_text(f"\x1b[31mError: {e}\x1b[0m\r\n")
+                await websocket.close(code=1011)
+            except Exception:
+                pass
+
+    async def ws_agent_acp(websocket: WebSocket) -> None:
+        """Bridge the browser ACP chat to an ACP adapter in the coder container.
+
+        Unlike ``ws_agent_console`` (an interactive PTY terminal), this is a dumb
+        line-framed relay: the adapter speaks JSON-RPC over stdio. We exec it
+        WITHOUT a TTY, demux docker's multiplexed stdout/stderr, forward one
+        complete stdout line (= one JSON-RPC frame) per WebSocket message, and
+        write inbound frames to stdin. See specs/0029-agent-console-and-chat.md."""
+        branch = websocket.path_params["branch"]
+        await websocket.accept()
+
+        async def _err(msg: str) -> None:
+            try:
+                await websocket.send_text(
+                    json.dumps(
+                        {
+                            "jsonrpc": "2.0",
+                            "method": "_chat/error",
+                            "params": {"message": msg},
+                        }
+                    )
+                )
+            except Exception:
+                pass
+            try:
+                await websocket.close(code=1011)
+            except Exception:
+                pass
+
+        try:
+            import docker as _docker
+            from docker.utils.socket import (
+                STDERR,
+                next_frame_header,
+                read_exactly,
+            )
+
+            from oduflow.docker_ops.client import get_client as _get_client
+            from oduflow.naming import (
+                get_agent_checkout_dir,
+                get_agent_container_name,
+            )
+
+            settings = get_settings()
+            team = _get_ui_team(websocket)
+            client = _get_client()
+
+            if not team.agent_enabled:
+                await _err(
+                    "the coding agent is disabled for this team. Set "
+                    f"agent_enabled = true in the [team.{team.team_id}] section "
+                    "of oduflow.toml and restart the server."
+                )
+                return
+
+            agent_type = agent_config.resolve_agent_type(
+                websocket.query_params.get("type"), team
+            )
+
+            container_name = get_agent_container_name(team.team_id, settings.prefix)
+            try:
+                container = client.containers.get(container_name)
+            except _docker.errors.NotFound:
+                await _err(
+                    "agent container not found "
+                    "(it is created on server start; check the logs)."
+                )
+                return
+            if container.status != "running":
+                await _err("agent container is not running")
+                return
+
+            checkout = get_agent_checkout_dir(branch)
+
+            def _checkout_missing() -> bool:
+                code, _ = container.exec_run(["test", "-d", checkout])
+                return bool(code != 0)
+
+            missing = await asyncio.get_event_loop().run_in_executor(
+                None, _checkout_missing
+            )
+            if missing:
+                await asyncio.get_event_loop().run_in_executor(
+                    None,
+                    lambda: env_ops.ensure_agent_env_checkout(settings, team, branch),
+                )
+                missing = await asyncio.get_event_loop().run_in_executor(
+                    None, _checkout_missing
+                )
+            if missing:
+                await _err(
+                    f"no checkout at {checkout} — could not build it "
+                    "automatically (live-mount environments have no repo to "
+                    "clone); recreate the environment or check the logs."
+                )
+                return
+
+            exec_id = client.api.exec_create(
+                container.id,
+                _acp_adapter_cmd(agent_type),
+                stdin=True,
+                tty=False,
+                stdout=True,
+                stderr=True,
+                workdir=checkout,
+            )["Id"]
+            sock = client.api.exec_start(exec_id, detach=False, tty=False, socket=True)
+            raw_sock = sock._sock
+
+            loop = asyncio.get_event_loop()
+            closed = asyncio.Event()
+
+            async def docker_to_browser() -> None:
+                buf = b""
+                try:
+                    while not closed.is_set():
+                        stream, length = await loop.run_in_executor(
+                            None, next_frame_header, raw_sock
+                        )
+                        if stream == -1 or length < 0:
+                            break
+                        if length == 0:
+                            continue
+                        payload = await loop.run_in_executor(
+                            None, read_exactly, raw_sock, length
+                        )
+                        if stream == STDERR:
+                            logger.info(
+                                "acp[%s/%s] stderr: %s",
+                                branch,
+                                agent_type,
+                                payload.decode("utf-8", "replace").rstrip(),
+                            )
+                            continue
+                        # stdout carries NDJSON JSON-RPC. Frame boundaries do NOT
+                        # align with lines, so buffer and emit one complete line
+                        # (one JSON-RPC frame) per WebSocket message.
+                        buf += payload
+                        while b"\n" in buf:
+                            line, buf = buf.split(b"\n", 1)
+                            text = line.strip()
+                            if text:
+                                await websocket.send_text(
+                                    text.decode("utf-8", "replace")
+                                )
+                except Exception:
+                    pass
+                finally:
+                    closed.set()
+
+            async def browser_to_docker() -> None:
+                try:
+                    while not closed.is_set():
+                        text = await websocket.receive_text()
+                        if not text:
+                            continue
+                        frame = text if text.endswith("\n") else text + "\n"
+                        await loop.run_in_executor(
+                            None, raw_sock.sendall, frame.encode("utf-8")
+                        )
+                except Exception:
+                    pass
+                finally:
+                    closed.set()
+
+            tasks = [
+                asyncio.ensure_future(docker_to_browser()),
+                asyncio.ensure_future(browser_to_docker()),
+            ]
+            try:
+                # Return as soon as EITHER side ends — the browser closed the
+                # chat, or the adapter exited.
+                await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+            finally:
+                closed.set()
+                # Tear the exec down so it never outlives the chat. A thread
+                # parked in next_frame_header/recv is only reliably woken by
+                # shutdown() (a bare close() need not interrupt a blocked recv);
+                # dropping the socket also gives the adapter EOF on stdin so the
+                # `docker exec` process exits instead of leaking. Then cancel the
+                # still-parked coroutine (receive_text is cancellable) and reap.
+                try:
+                    raw_sock.shutdown(socket.SHUT_RDWR)
+                except Exception:
+                    pass
+                try:
+                    raw_sock.close()
+                except Exception:
+                    pass
+                try:
+                    sock.close()
+                except Exception:
+                    pass
+                try:
+                    await websocket.close()
+                except Exception:
+                    pass
+                for t in tasks:
+                    t.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
+
+        except Exception:
+            logger.exception("WebSocket ACP chat error for branch %s", branch)
+            try:
+                await websocket.close(code=1011)
+            except Exception:
+                pass
+
     return [
         Route("/", dashboard, methods=["GET"]),
         Route("/login", login, methods=["GET", "POST"]),
@@ -2045,6 +2489,17 @@ def _build_routes(
         ),
         Route("/api/agent-guides", api_agent_guides_list, methods=["GET"]),
         Route("/api/agent-guides/{filename}", api_agent_guide_get, methods=["GET"]),
+        Route("/api/agent", api_agent_info, methods=["GET"]),
+        Route(
+            "/api/environments/{branch:path}/agent-acp/info",
+            api_agent_acp_info,
+            methods=["GET"],
+        ),
+        Route(
+            "/api/environments/{branch:path}/agent-acp/session",
+            api_agent_acp_session,
+            methods=["POST"],
+        ),
         Route("/api/environments/{branch:path}/start", api_start, methods=["POST"]),
         Route("/api/environments/{branch:path}/stop", api_stop, methods=["POST"]),
         Route("/api/environments/{branch:path}/restart", api_restart, methods=["POST"]),
@@ -2101,6 +2556,8 @@ def _build_routes(
         Route("/api/environments/{branch:path}/logs", api_logs, methods=["GET"]),
         WebSocketRoute("/api/environments/{branch:path}/terminal", ws_terminal),
         WebSocketRoute("/api/environments/{branch:path}/sql", ws_sql_terminal),
+        WebSocketRoute("/api/environments/{branch:path}/agent", ws_agent_console),
+        WebSocketRoute("/api/environments/{branch:path}/agent-acp", ws_agent_acp),
     ]
 
 

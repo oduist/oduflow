@@ -669,6 +669,21 @@ def init_system(
     for team in settings.teams.values():
         ensure_team_network(client, settings, team)
 
+    # Per-team coding-agent containers. init_system runs on every server
+    # start, so oduflow.toml is applied here: enabled teams get their container
+    # ensured (recreated on config drift), disabled teams get a leftover
+    # container removed. Best-effort either way.
+    from oduflow.docker_ops.env_ops import (
+        _ensure_agent_container,
+        _remove_agent_container,
+    )
+
+    for team in settings.teams.values():
+        if team.agent_enabled:
+            _ensure_agent_container(client, settings, team)
+        else:
+            _remove_agent_container(client, settings, team)
+
     logger.info("System initialized")
     return {"status": "initialized"}
 
@@ -1325,6 +1340,34 @@ def destroy_system(settings: Settings) -> dict[str, str]:
             )
 
     removed: list[str] = []
+
+    # Per-team agent containers and their volumes. They must go before the
+    # team networks (a running agent container keeps its network busy); destroy
+    # is full teardown, so the home/workspace volumes go too.
+    from oduflow.naming import (
+        get_agent_container_name,
+        get_agent_home_volume_name,
+        get_agent_workspace_volume_name,
+    )
+
+    for team in settings.teams.values():
+        agent_name = get_agent_container_name(team.team_id, settings.prefix)
+        try:
+            client.containers.get(agent_name).remove(force=True)
+            removed.append(agent_name)
+        except docker.errors.NotFound:
+            pass
+        for volume_name in (
+            get_agent_home_volume_name(team.team_id, settings.prefix),
+            get_agent_workspace_volume_name(team.team_id, settings.prefix),
+        ):
+            try:
+                client.volumes.get(volume_name).remove()
+                removed.append(volume_name)
+            except docker.errors.NotFound:
+                pass
+            except docker.errors.APIError:
+                logger.warning("Could not remove volume %s", volume_name)
 
     _destroy_traefik(client, settings, removed)
 

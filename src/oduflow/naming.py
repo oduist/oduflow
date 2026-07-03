@@ -64,6 +64,34 @@ def get_service_container_name(name: str, prefix: str, team_id: str) -> str:
     return f"{prefix}{team_id}-svc-{name}"
 
 
+def get_agent_container_name(team_id: str, prefix: str) -> str:
+    """The team's coding-agent container (one container serves every
+    environment of the team). Cannot collide with env resources
+    (``{prefix}{team}-{env}-{type}``, always type-suffixed) or services
+    (``{prefix}{team}-svc-{name}``)."""
+    return f"{prefix}{team_id}-agent"
+
+
+def get_agent_home_volume_name(team_id: str, prefix: str) -> str:
+    """Named volume mounted as the agent container's HOME (auth + sessions)."""
+    return f"{prefix}{team_id}-agent-home"
+
+
+def get_agent_workspace_volume_name(team_id: str, prefix: str) -> str:
+    """Named volume mounted at /workspace (one checkout per environment)."""
+    return f"{prefix}{team_id}-agent-workspace"
+
+
+def get_agent_checkout_dir(env_name: str) -> str:
+    """Path of an environment's checkout inside the team's agent container.
+
+    Used both by the create hook (clone-env.sh target) and the agent console /
+    ACP chat (exec workdir), so they must agree on the same slug.
+    See specs/0029-agent-console-and-chat.md.
+    """
+    return f"/workspace/{slugify_branch(env_name)}"
+
+
 def get_workspace_path(env_name: str, workspaces_dir: str) -> str:
     return os.path.join(workspaces_dir, env_name.replace("/", "-"))
 

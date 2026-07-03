@@ -17,6 +17,9 @@ TEST_TEAM = TeamSettings(
     port_range_end=50100,
 )
 
+# These tests exercise environment/Odoo lifecycle, not the agent; TEST_TEAM
+# keeps the default agent_enabled=False so the team agent container stays out
+# of it (agent behaviour has its own tests below).
 TEST_SETTINGS = Settings(
     base_data_dir="/tmp/flow-test",
     db_user="odoo",
@@ -1393,3 +1396,316 @@ class TestReapplyOdooConf:
         )
         assert applied is False
         mock_copy.assert_not_called()
+
+
+class TestAgentContainer:
+    """The agent is a SINGLE per-team container with persistent HOME/workspace
+    volumes; per-env checkouts are added/removed via `docker exec`. It is
+    opt-in per team (a hosting feature) and configured statically in
+    oduflow.toml. See specs/0029-agent-console-and-chat.md."""
+
+    def _team(self, **kw):
+        base = dict(
+            team_id="1",
+            data_dir="/tmp/flow-test",
+            auth_token="tok",
+            agent_enabled=True,
+        )
+        base.update(kw)
+        return TeamSettings(**base)
+
+    def _settings(self, team=None, **kw):
+        team = team or self._team()
+        base = dict(
+            base_data_dir="/tmp/flow-test",
+            etc_dir="/tmp/flow-test/etc",
+            port=8000,
+            agent_image="oduist/oduflow-coder:latest",
+            teams={team.team_id: team},
+        )
+        base.update(kw)
+        return Settings(**base)
+
+    def test_disabled_creates_nothing(self, mock_docker_client):
+        team = self._team(agent_enabled=False)
+        env_ops._ensure_agent_container(
+            mock_docker_client, self._settings(team=team), team
+        )
+        mock_docker_client.containers.run.assert_not_called()
+        mock_docker_client.volumes.create.assert_not_called()
+
+    @patch("oduflow.docker_ops.env_ops.os.path.isfile", return_value=True)
+    def test_ensure_creates_single_container_with_volumes(
+        self, mock_isfile, monkeypatch, mock_docker_client
+    ):
+        monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "sub-token")
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.setenv("OPENAI_API_KEY", "oai-key")
+        # No existing volumes, no existing container.
+        mock_docker_client.volumes.get.side_effect = docker.errors.NotFound("nf")
+        mock_docker_client.containers.get.side_effect = docker.errors.NotFound("nf")
+
+        team = self._team()
+        s = self._settings(team=team)
+        env_ops._ensure_agent_container(mock_docker_client, s, team)
+
+        # Both persistent volumes created.
+        created = {c.args[0] for c in mock_docker_client.volumes.create.call_args_list}
+        assert "oduflow-1-agent-home" in created
+        assert "oduflow-1-agent-workspace" in created
+
+        mock_docker_client.containers.run.assert_called_once()
+        kwargs = mock_docker_client.containers.run.call_args.kwargs
+        assert kwargs["name"] == "oduflow-1-agent"
+        # Tenant isolation: the agent joins the team network, not a shared one.
+        assert kwargs["network"] == "oduflow-1-net"
+        assert kwargs["labels"]["oduflow.agent"] == "true"
+        assert kwargs["labels"][s.team_label] == "1"
+        # Config-as-source-of-truth: the injected config is fingerprinted so a
+        # later ensure can detect drift and recreate.
+        assert kwargs["labels"]["oduflow.agent_config_hash"]
+        # Team-wide: no per-env branch label.
+        assert s.branch_label not in kwargs["labels"]
+        assert kwargs["extra_hosts"] == {"host.docker.internal": "host-gateway"}
+        vols = kwargs["volumes"]
+        assert vols["oduflow-1-agent-home"]["bind"] == "/root"
+        assert vols["oduflow-1-agent-workspace"]["bind"] == "/workspace"
+        assert any(v["bind"] == "/run/oduflow/git-credentials" for v in vols.values())
+        env = kwargs["environment"]
+        # Team-wide wiring only; per-env repo/branch go to clone-env.sh.
+        assert env["ODUFLOW_MCP_URL"] == "http://host.docker.internal:8000/mcp"
+        assert env["ODUFLOW_MCP_TOKEN"] == "tok"
+        # Subscription wins; the API key must not be set alongside it.
+        assert env["CLAUDE_CODE_OAUTH_TOKEN"] == "sub-token"
+        assert "ANTHROPIC_API_KEY" not in env
+        assert env["OPENAI_API_KEY"] == "oai-key"
+
+    def _existing_container(self, settings, team, monkeypatch):
+        """A mocked running container carrying the CURRENT config hash."""
+        env = dict(env_ops._agent_env_vars(settings, team))
+        env.update(
+            {
+                "ODUFLOW_MCP_URL": f"http://host.docker.internal:{settings.port}/mcp",
+                "ODUFLOW_MCP_TOKEN": team.auth_token,
+            }
+        )
+        existing = MagicMock()
+        existing.status = "running"
+        existing.labels = {
+            "oduflow.agent_config_hash": env_ops._agent_config_hash(
+                settings.agent_image, env
+            )
+        }
+        return existing
+
+    def test_ensure_idempotent_when_config_unchanged(
+        self, monkeypatch, mock_docker_client
+    ):
+        monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        team = self._team()
+        s = self._settings(team=team)
+        mock_docker_client.volumes.get.return_value = MagicMock()  # volumes exist
+        existing = self._existing_container(s, team, monkeypatch)
+        mock_docker_client.containers.get.return_value = existing
+
+        env_ops._ensure_agent_container(mock_docker_client, s, team)
+
+        mock_docker_client.containers.run.assert_not_called()
+        existing.remove.assert_not_called()
+        existing.start.assert_not_called()
+
+    @patch("oduflow.docker_ops.env_ops.os.path.isfile", return_value=False)
+    def test_ensure_recreates_on_config_drift(
+        self, mock_isfile, monkeypatch, mock_docker_client
+    ):
+        # The container was created with different env (stale hash label) —
+        # e.g. the operator edited [team.X.agent_env] and restarted the server.
+        monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        team = self._team(agent_env={"OPENAI_API_KEY": "new-key"})
+        s = self._settings(team=team)
+        mock_docker_client.volumes.get.return_value = MagicMock()
+        existing = MagicMock()
+        existing.status = "running"
+        existing.labels = {"oduflow.agent_config_hash": "stale"}
+        mock_docker_client.containers.get.return_value = existing
+
+        env_ops._ensure_agent_container(mock_docker_client, s, team)
+
+        existing.remove.assert_called_once_with(force=True)
+        mock_docker_client.containers.run.assert_called_once()
+        env = mock_docker_client.containers.run.call_args.kwargs["environment"]
+        assert env["OPENAI_API_KEY"] == "new-key"
+
+    def test_api_key_when_no_subscription(self, monkeypatch, mock_docker_client):
+        monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant")
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        mock_docker_client.volumes.get.side_effect = docker.errors.NotFound("nf")
+        mock_docker_client.containers.get.side_effect = docker.errors.NotFound("nf")
+
+        team = self._team()
+        with patch("oduflow.docker_ops.env_ops.os.path.isfile", return_value=False):
+            env_ops._ensure_agent_container(
+                mock_docker_client, self._settings(team=team), team
+            )
+
+        env = mock_docker_client.containers.run.call_args.kwargs["environment"]
+        assert env["ANTHROPIC_API_KEY"] == "sk-ant"
+        assert "CLAUDE_CODE_OAUTH_TOKEN" not in env
+
+    def test_server_env_not_inherited_with_multiple_teams(
+        self, monkeypatch, mock_docker_client
+    ):
+        # With several teams, a server-level provider key must NOT leak into a
+        # tenant's agent container; only the team's own config applies.
+        monkeypatch.setenv("OPENAI_API_KEY", "operator-key")
+        mock_docker_client.volumes.get.side_effect = docker.errors.NotFound("nf")
+        mock_docker_client.containers.get.side_effect = docker.errors.NotFound("nf")
+
+        team1 = self._team()
+        team2 = TeamSettings(
+            team_id="2", data_dir="/tmp/flow-test-2", auth_token="tok2"
+        )
+        s = Settings(
+            base_data_dir="/tmp/flow-test",
+            etc_dir="/tmp/flow-test/etc",
+            port=8000,
+            teams={"1": team1, "2": team2},
+        )
+        with patch("oduflow.docker_ops.env_ops.os.path.isfile", return_value=False):
+            env_ops._ensure_agent_container(mock_docker_client, s, team1)
+
+        env = mock_docker_client.containers.run.call_args.kwargs["environment"]
+        assert "OPENAI_API_KEY" not in env
+
+    def test_team_agent_env_injected_and_overrides_server(
+        self, monkeypatch, mock_docker_client
+    ):
+        # Variables from [team.X.agent_env] reach the container and override
+        # the server environment; wiring vars always win over user vars.
+        monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+        monkeypatch.setenv("OPENAI_API_KEY", "from-server")
+        team = self._team(agent_env={"OPENAI_API_KEY": "from-config", "MY_FLAG": "1"})
+        mock_docker_client.volumes.get.side_effect = docker.errors.NotFound("nf")
+        mock_docker_client.containers.get.side_effect = docker.errors.NotFound("nf")
+
+        with patch("oduflow.docker_ops.env_ops.os.path.isfile", return_value=False):
+            env_ops._ensure_agent_container(
+                mock_docker_client, self._settings(team=team), team
+            )
+
+        env = mock_docker_client.containers.run.call_args.kwargs["environment"]
+        assert env["OPENAI_API_KEY"] == "from-config"  # config wins
+        assert env["MY_FLAG"] == "1"
+        assert env["ODUFLOW_MCP_URL"] == "http://host.docker.internal:8000/mcp"
+
+    def test_add_env_execs_clone_script(self, monkeypatch, mock_docker_client):
+        monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        team = self._team()
+        s = self._settings(team=team)
+        container = self._existing_container(s, team, monkeypatch)
+        container.exec_run.return_value = (0, b"")
+        mock_docker_client.volumes.get.return_value = MagicMock()  # ensure noop
+        mock_docker_client.containers.get.return_value = container
+
+        env_ops._agent_add_env(
+            mock_docker_client,
+            s,
+            team,
+            "feature/x",
+            "https://x/r.git",
+            "feature/x",
+            "alice",
+        )
+
+        container.exec_run.assert_called_once()
+        cmd = container.exec_run.call_args.args[0]
+        assert cmd[0] == "/usr/local/bin/clone-env.sh"
+        assert cmd[1] == "https://x/r.git"
+        assert cmd[2] == "feature/x"
+        assert cmd[3] == "feature-x"  # slugified env -> checkout dir
+        assert cmd[4] == "http://host.docker.internal:8000/mcp"
+        assert cmd[5] == "tok"
+        assert cmd[6] == "alice"
+
+    def test_add_env_skipped_when_disabled(self, mock_docker_client):
+        team = self._team(agent_enabled=False)
+        env_ops._agent_add_env(
+            mock_docker_client,
+            self._settings(team=team),
+            team,
+            "feature/x",
+            "https://x/r.git",
+            "feature/x",
+            "alice",
+        )
+        mock_docker_client.containers.get.assert_not_called()
+
+    def test_ensure_env_checkout_clones_from_labels(
+        self, monkeypatch, mock_docker_client
+    ):
+        # Opening a console for a pre-existing env reads repo/branch/user from the
+        # Odoo container labels and clones on demand.
+        monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        team = self._team()
+        s = self._settings(team=team)
+        odoo = MagicMock()
+        odoo.labels = {
+            "oduflow.repo": "https://x/r.git",
+            "oduflow.git_branch": "19.0",
+            "oduflow.git_user": "alice",
+        }
+        agent = self._existing_container(s, team, monkeypatch)
+        agent.exec_run.return_value = (0, b"")
+        mock_docker_client.volumes.get.return_value = MagicMock()
+
+        def _get(name):
+            return odoo if name.endswith("-odoo") else agent
+
+        mock_docker_client.containers.get.side_effect = _get
+
+        env_ops.ensure_agent_env_checkout(s, team, "prod")
+
+        agent.exec_run.assert_called_once()
+        cmd = agent.exec_run.call_args.args[0]
+        assert cmd[0] == "/usr/local/bin/clone-env.sh"
+        assert cmd[1] == "https://x/r.git"
+        assert cmd[2] == "19.0"  # git_branch label (may differ from env name)
+        assert cmd[3] == "prod"  # slug from env name -> checkout dir
+        assert cmd[6] == "alice"
+
+    def test_ensure_env_checkout_skips_repo_for_live_mount(
+        self, monkeypatch, mock_docker_client
+    ):
+        # A live-mount env has no repo to clone; the hook passes an empty URL
+        # (clone-env.sh then skips) instead of cloning a stale repo label.
+        monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        team = self._team()
+        s = self._settings(team=team)
+        odoo = MagicMock()
+        odoo.labels = {
+            "oduflow.repo": "https://x/r.git",
+            "oduflow.local_path": "/home/dev/checkout",
+            "oduflow.git_branch": "19.0",
+        }
+        agent = self._existing_container(s, team, monkeypatch)
+        agent.exec_run.return_value = (0, b"")
+        mock_docker_client.volumes.get.return_value = MagicMock()
+        mock_docker_client.containers.get.side_effect = lambda name: (
+            odoo if name.endswith("-odoo") else agent
+        )
+
+        env_ops.ensure_agent_env_checkout(s, team, "prod")
+
+        cmd = agent.exec_run.call_args.args[0]
+        assert cmd[1] == ""  # no repo URL for live-mount envs

@@ -30,6 +30,20 @@ overlay_threshold_mb = 50         # filestore size limit for overlay vs copy
 auto_stop_hours = 48              # stop idle environments after N hours (non-destructive)
 auto_delete_hours = 0             # delete stopped environments after N hours (DESTRUCTIVE; opt-in)
 
+# ── Coding agent ──────────────────────────────────────
+# One agent container per team (Claude Code + OpenAI Codex), driven from the
+# dashboard: "Agent Chat" (structured browser chat) and "Agent CLI"
+# (terminal). The agent holds a git checkout per environment and reaches
+# environments only through the Oduflow MCP server. It is a HOSTING feature —
+# enable it per team (agent_enabled, below); local developers use their own
+# agents, so it is off by default. This global section holds only
+# deployment-wide bits; changes apply on server restart (the agent container
+# is recreated automatically when its config changed).
+# [agent]
+# image = "oduist/oduflow-coder:latest"
+# claude_model = ""                # optional model override; empty = CLI default
+# codex_model = ""                 # optional model override; empty = CLI default
+
 # ── OAuth (optional) ──────────────────────────────────
 # Set oauth_base_url to the public URL of this Oduflow instance to enable
 # the self-hosted OAuth Authorization Server. Endpoints exposed:
@@ -56,3 +70,12 @@ ui_password = ""                  # Web UI password (empty = UI open)
 port_range = [50000, 50100]       # port range for Odoo containers
 # db_quota_gb = 50                # combined size cap for the team's PostgreSQL DBs (environments + templates); 0 = off
 # disk_quota_gb = 0               # cap on team files + databases via XFS project quotas (needs data dir on XFS with prjquota)
+# agent_enabled = false           # per-team coding agent (dashboard Agent Chat / Agent CLI); off by default
+# agent_default = "claude"        # "claude" | "codex" — which agent consoles/chats open by default
+
+# Variables injected into the team's agent container — provider credentials
+# and anything custom. Uncomment together with agent_enabled above.
+# [team.1.agent_env]
+# CLAUDE_CODE_OAUTH_TOKEN = ""    # Claude subscription token (`claude setup-token`); outranks the API key
+# ANTHROPIC_API_KEY = ""          # Claude API key (used when no OAuth token)
+# OPENAI_API_KEY = ""             # Codex API key (recommended over subscription)
