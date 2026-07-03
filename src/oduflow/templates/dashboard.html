@@ -901,6 +901,8 @@
   .modal-note { font-size: var(--text-sm); color: var(--text-dim); margin-bottom: 16px; }
   .modal-note a { color: var(--accent); }
   .mono-input { font-family: var(--font-mono); font-size: var(--text-xs); }
+  .copy-row { display: flex; gap: 8px; align-items: stretch; }
+  .copy-row input { flex: 1 1 auto; min-width: 0; }
   .guide-viewer-head { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
   .guide-viewer-title { font-size: var(--text-md); font-weight: 600; color: var(--text); }
   .guide-file { font-size: var(--text-xs); color: var(--text-dim); }
@@ -1402,6 +1404,36 @@
         <button class="btn danger" id="note-delete-btn" onclick="deleteNote()">Delete note</button>
         <button class="btn" onclick="closeNoteModal()">Cancel</button>
         <button class="btn-create" onclick="saveNote()">Save note</button>
+      </div>
+    </div>
+  </div>
+</div>
+<div class="modal-overlay" id="mcp-access-modal" onclick="closeMcpAccess(event)">
+  <div class="modal modal-sm">
+    <div class="modal-header">
+      <h2 id="mcp-access-title">MCP Access</h2>
+      <button class="modal-close" onclick="closeMcpAccess()">&times;</button>
+    </div>
+    <div class="modal-body">
+      <p class="modal-note">Scoped MCP endpoint for this environment only. Use the Secret Key as a Bearer token or as an OAuth client credential. It exposes the in-environment tools (sync, install/upgrade, tests, shell, SQL, logs); it cannot create, delete or stop environments.</p>
+      <div class="form-group">
+        <label for="mcp-access-url">Endpoint URL</label>
+        <div class="copy-row">
+          <input id="mcp-access-url" class="mono-input" type="text" readonly>
+          <button class="btn" type="button" onclick="copyMcpField('mcp-access-url', 'URL copied')">Copy</button>
+        </div>
+      </div>
+      <div class="form-group" id="mcp-access-secret-group">
+        <label for="mcp-access-token">Secret Key</label>
+        <div class="copy-row">
+          <input id="mcp-access-token" class="mono-input" type="password" readonly>
+          <button class="btn" type="button" id="mcp-access-reveal" onclick="toggleMcpSecret()" aria-pressed="false">Show</button>
+          <button class="btn" type="button" onclick="copyMcpField('mcp-access-token', 'Secret Key copied')">Copy</button>
+        </div>
+      </div>
+      <p class="modal-note" id="mcp-access-missing" style="display:none;">This environment was created before per-environment tokens existed. Recreate it to issue a Secret Key.</p>
+      <div class="form-actions">
+        <button class="btn" onclick="closeMcpAccess()">Close</button>
       </div>
     </div>
   </div>
@@ -1918,6 +1950,7 @@ function renderEnvironments(envs, force) {
                 (allStopped ? 'disabled' : '') + '>Open console</button>' +
               '<button role="menuitem" title="psql session on the environment database" onclick="openSqlConsole(\'' + escAttr(env.branch) + '\')" ' +
                 (allStopped ? 'disabled' : '') + '>Open SQL console</button>' +
+              '<button role="menuitem" title="Scoped MCP endpoint and Secret Key for this environment only" onclick="openMcpAccess(\'' + escAttr(env.branch) + '\')">MCP Access</button>' +
               '<button role="menuitem" title="' + (env.note ? 'Edit the note on this environment' : 'Add a note to this environment') + '" onclick="editNote(\'' + escAttr(env.branch) + '\')">' +
                 (env.note ? 'Edit note' : 'Add note') + '</button>' +
               '<button role="menuitem" title="' + (env.protected ? 'Allow Stop, Update, Recreate and Delete again' : 'Disable Stop, Update, Recreate and Delete') + '" onclick="doProtect(\'' + escAttr(env.branch) + '\',' + (env.protected ? 'true' : 'false') + ')" ' + dis + '>' +
@@ -2176,6 +2209,54 @@ async function saveNote() {
 
 async function deleteNote() {
   await _putNote(_noteBranch, '', 'Note deleted');
+}
+
+async function openMcpAccess(branch) {
+  document.getElementById('mcp-access-title').textContent = 'MCP Access — ' + branch;
+  var tokenEl = document.getElementById('mcp-access-token');
+  // Reset the secret to its masked state every time the modal opens.
+  tokenEl.type = 'password';
+  var reveal = document.getElementById('mcp-access-reveal');
+  reveal.textContent = 'Show';
+  reveal.setAttribute('aria-pressed', 'false');
+  document.getElementById('mcp-access-url').value = '';
+  tokenEl.value = '';
+  document.getElementById('mcp-access-secret-group').style.display = '';
+  document.getElementById('mcp-access-missing').style.display = 'none';
+  showModal('mcp-access-modal');
+  try {
+    var r = await fetch(API + '/' + encodeURIComponent(branch) + '/mcp-access');
+    var data = await r.json();
+    if (!data.ok) { showToast(data.error || 'Failed to load MCP access', true); return; }
+    document.getElementById('mcp-access-url').value = data.result.url || '';
+    if (data.result.token) {
+      tokenEl.value = data.result.token;
+    } else {
+      document.getElementById('mcp-access-secret-group').style.display = 'none';
+      document.getElementById('mcp-access-missing').style.display = '';
+    }
+  } catch (e) {
+    showToast('Connection error: ' + e.message, true);
+  }
+}
+
+function closeMcpAccess(event) {
+  if (event && event.target !== event.currentTarget) return;
+  hideModal('mcp-access-modal');
+}
+
+function toggleMcpSecret() {
+  var el = document.getElementById('mcp-access-token');
+  var btn = document.getElementById('mcp-access-reveal');
+  var show = el.type === 'password';
+  el.type = show ? 'text' : 'password';
+  btn.textContent = show ? 'Hide' : 'Show';
+  btn.setAttribute('aria-pressed', show ? 'true' : 'false');
+}
+
+function copyMcpField(id, label) {
+  var val = document.getElementById(id).value;
+  if (val) copyToClipboard(val, label);
 }
 
 async function loadEnvironments(force) {

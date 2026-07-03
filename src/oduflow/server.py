@@ -3544,6 +3544,16 @@ def _start_http() -> None:
 
     app = create_streamable_http_app(mcp, "/mcp", auth=auth, stateless_http=True)
 
+    # Scoped single-environment access: gate the tool surface for /mcp/<env>
+    # requests and inject the resolved env_name. No-op for the full /mcp.
+    from oduflow.scoped_access import (
+        ScopedAccessMiddleware,
+        ScopedEnvASGI,
+        build_env_param_tools,
+    )
+
+    mcp.add_middleware(ScopedAccessMiddleware(build_env_param_tools(mcp)))
+
     reaper.start_reaper(_get_settings, _locks)
 
     from oduflow.web_ui import mount_web_ui
@@ -3566,7 +3576,8 @@ def _start_http() -> None:
 
     import uvicorn
 
-    uvicorn.run(app, host=host, port=port, ws="websockets-sansio")
+    # Outermost shim so /mcp/<env> routes to the canonical /mcp route.
+    uvicorn.run(ScopedEnvASGI(app), host=host, port=port, ws="websockets-sansio")
 
 
 def _build_auth(settings: Settings):  # type: ignore[no-untyped-def]
@@ -3582,13 +3593,10 @@ def _build_auth(settings: Settings):  # type: ignore[no-untyped-def]
       auth_token is consumed directly from the Authorization header.
       Suitable for curl, CLI clients, and IDEs that don't need OAuth.
     """
-    tokens: dict[str, dict[str, object]] = {}
-    for team_id, team in settings.teams.items():
-        if team.auth_token:
-            tokens[team.auth_token] = {"client_id": team_id, "scopes": []}
+    has_team_token = any(t.auth_token for t in settings.teams.values())
 
     if settings.oauth_enabled:
-        if not tokens:
+        if not has_team_token:
             logger.warning(
                 "oauth_base_url is set but no team has auth_token; OAuth disabled"
             )
@@ -3597,10 +3605,12 @@ def _build_auth(settings: Settings):  # type: ignore[no-untyped-def]
 
         return OduflowOAuthProvider(settings)
 
-    if tokens:
-        from fastmcp.server.auth.providers.jwt import StaticTokenVerifier
+    if has_team_token:
+        # Verifies team auth_token (full access) and per-environment tokens
+        # (scoped /mcp/<env> access) — see oduflow.scoped_access.
+        from oduflow.scoped_access import OduflowTokenVerifier
 
-        return StaticTokenVerifier(tokens=tokens)
+        return OduflowTokenVerifier(settings)
 
     logger.warning("HTTP auth DISABLED (no auth_token or oauth_base_url set)")
     return None

@@ -29,6 +29,7 @@ from oduflow.docker_ops.system_ops import (
 )
 from oduflow.docker_ops.stats import default_env_limits
 from oduflow.env_credentials import create_credentials, load_credentials
+from oduflow.env_tokens import MCP_TOKEN_LABEL, generate_token, invalidate_cache
 from oduflow.errors import (
     ConflictError,
     ExternalCommandError,
@@ -755,6 +756,8 @@ def create_environment(
         "oduflow.template": template_name if template_name is not None else "none",
         "oduflow.git_branch": branch,
         "oduflow.created_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        # Personal token authorizing the scoped MCP endpoint /mcp/<env>.
+        MCP_TOKEN_LABEL: generate_token(),
     }
 
     if extra_addons:
@@ -1184,6 +1187,8 @@ def create_environment(
     result["local_path"] = repo_path if local_mount else ""
     result["elapsed_seconds"] = round(time.time() - start_time, 1)
     activity.touch(team, env_name)
+    # Let the new env's MCP token resolve without waiting for the scan interval.
+    invalidate_cache()
     return result
 
 
@@ -1236,6 +1241,22 @@ def unprotect_environment(
         os.remove(marker)
     logger.info("Environment unprotected", extra={"env_name": env_name})
     return {"env_name": env_name, "protected": False}
+
+
+def get_env_token(settings: Settings, team: TeamSettings, env_name: str) -> str | None:
+    """Return the per-environment MCP access token from the container label.
+
+    Returns ``None`` for environments created before the feature existed (their
+    container carries no ``oduflow.mcp_token`` label and Docker labels cannot be
+    added without recreating the container).
+    """
+    client = get_client()
+    container_name = get_resource_name(env_name, "odoo", settings.prefix, team.team_id)
+    try:
+        container = client.containers.get(container_name)
+    except docker.errors.NotFound:
+        raise NotFoundError(f"Environment '{env_name}' does not exist.")
+    return container.labels.get(MCP_TOKEN_LABEL) or None
 
 
 def get_note(settings: Settings, team: TeamSettings, env_name: str) -> str:
@@ -1342,6 +1363,7 @@ def delete_environment(
         shutil.rmtree(workspace_path)
 
     activity.remove(team, env_name)
+    invalidate_cache()
     logger.info("Environment deleted", extra={"env_name": env_name})
     return warnings
 

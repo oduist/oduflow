@@ -12,6 +12,7 @@ import re
 import secrets
 import threading
 import time
+from urllib.parse import quote
 
 from itsdangerous import BadData, URLSafeTimedSerializer
 from starlette.requests import HTTPConnection, Request
@@ -1783,6 +1784,21 @@ def _build_routes(
             logger.exception("Unexpected error in api_set_note")
             return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
 
+    def api_mcp_access(request: Request) -> JSONResponse:
+        branch = request.path_params["branch"]
+        try:
+            settings = get_settings()
+            team = _get_ui_team(request)
+            token = env_ops.get_env_token(settings, team, branch)
+            base = (settings.oauth_base_url or str(request.base_url)).rstrip("/")
+            url = f"{base}/mcp/{quote(branch, safe='/')}"
+            return JSONResponse({"ok": True, "result": {"url": url, "token": token}})
+        except FlowError as e:
+            return _error_response(e)
+        except Exception as e:
+            logger.exception("Unexpected error in api_mcp_access")
+            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+
     async def ws_terminal(websocket: WebSocket) -> None:
         branch = websocket.path_params["branch"]
         await websocket.accept()
@@ -2038,6 +2054,11 @@ def _build_routes(
             "/api/environments/{branch:path}/unprotect", api_unprotect, methods=["POST"]
         ),
         Route("/api/environments/{branch:path}/note", api_set_note, methods=["POST"]),
+        Route(
+            "/api/environments/{branch:path}/mcp-access",
+            api_mcp_access,
+            methods=["GET"],
+        ),
         Route("/api/environments/{branch:path}/update", api_update, methods=["POST"]),
         Route(
             "/api/environments/{branch:path}/recreate", api_recreate, methods=["POST"]

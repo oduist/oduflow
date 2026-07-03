@@ -140,6 +140,35 @@ class TestOduflowOAuthProvider:
         with pytest.raises(InvalidRedirectUriError):
             client.validate_redirect_uri(AnyUrl("http://evil.example/cb"))
 
+    def test_env_token_acts_as_client(self, monkeypatch):
+        from oduflow import oauth_provider as op
+
+        mapping = {"env-secret": ("2", "feature/x"), "tok-a": ("1", None)}
+        monkeypatch.setattr(
+            op.env_tokens,
+            "resolve_token",
+            lambda settings, token: mapping.get(token),
+        )
+        provider = OduflowOAuthProvider(_settings())
+
+        # A per-env token resolves as its own OAuth client.
+        client = _run(provider.get_client("env-secret"))
+        assert client is not None
+        assert client.client_id == "env-secret"
+        assert client.client_secret == "env-secret"
+
+        # Its access token carries the team_id and an env-binding scope.
+        access = _run(provider.verify_token("env-secret"))
+        assert access is not None
+        assert access.client_id == "2"
+        assert access.scopes == ["oduflow_env:feature/x"]
+
+        # Team tokens still resolve via the preseeded path (no env scope).
+        team_access = _run(provider.verify_token("tok-a"))
+        assert team_access is not None
+        assert team_access.client_id == "1"
+        assert team_access.scopes == []
+
     def test_well_known_route_exposed(self):
         provider = OduflowOAuthProvider(_settings())
         routes = provider.get_routes("/mcp")
