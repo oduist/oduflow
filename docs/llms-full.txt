@@ -1334,7 +1334,7 @@ Click the **🔓 Protect** button on any environment card to toggle protection. 
 
 [TOC]
 
-Oduflow can host a **coding agent** for a team: an opt-in feature where the client grows their Odoo by chatting with an AI agent directly from the browser dashboard. Oduflow runs one agent container per team (`oduist/oduflow-coder`, bundling Claude Code + OpenAI Codex) and exposes two front-ends for every environment.
+Oduflow can host a **coding agent** for a team: an opt-in feature where the client grows their Odoo by chatting with an AI agent directly from the browser dashboard. Oduflow runs one agent container per team (`oduist/oduflow-coder`, running Claude Code + OpenAI Codex) and exposes two front-ends for every environment.
 
 It is a **hosting feature, off by default.** A local developer already has the code and their own agents, so it is disabled unless you set `agent_enabled` for the team, and it is **hidden for live-mount (`local_path`) environments** — there is nothing for the containerized agent to clone.
 

@@ -3,7 +3,7 @@
 Oduflow can host a **coding agent** for a team: an opt-in feature where the
 client grows their Odoo by chatting with an AI agent directly from the browser
 dashboard. Oduflow runs one agent container per team
-(`oduist/oduflow-coder`, bundling Claude Code + OpenAI Codex) and exposes two
+(`oduist/oduflow-coder`, running Claude Code + OpenAI Codex) and exposes two
 front-ends for every environment.
 
 !!! note "Hosting feature — off by default"
