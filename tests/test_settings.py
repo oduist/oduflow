@@ -94,6 +94,35 @@ class TestSettings:
         with pytest.raises(ValueError, match="Duplicate auth_token"):
             s.validate()
 
+    def test_routing_tls_default(self):
+        # Traefik terminates TLS by default.
+        assert Settings().routing_tls is True
+
+    def test_routing_tls_from_toml(self, tmp_path):
+        toml = tmp_path / "oduflow.toml"
+        toml.write_text(
+            '[routing]\nmode = "traefik"\ntls = false\n'
+            '[team.1]\nhostname = "dev.example.com"\n'
+        )
+        s = Settings.from_toml(str(toml))
+        assert s.routing_tls is False
+
+    def test_validate_traefik_tls_requires_acme_email(self):
+        # tls = true (default) still requires an ACME e-mail.
+        team = TeamSettings(team_id="1", hostname="dev.example.com")
+        s = Settings(routing_mode="traefik", acme_email="", teams={"1": team})
+        with pytest.raises(ValueError, match="acme_email"):
+            s.validate()
+
+    def test_validate_traefik_no_tls_acme_email_optional(self):
+        # Behind a TLS-terminating upstream (tls = false) ACME is unused, so
+        # acme_email is not required.
+        team = TeamSettings(team_id="1", hostname="dev.example.com")
+        s = Settings(
+            routing_mode="traefik", routing_tls=False, acme_email="", teams={"1": team}
+        )
+        s.validate()
+
 
 class TestOAuthSettings:
     def _team(self, **kw):

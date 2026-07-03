@@ -115,7 +115,8 @@ allow_local_path = true     # allow live-mount (bind local checkout) environment
 # ── Routing ───────────────────────────────────────────
 [routing]
 mode = "port"               # "port" (direct host port) | "traefik" (reverse proxy with auto-HTTPS)
-# acme_email = "admin@example.com"  # required when mode = "traefik"
+# acme_email = "admin@example.com"  # required when mode = "traefik" and tls = true
+# tls = true                # traefik only. false = plain HTTP on :80, no ACME (behind a Cloudflare tunnel / TLS proxy)
 # hostname = "localhost"    # default hostname for teams that don't set their own
 
 # ── OAuth (optional) ──────────────────────────────────
@@ -182,7 +183,8 @@ port_range = [50000, 50100]          # port range for Odoo containers [start, en
 | Key | Default | Description |
 |---|---|---|
 | `[routing].mode` | `port` | `port` — direct host port mapping; `traefik` — reverse proxy with auto-HTTPS |
-| `[routing].acme_email` | *(empty)* | Let's Encrypt email for TLS certificates. Required when `mode = "traefik"` |
+| `[routing].acme_email` | *(empty)* | Let's Encrypt email for TLS certificates. Required when `mode = "traefik"` and `tls = true` |
+| `[routing].tls` | `true` | Traefik only. `true`: Traefik terminates TLS (:443, HTTP→HTTPS redirect, Let's Encrypt). `false`: plain HTTP on :80 only, no redirect/ACME — for a TLS-terminating upstream (e.g. a Cloudflare tunnel). Public URLs stay `https://` either way |
 | `[routing].hostname` | `localhost` | Default hostname for teams that don't set their own `hostname` |
 
 ### OAuth settings

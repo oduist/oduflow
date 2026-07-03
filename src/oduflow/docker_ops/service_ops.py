@@ -109,10 +109,15 @@ def create_service(
             hostname = f"{hostname}.{team.hostname}"
         labels["traefik.enable"] = "true"
         labels[f"traefik.http.routers.{container_name}.rule"] = f"Host(`{hostname}`)"
-        labels[f"traefik.http.routers.{container_name}.entrypoints"] = "websecure"
-        labels[f"traefik.http.routers.{container_name}.tls.certresolver"] = (
-            "letsencrypt"
-        )
+        if settings.routing_tls:
+            labels[f"traefik.http.routers.{container_name}.entrypoints"] = "websecure"
+            labels[f"traefik.http.routers.{container_name}.tls.certresolver"] = (
+                "letsencrypt"
+            )
+        else:
+            # Upstream terminates TLS (e.g. Cloudflare tunnel): plain HTTP on the
+            # web entrypoint. Public URL stays https:// below.
+            labels[f"traefik.http.routers.{container_name}.entrypoints"] = "web"
         if host_mode:
             labels[
                 f"traefik.http.services.{container_name}.loadbalancer.server.url"

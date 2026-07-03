@@ -120,6 +120,45 @@ class TestCreateService:
         )
         # No port mapping in traefik mode
         assert "ports" not in run_kwargs[1]
+        # TLS mode: router uses websecure with Let's Encrypt.
+        assert (
+            labels["traefik.http.routers.oduflow-1-svc-meilisearch.entrypoints"]
+            == "websecure"
+        )
+        assert (
+            labels["traefik.http.routers.oduflow-1-svc-meilisearch.tls.certresolver"]
+            == "letsencrypt"
+        )
+
+    def test_create_traefik_no_tls(self, mock_docker_client):
+        # tls=false (e.g. behind a Cloudflare tunnel): router on the plain-HTTP
+        # web entrypoint, no certresolver — but the public URL stays https://.
+        mock_docker_client.networks.get.return_value = MagicMock()
+        mock_docker_client.containers.get.side_effect = docker.errors.NotFound("nf")
+        mock_docker_client.containers.run.return_value = MagicMock()
+
+        settings = Settings(
+            routing_mode="traefik",
+            routing_tls=False,
+            base_data_dir="/tmp/flow-test",
+            db_user="odoo",
+            db_password="odoo",
+            teams={"1": TRAEFIK_TEAM},
+        )
+        result = service_ops.create_service(
+            settings, TRAEFIK_TEAM, "meilisearch", "getmeili/meilisearch:v1.6", 7700
+        )
+
+        assert result["url"] == "https://meilisearch.example.com"
+        labels = mock_docker_client.containers.run.call_args[1]["labels"]
+        assert (
+            labels["traefik.http.routers.oduflow-1-svc-meilisearch.entrypoints"]
+            == "web"
+        )
+        assert (
+            "traefik.http.routers.oduflow-1-svc-meilisearch.tls.certresolver"
+            not in labels
+        )
 
     def test_create_traefik_custom_hostname(self, mock_docker_client):
         mock_docker_client.networks.get.return_value = MagicMock()
