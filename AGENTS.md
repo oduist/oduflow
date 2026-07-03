@@ -62,7 +62,7 @@ mkdocs gh-deploy --force
 MCP Clients (Cursor, Claude, etc.)
         │ MCP (Streamable HTTP)
         ▼
-   server.py ── FastMCP + CLI entry point (43 tools)
+   server.py ── FastMCP + CLI entry point (MCP tools + CLI)
         │         ├── @handle_errors decorator → ToolError
         │         └── LockManager (per-branch / per-team / system) → BusyError
         ├── web_ui.py ── Starlette dashboard + REST API + Basic auth

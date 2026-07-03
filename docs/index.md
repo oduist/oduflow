@@ -140,6 +140,7 @@ The agent writes code, installs the module, reads the traceback, fixes the error
 
 ### Integration
 - **AI-agent friendly** — the server exposes tools via [Model Context Protocol (MCP)](https://modelcontextprotocol.io/), so LLM-based coding agents (Cursor, Cline, Amp, etc.) can provision and manage Odoo environments programmatically
+- **Hosted coding agent** — an opt-in, per-team AI agent (Claude Code / OpenAI Codex) with a browser **Agent Chat** and **Agent CLI**, driving environments through MCP (see [Coding Agent](agent.md))
 - **Web dashboard** — a built-in HTML dashboard for managing environments from a browser
 - **REST API** — full JSON API for programmatic control from any HTTP client
 - **CLI tools** — every MCP tool can be called directly from the command line via `oduflow call`

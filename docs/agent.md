@@ -1,0 +1,110 @@
+# Coding Agent
+
+Oduflow can host a **coding agent** for a team: an opt-in feature where the
+client grows their Odoo by chatting with an AI agent directly from the browser
+dashboard. Oduflow runs one agent container per team
+(`oduist/oduflow-coder`, bundling Claude Code + OpenAI Codex) and exposes two
+front-ends for every environment.
+
+!!! note "Hosting feature — off by default"
+    The coding agent is for **hosted** deployments. A local developer already
+    has the code and their own agents, so it is disabled unless you set
+    `agent_enabled` for the team. It is also **hidden for live-mount
+    (`local_path`) environments** — there is nothing for the containerized
+    agent to clone.
+
+## Agent CLI vs Agent Chat
+
+Both drive the same agent container over the dashboard's existing
+WebSocket ↔ `docker exec` bridge:
+
+- **Agent CLI** — the agent's own terminal UI (TUI) rendered in the browser,
+  exec'd with a PTY at the environment's git checkout. Full access to the
+  agent's native command-line experience.
+- **Agent Chat** — a structured, framework-free browser chat that speaks the
+  **Agent Client Protocol (ACP)** to the agent's adapter. Each environment has
+  a **durable session** that resumes across reloads; chats minimize to a dock,
+  so several can run in parallel. Assistant messages render as markdown, with
+  collapsible reasoning, tool-call cards, plans, and inline approve/deny
+  prompts for permission requests.
+
+## How it works
+
+The agent never touches host files. It holds one full git checkout per
+environment (at `/workspace/<slug>` in the container), edits its own clone,
+`git push`es, and then drives the environment **only through the Oduflow MCP
+server** (`pull_and_apply`, `run_odoo_tests`, etc.) — the same closed loop a
+remote MCP client uses.
+
+Lifecycle is automatic: the container is created on startup for each enabled
+team and removed for disabled ones; `create_environment` adds the environment's
+checkout, `delete_environment` removes it. The container carries a hash of its
+injected config as a label and is **recreated automatically** when the config
+changes. The only runtime state is a durable ACP-session file in the team's
+data directory.
+
+## Enabling it
+
+Configuration lives entirely in `oduflow.toml` — there is no runtime editing.
+The global `[agent]` section holds deployment-wide settings; per-team
+enablement and credentials live in the `[team.*]` sections:
+
+```toml
+# Deployment-wide (optional)
+[agent]
+image = "oduist/oduflow-coder:latest"
+# claude_model = ""     # optional Claude model override; empty = CLI default
+# codex_model = ""      # optional Codex model override; empty = CLI default
+
+[team.1]
+hostname = "localhost"
+auth_token = "…"
+agent_enabled = true    # turn the coding agent on for this team
+agent_default = "claude"  # "claude" | "codex" — which agent opens by default
+
+# Provider credentials injected into the team's agent container
+[team.1.agent_env]
+CLAUDE_CODE_OAUTH_TOKEN = ""   # Claude subscription token (`claude setup-token`); outranks the API key
+ANTHROPIC_API_KEY = ""         # Claude API key (used when no OAuth token)
+OPENAI_API_KEY = ""            # Codex API key
+```
+
+See the [`[agent]`](installation.md#agent-settings) and
+[per-team](installation.md#per-team-settings) settings tables for the full
+reference.
+
+## Security model
+
+!!! warning "A console/chat is arbitrary code execution"
+    Opening an Agent CLI or Agent Chat is arbitrary code execution **inside the
+    team's agent container**. It is confined to that container, its clones, and
+    the session's scoped MCP token.
+
+- **Per-team isolation.** Each team gets its own agent container, volumes, and
+  network. Cross-team reach is blocked; the dashboard auth middleware resolves
+  the team, so a team can only ever reach its own agent.
+- **Scoped MCP access.** The team `auth_token` never enters the agent
+  container. Each session injects that **environment's** scoped per-environment
+  token, which grants only the dev-loop allowlist on the one environment the
+  session already controls. The agent **cannot** create, delete, or stop
+  environments, or touch templates, services, or volumes — those remain
+  operator actions.
+- **Credentials.** Server-level provider keys are inherited by the container
+  only in single-team deployments; with several teams, each team sets its own
+  keys in `[team.X.agent_env]` so an operator credential never leaks to
+  tenants.
+
+## Limitations
+
+- The agent UI is hidden for live-mount (`local_path`) environments.
+- Environments created before per-environment tokens existed have no scoped
+  token; their consoles warn and the agent works without MCP until the
+  environment is updated/recreated.
+- The Codex ACP adapter has no config-override channel yet, so **Codex *chat*
+  runs without Oduflow MCP** for now (the Codex CLI console is fully wired);
+  Claude is the fully supported path.
+
+The published image redistributes only Apache-2.0 software (Codex CLI + its ACP
+adapter). Claude Code and its adapter are installed at first container start
+onto the persistent home volume — downloaded directly from npm by the end
+user's container.

@@ -108,12 +108,15 @@ hostname = "localhost"
 [server]
 host = "0.0.0.0"           # HTTP server bind address
 port = 8000                 # HTTP server port
+allow_local_path = true     # allow live-mount (bind local checkout) environments
+# allow_insecure_http = false  # serve /mcp over HTTP with NO auth (only behind your own proxy)
 # trace = false             # verbose tracing for git analysis & env ops
 
 # ── Routing ───────────────────────────────────────────
 [routing]
 mode = "port"               # "port" (direct host port) | "traefik" (reverse proxy with auto-HTTPS)
 # acme_email = "admin@example.com"  # required when mode = "traefik"
+# hostname = "localhost"    # default hostname for teams that don't set their own
 
 # ── OAuth (optional) ──────────────────────────────────
 # Set to the public URL of this instance to turn Oduflow into a self-hosted
@@ -125,7 +128,7 @@ mode = "port"               # "port" (direct host port) | "traefik" (reverse pro
 # ── Database ──────────────────────────────────────────
 [database]
 user = "odoo"               # PostgreSQL user for the shared database container
-password = "odoo"           # PostgreSQL password
+password = "odoo"           # PostgreSQL password (auto-generated on first init; set to override)
 image = "postgres:15"       # PostgreSQL Docker image
 
 # ── Storage ───────────────────────────────────────────
@@ -136,7 +139,15 @@ overlay_threshold_mb = 50            # template filestore size threshold (MB) �
 # ── Lifecycle ─────────────────────────────────────────
 [lifecycle]
 auto_stop_hours = 48        # auto-stop environments idle for N hours (no MCP/dashboard work); 0 disables
-auto_delete_hours = 72      # auto-delete environments stopped for N hours; 0 disables (protected envs are exempt)
+auto_delete_hours = 0       # auto-delete environments stopped for N hours; 0 disables (opt-in; DESTRUCTIVE, protected envs exempt)
+
+# ── Coding agent (optional) ───────────────────────────
+# One agent container per team (Claude Code + OpenAI Codex), driven from the
+# dashboard (Agent Chat / Agent CLI). Opt-in per team via agent_enabled below.
+# [agent]
+# image = "oduist/oduflow-coder:latest"
+# claude_model = ""         # optional Claude model override; empty = CLI default
+# codex_model = ""          # optional Codex model override; empty = CLI default
 
 # ── Teams ─────────────────────────────────────────────
 # Each team gets isolated workspaces, templates, credentials, and services.
@@ -147,6 +158,12 @@ hostname = "localhost"               # port mode: http://{hostname}:{port}, trae
 auth_token = ""                      # MCP bearer token (empty = MCP auth disabled)
 ui_password = ""                     # Web UI password (empty = UI auth disabled)
 port_range = [50000, 50100]          # port range for Odoo containers [start, end)
+# agent_enabled = false              # enable the per-team coding agent (Agent Chat / Agent CLI)
+# agent_default = "claude"           # "claude" | "codex" — default agent for consoles/chats
+# [team.1.agent_env]                 # provider credentials injected into the agent container
+# CLAUDE_CODE_OAUTH_TOKEN = ""
+# ANTHROPIC_API_KEY = ""
+# OPENAI_API_KEY = ""
 ```
 
 ### Server settings
@@ -155,6 +172,8 @@ port_range = [50000, 50100]          # port range for Odoo containers [start, en
 |---|---|---|
 | `[server].host` | `0.0.0.0` | HTTP server bind address |
 | `[server].port` | `8000` | HTTP server port |
+| `[server].allow_local_path` | `true` | Allow live-mount (`local_path`) environments that bind-mount a local checkout instead of cloning. Set `false` to force git-clone delivery only |
+| `[server].allow_insecure_http` | `false` | Serve the `/mcp` endpoint over plain HTTP with **no** authentication. Only enable behind your own authenticating proxy |
 | `[server].trace` | `false` | Enable detailed trace logging for git analysis and environment operations |
 | `[server].disable_telemetry` | `false` | Disable anonymous usage telemetry (see [Telemetry](#telemetry)) |
 
@@ -164,6 +183,7 @@ port_range = [50000, 50100]          # port range for Odoo containers [start, en
 |---|---|---|
 | `[routing].mode` | `port` | `port` — direct host port mapping; `traefik` — reverse proxy with auto-HTTPS |
 | `[routing].acme_email` | *(empty)* | Let's Encrypt email for TLS certificates. Required when `mode = "traefik"` |
+| `[routing].hostname` | `localhost` | Default hostname for teams that don't set their own `hostname` |
 
 ### OAuth settings
 
@@ -176,7 +196,7 @@ port_range = [50000, 50100]          # port range for Odoo containers [start, en
 | Key | Default | Description |
 |---|---|---|
 | `[database].user` | `odoo` | PostgreSQL user for the shared database container |
-| `[database].password` | `odoo` | PostgreSQL password |
+| `[database].password` | `odoo` | PostgreSQL password. The bundled config omits it and one is auto-generated on first init; set explicitly to override |
 | `[database].image` | `postgres:15` | PostgreSQL Docker image |
 
 ### Storage settings
@@ -186,7 +206,17 @@ port_range = [50000, 50100]          # port range for Odoo containers [start, en
 | `[storage].data_dir` | `/srv/oduflow` or `~/.oduflow/data` | Base directory for all data. Team data directories are `team_{ID}` subdirectories inside |
 | `[storage].overlay_threshold_mb` | `50` | Template filestore size threshold (MB). Templates smaller than this use a simple copy per environment; larger templates use fuse-overlayfs. The decision is stored in `metadata.json` at template creation time |
 | `[lifecycle].auto_stop_hours` | `48` | Auto-stop environments after N hours without work (env-scoped MCP calls or dashboard actions). `0` disables. Protected environments are exempt |
-| `[lifecycle].auto_delete_hours` | `72` | Auto-delete environments N hours after they stopped (manual stops count). `0` disables. Protected environments are exempt; `pull_and_apply` wakes a stopped environment automatically |
+| `[lifecycle].auto_delete_hours` | `0` | Auto-delete stopped environments N hours after they stopped (manual stops count). Default `0` = **disabled** — auto-delete is opt-in and destructive; set a positive value to enable. Protected environments are exempt; `pull_and_apply` wakes a stopped environment automatically |
+
+### Agent settings
+
+The global `[agent]` section holds deployment-wide settings for the per-team coding agent (see [Coding Agent](agent.md)). Per-team enablement lives in the `[team.*]` sections below.
+
+| Key | Default | Description |
+|---|---|---|
+| `[agent].image` | `oduist/oduflow-coder:latest` | Image for the per-team coding-agent container (Claude Code + OpenAI Codex) |
+| `[agent].claude_model` | *(empty)* | Optional Claude model override for the agent; empty = CLI default |
+| `[agent].codex_model` | *(empty)* | Optional Codex model override for the agent; empty = CLI default |
 
 ### Per-team settings
 
@@ -198,6 +228,9 @@ Each `[team.*]` section defines an isolated team with its own workspaces, templa
 | `auth_token` | *(empty)* | Bearer token for MCP HTTP auth. Empty = MCP auth disabled for this team |
 | `ui_password` | *(empty)* | Password for Web UI Basic auth (user: `admin`). Separate from MCP auth token. Empty = UI auth disabled |
 | `port_range` | `[50000, 50100]` | Port range for Odoo containers `[start, end)` — supports up to 100 concurrent environments |
+| `agent_enabled` | `false` | Enable the per-team coding agent (dashboard Agent Chat / Agent CLI). Off by default |
+| `agent_default` | `claude` | Which agent consoles/chats open by default: `claude` or `codex` |
+| `[team.X.agent_env]` | *(empty)* | Sub-table of environment variables injected into the team's agent container — provider credentials (`CLAUDE_CODE_OAUTH_TOKEN`, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`) and any custom vars |
 
 Team data is stored at `{data_dir}/team_{ID}/`:
 

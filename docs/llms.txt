@@ -52,7 +52,7 @@ mode = "port"                         # "port" | "traefik" (auto-HTTPS)
 
 [database]
 user = "odoo"
-password = "odoo"
+password = "odoo"                     # auto-generated on first init; set to override
 image = "postgres:15"
 
 [storage]
@@ -61,20 +61,27 @@ overlay_threshold_mb = 50             # filestore size threshold for overlay vs 
 
 [lifecycle]
 auto_stop_hours = 48                  # auto-stop after N hours without MCP/dashboard work; 0 disables
-auto_delete_hours = 72                # auto-delete N hours after the environment stopped; 0 disables
+auto_delete_hours = 0                 # auto-delete N hours after stop; 0 disables (opt-in; DESTRUCTIVE)
+
+# Per-team coding agent (dashboard Agent Chat / Agent CLI); opt-in, off by default.
+# [agent]
+# image = "oduist/oduflow-coder:latest"
 
 [team.1]
 hostname = "localhost"
 auth_token = ""                       # MCP bearer token (empty = auth disabled)
 ui_password = ""                      # Web UI password (empty = UI open)
 port_range = [50000, 50100]           # port range for Odoo containers
+# agent_enabled = false               # enable the per-team coding agent (Agent Chat / Agent CLI)
+# agent_default = "claude"            # "claude" | "codex" — default agent for consoles/chats
+# [team.1.agent_env]                  # provider credentials injected into the agent container
+# ANTHROPIC_API_KEY = ""
+# OPENAI_API_KEY = ""
 ```
 
 ### Initialize
 
-```bash
-oduflow init              # Create shared Docker network, PostgreSQL, team directories
-```
+No separate init step is needed. On first launch Oduflow automatically creates a default `oduflow.toml` (if none exists) and initializes shared infrastructure (Docker network, PostgreSQL, team directories). Just start the server (below).
 
 ### Upgrade
 
@@ -140,7 +147,7 @@ For OAuth-based MCP clients like Claude.ai Remote MCP, set `[oauth].oauth_base_u
 - `create_environment` — provision a new Odoo environment for a branch (optional `env_vars` injects container environment variables)
 - `delete_environment` — tear down an environment
 - `start_environment` / `stop_environment` / `restart_environment` — lifecycle control
-- Idle environments auto-stop after 48h without work; stopped ones auto-delete after 72h (configurable via `[lifecycle]`; protected environments are exempt). Container-level tools (pull_and_apply, shell/tests/installs/file ops) wake a stopped environment automatically and note it in the response
+- Idle environments auto-stop after 48h without work (`[lifecycle].auto_stop_hours`). Auto-delete of long-stopped environments is opt-in and off by default (`auto_delete_hours = 0`; set a positive value to enable — destructive; protected environments are exempt). Container-level tools (pull_and_apply, shell/tests/installs/file ops) wake a stopped environment automatically and note it in the response
 - `update_environment` — re-create the container preserving DB and filestore (optional `odoo_image` switches image, `env_vars` replaces container environment variables)
 - `install_odoo_modules` — install Odoo modules
 - `upgrade_odoo_modules` — upgrade Odoo modules
@@ -170,6 +177,10 @@ For OAuth-based MCP clients like Claude.ai Remote MCP, set `[oauth].oauth_base_u
 - `get_agent_instructions` — get AI agent instructions for using Oduflow
 - `get_odoo_development_guide` — get Odoo development standards guide for a specific version (15–19)
 
+## Coding Agent (hosting)
+
+An opt-in, per-team hosting feature: Oduflow runs one coding-agent container per team (`oduist/oduflow-coder`, Claude Code + OpenAI Codex) and exposes two dashboard surfaces — **Agent CLI** (the agent's TUI in the browser) and **Agent Chat** (a browser ACP chat with durable per-environment sessions). The agent edits its own git checkout, `git push`es, and drives the environment only through the Oduflow MCP server with a scoped per-environment token. It is off by default; enable it per team with `agent_enabled` and set provider credentials under `[team.X.agent_env]`. The agent UI is hidden for live-mount (`local_path`) environments.
+
 ## Typical Agent Workflow
 
 1. Call `list_environments` to check if an environment for the branch exists
@@ -182,5 +193,5 @@ For OAuth-based MCP clients like Claude.ai Remote MCP, set `[oauth].oauth_base_u
 
 - Repository: <https://github.com/oduist/oduflow>
 - Documentation: <https://docs.oduflow.dev>
-- License: Polyform Noncommercial 1.0.0
+- License: BUSL-1.1 (Business Source License 1.1) — free for non-commercial use; commercial use requires a paid license; converts to MPL 2.0 four years after publication
 - Website: <https://oduflow.dev>
