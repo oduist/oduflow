@@ -1469,6 +1469,12 @@ def _agent_remove_env(
 
     Best-effort; the container itself keeps running (it serves other envs).
     """
+    # A name that slugifies to nothing would make the checkout dir /workspace/
+    # itself — never rm -rf the shared volume holding every env's checkout.
+    # (clone-env.sh has the matching guard on the create side.)
+    if not slugify_branch(env_name):
+        logger.warning("Agent checkout removal skipped: empty slug for '%s'", env_name)
+        return
     try:
         container = client.containers.get(
             get_agent_container_name(team.team_id, settings.prefix)

@@ -94,6 +94,10 @@ log "base Codex config written (MCP wiring is per session)"
 # present, ANTHROPIC_API_KEY MUST be unset or it wins by precedence. With no
 # credential at all, an interactive `claude` login persists to the home volume.
 if [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
+    # ANTHROPIC_API_KEY is already excluded from the container env by
+    # _agent_env_vars() in env_ops.py; this unset is belt-and-suspenders for
+    # the entrypoint's own shell only (docker exec sessions inherit the
+    # container-level env, which already lacks the key).
     unset ANTHROPIC_API_KEY || true
     log "Claude auth: subscription (CLAUDE_CODE_OAUTH_TOKEN)"
 elif [ -n "${ANTHROPIC_API_KEY:-}" ]; then

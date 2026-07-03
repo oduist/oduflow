@@ -146,6 +146,10 @@
       this._emit('update', params);
     } else if (method === '_chat/error') {
       this._emit('error', (params && params.message) || 'unknown error');
+    } else if (method === '_chat/notice') {
+      // Non-fatal relay-side note (e.g. degraded MCP wiring); rendered as a
+      // system line, the session keeps going.
+      this._emit('notice', (params && params.message) || '');
     }
     // $/ping and anything else: ignore.
   };

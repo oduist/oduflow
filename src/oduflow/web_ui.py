@@ -2333,6 +2333,21 @@ def _build_routes(
             except Exception:
                 pass
 
+        async def _notice(msg: str) -> None:
+            """Non-fatal system line in the chat (unlike _err, keeps going)."""
+            try:
+                await websocket.send_text(
+                    json.dumps(
+                        {
+                            "jsonrpc": "2.0",
+                            "method": "_chat/notice",
+                            "params": {"message": msg},
+                        }
+                    )
+                )
+            except Exception:
+                pass
+
         try:
             import docker as _docker
             from docker.utils.socket import (
@@ -2412,6 +2427,19 @@ def _build_routes(
                 )
             except Exception:
                 mcp_token = None
+            if not mcp_token:
+                await _notice(
+                    "This environment has no scoped MCP token (created before "
+                    "MCP Access existed) — the agent cannot drive it over MCP. "
+                    "Update or recreate the environment."
+                )
+            if agent_type == "codex":
+                await _notice(
+                    "Codex chat cannot reach the Oduflow MCP server yet (its "
+                    "ACP adapter has no configuration channel) — the agent can "
+                    "edit and push code, but use Claude chat or the Agent CLI "
+                    "to drive the environment."
+                )
             exec_env = {
                 "ODUFLOW_MCP_URL": env_ops.get_agent_mcp_url(settings, branch),
                 "ODUFLOW_MCP_TOKEN": mcp_token or "",
