@@ -514,11 +514,18 @@
     padding: 12px 20px; border-bottom: 1px solid var(--border);
   }
   .modal-header h2 { font-size: var(--text-lg); font-weight: 600; }
+  .modal-header-actions { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
   .modal-close {
     background: none; border: none; color: var(--text-dim);
     font-size: var(--text-xl); cursor: pointer; padding: 0 4px;
   }
   .modal-close:hover { color: var(--text); }
+  .modal-min {
+    background: none; border: none; color: var(--text-dim);
+    cursor: pointer; padding: 0 4px; display: inline-flex; align-items: center;
+  }
+  .modal-min:hover { color: var(--text); }
+  .modal-min svg { width: 18px; height: 18px; display: block; }
   .modal-body {
     padding: 16px 20px; overflow-y: auto; flex: 1;
   }
@@ -663,6 +670,29 @@
   }
   .system-bar .sys-label { font-weight: 600; color: var(--text); margin-right: 4px; }
   .system-bar .sys-val { color: var(--text); font-weight: 500; }
+  /* Dock of minimized log/console windows — a taskbar in the system bar. */
+  .min-dock { display: flex; align-items: center; gap: 8px; margin-left: auto; flex-wrap: wrap; }
+  .min-chip {
+    display: inline-flex; align-items: center; max-width: 240px; overflow: hidden;
+    border: 1px solid var(--border); border-radius: 999px; background: var(--surface-raised);
+  }
+  .min-chip:hover { border-color: var(--accent); }
+  .min-chip-main {
+    display: inline-flex; align-items: center; gap: 6px; min-width: 0;
+    padding: 3px 4px 3px 10px; background: none; border: none;
+    color: var(--text-dim); cursor: pointer; font-family: inherit; font-size: var(--text-2xs);
+  }
+  .min-chip-main:hover { color: var(--text); }
+  .min-chip-main svg { width: 14px; height: 14px; flex-shrink: 0; }
+  .min-chip-label {
+    font-family: var(--font-mono); white-space: nowrap; overflow: hidden;
+    text-overflow: ellipsis; max-width: 170px;
+  }
+  .min-chip-close {
+    background: none; border: none; color: var(--text-dim); cursor: pointer;
+    font-size: var(--text-md); line-height: 1; padding: 2px 8px 2px 4px;
+  }
+  .min-chip-close:hover { color: var(--text); }
   .usage-bar {
     display: inline-block;
     width: 64px;
@@ -1148,7 +1178,10 @@
   <div class="modal">
     <div class="modal-header">
       <h2 id="logs-title">Logs</h2>
-      <button class="modal-close" onclick="closeLogsModal()">&times;</button>
+      <div class="modal-header-actions">
+        <button class="modal-min" onclick="minimizePanel('logs-modal')" aria-label="Minimize" title="Minimize"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 18h12"/></svg></button>
+        <button class="modal-close" onclick="closeLogsModal()">&times;</button>
+      </div>
     </div>
     <div class="logs-toolbar">
       <input type="text" id="logs-search" placeholder="Filter logs..." aria-label="Filter log lines" oninput="filterLogs()">
@@ -1180,7 +1213,10 @@
   <div class="modal modal-terminal">
     <div class="modal-header">
       <h2 id="console-title">Console</h2>
-      <button class="modal-close" onclick="closeConsole()">&times;</button>
+      <div class="modal-header-actions">
+        <button class="modal-min" onclick="minimizePanel('console-modal')" aria-label="Minimize" title="Minimize"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 18h12"/></svg></button>
+        <button class="modal-close" onclick="closeConsole()">&times;</button>
+      </div>
     </div>
     <div class="modal-body" style="flex:1; padding:0; overflow:hidden;">
       <div id="console-terminal" style="height:100%;"></div>
@@ -1191,7 +1227,10 @@
   <div class="modal modal-terminal">
     <div class="modal-header">
       <h2 id="sql-title">SQL Console</h2>
-      <button class="modal-close" onclick="closeSqlConsole()">&times;</button>
+      <div class="modal-header-actions">
+        <button class="modal-min" onclick="minimizePanel('sql-modal')" aria-label="Minimize" title="Minimize"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 18h12"/></svg></button>
+        <button class="modal-close" onclick="closeSqlConsole()">&times;</button>
+      </div>
     </div>
     <div class="modal-body" style="flex:1; padding:0; overflow:hidden;">
       <div id="sql-terminal" style="height:100%;"></div>
@@ -1370,6 +1409,7 @@
   <span>CPU: <span class="sys-val" id="sys-cpu">—</span></span>
   <span>RAM: <span class="sys-val" id="sys-ram">—</span></span>
   <span>Load: <span class="sys-val" id="sys-load">—</span></span>
+  <div class="min-dock" id="min-dock" aria-label="Minimized windows"></div>
 </div>
 
 <div class="modal-overlay" id="confirm-modal" onclick="cancelConfirm(event)">
@@ -1565,6 +1605,76 @@ function hideModal(id) {
   var prev = _modalReturnFocus[id];
   delete _modalReturnFocus[id];
   if (prev && document.contains(prev)) prev.focus();
+}
+
+// --- Minimize/restore: dock log & console windows without tearing them down ---
+// Overlays are singletons, so at most one window of each type is minimized.
+// Minimizing only drops the .show class; the WebSocket, xterm buffer and log
+// state stay alive so restoring resumes the exact session.
+var _minimized = {};   // id -> { title, returnFocus }
+var MIN_ICONS = {
+  'console-modal': '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 17l6-6-6-6M12 19h8"/></svg>',
+  'sql-modal': '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v14c0 1.7 3.6 3 8 3s8-1.3 8-3V5M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3"/></svg>',
+  'logs-modal': '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h16M4 12h16M4 18h10"/></svg>'
+};
+
+function renderMinDock() {
+  var dock = document.getElementById('min-dock');
+  if (!dock) return;
+  dock.innerHTML = Object.keys(_minimized).map(function(id) {
+    var m = _minimized[id];
+    var title = esc(m.title);
+    return '<span class="min-chip">' +
+      '<button class="min-chip-main" onclick="restorePanel(\'' + id + '\')" ' +
+        'title="Restore ' + title + '" aria-label="Restore ' + title + '">' +
+        (MIN_ICONS[id] || '') + '<span class="min-chip-label">' + title + '</span></button>' +
+      '<button class="min-chip-close" onclick="closeMinimized(\'' + id + '\')" ' +
+        'aria-label="Close ' + title + '" title="Close">&times;</button>' +
+    '</span>';
+  }).join('');
+}
+
+function _dropChip(id) {
+  if (_minimized[id]) { delete _minimized[id]; renderMinDock(); }
+}
+
+function minimizePanel(id) {
+  var overlay = document.getElementById(id);
+  if (!overlay.classList.contains('show')) return;
+  overlay.classList.remove('show');
+  var t = overlay.querySelector('.modal-header h2');
+  // Carry the launcher across the minimize→restore cycle so closing later
+  // returns focus there, not to <body> (the chip steals focus before restore).
+  var prev = _modalReturnFocus[id];
+  delete _modalReturnFocus[id];
+  _minimized[id] = { title: t ? t.textContent : id, returnFocus: prev };
+  renderMinDock();
+  if (prev && document.contains(prev)) prev.focus();
+}
+
+function restorePanel(id) {
+  var returnFocus = _minimized[id] && _minimized[id].returnFocus;
+  _dropChip(id);
+  showModal(id);
+  // Reinstate the original launcher: showModal just recorded <body> because the
+  // focused dock chip was removed from the DOM before it ran.
+  if (returnFocus && document.contains(returnFocus)) {
+    _modalReturnFocus[id] = returnFocus;
+  }
+  if (id === 'console-modal' && _consoleState.fitAddon && _consoleState.term) {
+    _consoleState.fitAddon.fit();
+    _consoleState.term.focus();
+  } else if (id === 'sql-modal' && _sqlConsoleState.fitAddon && _sqlConsoleState.term) {
+    _sqlConsoleState.fitAddon.fit();
+    _sqlConsoleState.term.focus();
+  } else if (id === 'logs-modal') {
+    document.getElementById('logs-search').focus();
+  }
+}
+
+function closeMinimized(id) {
+  var closer = MODAL_CLOSERS[id];
+  if (closer) closer();   // per-type closer drops the chip and tears down WS/term
 }
 
 document.querySelectorAll('.modal-overlay').forEach(function(overlay) {
@@ -2309,6 +2419,7 @@ async function doProtect(branch, isProtected) {
 var _logsState = { branch: '', lines: [], type: 'env', serviceName: '' };
 
 async function showLogs(branch) {
+  _dropChip('logs-modal');   // reopening replaces any minimized logs window
   _logsState.branch = branch;
   _logsState.lines = [];
   _logsState.type = 'env';
@@ -2446,6 +2557,7 @@ function changeLogLines() { fetchLogs(); }
 
 function closeLogsModal(event) {
   if (event && event.target !== event.currentTarget) return;
+  _dropChip('logs-modal');
   hideModal('logs-modal');
 }
 
@@ -3001,6 +3113,7 @@ async function doDeleteService(name) {
 }
 
 async function showServiceLogs(name) {
+  _dropChip('logs-modal');   // reopening replaces any minimized logs window
   _logsState.branch = '';
   _logsState.lines = [];
   _logsState.type = 'service';
@@ -3958,7 +4071,16 @@ var _XTERM_FONT = '"Geist Mono", Menlo, ui-monospace, monospace';
 
 var _consoleState = { ws: null, term: null, fitAddon: null };
 
+function teardownConsole() {
+  if (_consoleState.ws) { _consoleState.ws.close(); _consoleState.ws = null; }
+  if (_consoleState.term) { _consoleState.term.dispose(); _consoleState.term = null; }
+  _consoleState.fitAddon = null;
+}
+
 async function openConsole(branch) {
+  // Reopening replaces any live/minimized session for this singleton overlay.
+  teardownConsole();
+  _dropChip('console-modal');
   try {
     await ensureXterm();
   } catch (e) {
@@ -4014,15 +4136,23 @@ async function openConsole(branch) {
 
 function closeConsole(event) {
   if (event && event.target !== event.currentTarget) return;
-  if (_consoleState.ws) { _consoleState.ws.close(); _consoleState.ws = null; }
-  if (_consoleState.term) { _consoleState.term.dispose(); _consoleState.term = null; }
-  _consoleState.fitAddon = null;
+  teardownConsole();
+  _dropChip('console-modal');
   hideModal('console-modal');
 }
 
 var _sqlConsoleState = { ws: null, term: null, fitAddon: null };
 
+function teardownSqlConsole() {
+  if (_sqlConsoleState.ws) { _sqlConsoleState.ws.close(); _sqlConsoleState.ws = null; }
+  if (_sqlConsoleState.term) { _sqlConsoleState.term.dispose(); _sqlConsoleState.term = null; }
+  _sqlConsoleState.fitAddon = null;
+}
+
 async function openSqlConsole(branch) {
+  // Reopening replaces any live/minimized session for this singleton overlay.
+  teardownSqlConsole();
+  _dropChip('sql-modal');
   try {
     await ensureXterm();
   } catch (e) {
@@ -4078,9 +4208,8 @@ async function openSqlConsole(branch) {
 
 function closeSqlConsole(event) {
   if (event && event.target !== event.currentTarget) return;
-  if (_sqlConsoleState.ws) { _sqlConsoleState.ws.close(); _sqlConsoleState.ws = null; }
-  if (_sqlConsoleState.term) { _sqlConsoleState.term.dispose(); _sqlConsoleState.term = null; }
-  _sqlConsoleState.fitAddon = null;
+  teardownSqlConsole();
+  _dropChip('sql-modal');
   hideModal('sql-modal');
 }
 
