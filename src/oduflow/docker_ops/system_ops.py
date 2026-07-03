@@ -165,6 +165,9 @@ def _write_traefik_dynamic_config(settings: Settings, config_path: str) -> None:
     # Written to a ``.yml`` file: Traefik's file provider only accepts
     # .toml/.yaml/.yml (it rejects .json), and JSON is a valid subset of YAML,
     # so json.dump output parses fine. Do not switch the extension back to .json.
+    parent = os.path.dirname(config_path)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
     with open(config_path, "w") as f:
         json.dump(config, f, indent=2)
     logger.info("Traefik dynamic config written to %s", config_path)
@@ -182,7 +185,11 @@ def _ensure_traefik(client: DockerClient, settings: Settings) -> None:
         client.volumes.create(settings.traefik_acme_volume, labels=system_labels)
         logger.info("Created volume %s", settings.traefik_acme_volume)
 
-    traefik_config = "/etc/oduflow/traefik.yml"
+    # Host path for the dynamic config, bind-mounted into the container below.
+    # Use the resolved config dir (``/etc/oduflow`` when writable, else
+    # ``~/.oduflow/conf``) so it works without root on macOS and lands under a
+    # path Docker Desktop shares — same placement as postgresql.conf.
+    traefik_config = os.path.join(settings.etc_dir, "traefik.yml")
     _write_traefik_dynamic_config(settings, traefik_config)
 
     try:
