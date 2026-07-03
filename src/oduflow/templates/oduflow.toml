@@ -9,8 +9,16 @@ allow_local_path = true        # allow live-mount (bind local checkout) workflow
 # ── Routing ───────────────────────────────────────────
 [routing]
 mode = "port"                   # "port" | "traefik"
-# acme_email = "admin@example.com"  # required for traefik
+# acme_email = "admin@example.com"  # required for traefik (when tls = true)
 # hostname = "localhost"           # default hostname for teams that don't set their own
+# tls = true                       # traefik only. true: Traefik terminates TLS
+#                                  # (:443, HTTP->HTTPS redirect, Let's Encrypt).
+#                                  # false: plain HTTP on :80 only, no redirect/ACME —
+#                                  # for a TLS-terminating upstream (e.g. Cloudflare
+#                                  # tunnel). Public URLs stay https:// either way.
+#                                  # Deploy-time choice: flipping it on a live server
+#                                  # requires recreating existing environments/services
+#                                  # (their routing labels are fixed at creation).
 
 # ── Database ──────────────────────────────────────────
 [database]

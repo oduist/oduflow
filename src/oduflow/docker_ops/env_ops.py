@@ -783,15 +783,24 @@ def create_environment(
             {
                 "traefik.enable": "true",
                 f"traefik.http.routers.{traefik_router}.rule": f"Host(`{traefik_host}`)",
-                f"traefik.http.routers.{traefik_router}.entrypoints": "websecure",
-                f"traefik.http.routers.{traefik_router}.tls": "true",
-                f"traefik.http.routers.{traefik_router}.tls.certresolver": "letsencrypt",
                 f"traefik.http.services.{traefik_router}.loadbalancer.server.port": "8069",
                 "traefik.docker.network": get_team_network_name(
                     team.team_id, settings.prefix
                 ),
             }
         )
+        if settings.routing_tls:
+            labels.update(
+                {
+                    f"traefik.http.routers.{traefik_router}.entrypoints": "websecure",
+                    f"traefik.http.routers.{traefik_router}.tls": "true",
+                    f"traefik.http.routers.{traefik_router}.tls.certresolver": "letsencrypt",
+                }
+            )
+        else:
+            # Upstream (e.g. Cloudflare tunnel) terminates TLS; Traefik routes
+            # plain HTTP on the web entrypoint. Public URL stays https://.
+            labels[f"traefik.http.routers.{traefik_router}.entrypoints"] = "web"
 
     logger.info(
         "Creating environment",

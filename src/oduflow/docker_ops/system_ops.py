@@ -137,12 +137,21 @@ def _write_traefik_dynamic_config(settings: Settings, config_path: str) -> None:
         if not team.hostname:
             continue
         router_name = f"oduflow-team-{team_id}"
-        routers[router_name] = {
-            "rule": f"Host(`{team.hostname}`)",
-            "service": "oduflow",
-            "entryPoints": ["websecure"],
-            "tls": {"certResolver": "letsencrypt"},
-        }
+        if settings.routing_tls:
+            routers[router_name] = {
+                "rule": f"Host(`{team.hostname}`)",
+                "service": "oduflow",
+                "entryPoints": ["websecure"],
+                "tls": {"certResolver": "letsencrypt"},
+            }
+        else:
+            # Behind an upstream TLS terminator (e.g. Cloudflare tunnel): plain
+            # HTTP on the web entrypoint, no TLS/ACME.
+            routers[router_name] = {
+                "rule": f"Host(`{team.hostname}`)",
+                "service": "oduflow",
+                "entryPoints": ["web"],
+            }
 
     if not routers:
         return
@@ -179,11 +188,13 @@ def _ensure_traefik(client: DockerClient, settings: Settings) -> None:
 
     system_labels = {settings.managed_label: "true", settings.system_label: "true"}
 
-    try:
-        client.volumes.get(settings.traefik_acme_volume)
-    except docker.errors.NotFound:
-        client.volumes.create(settings.traefik_acme_volume, labels=system_labels)
-        logger.info("Created volume %s", settings.traefik_acme_volume)
+    # ACME/Let's Encrypt only when Traefik terminates TLS itself.
+    if settings.routing_tls:
+        try:
+            client.volumes.get(settings.traefik_acme_volume)
+        except docker.errors.NotFound:
+            client.volumes.create(settings.traefik_acme_volume, labels=system_labels)
+            logger.info("Created volume %s", settings.traefik_acme_volume)
 
     # Host path for the dynamic config, bind-mounted into the container below.
     # Use the resolved config dir (``/etc/oduflow`` when writable, else
@@ -194,38 +205,74 @@ def _ensure_traefik(client: DockerClient, settings: Settings) -> None:
 
     try:
         t = client.containers.get(settings.traefik_container)
-        if t.status != "running":
-            t.start()
-        return
+        # Self-correcting drift control: _ensure_traefik never rewrites an
+        # existing container's args, so a flipped routing tls setting would
+        # otherwise be ignored until a manual recreate. The HTTP->HTTPS redirect
+        # arg is present only in TLS mode, so its presence must match
+        # routing_tls; recreate on mismatch (in either direction).
+        cmd = t.attrs.get("Config", {}).get("Cmd") or []
+        has_redirect = any("redirections" in str(arg) for arg in cmd)
+        if has_redirect != settings.routing_tls:
+            logger.info(
+                "Recreating %s: routing tls changed (was tls=%s, now tls=%s)",
+                settings.traefik_container,
+                has_redirect,
+                settings.routing_tls,
+            )
+            t.stop()
+            t.remove()
+        else:
+            if t.status != "running":
+                t.start()
+            return
     except docker.errors.NotFound:
         pass
 
-    client.containers.run(
-        "traefik:v3",
-        name=settings.traefik_container,
-        detach=True,
-        network=settings.shared_network,
-        ports={"80/tcp": 80, "443/tcp": 443},
-        extra_hosts={"host.docker.internal": "host-gateway"},
-        volumes={
-            "/var/run/docker.sock": {"bind": "/var/run/docker.sock", "mode": "ro"},
-            settings.traefik_acme_volume: {"bind": "/acme", "mode": "rw"},
-            traefik_config: {"bind": "/etc/traefik/dynamic/oduflow.yml", "mode": "ro"},
-        },
-        command=[
-            "--log.level=INFO",
-            "--providers.docker=true",
-            "--providers.docker.exposedbydefault=false",
-            "--providers.file.filename=/etc/traefik/dynamic/oduflow.yml",
-            "--providers.file.watch=true",
-            "--entrypoints.web.address=:80",
+    volumes = {
+        "/var/run/docker.sock": {"bind": "/var/run/docker.sock", "mode": "ro"},
+        traefik_config: {"bind": "/etc/traefik/dynamic/oduflow.yml", "mode": "ro"},
+    }
+    command = [
+        "--log.level=INFO",
+        "--providers.docker=true",
+        "--providers.docker.exposedbydefault=false",
+        "--providers.file.filename=/etc/traefik/dynamic/oduflow.yml",
+        "--providers.file.watch=true",
+        "--entrypoints.web.address=:80",
+    ]
+    if settings.routing_tls:
+        ports = {"80/tcp": 80, "443/tcp": 443}
+        volumes[settings.traefik_acme_volume] = {"bind": "/acme", "mode": "rw"}
+        command += [
             "--entrypoints.websecure.address=:443",
             "--entrypoints.web.http.redirections.entryPoint.to=websecure",
             "--entrypoints.web.http.redirections.entryPoint.scheme=https",
             "--certificatesresolvers.letsencrypt.acme.httpchallenge.entrypoint=web",
             f"--certificatesresolvers.letsencrypt.acme.email={settings.acme_email}",
             "--certificatesresolvers.letsencrypt.acme.storage=/acme/acme.json",
-        ],
+        ]
+    else:
+        # Plain HTTP on :80 only — an upstream (e.g. Cloudflare tunnel)
+        # terminates TLS and forwards here over HTTP.
+        ports = {"80/tcp": 80}
+        # Trust the upstream's X-Forwarded-* headers. Without this Traefik
+        # overwrites X-Forwarded-Proto with the actual connection scheme (http
+        # on this entrypoint), so the tunnel's `X-Forwarded-Proto: https` would
+        # be lost and Oduflow would treat the request as insecure (dropping the
+        # cookie Secure flag and generating http:// links). This entrypoint is
+        # only meant to receive traffic from the trusted TLS terminator, so
+        # trusting all forwarded headers here is intended.
+        command.append("--entrypoints.web.forwardedHeaders.insecure=true")
+
+    client.containers.run(
+        "traefik:v3",
+        name=settings.traefik_container,
+        detach=True,
+        network=settings.shared_network,
+        ports=ports,
+        extra_hosts={"host.docker.internal": "host-gateway"},
+        volumes=volumes,
+        command=command,
         labels=system_labels,
         restart_policy={"Name": "unless-stopped"},
     )

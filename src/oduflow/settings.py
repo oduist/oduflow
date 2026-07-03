@@ -127,6 +127,13 @@ class Settings:
     # Routing
     routing_mode: str = "port"
     acme_email: str = ""
+    # Whether Traefik terminates TLS itself. True (default): Traefik listens on
+    # :443, redirects HTTP->HTTPS and obtains Let's Encrypt certificates. False:
+    # Traefik listens on plain HTTP :80 only, no redirect and no ACME — for
+    # running behind a TLS-terminating upstream (e.g. a Cloudflare tunnel) that
+    # already serves HTTPS. Public URLs stay https:// (the upstream provides the
+    # certificate). Ignored in port mode.
+    routing_tls: bool = True
 
     # Database
     db_user: str = "odoo"
@@ -230,9 +237,12 @@ class Settings:
         if self.routing_mode not in ("port", "traefik"):
             raise ValueError("routing_mode must be 'port' or 'traefik'")
 
-        if self.routing_mode == "traefik":
+        if self.routing_mode == "traefik" and self.routing_tls:
             if not self.acme_email:
-                raise ValueError("acme_email must be set when routing_mode=traefik")
+                raise ValueError(
+                    "acme_email must be set when routing_mode=traefik and "
+                    "routing tls is enabled"
+                )
 
         # Validate per-team settings
         for team in self.teams.values():
@@ -381,6 +391,7 @@ class Settings:
             allow_insecure_http=bool(server.get("allow_insecure_http", False)),
             routing_mode=str(routing.get("mode", "port")).strip().lower(),
             acme_email=str(routing.get("acme_email", "")).strip(),
+            routing_tls=bool(routing.get("tls", True)),
             db_user=str(database.get("user", "odoo")),
             db_password=str(database.get("password", "odoo")),
             postgres_image=str(database.get("image", "postgres:15")),
