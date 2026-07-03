@@ -1,10 +1,95 @@
 # Changelog
 
-## Unreleased
+## v1.60.0
+
+### Features
+
+- **Scoped single-environment MCP access** — a new `/mcp/<env>` endpoint exposes only the in-environment dev-loop tools (sync, install/upgrade modules, tests, Odoo shell, SQL, file read/write/search, HTTP request, logs, info, restart) and denies every lifecycle/system tool. Access is isolated by a per-environment token generated at create time and stored in the `oduflow.mcp_token` container label; the Secret Key works as a Bearer token or an OAuth client credential. A dashboard **More → MCP Access** modal surfaces the URL and Secret Key. (#96)
+
+### Dashboard
+
+- **Minimize-to-dock windows** — the Log, Console (Odoo shell) and SQL Console modals gain a minimize button that docks the window as a chip in the system bar. Minimizing only hides the overlay, so the WebSocket, xterm buffer and log state stay alive and restoring resumes the exact session; reopening a window of the same type replaces the docked session without leaking its WebSocket, and focus returns to the launching control across the cycle. (#95)
+
+### Documentation
+
+- **Per-version Odoo development guides (15–19)** — `get_odoo_development_guide` now serves concise, self-contained per-version cheat sheets covering the key conventions and breaking changes for each release, plus a "Migrating a module to this version" block (migration scripts, pre/post split, openupgradelib helpers) for 16–19. Version-boundary facts were verified against `odoo/odoo` 16.0–19.0. (#97)
+
+## v1.59.0
+
+### Features
+
+- **Multi-tenant hosting: hard tenant isolation** — a hosting-grade tenancy pass so environments running arbitrary client code cannot reach across teams. Container names are now team-scoped (`oduflow-{team}-{env}-{type}` and `oduflow-{team}-svc-{name}`); each team gets its own Docker network (only the shared PostgreSQL and Traefik bridge across teams), its own PostgreSQL tablespace (`oduflow_team_{id}`), and default per-container memory/pids limits auto-derived from host size. Odoo-style startup migrations (recorded in `migrations.json`) retrofit existing installs in place — renaming containers, moving tablespaces, and re-homing networks — with no manual steps and a clean resume after a partial run. (#91)
+- **Per-team quotas** — `db_quota_gb` (default 50, 0 = off) caps the combined size of a team's PostgreSQL databases, checked before any operation that creates a new database; `disk_quota_gb` (default 0) is enforced on XFS with project quotas, giving a team's files and its PG tablespace one project ID and a single kernel limit. (#91)
+- **Per-environment usage stats** — environment cards show DB size / disk usage after the CPU/RAM stats with a per-card refresh control, backed by a cached storage-stats subsystem and a `GET /api/usage` + `POST /api/usage/refresh` REST surface that external billing/quota tooling can consume per team. (#91)
+- **Strict HTTP team resolution** — the single-team fallback now applies to stdio only; in HTTP mode an unresolved request is rejected unless `allow_insecure_http` is set, and multi-team HTTP requires an `auth_token` for every team at startup. (#91)
 
 ### Bug Fixes
 
-- **Repo `odoo.conf` changes now actually apply** — a changed `.oduflow/odoo.conf` is now reconstructed (merged `addons_path`, stripped `db_*`) and copied into the container before the restart during `pull_and_apply`. Previously (#69) it only triggered a plain restart, which reused the stale `/etc/odoo/odoo.conf` copy and silently ignored the new config; the regeneration only ever ran on a full `update_environment` recreate.
+- **Review cleanups** — dropped dead team-guard branches now that `team` is a required argument, extracted the duplicated Traefik-label helper to module level, and `fsync` before the atomic storage-cache rename so a crash mid-write cannot leave an empty file. (#93)
+
+## v1.58.0
+
+### Licensing
+
+- **Relicense to Business Source License 1.1** — replaces PolyForm Noncommercial 1.0.0 with BUSL-1.1 (the canonical MariaDB text). The Additional Use Grant keeps production use free forever for non-commercial purposes (evaluation, education, personal projects, non-profits) and defines three commercial tiers — Individual, Business (internal use), and Integrator (Odoo services to third parties) — matching the existing license-key types. Each release converts to MPL 2.0 four years after publication, per standard BSL mechanics. (#90)
+
+## v1.57.0
+
+### Features
+
+- **Neutral dashboard create buttons** — the `.btn-create` primary buttons move from a solid Console Blue fill to the outline treatment (surface fill, hairline border, ink text) that reveals a blue border, text and 10% tint on hover/focus, matching the Sync/Logs actions; weight 600 and the larger radius keep them distinguishable without a resting fill. The destructive confirm keeps its solid red. (#87)
+
+### CI
+
+- **Automatic Docker image publishing** — a new `docker.yml` workflow builds and pushes `oduist/oduflow:<version>` plus `:latest` (linux/amd64 + arm64, via Buildx/QEMU) to Docker Hub on every published GitHub Release — the same trigger as the PyPI publish. The version comes from the release git tag; `latest` is skipped for pre-releases. (#88)
+
+## v1.56.0
+
+### Features
+
+- **Import templates from Odoo.sh** — Odoo.sh blocks `pg_dump` and `/web/database/manager`, so import is inverted: a push-based, resumable shell client (served at `/import-odoo.sh`, launched from the dashboard "Import from Odoo.sh" button) rides the platform's own daily backup, streaming the SQL dump as-is and the filestore tar'd per hash-directory chunk to short-lived (15 min), token-authed ingest endpoints that stage and restore it through the existing template machinery. Resume state is derived from what is already staged on disk, so a fresh token minted after the previous one expired continues the transfer where it stopped. (#85)
+
+### Security
+
+- **Odoo.sh import hardening** — closed an auth-bypass where the public ingest prefix also exposed sibling routes like template deletion; uploads now land in a staging dir (no fake-resume over an existing template, no writes into a mounted overlay lower layer); chunk extraction is atomic (a truncated upload is never treated as finished on resume); and the client resolves http→https redirects up front, streams with `curl -T` instead of buffering whole payloads in RAM, and fails fast on non-JSON responses instead of crashing with a raw traceback. (#89)
+
+### Dashboard
+
+- **Import from Odoo.sh modal** — widened to 80vw, with the input placeholder updated to `oduist-prod`. (#92, #94)
+
+## v1.55.0
+
+### Security
+
+- **Security & bug audit remediation (17 fixes)** — a broad hardening pass across the tenancy and request surfaces: `template_name` is now validated at both the filesystem and PostgreSQL-identifier sinks (blocking path traversal and SQL injection); env DB roles no longer receive cluster-superuser membership (closing a `SET ROLE` → `COPY … TO PROGRAM` RCE) and the post-clone ownership transfer was made comprehensive; reserved `oduflow-*` volumes can no longer be mounted by a service; SSRF guards were added for `import_from_odoo` and git remote URLs; zip-slip/tar extraction is now containment-checked; `get_client` raises a catchable `FlowError` instead of `SystemExit`; the web create handler no longer releases a lock it does not own; and overlapping team port ranges are rejected in `Settings.validate()`, with constant-time secret compares and atomic credential writes. (#82)
+
+### Bug Fixes
+
+- **Destructive auto-delete off by default** — `auto_delete_hours` now defaults to `0` (opt-in) so a stopped environment is never silently deleted; the non-destructive 48h auto-stop stays on, and enabling auto-delete logs a prominent warning naming the consequence and how to disable it. (#82)
+- **`oduflow cleanup --force` actually removes orphans** — `cleanup_orphans` now passes the per-team settings to `_unmount_filestore`, fixing an `AttributeError` that was silently swallowed while the command reported success but removed nothing. (#82)
+
+## v1.54.0
+
+### Bug Fixes
+
+- **Repo `odoo.conf` changes now actually apply** — a changed `.oduflow/odoo.conf` is now reconstructed (merged `addons_path`, stripped `db_*`) and copied into the container before the restart during `pull_and_apply`, in both the restart and upgrade-then-restart paths. Previously (#69) it only triggered a plain restart, which reused the stale `/etc/odoo/odoo.conf` copy and silently ignored the new config; the regeneration only ever ran on a full `update_environment` recreate. (#81)
+
+## v1.53.0
+
+### Features
+
+- **`addons/` sub-directory auto-detected** — when the main repo keeps its modules under a top-level `addons/` directory, the generated `odoo.conf` now points `addons_path` at `/mnt/extra-addons/addons` instead of the repo root. Odoo scans `addons_path` non-recursively, so the root mount alone would miss modules nested under `addons/`; detection is automatic and falls back to `/mnt/extra-addons` otherwise. (#80)
+- **Complete bundled config template** — the shipped `oduflow.toml` now includes every option `Settings.from_toml` reads, adding the `[lifecycle]` section (`auto_stop_hours`, `auto_delete_hours`) and a commented `routing.hostname` fallback, so no knob is left undocumented. (#86)
+
+## v1.52.0
+
+### Dashboard
+
+- **`Created` label for services** — service cards now show a Created timestamp. (#79)
+
+### Documentation
+
+- **Release process** — documented the mandatory GitHub Release step (the event that actually triggers the PyPI and Docker publishes) in `AGENTS.md`.
 
 ## v1.51.0
 
