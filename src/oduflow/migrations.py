@@ -303,6 +303,41 @@ def _migrate_env_resource_limits(settings: Settings) -> None:
                 )
 
 
+def _migrate_traefik_yml_config(settings: Settings) -> None:
+    """Recreate Traefik if it still mounts the old ``.json`` dynamic config.
+
+    Traefik's file provider only accepts ``.toml``/``.yaml``/``.yml`` and
+    rejects ``.json`` ("unsupported file extension"), so the dynamic config is
+    now written to ``oduflow.yml``. ``_ensure_traefik`` early-returns on an
+    existing container and never rewrites its args, so the stale container is
+    removed here (the ACME volume persists → certificates survive) and system
+    init recreates it right after migrations with the corrected ``.yml`` path.
+    Idempotent: once recreated the arg is ``.yml``, so a rerun finds nothing.
+    """
+    import docker
+
+    from oduflow.docker_ops.client import get_client
+
+    if settings.routing_mode != "traefik":
+        return
+
+    client = get_client()
+    old_arg = "--providers.file.filename=/etc/traefik/dynamic/oduflow.json"
+    try:
+        traefik = client.containers.get(settings.traefik_container)
+        cmd = traefik.attrs.get("Config", {}).get("Cmd") or []
+        if any(str(arg) == old_arg for arg in cmd):
+            logger.info(
+                "Removing %s (stale .json dynamic config); system init "
+                "recreates it with oduflow.yml",
+                settings.traefik_container,
+            )
+            traefik.stop()
+            traefik.remove()
+    except docker.errors.NotFound:
+        pass
+
+
 # Append-only registry, executed in list order. Ids are recorded in
 # migrations.json once applied; reordering or renaming entries would re-run
 # or skip steps on existing installs.
@@ -338,6 +373,14 @@ MIGRATIONS: list[Migration] = [
             "containers via docker update"
         ),
         apply=_migrate_env_resource_limits,
+    ),
+    Migration(
+        id="0005-traefik-yml-dynamic-config",
+        description=(
+            "Recreate Traefik if it still mounts the old .json dynamic config "
+            "(file provider rejects .json); init recreates it with oduflow.yml"
+        ),
+        apply=_migrate_traefik_yml_config,
     ),
 ]
 

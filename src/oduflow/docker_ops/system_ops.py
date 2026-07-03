@@ -162,6 +162,9 @@ def _write_traefik_dynamic_config(settings: Settings, config_path: str) -> None:
         }
     }
 
+    # Written to a ``.yml`` file: Traefik's file provider only accepts
+    # .toml/.yaml/.yml (it rejects .json), and JSON is a valid subset of YAML,
+    # so json.dump output parses fine. Do not switch the extension back to .json.
     with open(config_path, "w") as f:
         json.dump(config, f, indent=2)
     logger.info("Traefik dynamic config written to %s", config_path)
@@ -179,7 +182,7 @@ def _ensure_traefik(client: DockerClient, settings: Settings) -> None:
         client.volumes.create(settings.traefik_acme_volume, labels=system_labels)
         logger.info("Created volume %s", settings.traefik_acme_volume)
 
-    traefik_config = "/etc/oduflow/traefik.json"
+    traefik_config = "/etc/oduflow/traefik.yml"
     _write_traefik_dynamic_config(settings, traefik_config)
 
     try:
@@ -200,13 +203,13 @@ def _ensure_traefik(client: DockerClient, settings: Settings) -> None:
         volumes={
             "/var/run/docker.sock": {"bind": "/var/run/docker.sock", "mode": "ro"},
             settings.traefik_acme_volume: {"bind": "/acme", "mode": "rw"},
-            traefik_config: {"bind": "/etc/traefik/dynamic/oduflow.json", "mode": "ro"},
+            traefik_config: {"bind": "/etc/traefik/dynamic/oduflow.yml", "mode": "ro"},
         },
         command=[
             "--log.level=INFO",
             "--providers.docker=true",
             "--providers.docker.exposedbydefault=false",
-            "--providers.file.filename=/etc/traefik/dynamic/oduflow.json",
+            "--providers.file.filename=/etc/traefik/dynamic/oduflow.yml",
             "--providers.file.watch=true",
             "--entrypoints.web.address=:80",
             "--entrypoints.websecure.address=:443",
