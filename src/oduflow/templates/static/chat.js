@@ -432,6 +432,7 @@
       inst.client.on('update', function (p) { handleUpdate(inst, p); });
       inst.client.on('permission', function (p) { renderPermission(inst, p.requestId, p.params); });
       inst.client.on('error', function (msg) { addErrorLine(inst, msg); });
+      inst.client.on('notice', function (msg) { if (msg) addSystemLine(inst, msg); });
       inst.client.on('close', function () { setStatus(inst, 'closed'); setBusy(inst, false); });
       return inst.client.connect().then(function () {
         return inst.client.initialize();
