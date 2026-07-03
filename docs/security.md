@@ -71,6 +71,48 @@ Authorization: Bearer secret-token-team-1
 
 This works whether or not `oauth_base_url` is configured.
 
+## Scoped single-environment access (`/mcp/<env>`)
+
+The team `auth_token` unlocks the **full** tool surface — create, delete, and stop
+environments, manage templates, services, and volumes. To hand an AI agent a
+*confined* handle to one environment only, Oduflow exposes a scoped endpoint:
+
+```
+https://your-server.com/mcp/<env>
+```
+
+On this endpoint only the in-environment tools are available — sync
+(`pull_and_apply`), install/upgrade modules, run tests, open the Odoo shell, run
+SQL, read/write/search files, fetch logs and info, and `restart`. Lifecycle and
+system tools (create/delete/stop/start/recreate, templates, services, volumes,
+listing other environments) are **not exposed and cannot be called**. The
+environment is taken from the URL, so the agent never passes — and cannot
+override — which environment it operates on.
+
+### Per-environment Secret Key
+
+Every environment created after this feature gets its own access token, generated
+at creation time and stored on the container. Use it as a **Bearer token** or as
+an **OAuth** client credential — exactly like a team `auth_token`, but it only
+unlocks its own `/mcp/<env>` endpoint:
+
+```
+Authorization: Bearer <environment-secret-key>
+```
+
+A per-environment token is rejected on the full `/mcp` endpoint and on any other
+environment's URL, so the credential itself is the boundary.
+
+### Getting the URL and Secret Key
+
+In the web dashboard, open an environment's **More → MCP Access**. The dialog
+shows the `/mcp/<env>` URL and the Secret Key (with copy buttons) ready to paste
+into an agent's MCP configuration.
+
+Environments created before this feature carry no Secret Key (Docker labels can't
+be added to a live container); recreate the environment to issue one. Recreating
+an environment also rotates its token.
+
 ## Web Dashboard Auth
 
 The web dashboard and REST API use HTTP Basic authentication with a **separate** password:

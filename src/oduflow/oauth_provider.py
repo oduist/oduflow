@@ -24,6 +24,8 @@ from mcp.shared.auth import (
 )
 from pydantic import AnyUrl
 
+from oduflow import env_tokens
+from oduflow.scoped_access import ENV_SCOPE_PREFIX
 from oduflow.settings import Settings
 
 logger = logging.getLogger("oduflow")
@@ -73,6 +75,7 @@ class OduflowOAuthProvider(InMemoryOAuthProvider):
             raise ValueError("oauth_base_url is required for self-hosted OAuth")
         super().__init__(base_url=settings.oauth_base_url)
 
+        self._settings = settings
         self._token_to_team: dict[str, str] = {}
         placeholder_redirect = AnyUrl("https://claude.ai/")
 
@@ -100,6 +103,56 @@ class OduflowOAuthProvider(InMemoryOAuthProvider):
                 expires_at=None,
             )
 
+    async def _env_identity(self, token: str | None) -> tuple[str, str] | None:
+        """Return ``(team_id, env_name)`` for a valid per-environment token.
+
+        Team tokens are handled by the preseeded clients/access tokens, so they
+        return ``None`` here.
+        """
+        if not token:
+            return None
+        resolved = await env_tokens.resolve_token_async(self._settings, token)
+        if resolved is None:
+            return None
+        team_id, env_name = resolved
+        if env_name is None:
+            return None
+        return (team_id, env_name)
+
+    async def get_client(self, client_id: str) -> OAuthClientInformationFull | None:
+        client = await super().get_client(client_id)
+        if client is not None:
+            return client
+        # A per-environment token acts as its own OAuth client.
+        if await self._env_identity(client_id) is not None:
+            return _FlexibleClient(
+                client_id=client_id,
+                client_secret=client_id,
+                redirect_uris=[AnyUrl("https://claude.ai/")],
+                grant_types=["authorization_code", "refresh_token"],
+                response_types=["code"],
+                token_endpoint_auth_method="client_secret_post",
+                scope=None,
+            )
+        return None
+
+    async def load_access_token(  # type: ignore[override]
+        self, token: str
+    ) -> AccessToken | None:
+        existing = await super().load_access_token(token)
+        if existing is not None:
+            return existing
+        identity = await self._env_identity(token)
+        if identity is None:
+            return None
+        team_id, env_name = identity
+        return AccessToken(
+            token=token,
+            client_id=team_id,
+            scopes=[f"{ENV_SCOPE_PREFIX}{env_name}"],
+            expires_at=None,
+        )
+
     async def register_client(self, client_info: OAuthClientInformationFull) -> None:
         raise ValueError(
             "Dynamic client registration is disabled. "
@@ -114,12 +167,15 @@ class OduflowOAuthProvider(InMemoryOAuthProvider):
         # Single-use code.
         self.auth_codes.pop(authorization_code.code, None)
 
-        if client.client_id is None or client.client_id not in self._token_to_team:
+        cid = client.client_id
+        if cid is None or (
+            cid not in self._token_to_team and await self._env_identity(cid) is None
+        ):
             from mcp.server.auth.provider import TokenError
 
             raise TokenError("invalid_client", "Unknown client.")
 
-        token = client.client_id
+        token = cid
         scope = (
             " ".join(authorization_code.scopes) if authorization_code.scopes else None
         )
@@ -136,14 +192,17 @@ class OduflowOAuthProvider(InMemoryOAuthProvider):
         client: OAuthClientInformationFull,
         refresh_token: str,
     ) -> RefreshToken | None:
+        cid = client.client_id
         if (
-            client.client_id is not None
-            and refresh_token == client.client_id
-            and refresh_token in self._token_to_team
+            cid is not None
+            and refresh_token == cid
+            and (
+                cid in self._token_to_team or await self._env_identity(cid) is not None
+            )
         ):
             return RefreshToken(
                 token=refresh_token,
-                client_id=client.client_id,
+                client_id=cid,
                 scopes=[],
                 expires_at=None,
             )
