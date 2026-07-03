@@ -75,6 +75,7 @@ port_range = [50000, 50100]           # port range for Odoo containers
 # agent_enabled = false               # enable the per-team coding agent (Agent Chat / Agent CLI)
 # agent_default = "claude"            # "claude" | "codex" — default agent for consoles/chats
 # [team.1.agent_env]                  # provider credentials injected into the agent container
+# CLAUDE_CODE_OAUTH_TOKEN = ""
 # ANTHROPIC_API_KEY = ""
 # OPENAI_API_KEY = ""
 ```
