@@ -59,8 +59,8 @@ Quick orientation for an agent about to author or refactor a module on 18.0.
       return super().create(vals_list)
   ```
 
-- **Future-proof the display label.** `_compute_display_name()` already works on 18,
-  so prefer it over `name_get()` to ease the move to 19.
+- **Set the display label via `_compute_display_name()`.** `name_get()` was removed in
+  18, so this is the only mechanism — there is no `name_get()` override to fall back on.
 
 ## Views
 

@@ -8,25 +8,29 @@ Quick orientation for an agent about to author or refactor a module on 19.0.
 
 ## Runtime baseline
 
-- Python **3.12+** (this is a hard jump from 18)
+- Python **3.10–3.14** (minimum is 3.10 — same as 18)
 - PostgreSQL **14+** (15+ recommended)
-- Node **18+** for asset builds
 
-### Python 3.12 fallout
+### If you run on Python 3.12+
+
+19 supports (but does not require) recent Python, so these only bite when the actual
+runtime is 3.12 or newer:
 
 - `datetime.utcnow()` is deprecated. Use `fields.Datetime.now()` for ORM values, or
   `datetime.now(timezone.utc).replace(tzinfo=None)` if you need stdlib.
-- Several stdlib modules were removed and cause **hard import errors** at load — grep
-  the module for them before porting: `distutils`, `cgi`, `imghdr`, `cgitb`,
-  `telnetlib`, `pipes`, `aifc`, `sunau`, `audioop`.
+- Recent Python removed several stdlib modules, which then cause **hard import errors**
+  at load — grep the module for them before porting: `distutils` (gone in 3.12); `cgi`,
+  `cgitb`, `telnetlib`, `pipes`, `aifc`, `sunau`, `audioop` (gone in 3.13).
 
 ## Models / ORM
 
 - **`@api.model_create_multi` is the only accepted `create()` override.** A
   single-dict `@api.model def create(self, vals)` is deprecated and warns.
 
-- **`name_get()` is deprecated → `_compute_display_name()`.** The `@api.depends` is
-  mandatory; without it the label never refreshes:
+- **`name_get()` no longer exists** (removed back in 18) — use
+  **`_compute_display_name()`**. A leftover `name_get()` override is silently ignored,
+  and *calling* `name_get()` raises `AttributeError`. The `@api.depends` is mandatory;
+  without it the label never refreshes:
 
   ```python
   @api.depends("isbn", "title")
@@ -38,20 +42,6 @@ Quick orientation for an agent about to author or refactor a module on 19.0.
 - **Do not declare a `display_name` field.** It is a built-in computed field on
   `models.Model`; re-declaring it conflicts with the ORM (and a previously stored
   column may need dropping in a migration).
-
-- **`read_group()` → `_read_group()`.** Arguments after the domain are keyword-only and
-  the return shape changed from dicts to tuples/recordsets — rewrite the *callers*, not
-  just the name:
-
-  ```python
-  for partner, total in self.env["sale.order"]._read_group(
-      domain=[("state", "=", "sale")],
-      groupby=["partner_id"],
-      aggregates=["amount_total:sum"],
-  ):
-      # partner is a recordset, total is a float
-      ...
-  ```
 
 ## Views
 
@@ -76,13 +66,12 @@ Quick orientation for an agent about to author or refactor a module on 19.0.
 
 | Old | Use instead |
 | --- | --- |
-| `name_get()` override | `_compute_display_name()` (+ `@api.depends`) |
+| `name_get()` (removed in 18) | `_compute_display_name()` (+ `@api.depends`) |
 | explicit `display_name` field | built-in computed field — remove it |
 | `@api.model def create(self, vals)` | `@api.model_create_multi def create(self, vals_list)` |
-| `read_group()` (dict results) | `_read_group()` (tuple results, keyword args) |
 | `<tree>` / `//tree` xpath | `<list>` / `//list` |
 | string domains | list domains |
-| `datetime.utcnow()` | `fields.Datetime.now()` |
+| `datetime.utcnow()` (on Python 3.12+) | `fields.Datetime.now()` |
 
 ## Migrating a module to Odoo 19
 

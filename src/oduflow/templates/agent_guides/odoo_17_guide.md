@@ -31,8 +31,8 @@ The same applies to `readonly` and `required` — set them inline
 
 ### Views
 
-- Prefer the **`<list>`** tag — it is accepted as the alias for `<tree>` from this
-  release on. New views should use `<list>`.
+- The list-view root tag is still **`<tree>`** on 17. The `<tree>` → `<list>` rename
+  lands in 18, so a `<list>` view here fails validation at install — keep `<tree>`.
 
 ### Models / ORM
 
@@ -44,8 +44,10 @@ The same applies to `readonly` and `required` — set them inline
       _rec_names_search = ["title", "isbn"]   # searched automatically
   ```
 
-- `_compute_display_name()` is available and is the direction of travel;
-  `name_get()` still works on 17 but plan to move off it.
+- Control the display label by overriding **`_compute_display_name()`** — on 17 the
+  computation direction reversed. `name_get()` is now only a deprecated shim that
+  returns `display_name`; the core no longer calls it, so overriding `name_get()` has
+  **no effect** on the record's displayed name.
 - Keep using **`@api.model_create_multi`** and the **`Command`** namespace for x2many.
 
 ### JavaScript / OWL

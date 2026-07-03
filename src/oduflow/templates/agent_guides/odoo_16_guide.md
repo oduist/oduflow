@@ -31,8 +31,11 @@ Quick orientation for an agent about to author or refactor a module on 16.0.
 
 ## Watch out for
 
-- Don't introduce 17+ idioms (`<list>`, inline `invisible="..."` replacing `attrs`,
-  `_rec_names_search`).
+- Don't jump ahead to later removals: keep `attrs`/`states` and the `<tree>` tag.
+  Inline `invisible="..."` replaces `attrs` only from 17; `<tree>` becomes `<list>`
+  only from 18.
+- `_rec_names_search` **is** available on 16 — declare it (`_rec_names_search = [...]`)
+  instead of overriding `name_search()`.
 - Keep the manifest `version` in the full `16.0.x.y.z` form.
 
 ## Migrating a module to Odoo 16
