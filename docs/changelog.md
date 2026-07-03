@@ -1,5 +1,17 @@
 # Changelog
 
+## v1.61.0
+
+### Features
+
+- **Per-team coding agent — Agent CLI & Agent Chat** — an opt-in hosting feature that runs one coding-agent container per team (`oduflow-{team}-agent`) on the team's isolated network, with persistent HOME/workspace volumes and one git checkout per environment. The agent drives environments only through the Oduflow MCP server (git push → `pull_and_apply`). Two front-ends ship: **Agent CLI**, the agent's own TUI in xterm.js over a WebSocket ↔ `docker exec` bridge; and **Agent Chat**, a framework-free browser client talking to the agent's ACP adapter, with a durable session per (environment, agent) that resumes via ACP `session/load` and minimizes to a dock so several chats run in parallel. Configured statically in `oduflow.toml` (`agent_enabled`, `agent_default`, `[team.X.agent_env]`); the container carries a config-hash label and is recreated automatically on drift. The agent UI is hidden for live-mount environments. (#99)
+- **Scoped per-environment MCP tokens for agents** — the team `auth_token` never enters the agent container; each console/chat session injects the environment's scoped `/mcp/<env>` token (default-deny dev-loop allowlist) into its own `docker exec` environment via a `${ODUFLOW_MCP_TOKEN}` placeholder, so no secret lands on disk and a leaked session credential grants only the one environment it already controls. (#99)
+- **Coder image (`oduist/oduflow-coder`)** — a new merge-gated `publish-coder.yml` workflow publishes the agent image, which redistributes only Apache-2.0 software (Codex CLI + codex-acp); Claude Code and its ACP adapter are installed at first container start onto the persistent home volume. (#99)
+
+### Bug Fixes
+
+- **Traefik dynamic config now actually loads** — the per-team hostname→dashboard routing config was written as `.json`, which Traefik's file provider rejects ("unsupported file extension"), so it never loaded. It is now written as `oduflow.yml` (JSON is valid YAML, so no new dependency), placed under `etc_dir` (`/etc/oduflow` when writable, else `~/.oduflow/conf`) with the parent directory created first so a first traefik-mode start no longer crashes on macOS. Migration 0005 removes a still-running Traefik container that mounts the old `.json` path (the ACME volume persists, so certificates survive) and system init recreates it with the corrected path. (#98)
+
 ## v1.60.0
 
 ### Features
