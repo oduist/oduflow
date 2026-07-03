@@ -212,3 +212,56 @@ class TestQuotas:
         s = Settings(teams={"1": team})
         with pytest.raises(ValueError, match="quotas must be >= 0"):
             s.validate()
+
+
+class TestAgentSettings:
+    def test_global_defaults(self):
+        s = Settings()
+        assert s.agent_image == "oduist/oduflow-coder:latest"
+        assert s.agent_claude_model == ""
+        assert s.agent_codex_model == ""
+
+    def test_team_defaults_agent_off(self):
+        # The agent is a hosting feature; a team must opt in explicitly.
+        t = TeamSettings(team_id="1")
+        assert t.agent_enabled is False
+        assert t.agent_default == "claude"
+        assert t.agent_env == {}
+
+    def test_from_toml(self, tmp_path):
+        toml = tmp_path / "oduflow.toml"
+        toml.write_text(
+            "[agent]\n"
+            'image = "oduist/oduflow-coder:dev"\n'
+            'claude_model = "claude-sonnet-4-6"\n'
+            "\n"
+            '[team.1]\nhostname = "localhost"\n'
+            "agent_enabled = true\n"
+            'agent_default = "Codex"\n'
+            "[team.1.agent_env]\n"
+            'OPENAI_API_KEY = "sk-oai"\n'
+            "MY_FLAG = 1\n"
+        )
+        s = Settings.from_toml(str(toml))
+        assert s.agent_image == "oduist/oduflow-coder:dev"
+        assert s.agent_claude_model == "claude-sonnet-4-6"
+        assert s.agent_codex_model == ""
+        team = s.teams["1"]
+        assert team.agent_enabled is True
+        assert team.agent_default == "codex"  # normalised to lowercase
+        # Values are coerced to strings (env vars).
+        assert team.agent_env == {"OPENAI_API_KEY": "sk-oai", "MY_FLAG": "1"}
+
+    def test_missing_keys_use_defaults(self, tmp_path):
+        toml = tmp_path / "oduflow.toml"
+        toml.write_text('[team.1]\nhostname = "localhost"\n')
+        s = Settings.from_toml(str(toml))
+        assert s.agent_image == "oduist/oduflow-coder:latest"
+        assert s.teams["1"].agent_enabled is False
+        assert s.teams["1"].agent_env == {}
+
+    def test_agent_env_must_be_table(self, tmp_path):
+        toml = tmp_path / "oduflow.toml"
+        toml.write_text('[team.1]\nhostname = "localhost"\nagent_env = "oops"\n')
+        with pytest.raises(ValueError, match="agent_env must be a table"):
+            Settings.from_toml(str(toml))

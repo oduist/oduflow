@@ -42,6 +42,17 @@ class TeamSettings:
     # on filesystems without project-quota support it stays informational.
     db_quota_gb: int = 50
     disk_quota_gb: int = 0
+    # Coding agent (dashboard "Agent Chat" / "Agent CLI"). Opt-in per team:
+    # it is a hosting feature (clients driving their environments from the
+    # browser); local developers use their own agents, so it defaults to off.
+    # agent_env holds the variables injected into the team's agent container
+    # (provider credentials such as CLAUDE_CODE_OAUTH_TOKEN / OPENAI_API_KEY),
+    # from the [team.X.agent_env] TOML table. Config is the source of truth:
+    # the container is recreated automatically when these change (see
+    # env_ops._ensure_agent_container). See specs/0029-agent-console-and-chat.md.
+    agent_enabled: bool = False
+    agent_default: str = "claude"  # which agent consoles/chats open by default
+    agent_env: dict[str, str] = field(default_factory=dict)
 
     @property
     def workspaces_dir(self) -> str:
@@ -125,6 +136,17 @@ class Settings:
     # Storage
     base_data_dir: str = ""
     overlay_threshold_mb: int = 50
+
+    # Coding agent — deployment-wide bits only; enabling the agent and its
+    # credentials are per team (TeamSettings.agent_*). When enabled for a team,
+    # a single agent container (Claude Code + OpenAI Codex) serves all of its
+    # environments: one git checkout per environment on a persistent volume,
+    # driving environments only through the Oduflow MCP server. Container and
+    # volume names are derived per team in naming.py.
+    # See specs/0029-agent-console-and-chat.md.
+    agent_image: str = "oduist/oduflow-coder:latest"
+    agent_claude_model: str = ""  # optional; empty = CLI default
+    agent_codex_model: str = ""  # optional; empty = CLI default
 
     # Lifecycle: automatic stop of idle environments and cleanup of stopped
     # ones (see oduflow.reaper). 0 disables either behavior. Protected
@@ -278,6 +300,7 @@ class Settings:
         database = raw.get("database", {})
         storage = raw.get("storage", {})
         lifecycle = raw.get("lifecycle", {})
+        agent = raw.get("agent", {})
         oauth = raw.get("oauth", server)  # [oauth] section or fall back to [server]
 
         etc_dir = _resolve_etc_dir()
@@ -318,6 +341,13 @@ class Settings:
             )
             hostname = re.sub(r"^https?://", "", raw_hostname).strip()
 
+            agent_env_raw = team_cfg.get("agent_env", {})
+            if not isinstance(agent_env_raw, dict):
+                raise ValueError(
+                    f"Team '{team_id}': agent_env must be a table "
+                    f"([team.{team_id}.agent_env]), got {agent_env_raw!r}"
+                )
+
             teams[team_id] = TeamSettings(
                 team_id=team_id,
                 hostname=hostname,
@@ -329,6 +359,12 @@ class Settings:
                 port_registry_path=os.path.join(team_data_dir, "ports.json"),
                 db_quota_gb=int(team_cfg.get("db_quota_gb", 50)),
                 disk_quota_gb=int(team_cfg.get("disk_quota_gb", 0)),
+                agent_enabled=bool(team_cfg.get("agent_enabled", False)),
+                agent_default=str(team_cfg.get("agent_default", "claude"))
+                .strip()
+                .lower()
+                or "claude",
+                agent_env={str(k): str(v) for k, v in agent_env_raw.items()},
             )
 
         trace = bool(server.get("trace", False))
@@ -350,6 +386,10 @@ class Settings:
             postgres_image=str(database.get("image", "postgres:15")),
             base_data_dir=base_data_dir,
             overlay_threshold_mb=int(storage.get("overlay_threshold_mb", 50)),
+            agent_image=str(agent.get("image", "oduist/oduflow-coder:latest")).strip()
+            or "oduist/oduflow-coder:latest",
+            agent_claude_model=str(agent.get("claude_model", "")).strip(),
+            agent_codex_model=str(agent.get("codex_model", "")).strip(),
             auto_stop_hours=int(lifecycle.get("auto_stop_hours", 48)),
             auto_delete_hours=int(lifecycle.get("auto_delete_hours", 0)),
             oauth_base_url=str(oauth.get("oauth_base_url", "")).strip(),
