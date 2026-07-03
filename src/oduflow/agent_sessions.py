@@ -54,13 +54,12 @@ def _save(team: TeamSettings, data: dict[str, dict[str, str]]) -> None:
     os.makedirs(team.data_dir, exist_ok=True)
     path = _path(team)
     tmp = f"{path}.tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
+    # 0o600 from birth: os.replace carries the tmp file's mode over, so the
+    # session ids are never readable beyond the owner, even briefly.
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2, sort_keys=True)
     os.replace(tmp, path)
-    try:
-        os.chmod(path, 0o600)
-    except OSError:
-        pass
 
 
 def get_session(team: TeamSettings, branch: str, agent_type: str) -> str | None:

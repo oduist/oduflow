@@ -1744,3 +1744,16 @@ class TestAgentContainer:
 
         cmd = agent.exec_run.call_args.args[0]
         assert cmd[1] == ""  # no repo URL for live-mount envs
+
+    def test_remove_env_guards_empty_slug(self, mock_docker_client):
+        # "..." slugifies to "" -> checkout dir would be /workspace/ itself;
+        # the removal must refuse rather than rm -rf the whole shared volume.
+        team = self._team()
+        agent = MagicMock()
+        mock_docker_client.containers.get.return_value = agent
+
+        env_ops._agent_remove_env(
+            mock_docker_client, self._settings(team=team), team, "..."
+        )
+
+        agent.exec_run.assert_not_called()
