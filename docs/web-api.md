@@ -18,6 +18,7 @@ When running in HTTP mode, a web dashboard is available at the server root (`htt
 - **Git credential management** — list, add, delete, and validate stored git credentials
 - **Template listing** — view available template profiles with their status
 - **License management** — view current license and activate license keys
+- **Coding agent** (opt-in, per team) — **Agent CLI** (the agent's terminal in the browser) and **Agent Chat** (a structured ACP chat) for each environment, when `agent_enabled` is set for the team. Hidden for live-mount (`local_path`) environments. See [Coding Agent](agent.md)
 
 ## REST API Endpoints
 
@@ -103,3 +104,13 @@ All endpoints return JSON with an `ok` field. Authentication via HTTP Basic auth
 |---|---|---|
 | `GET` | `/api/agent-guides` | List all available agent guides |
 | `GET` | `/api/agent-guides/{filename}` | Get content of a specific agent guide |
+
+### Coding Agent
+
+The per-team coding agent (see [Coding Agent](agent.md)) exposes one status endpoint and two WebSocket surfaces. Available only when `agent_enabled` is set for the team.
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `GET` | `/api/agent` | Whether the coding agent is enabled for the team and its default type (`claude` / `codex`) |
+| `WebSocket` | `/api/environments/{branch}/agent` | **Agent CLI** — the agent's interactive TUI, bridged from a PTY `docker exec` in the team's agent container (used by the dashboard console) |
+| `WebSocket` | `/api/environments/{branch}/agent-acp` | **Agent Chat** — a line-framed relay to the agent's ACP adapter (`claude-code-acp` / `codex-acp`), rendered by the browser chat client with durable per-environment sessions |

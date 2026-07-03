@@ -101,6 +101,7 @@ For full documentation, visit **[oduflow.dev](https://oduflow.dev)** or see the 
 - [Use Cases & Workflows](docs/use-cases.md)
 - [Template Management](docs/templates.md)
 - [Environment Management](docs/environments.md)
+- [Coding Agent](docs/agent.md)
 - [Auxiliary Services](docs/services.md)
 - [Extra Addons Repositories](docs/extra-addons.md)
 - [Web Dashboard & REST API](docs/web-api.md)

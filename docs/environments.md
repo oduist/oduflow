@@ -222,7 +222,7 @@ Configure (or disable with `0`) in `oduflow.toml`:
 ```toml
 [lifecycle]
 auto_stop_hours = 48    # stop after N hours without work; 0 disables
-auto_delete_hours = 72  # delete N hours after the environment stopped; 0 disables
+auto_delete_hours = 0   # delete N hours after stop; 0 disables (opt-in; DESTRUCTIVE)
 ```
 
 ## Viewing Logs

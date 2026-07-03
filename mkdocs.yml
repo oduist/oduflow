@@ -92,6 +92,7 @@ nav:
       - Use Cases & Workflows: use-cases.md
       - Template Management: templates.md
       - Environment Management: environments.md
+      - Coding Agent: agent.md
       - Auxiliary Services: services.md
       - Extra Addons Repositories: extra-addons.md
   - Reference:

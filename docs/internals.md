@@ -92,7 +92,7 @@ src/oduflow/
     stats.py            # Container and system CPU/RAM stats (parallel collection)
 
   templates/
-    oduflow.toml          # Default TOML configuration (copied on first `oduflow init`)
+    oduflow.toml          # Default TOML configuration (copied on first startup)
     odoo.conf             # Odoo configuration template (addons path, limits, security)
     postgresql.conf       # PostgreSQL tuning (shared_buffers, WAL, autovacuum, etc.)
     dashboard.html        # Web dashboard UI (single-page application)
