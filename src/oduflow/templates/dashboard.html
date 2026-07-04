@@ -3866,13 +3866,18 @@ async function loadLicense() {
       badge.title = 'Click to activate a license';
       if (badge.dataset.alertPlayed !== 'true') {
         badge.dataset.alertPlayed = 'true';
-        void badge.offsetWidth;                 // reflow — guarantee the animation starts
-        badge.classList.add('license-alert');
-        badge.addEventListener('animationend', function onEnd(e) {
-          if (e.animationName !== 'license-alert-flash') return;  // the longer of the two
-          badge.classList.remove('license-alert');
-          badge.removeEventListener('animationend', onEnd);
-        }, false);
+        // Under reduced motion the CSS sets animation:none, so animationend would
+        // never fire — skip the class/listener entirely to keep the lifecycle tight.
+        var reduceMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+        if (!reduceMotion) {
+          void badge.offsetWidth;                 // reflow — guarantee the animation starts
+          badge.classList.add('license-alert');
+          badge.addEventListener('animationend', function onEnd(e) {
+            if (e.animationName !== 'license-alert-flash') return;  // canonical: both are 1.1s; pick one to trigger cleanup
+            badge.classList.remove('license-alert');
+            badge.removeEventListener('animationend', onEnd);
+          }, false);
+        }
       }
     } else {
       badge.style.cursor = 'default';
