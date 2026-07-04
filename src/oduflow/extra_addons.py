@@ -5,6 +5,7 @@ import os
 import re
 import shutil
 import subprocess
+import tempfile
 
 from oduflow.docker_ops.client import get_client
 from oduflow.errors import (
@@ -96,6 +97,112 @@ def clone_extra_repo(
     return {"name": name, "repo_url": repo_url, "path": target}
 
 
+def create_local_repo(
+    team: TeamSettings, name: str, source_dir: str, branch: str
+) -> dict:
+    """Create an extra-addons repo from local files, with no remote origin.
+
+    Used by the Odoo.sh import for addons that cannot be cloned (Enterprise,
+    Themes, private extra repos): the uploaded directory is seeded into a real
+    bare git repo with a single *branch*, so the normal worktree / mount /
+    pull_and_apply machinery works unchanged. A ``.local`` marker file records
+    that the repo has no origin; :func:`fetch_extra_repo` short-circuits on it,
+    so worktree creation and pulls never attempt a (non-existent) fetch.
+    """
+    if not _NAME_RE.match(name):
+        raise ValueError(
+            f"Invalid repo name '{name}': only [a-zA-Z0-9_-] allowed, "
+            "no dots or slashes, max 63 chars."
+        )
+    if not branch:
+        raise ValueError("A branch name is required for a local extra repo.")
+
+    target = os.path.join(team.shared_repos_dir, name)
+    if os.path.exists(target):
+        raise ConflictError(f"Extra repo '{name}' already exists at {target}")
+
+    os.makedirs(team.shared_repos_dir, exist_ok=True)
+
+    # A clean environment has no git identity configured, so the seed commit
+    # would fail — supply one explicitly for this operation only.
+    seed_env = {
+        **GIT_ENV,
+        "GIT_AUTHOR_NAME": "Oduflow",
+        "GIT_AUTHOR_EMAIL": "import@oduflow.local",
+        "GIT_COMMITTER_NAME": "Oduflow",
+        "GIT_COMMITTER_EMAIL": "import@oduflow.local",
+    }
+
+    def _git(args: list[str], timeout: int = 300) -> None:
+        subprocess.run(
+            args,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            env=seed_env,
+        )
+
+    tmp = tempfile.mkdtemp(prefix="oduflow-localrepo-")
+    try:
+        _git(["git", "init", "--bare", target], timeout=30)
+        _git(["git", "-C", tmp, "init"], timeout=30)
+        # Copy the source tree in, skipping any stray VCS metadata (Odoo.sh
+        # worktrees leave a .git gitdir pointer; the tar upload excludes it, but
+        # be defensive here too).
+        for entry in os.listdir(source_dir):
+            if entry == ".git":
+                continue
+            src = os.path.join(source_dir, entry)
+            dst = os.path.join(tmp, entry)
+            if os.path.isdir(src):
+                shutil.copytree(src, dst, symlinks=True)
+            else:
+                shutil.copy2(src, dst)
+        _git(["git", "-C", tmp, "add", "-A"], timeout=120)
+        _git(
+            [
+                "git",
+                "-C",
+                tmp,
+                "commit",
+                "--allow-empty",
+                "-m",
+                "Imported from Odoo.sh",
+            ],
+            timeout=120,
+        )
+        _git(["git", "-C", tmp, "branch", "-M", branch], timeout=30)
+        _git(["git", "-C", tmp, "push", target, f"{branch}:{branch}"], timeout=300)
+    except subprocess.CalledProcessError as e:
+        shutil.rmtree(target, ignore_errors=True)
+        raise ExternalCommandError(
+            "git (create local repo)", e.returncode, e.stderr or ""
+        )
+    except subprocess.TimeoutExpired:
+        shutil.rmtree(target, ignore_errors=True)
+        raise ExternalCommandError("git (create local repo)", -1, "Seed timed out.")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+    # Mark as local (no origin) — the marker is what fetch_extra_repo keys on.
+    open(os.path.join(target, ".local"), "w").close()
+
+    logger.info("Created local extra repo '%s' (branch '%s')", name, branch)
+    return {
+        "name": name,
+        "repo_url": "",
+        "path": target,
+        "local": True,
+        "branch": branch,
+    }
+
+
+def is_local_repo(team: TeamSettings, name: str) -> bool:
+    """True if the extra repo is a remote-less local repo (Odoo.sh import)."""
+    return os.path.exists(os.path.join(team.shared_repos_dir, name, ".local"))
+
+
 def list_extra_repos(team: TeamSettings) -> list[dict]:
     repos_dir = team.shared_repos_dir
     if not os.path.isdir(repos_dir):
@@ -131,12 +238,14 @@ def list_extra_repos(team: TeamSettings) -> list[dict]:
             branches = []
 
         protected = os.path.exists(os.path.join(path, ".protected"))
+        local = os.path.exists(os.path.join(path, ".local"))
         result.append(
             {
                 "name": entry,
                 "repo_url": sanitize_repo_url(url),
                 "branches": branches,
                 "protected": protected,
+                "local": local,
             }
         )
 
@@ -247,6 +356,19 @@ def fetch_extra_repo(team: TeamSettings, name: str) -> dict:
     path = os.path.join(team.shared_repos_dir, name)
     if not os.path.isdir(path):
         raise NotFoundError(f"Extra repo '{name}' not found.")
+
+    # Local (remote-less) repos have no origin to fetch from. Short-circuit so
+    # every caller — create_worktree, pull_extra_worktree, the pull REST/MCP
+    # path — treats them as always up to date instead of failing on git fetch.
+    if os.path.exists(os.path.join(path, ".local")):
+        return {
+            "name": name,
+            "local": True,
+            "up_to_date": True,
+            "new_branches": [],
+            "deleted_branches": [],
+            "updated_branches": [],
+        }
 
     # Ensure fetch refspec is configured (bare repos created before the fix lack it)
     try:

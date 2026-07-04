@@ -77,6 +77,8 @@ _PUBLIC_PATHS = frozenset(
         "/api/templates/import/manifest",
         "/api/templates/import/dump",
         "/api/templates/import/filestore",
+        "/api/templates/import/addon",
+        "/api/templates/import/addon-remote",
         "/api/templates/import/finalize",
     }
 )
@@ -924,6 +926,37 @@ def _build_routes(
         finally:
             locks.release_team(team.team_id)
 
+    async def api_template_rename(request: Request) -> JSONResponse:
+        name = request.path_params["name"]
+        team = _get_ui_team(request)
+        try:
+            body = await request.json()
+        except ValueError:
+            return JSONResponse(
+                {"ok": False, "error": "Invalid JSON body"}, status_code=400
+            )
+        new_name = str((body or {}).get("new_name") or "").strip()
+        if not new_name:
+            return JSONResponse(
+                {"ok": False, "error": "new_name is required"}, status_code=400
+            )
+        try:
+            locks.acquire_team(team.team_id)
+        except BusyError as e:
+            return _error_response(e)
+        try:
+            result = system_ops.rename_template(get_settings(), team, name, new_name)
+            return JSONResponse({"ok": True, "result": result})
+        except ValueError as e:  # invalid template name
+            return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
+        except FlowError as e:
+            return _error_response(e)
+        except Exception as e:
+            logger.exception("Unexpected error in api_template_rename")
+            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+        finally:
+            locks.release_team(team.team_id)
+
     # --- Import from Odoo.sh (push-based template ingest) ------------------
 
     def _import_token_value(request: Request) -> str:
@@ -960,10 +993,37 @@ def _build_routes(
                     re.fullmatch(r"[0-9a-f]{2}", entry) or entry == "checklist"
                 ) and os.path.isdir(os.path.join(fs_dir, entry)):
                     chunks.append(entry)
+        # File-backed addons (Enterprise/Themes/private extras): a dir under
+        # addons/ appears only after its tar fully extracted (extract_addon_dir).
+        addons_dir = os.path.join(staging, "addons")
+        addons: list[str] = []
+        if os.path.isdir(addons_dir):
+            for entry in os.listdir(addons_dir):
+                if not entry.startswith(".") and os.path.isdir(
+                    os.path.join(addons_dir, entry)
+                ):
+                    addons.append(entry)
+        # Remote addons (cloned server-side) are announced in addons.json only.
+        remote_addons: list[str] = []
+        addons_manifest = os.path.join(staging, "addons.json")
+        if os.path.isfile(addons_manifest):
+            try:
+                with open(addons_manifest) as f:
+                    for e in json.load(f):
+                        if (
+                            isinstance(e, dict)
+                            and e.get("kind") == "remote"
+                            and e.get("name")
+                        ):
+                            remote_addons.append(str(e["name"]))
+            except (OSError, ValueError):
+                pass
         return {
             "manifest": manifest,
             "dump": dump,
             "filestore_chunks": sorted(chunks),
+            "addons": sorted(addons),
+            "remote_addons": sorted(set(remote_addons)),
         }
 
     def import_odoo_script(request: Request) -> Response:
@@ -975,12 +1035,19 @@ def _build_routes(
         )
 
     async def api_import_token(request: Request) -> JSONResponse:
-        """Mint a short-lived import token for a target template (UI-authed)."""
+        """Mint a short-lived import token for a target template (UI-authed).
+
+        Optional booleans ``with_enterprise`` / ``with_themes`` /
+        ``with_extra_addons`` append the matching ``--with-*`` flags to the
+        returned command so the checkboxes in the import dialog drive what the
+        Odoo.sh client downloads.
+        """
         team = _get_ui_team(request)
+        with_flags: list[str] = []
         try:
             body = await request.body()
-            data = json.loads(body or b"{}")
-            template_name = str((data or {}).get("template_name") or "").strip()
+            data = json.loads(body or b"{}") or {}
+            template_name = str(data.get("template_name") or "").strip()
             if not template_name:
                 return JSONResponse(
                     {"ok": False, "error": "template_name is required"},
@@ -989,6 +1056,12 @@ def _build_routes(
             from oduflow.naming import validate_template_name
 
             validate_template_name(template_name)
+            if data.get("with_enterprise"):
+                with_flags.append("--with-enterprise")
+            if data.get("with_themes"):
+                with_flags.append("--with-themes")
+            if data.get("with_extra_addons"):
+                with_flags.append("--with-extra-addons")
             record = import_tokens.create_token(team, template_name)
         except ValueError as e:
             return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
@@ -1006,6 +1079,8 @@ def _build_routes(
             f"curl -sSfL {base}/import-odoo.sh | bash -s -- "
             f"--server {base} --token {record['token']}"
         )
+        if with_flags:
+            command += " " + " ".join(with_flags)
         return JSONResponse(
             {
                 "ok": True,
@@ -1128,6 +1203,125 @@ def _build_routes(
         finally:
             if os.path.exists(tmp_tar):
                 os.remove(tmp_tar)
+        return JSONResponse({"ok": True})
+
+    _ADDON_NAME_RE = re.compile(r"^[a-zA-Z0-9_-]{1,63}$")
+
+    def _record_import_addon(
+        team: TeamSettings, template_name: str, entry: dict[str, object]
+    ) -> None:
+        """Append/replace an addon descriptor in the staging addons.json.
+
+        Keyed by name so a resumed upload updates rather than duplicates.
+        """
+        staging = team.get_import_staging_dir(template_name)  # validates name
+        os.makedirs(staging, exist_ok=True)
+        path = os.path.join(staging, "addons.json")
+        entries: list = []
+        if os.path.isfile(path):
+            try:
+                with open(path) as f:
+                    loaded = json.load(f)
+                if isinstance(loaded, list):
+                    entries = [
+                        e
+                        for e in loaded
+                        if isinstance(e, dict) and e.get("name") != entry["name"]
+                    ]
+            except (OSError, ValueError):
+                entries = []
+        entries.append(entry)
+        with open(path, "w") as f:
+            json.dump(entries, f, indent=2)
+
+    async def api_import_addon(request: Request) -> JSONResponse:
+        """Receive one addon directory (tar stream) that becomes a local
+        (remote-less) extra-addons repo — Enterprise, Themes or a private extra
+        repo that cannot be cloned."""
+        try:
+            team, record = _resolve_import_token(request)
+        except FlowError as e:
+            return _error_response(e)
+        name = request.query_params.get("name", "").strip()
+        if not _ADDON_NAME_RE.match(name):
+            return JSONResponse(
+                {"ok": False, "error": f"Invalid addon name '{name}'"},
+                status_code=400,
+            )
+        branch = request.query_params.get("branch", "").strip()
+        category = request.query_params.get("category", "").strip()
+        template_name = str(record["template_name"])
+        try:
+            staging = team.get_import_staging_dir(template_name)
+        except ValueError as e:
+            return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
+        addons_dir = os.path.join(staging, "addons")
+        os.makedirs(staging, exist_ok=True)
+        tmp_tar = os.path.join(staging, f".addon_{name}.tar")
+        try:
+            with open(tmp_tar, "wb") as f:
+                async for data in request.stream():
+                    f.write(data)
+            system_ops.extract_addon_dir(tmp_tar, addons_dir, name)
+            _record_import_addon(
+                team,
+                template_name,
+                {
+                    "name": name,
+                    "kind": "local",
+                    "branch": branch,
+                    "origin_url": "",
+                    "category": category,
+                },
+            )
+        except Exception as e:
+            logger.exception("Failed to receive addon %s for %s", name, template_name)
+            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+        finally:
+            if os.path.exists(tmp_tar):
+                os.remove(tmp_tar)
+        return JSONResponse({"ok": True})
+
+    async def api_import_addon_remote(request: Request) -> JSONResponse:
+        """Announce a reachable extra repo (no files uploaded) — it is cloned
+        from its origin at finalize so it stays updatable via Oduflow."""
+        try:
+            team, record = _resolve_import_token(request)
+        except FlowError as e:
+            return _error_response(e)
+        try:
+            body = await request.json()
+        except ValueError:
+            return JSONResponse(
+                {"ok": False, "error": "Invalid JSON body"}, status_code=400
+            )
+        name = str((body or {}).get("name") or "").strip()
+        if not _ADDON_NAME_RE.match(name):
+            return JSONResponse(
+                {"ok": False, "error": f"Invalid addon name '{name}'"},
+                status_code=400,
+            )
+        origin_url = str((body or {}).get("origin_url") or "").strip()
+        if not origin_url:
+            return JSONResponse(
+                {"ok": False, "error": "origin_url is required"}, status_code=400
+            )
+        branch = str((body or {}).get("branch") or "").strip()
+        template_name = str(record["template_name"])
+        try:
+            _record_import_addon(
+                team,
+                template_name,
+                {
+                    "name": name,
+                    "kind": "remote",
+                    "branch": branch,
+                    "origin_url": origin_url,
+                    "category": "extra",
+                },
+            )
+        except ValueError as e:  # invalid template name
+            return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
         return JSONResponse({"ok": True})
 
     def api_import_finalize(request: Request) -> JSONResponse:
@@ -2575,8 +2769,15 @@ def _build_routes(
         Route(
             "/api/templates/import/filestore", api_import_filestore, methods=["POST"]
         ),
+        Route("/api/templates/import/addon", api_import_addon, methods=["POST"]),
+        Route(
+            "/api/templates/import/addon-remote",
+            api_import_addon_remote,
+            methods=["POST"],
+        ),
         Route("/api/templates/import/finalize", api_import_finalize, methods=["POST"]),
         Route("/api/templates/{name}/delete", api_template_delete, methods=["POST"]),
+        Route("/api/templates/{name}/rename", api_template_rename, methods=["POST"]),
         Route("/api/environments", api_list, methods=["GET"]),
         Route("/api/environments/create", api_create, methods=["POST"]),
         Route("/api/stats", api_stats, methods=["GET"]),

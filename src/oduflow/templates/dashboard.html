@@ -1527,6 +1527,29 @@
           <input type="text" id="import-tpl-name" placeholder="e.g. oduist-prod">
           <div class="hint">Restores an Odoo.sh daily backup (database + filestore) into a new template of this name.</div>
         </div>
+        <div class="form-group">
+          <label>Also bring over addons</label>
+          <div class="hint" style="margin-top:0;">The standard Odoo modules ship with the image. These options download the rest of the Odoo.sh addons-path into extra-addons for this template.</div>
+          <div class="check-row" style="margin-top:8px;">
+            <input type="checkbox" id="import-with-enterprise" disabled>
+            <label for="import-with-enterprise">Enterprise addons <span class="label-hint">— downloaded as a local repo (no remote)</span></label>
+          </div>
+          <div class="check-row" style="margin-top:6px;">
+            <input type="checkbox" id="import-with-themes" disabled>
+            <label for="import-with-themes">Themes <span class="label-hint">— downloaded as a local repo (no remote)</span></label>
+          </div>
+          <div class="check-row" style="margin-top:6px;">
+            <input type="checkbox" id="import-with-extra" disabled>
+            <label for="import-with-extra">Extra addons <span class="label-hint">— OCA and other repos; reachable ones stay updatable</span></label>
+          </div>
+        </div>
+        <div class="form-group">
+          <div class="hint" style="margin-top:0;">Enterprise and Themes are proprietary Odoo code. Before downloading them, review your rights and obligations: <a href="https://oduflow.dev/odoo-sh-import-notes" target="_blank" rel="noopener">oduflow.dev/odoo-sh-import-notes</a> (opens in a new tab).</div>
+          <div class="check-row" style="margin-top:8px;">
+            <input type="checkbox" id="import-ack" onchange="onImportAckChange()">
+            <label for="import-ack">I have read the import notes and accept responsibility for the addons I download.</label>
+          </div>
+        </div>
         <div class="form-actions">
           <button class="btn" onclick="closeImportOdooModal()">Cancel</button>
           <button class="btn-create" id="import-odoo-submit" onclick="submitImportOdoo()">Generate command</button>
@@ -1539,6 +1562,27 @@
           <button class="btn" onclick="closeImportOdooModal()">Close</button>
           <button class="btn-create" onclick="copyImportOdooCommand()">Copy command</button>
         </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="rename-tpl-modal" onclick="closeRenameTemplateModal(event)">
+  <div class="modal">
+    <div class="modal-header">
+      <h2>Rename template</h2>
+      <button class="modal-close" onclick="closeRenameTemplateModal()">&times;</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-error" id="rename-tpl-error"></div>
+      <div class="form-group">
+        <label for="rename-tpl-name">New name</label>
+        <input type="text" id="rename-tpl-name" placeholder="new template name">
+        <div class="hint">Renames the template's directory and its PostgreSQL template database. Refused if any environment was created from this template.</div>
+      </div>
+      <div class="form-actions">
+        <button class="btn" onclick="closeRenameTemplateModal()">Cancel</button>
+        <button class="btn-create" id="rename-tpl-submit" onclick="submitRenameTemplate()">Rename</button>
       </div>
     </div>
   </div>
@@ -2860,8 +2904,23 @@ function openImportOdooModal() {
   document.getElementById('import-odoo-command').textContent = '';
   document.getElementById('import-odoo-submit').disabled = false;
   document.getElementById('import-odoo-submit').textContent = 'Generate command';
+  ['import-with-enterprise', 'import-with-themes', 'import-with-extra'].forEach(function(id) {
+    var cb = document.getElementById(id);
+    cb.checked = false;
+    cb.disabled = true;
+  });
+  document.getElementById('import-ack').checked = false;
   showModal('import-odoo-modal');
   document.getElementById('import-tpl-name').focus();
+}
+
+function onImportAckChange() {
+  var ack = document.getElementById('import-ack').checked;
+  ['import-with-enterprise', 'import-with-themes', 'import-with-extra'].forEach(function(id) {
+    var cb = document.getElementById(id);
+    cb.disabled = !ack;
+    if (!ack) cb.checked = false;
+  });
 }
 
 function closeImportOdooModal(event) {
@@ -2889,7 +2948,12 @@ async function submitImportOdoo() {
     var r = await fetch(API_TEMPLATES + '/import-token', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ template_name: name })
+      body: JSON.stringify({
+        template_name: name,
+        with_enterprise: document.getElementById('import-with-enterprise').checked,
+        with_themes: document.getElementById('import-with-themes').checked,
+        with_extra_addons: document.getElementById('import-with-extra').checked
+      })
     });
     var data = await r.json();
     if (data.ok) {
@@ -2906,6 +2970,67 @@ async function submitImportOdoo() {
   } finally {
     btn.disabled = false;
     btn.textContent = 'Generate command';
+  }
+}
+
+var _renameTplName = '';
+
+function openRenameTemplateModal(name) {
+  _renameTplName = name;
+  var errEl = document.getElementById('rename-tpl-error');
+  errEl.style.display = 'none';
+  errEl.textContent = '';
+  var input = document.getElementById('rename-tpl-name');
+  input.value = name;
+  document.getElementById('rename-tpl-submit').disabled = false;
+  document.getElementById('rename-tpl-submit').textContent = 'Rename';
+  showModal('rename-tpl-modal');
+  input.focus();
+  input.select();
+}
+
+function closeRenameTemplateModal(event) {
+  if (event && event.target !== event.currentTarget) return;
+  hideModal('rename-tpl-modal');
+}
+
+async function submitRenameTemplate() {
+  var newName = document.getElementById('rename-tpl-name').value.trim();
+  var errEl = document.getElementById('rename-tpl-error');
+  if (!newName) {
+    errEl.textContent = 'New name is required.';
+    errEl.style.display = 'block';
+    return;
+  }
+  if (newName === _renameTplName) {
+    closeRenameTemplateModal();
+    return;
+  }
+  errEl.style.display = 'none';
+  var btn = document.getElementById('rename-tpl-submit');
+  btn.disabled = true;
+  btn.textContent = 'Renaming...';
+  try {
+    var r = await fetch(API_TEMPLATES + '/' + encodeURIComponent(_renameTplName) + '/rename', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ new_name: newName })
+    });
+    var data = await r.json();
+    if (data.ok) {
+      showToast('Template renamed to "' + newName + '"');
+      hideModal('rename-tpl-modal');
+      await loadTemplates();
+    } else {
+      errEl.textContent = data.error || 'Rename failed';
+      errEl.style.display = 'block';
+    }
+  } catch (e) {
+    errEl.textContent = 'Connection error: ' + e.message;
+    errEl.style.display = 'block';
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Rename';
   }
 }
 
@@ -2952,6 +3077,7 @@ function renderTemplates(templates) {
         '<div class="tpl-head-right">' +
           '<div class="tpl-meta">' + dbTag + sqlTag + fsTag + modeTag + sizeHtml + '</div>' +
           '<button class="btn-create btn-sm" onclick="openCreateFromTemplate(\'' + escAttr(t.template_name) + '\')">+ New Env</button>' +
+          '<button class="btn btn-sm" onclick="openRenameTemplateModal(\'' + escAttr(t.template_name) + '\')">Rename</button>' +
           '<button class="btn btn-delete btn-sm" onclick="doDeleteTemplate(\'' + escAttr(t.template_name) + '\')">Remove</button>' +
         '</div>' +
       '</div>' +
@@ -3966,6 +4092,7 @@ function renderExtraRepos(repos) {
       '<div class="svc-header">' +
         '<div class="left">' +
           '<span class="svc-name">' + esc(r.name) + '</span>' +
+          (r.local ? '<span class="badge badge-neutral" title="Imported from Odoo.sh; no remote, cannot be updated from origin">local</span>' : '') +
           (r.protected ? '<span class="badge badge-protected" title="Deletion is disabled">protected</span>' : '') +
         '</div>' +
         '<div class="svc-actions">' +
@@ -3978,7 +4105,7 @@ function renderExtraRepos(repos) {
         '</div>' +
       '</div>' +
       '<div class="svc-meta">' +
-        '<span>URL: <strong>' + esc(r.repo_url) + '</strong></span>' +
+        '<span>URL: <strong>' + (r.local ? 'local (no remote)' : esc(r.repo_url)) + '</strong></span>' +
       '</div>' +
       (branches ? '<div class="svc-meta"><span>Branches: <strong>' + branches + '</strong></span></div>' : '') +
     '</div>';

@@ -208,6 +208,87 @@ def test_bad_token_rejected(tmp_path):
     assert r.json()["ok"] is False
 
 
+def test_addon_upload_and_status(tmp_path):
+    client, _s, team = _client(tmp_path)
+    token, _ = _mint(client, "zipfit")
+    hdr = {"Authorization": f"Bearer {token}"}
+    tar = _tar_bytes({"enterprise_src/sale_ent/__manifest__.py": b"{}"})
+    r = client.post(
+        "/api/templates/import/addon?name=enterprise&branch=18.0&category=enterprise",
+        headers=hdr,
+        content=tar,
+    )
+    assert r.status_code == 200 and r.json()["ok"] is True
+    staging = team.get_import_staging_dir("zipfit")
+    assert os.path.isfile(
+        os.path.join(staging, "addons", "enterprise", "sale_ent", "__manifest__.py")
+    )
+    entries = json.loads(open(os.path.join(staging, "addons.json")).read())
+    assert entries[0]["name"] == "enterprise"
+    assert entries[0]["kind"] == "local"
+    assert entries[0]["branch"] == "18.0"
+    st = client.get("/api/templates/import/status", headers=hdr).json()
+    assert st["progress"]["addons"] == ["enterprise"]
+
+
+def test_addon_remote_announce(tmp_path):
+    client, _s, _t = _client(tmp_path)
+    token, _ = _mint(client, "zipfit")
+    hdr = {"Authorization": f"Bearer {token}"}
+    r = client.post(
+        "/api/templates/import/addon-remote",
+        headers=hdr,
+        json={
+            "name": "oca-account-reconcile",
+            "origin_url": "https://github.com/OCA/account-reconcile.git",
+            "branch": "18.0",
+        },
+    )
+    assert r.status_code == 200 and r.json()["ok"] is True
+    st = client.get("/api/templates/import/status", headers=hdr).json()
+    assert st["progress"]["remote_addons"] == ["oca-account-reconcile"]
+
+
+def test_addon_invalid_name_rejected(tmp_path):
+    client, _s, _t = _client(tmp_path)
+    token, _ = _mint(client, "zipfit")
+    hdr = {"Authorization": f"Bearer {token}"}
+    r = client.post(
+        "/api/templates/import/addon?name=bad/name",
+        headers=hdr,
+        content=_tar_bytes({"x/y": b"z"}),
+    )
+    assert r.status_code == 400
+
+
+def test_addon_remote_requires_origin(tmp_path):
+    client, _s, _t = _client(tmp_path)
+    token, _ = _mint(client, "zipfit")
+    hdr = {"Authorization": f"Bearer {token}"}
+    r = client.post(
+        "/api/templates/import/addon-remote",
+        headers=hdr,
+        json={"name": "foo", "branch": "18.0"},
+    )
+    assert r.status_code == 400
+
+
+def test_import_token_flags_in_command(tmp_path):
+    client, _s, _t = _client(tmp_path)
+    r = client.post(
+        "/api/templates/import-token",
+        json={
+            "template_name": "zipfit",
+            "with_enterprise": True,
+            "with_extra_addons": True,
+        },
+    )
+    data = r.json()
+    assert "--with-enterprise" in data["command"]
+    assert "--with-extra-addons" in data["command"]
+    assert "--with-themes" not in data["command"]
+
+
 def test_filestore_tar_zip_slip_is_skipped(tmp_path):
     dest = tmp_path / "fs"
     dest.mkdir()

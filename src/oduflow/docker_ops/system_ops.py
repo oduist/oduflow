@@ -17,6 +17,7 @@ from docker import DockerClient
 from oduflow.docker_ops.client import chown_recursive, get_client, get_odoo_uid_gid
 from oduflow.docker_ops.stats import default_env_limits
 from oduflow.errors import (
+    ConflictError,
     ExternalCommandError,
     NotFoundError,
     PrerequisiteNotMetError,
@@ -26,6 +27,7 @@ from oduflow.naming import (
     get_tablespace_name,
     get_team_network_name,
     get_template_db_name,
+    validate_template_name,
 )
 from oduflow.settings import Settings, TeamSettings
 
@@ -1760,6 +1762,120 @@ def extract_filestore_chunk(tar_path: str, filestore_dir: str, chunk: str) -> in
     return written
 
 
+def extract_addon_dir(tar_path: str, addons_dir: str, name: str) -> int:
+    """Atomically extract one addon-repo tar (``<name>/...``) into ``addons_dir``.
+
+    Mirrors :func:`extract_filestore_chunk`: unpack into a temporary sibling,
+    verify the expected top-level ``<name>/`` directory is present, then rename
+    into place, so a truncated upload never leaves a half-extracted addon behind
+    (resume treats a present addon dir as complete). Returns files written.
+    """
+    os.makedirs(addons_dir, exist_ok=True)
+    tmp_root = os.path.join(addons_dir, f".incoming_{name}")
+    if os.path.exists(tmp_root):
+        shutil.rmtree(tmp_root)
+    cleanup = tmp_root
+    try:
+        written = extract_filestore_tar(tar_path, tmp_root)
+        entries = [e for e in os.listdir(tmp_root) if not e.startswith(".")]
+        dirs = [e for e in entries if os.path.isdir(os.path.join(tmp_root, e))]
+        # The client tars the repo directory (top-level "<repodir>/..."), so a
+        # single top-level dir is the addon root; otherwise (a tar of the repo's
+        # bare contents) tmp_root itself is the root. Either way it lands as
+        # addons/<name>.
+        if len(entries) == 1 and len(dirs) == 1:
+            src = os.path.join(tmp_root, dirs[0])
+        else:
+            src = tmp_root
+        final = os.path.join(addons_dir, name)
+        if os.path.exists(final):
+            shutil.rmtree(final)
+        os.rename(src, final)
+        if src == tmp_root:
+            cleanup = None  # renamed away, nothing to clean
+    finally:
+        if cleanup and os.path.exists(cleanup):
+            shutil.rmtree(cleanup)
+    return written
+
+
+def _wire_imported_addons(
+    team: TeamSettings, staging_dir: str, major_version: str
+) -> dict[str, str]:
+    """Turn staged Odoo.sh addons into Oduflow extra-addons repos.
+
+    Reads ``addons.json`` (a list of ``{name, kind, branch, origin_url}``) from
+    the staging dir. For each entry: ``kind == "remote"`` is cloned from its
+    origin (updatable via update_extra_repo); everything else is seeded as a
+    local (remote-less) repo from ``addons/<name>/``. A repo that already exists
+    is left as-is. Returns ``{name: branch}`` for every addon that is available
+    for the template to reference (existing or freshly created).
+    """
+    from oduflow import extra_addons
+
+    manifest = os.path.join(staging_dir, "addons.json")
+    if not os.path.isfile(manifest):
+        return {}
+    try:
+        with open(manifest) as f:
+            entries = json.load(f)
+        if not isinstance(entries, list):
+            return {}
+    except (OSError, ValueError):
+        logger.warning("Could not read staged addons manifest %s", manifest)
+        return {}
+
+    addons_src = os.path.join(staging_dir, "addons")
+    wired: dict[str, str] = {}
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        name = str(entry.get("name") or "").strip()
+        if not name:
+            continue
+        kind = str(entry.get("kind") or "local").strip()
+        branch = str(entry.get("branch") or "").strip()
+        if branch in ("", "HEAD"):
+            branch = major_version or "import"
+        origin_url = str(entry.get("origin_url") or "").strip()
+        repo_path = os.path.join(team.shared_repos_dir, name)
+
+        # Already registered (e.g. a re-run, or the user added it manually):
+        # reference it, don't recreate.
+        if os.path.isdir(repo_path):
+            wired[name] = branch
+            logger.info("Extra repo '%s' already exists; referencing it", name)
+            continue
+
+        src_dir = os.path.join(addons_src, name)
+        try:
+            if kind == "remote" and origin_url:
+                try:
+                    extra_addons.clone_extra_repo(team, name, origin_url)
+                    wired[name] = branch
+                    continue
+                except Exception as exc:  # noqa: BLE001 - fall back to local files
+                    logger.warning(
+                        "Clone of extra repo '%s' from %s failed (%s); "
+                        "falling back to local copy if available",
+                        name,
+                        origin_url,
+                        exc,
+                    )
+            if os.path.isdir(src_dir):
+                extra_addons.create_local_repo(team, name, src_dir, branch)
+                wired[name] = branch
+            else:
+                logger.warning(
+                    "Addon '%s' has no uploaded files and no usable origin; skipped",
+                    name,
+                )
+        except Exception as exc:  # noqa: BLE001 - one bad addon must not abort import
+            logger.warning("Could not wire imported addon '%s': %s", name, exc)
+
+    return wired
+
+
 def finalize_imported_template(
     settings: Settings,
     team: TeamSettings,
@@ -1835,6 +1951,24 @@ def finalize_imported_template(
     _update_template_sizes(team, settings, template_name)
     result = reload_template(settings, team, template_name=template_name)
 
+    # Turn any uploaded/announced addons (Enterprise, Themes, extra repos) into
+    # Oduflow extra-addons repos and record them on the template so environments
+    # created from it mount the same addons-path Odoo.sh ran with. Done after the
+    # DB restore and before staging cleanup; a single bad addon is logged, not
+    # fatal — the database/filestore import is the critical part.
+    wired = _wire_imported_addons(team, staging_dir, major_version)
+    if wired:
+        meta_path = team.get_template_metadata_path(template_name)
+        try:
+            with open(meta_path) as f:
+                md = json.load(f)
+            existing = _normalize_extra_addons(md.get("extra_addons", {}))
+            md["extra_addons"] = {**existing, **wired}
+            with open(meta_path, "w") as f:
+                json.dump(md, f, indent=2)
+        except (OSError, ValueError) as exc:
+            logger.warning("Could not record imported addons on template: %s", exc)
+
     shutil.rmtree(staging_dir, ignore_errors=True)
 
     return {
@@ -1844,6 +1978,7 @@ def finalize_imported_template(
         "restore_seconds": result.get("restore_seconds", 0),
         "affected_envs": remount.affected,
         "remount_failures": remount.failures,
+        "extra_addons": wired,
     }
 
 
@@ -2025,6 +2160,125 @@ def delete_template(
         logger.info("Removed template directory %s", template_dir_path)
 
     return {"status": "dropped", "template_name": template_name, "template_db": tpl_db}
+
+
+def rename_template(
+    settings: Settings, team: TeamSettings, template_name: str, new_name: str
+) -> dict[str, str]:
+    """Rename a template's directory and (if loaded) its PostgreSQL template DB.
+
+    Blocked when any environment was created from the template: the
+    ``oduflow.template`` label is immutable on a running container and
+    :func:`env_ops.remount_template_overlays` matches environments by it, so
+    renaming out from under them would orphan them (mirrors how
+    ``delete_extra_repo`` refuses in-use repos).
+
+    The DB is renamed first (reversible with a second ``ALTER``), then the
+    directory; if the directory rename fails, the DB name is rolled back so the
+    two never diverge.
+    """
+    validate_template_name(template_name)
+    validate_template_name(new_name)
+    if new_name == template_name:
+        raise ConflictError("New template name is the same as the current one.")
+
+    old_dir = team.get_template_dir(template_name)
+    new_dir = team.get_template_dir(new_name)
+    if not os.path.isdir(old_dir):
+        raise NotFoundError(f"Template '{template_name}' not found.")
+    if os.path.isdir(new_dir):
+        raise ConflictError(f"Template '{new_name}' already exists.")
+
+    client = get_client()
+    old_db = get_template_db_name(template_name, team.team_id)
+    new_db = get_template_db_name(new_name, team.team_id)
+
+    # Refuse if any environment references this template (immutable label).
+    filters = {
+        "label": [
+            f"{settings.managed_label}=true",
+            f"{settings.team_label}={team.team_id}",
+        ]
+    }
+    dependent: list[str] = []
+    for c in client.containers.list(all=True, filters=filters):
+        if c.labels.get("oduflow.template", "none") == template_name:
+            dependent.append(c.labels.get(settings.branch_label, c.name))
+    if dependent:
+        raise ConflictError(
+            f"Cannot rename template '{template_name}': used by environments: "
+            f"{', '.join(dependent)}. Delete those environments first."
+        )
+
+    db_renamed = False
+    if _db_exists(client, settings, old_db):
+        if _db_exists(client, settings, new_db):
+            raise ConflictError(f"A template database named '{new_db}' already exists.")
+        _wait_pg_ready(client, settings)
+        _exec_sql(
+            client,
+            settings,
+            f"UPDATE pg_database SET datistemplate=false WHERE datname='{old_db}';",
+        )
+        # ALTER DATABASE ... RENAME fails if the database has open sessions.
+        _exec_sql(
+            client,
+            settings,
+            "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
+            f"WHERE datname='{old_db}' AND pid<>pg_backend_pid();",
+        )
+        try:
+            _exec_sql(
+                client, settings, f'ALTER DATABASE "{old_db}" RENAME TO "{new_db}";'
+            )
+            db_renamed = True
+        finally:
+            # Re-mark whichever name is live as a template.
+            live_db = new_db if db_renamed else old_db
+            _exec_sql(
+                client,
+                settings,
+                f"UPDATE pg_database SET datistemplate=true WHERE datname='{live_db}';",
+            )
+        logger.info("Renamed template DB %s -> %s", old_db, new_db)
+
+    try:
+        os.makedirs(os.path.dirname(new_dir), exist_ok=True)
+        os.rename(old_dir, new_dir)
+    except OSError as exc:
+        if db_renamed:
+            try:
+                _exec_sql(
+                    client,
+                    settings,
+                    f"UPDATE pg_database SET datistemplate=false "
+                    f"WHERE datname='{new_db}';",
+                )
+                _exec_sql(
+                    client, settings, f'ALTER DATABASE "{new_db}" RENAME TO "{old_db}";'
+                )
+                _exec_sql(
+                    client,
+                    settings,
+                    f"UPDATE pg_database SET datistemplate=true "
+                    f"WHERE datname='{old_db}';",
+                )
+                logger.warning("Rolled back template DB rename after directory failure")
+            except Exception:  # noqa: BLE001 - rollback is best-effort
+                logger.error(
+                    "Template DB renamed to %s but directory rename failed and the "
+                    "DB rollback also failed; manual reconciliation needed.",
+                    new_db,
+                )
+        raise ExternalCommandError("rename template directory", 1, str(exc))
+
+    logger.info("Renamed template '%s' -> '%s'", template_name, new_name)
+    return {
+        "status": "renamed",
+        "template_name": new_name,
+        "old_name": template_name,
+        "template_db": new_db,
+    }
 
 
 def list_templates(settings: Settings, team: TeamSettings) -> list[dict]:
