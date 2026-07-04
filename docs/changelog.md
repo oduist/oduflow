@@ -1,5 +1,21 @@
 # Changelog
 
+## v1.62.0
+
+### Features
+
+- **HTTP-only Traefik mode** — a new `[routing].tls` toggle (bool, default `true`). With `mode = "traefik"` and `tls = false`, Traefik listens on plain HTTP `:80` only — no HTTP→HTTPS redirect and no Let's Encrypt/ACME — for running behind an upstream that already terminates TLS (e.g. a Cloudflare tunnel). Environment/service routers bind to the `web` entrypoint without TLS, the `acme_email` requirement is lifted, and `forwardedHeaders.insecure` lets the upstream's `X-Forwarded-Proto: https` through so cookies stay `Secure` and public URLs stay `https://`. `_ensure_traefik` self-corrects on a flipped `tls` setting by recreating the container. (#103)
+
+### Bug Fixes
+
+- **Agent checkout removal guard** — `_agent_remove_env` now refuses when an environment name slugifies to an empty string, which would resolve the checkout dir to `/workspace/` itself and let `rm -rf` wipe every environment's checkout from the shared volume (matching the guard `clone-env.sh` already had on the create side). (#100)
+- **Agent session file permissions** — `agent_sessions._save` now creates its temp file `0600` from birth via `os.open` (the mode carries over through `os.replace`), closing the brief default-permissions window that existed with chmod-after-rename. (#100)
+- **Surfaced degraded agent modes** — non-fatal `_chat/notice` frames now render as system lines in Agent Chat, making two previously silent degraded modes visible: an environment without a scoped MCP token, and Codex chat's missing Oduflow MCP wiring. (#100)
+
+### Documentation
+
+- **Docs synced with code** — a documentation audit corrected several drifts: the retired "PolyForm Noncommercial 1.0.0" license name → BUSL-1.1 in `llms.txt`/`llms-full.txt`; `auto_delete_hours` default corrected to `0` (opt-in) across pages; the removed `oduflow init` command/flag dropped; `[server].allow_local_path`, `allow_insecure_http` and `[routing].hostname` documented; and the v1.61.0 coding-agent feature fully documented (new `docs/agent.md`, installation/web-api pages, `llms.txt`/`llms-full.txt`). (#101, #102)
+
 ## v1.61.0
 
 ### Features
