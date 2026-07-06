@@ -3,7 +3,7 @@
 **Status:** Adopted (still in force)
 **Type:** Architecture
 **First introduced:** `cd0b9ec` "two-tier database sanitization" (2026-02-24), `e4949b0` "per-environment PostgreSQL credentials" (2026-02-26)
-**Key code today:** `env_credentials.py` (generate / persist / load / delete per-env creds), `sanitizer.py` (two-tier script runner), `docker_ops/env_ops.py` (`_create_pg_role`, post-clone ownership fixup), `docker_ops/system_ops.py` (shared DB, role helpers), `server.py` (`_inject_db_password` — bootstrap superuser secret)
+**Key code today:** `env_credentials.py` (generate / persist / load / delete per-env creds), `sanitizer.py` (`neutralize_environment` native baseline + two-tier script runner), `docker_ops/env_ops.py` (`_create_pg_role`, post-clone ownership fixup), `docker_ops/system_ops.py` (shared DB, role helpers), `server.py` (`_inject_db_password` — bootstrap superuser secret)
 
 ## Context
 
@@ -119,6 +119,35 @@ needed for admin operations:
   compatible. The matching admin connections rely on local trust auth inside the
   container, so they were unaffected by the change.
 
+A later layer was added **beneath** the two custom-script tiers — Odoo's own
+native neutralization, rather than re-implementing what Odoo already ships:
+
+- (2026-07-07) — **run `odoo-bin neutralize` as the baseline sanitization layer.**
+  Odoo 16+ ships a modular neutralization framework: each installed module carries
+  a `data/neutralize.sql`, and `odoo-bin neutralize -d <db>` applies them all in
+  one transaction — deactivating outgoing mail servers and crons (except
+  autovacuum), disabling payment providers, scrubbing third-party connector
+  credentials to `dummy`, neutralizing webhooks, and setting the
+  `database.is_neutralized` flag. Oduflow now invokes it (`neutralize_environment`)
+  as the **first** step of the sanitize gate, before the team/repo scripts, so the
+  custom tiers become PII-anonymization *on top of* a database that Odoo itself has
+  already made outbound-safe. The decisive design constraint is **`addons_path`
+  completeness**: `get_neutralization_queries` silently skips (`suppress(FileNotFoundError)`)
+  any module whose code isn't on the path, so the command is run **inside the
+  serving container** — which sees the full base-image + repo + extra-addons path —
+  and not at template-import time, where custom modules would be missing and quietly
+  under-neutralized. It also runs **after `auto_install_modules`** (and before the
+  post-install registry restart): Odoo's neutralize gathers SQL only from
+  *already-installed* modules, so neutralizing earlier would skip an auto-installed
+  module's `neutralize.sql` and leave the crons / payment providers / connector
+  credentials it creates active. Two properties were deliberately *not* taken on: neutralization
+  leaves `database.uuid` and `database.enterprise_code` **untouched** (Odoo regenerates
+  the uuid via a separate `ir.config_parameter.init(force=True)` on copy, decoupled
+  from neutralize), so the licensing phone-home stops only because its cron is
+  disabled, not because the identity changed. Kept lean (no new config knob): it
+  rides the existing `sanitize=True` + template-based gate. Failures are logged as
+  warnings, never fatal — consistent with the best-effort stance of the tiers.
+
 ## History
 
 - `cd0b9ec` (2026-02-24) — two-tier sanitization: drop hardcoded built-in queries;
@@ -137,3 +166,6 @@ needed for admin operations:
 - `#74` (2026-06-17) — auto-generate the shared PostgreSQL superuser password
   on first init; the bundled `oduflow.toml` ships without a hardcoded password and
   the bootstrap injects a random secret into the generated config (see Evolution).
+- (2026-07-07) — **native neutralization baseline:** `neutralize_environment` runs
+  `odoo-bin neutralize` inside the serving container as the first step of the
+  sanitize gate, ahead of the team/repo `.odoo_sanitize` tiers (see Evolution).
