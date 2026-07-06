@@ -1141,14 +1141,12 @@ def create_environment(
     if pip_log:
         setup_logs.append(pip_log)
 
-    # --- Sanitize environment database ---
-    if sanitize and template_name is not None:
-        from oduflow.sanitizer import sanitize_environment
-
-        sanitize_logs = sanitize_environment(client, settings, team, env_name)
-        setup_logs.extend(sanitize_logs)
-
     # --- Auto-install modules ---
+    # MUST run before sanitization below: Odoo's native neutralization gathers
+    # SQL only from already-installed modules, so any `data/neutralize.sql`
+    # shipped by an auto-installed module — and the crons, payment providers, or
+    # connector credentials those modules create — would be missed if neutralize
+    # ran first. Install now, neutralize after.
     if auto_install_modules:
         modules_str = ",".join(auto_install_modules)
         logger.info(
@@ -1178,6 +1176,29 @@ def create_environment(
             setup_logs.append(
                 f"[AUTO-INSTALL] odoo -i {modules_str} completed successfully"
             )
+        # NOTE: the serving container is restarted further down, AFTER
+        # sanitization, so the newly-installed modules' crons are already
+        # deactivated in the DB before PID1 reloads them into a live registry.
+
+    # --- Sanitize environment database ---
+    # Runs AFTER auto-install so Odoo's native neutralization sees the final set
+    # of installed modules (see the auto-install note above).
+    if sanitize and template_name is not None:
+        from oduflow.sanitizer import neutralize_environment, sanitize_environment
+
+        # Layer 1: Odoo's native neutralization — the baseline safety net that
+        # blocks anything going out (mail off, crons off, payment providers off,
+        # third-party credentials scrubbed, database.is_neutralized=true). Runs
+        # in the serving container so it sees the full addons_path.
+        setup_logs.extend(neutralize_environment(client, settings, team, env_name))
+        # Layer 2: custom team/repo .odoo_sanitize scripts (e.g. PII scrubbing)
+        # run on top of the neutralized database.
+        sanitize_logs = sanitize_environment(client, settings, team, env_name)
+        setup_logs.extend(sanitize_logs)
+
+    # Reload any auto-installed modules into the serving registry — done after
+    # sanitization so their crons/credentials are neutralized in the DB first.
+    if auto_install_modules:
         container.restart()
 
     if settings.routing_mode == "traefik":

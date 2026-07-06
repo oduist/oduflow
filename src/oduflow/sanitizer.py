@@ -105,6 +105,74 @@ def _run_scripts_from_dir(
     return logs
 
 
+def neutralize_environment(
+    client: DockerClient,
+    settings: Settings,
+    team: TeamSettings,
+    env_name: str,
+) -> list[str]:
+    """Neutralize the environment database using Odoo's native mechanism.
+
+    Runs ``odoo-bin neutralize`` inside the serving container. Odoo applies
+    every installed module's ``data/neutralize.sql`` in a single transaction:
+    it deactivates outgoing mail servers, disables crons (except autovacuum),
+    disables payment providers, scrubs third-party API credentials, neutralizes
+    webhooks, and sets the ``database.is_neutralized`` flag. Because it runs in
+    the serving container, Odoo sees the full ``addons_path`` (base image + repo
+    + extra addons), so custom modules shipping their own ``neutralize.sql`` are
+    covered too — a partial ``addons_path`` would silently skip them.
+
+    This is the baseline sanitization layer (block anything going out / phoning
+    home); per-project and per-team ``.odoo_sanitize`` scripts (e.g. PII
+    anonymization) run on top of it via :func:`sanitize_environment`.
+
+    Note: neutralization leaves ``database.uuid`` and ``database.enterprise_code``
+    untouched — it only stops transmission by disabling crons; it does not
+    change the database's identity.
+
+    Returns a list of human-readable log lines.
+    """
+    import docker as _docker
+
+    env_db = get_db_name(env_name, team.team_id)
+    logs: list[str] = []
+
+    odoo_container_name = get_resource_name(
+        env_name, "odoo", settings.prefix, team.team_id
+    )
+    try:
+        container = client.containers.get(odoo_container_name)
+    except _docker.errors.NotFound:
+        logger.warning("[NEUTRALIZE] container not found, skipping")
+        logs.append("[NEUTRALIZE] WARNING: container not found, skipping")
+        return logs
+
+    try:
+        exit_code, output = container.exec_run(
+            f"/entrypoint.sh odoo neutralize -d {env_db}"
+        )
+        output_str = (
+            output.decode("utf-8") if isinstance(output, bytes) else str(output)
+        )
+        if exit_code != 0:
+            logger.warning("[NEUTRALIZE] failed (exit %d): %s", exit_code, output_str)
+            logs.append(
+                f"[NEUTRALIZE] WARNING: neutralization failed (exit {exit_code}); "
+                "database may still send mail or phone home"
+            )
+        else:
+            logger.info("[NEUTRALIZE] Database %s neutralized", env_db)
+            logs.append(
+                "[NEUTRALIZE] Database neutralized "
+                "(mail off, crons off, credentials scrubbed, is_neutralized=true)"
+            )
+    except Exception as exc:  # noqa: BLE001 - never let neutralize abort provisioning
+        logger.warning("[NEUTRALIZE] failed: %s", exc)
+        logs.append(f"[NEUTRALIZE] WARNING: neutralization failed: {exc}")
+
+    return logs
+
+
 def sanitize_environment(
     client: DockerClient,
     settings: Settings,
