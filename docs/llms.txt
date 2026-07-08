@@ -48,7 +48,7 @@ mode = "port"                         # "port" | "traefik" (auto-HTTPS)
 # acme_email = "admin@example.com"    # required for traefik mode
 
 [oauth]
-# oauth_base_url = "https://oduflow.example.com"  # enable self-hosted OAuth (for Claude.ai); auth_token = client_id = client_secret = access token
+# oauth_base_url = "https://oduflow.example.com"  # OAuth issuer; NOT needed in traefik (auto, per-team host). Set to pin an issuer or in port mode. auth_token = client_id = client_secret = access token
 
 [database]
 user = "odoo"
@@ -141,7 +141,7 @@ Same JSON format in `claude_desktop_config.json` or `.amp/settings.json`.
 
 ### Claude.ai (self-hosted OAuth)
 
-For OAuth-based MCP clients like Claude.ai Remote MCP, set `[oauth].oauth_base_url` to this instance's public URL. Oduflow then runs its own OAuth 2.1 Authorization Server (no external IdP). In Claude.ai add a custom MCP at `https://<your-oduflow-host>/mcp` and enter the team's `auth_token` as **both** Client ID and Client Secret. The issued access token equals the `auth_token`, so the same value also works as a plain Bearer token.
+For OAuth-based MCP clients like Claude.ai Remote MCP, Oduflow runs its own OAuth 2.1 Authorization Server (no external IdP). In **traefik mode** it is enabled automatically and runs on each team's own hostname (issuer derived per-request) — no `oauth_base_url` needed. In **port mode**, set `[oauth].oauth_base_url` to this instance's public URL. In Claude.ai add a custom MCP at `https://<team-hostname>/mcp` and enter the team's `auth_token` as **both** Client ID and Client Secret. The issued access token equals the `auth_token`, so the same value also works as a plain Bearer token.
 
 ## Core MCP Tools
 

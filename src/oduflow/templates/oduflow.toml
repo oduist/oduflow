@@ -10,7 +10,8 @@ allow_local_path = true        # allow live-mount (bind local checkout) workflow
 [routing]
 mode = "port"                   # "port" | "traefik"
 # acme_email = "admin@example.com"  # required for traefik (when tls = true)
-# hostname = "localhost"           # default hostname for teams that don't set their own
+# hostname = "localhost"           # port mode only: default host for teams without their own
+                                   # (traefik requires each team to set its own hostname)
 # tls = true                       # traefik only. true: Traefik terminates TLS
 #                                  # (:443, HTTP->HTTPS redirect, Let's Encrypt).
 #                                  # false: plain HTTP on :80 only, no redirect/ACME —
@@ -53,17 +54,17 @@ auto_delete_hours = 0             # delete stopped environments after N hours (D
 # codex_model = ""                 # optional model override; empty = CLI default
 
 # ── OAuth (optional) ──────────────────────────────────
-# Set oauth_base_url to the public URL of this Oduflow instance to enable
-# the self-hosted OAuth Authorization Server. Endpoints exposed:
-#   /.well-known/oauth-authorization-server
-#   /authorize
-#   /token
-# For each team, claude.ai (and any OAuth-based MCP client) should be
-# configured with:
-#   client_id     = team.<id>.auth_token
-#   client_secret = team.<id>.auth_token   (same value)
+# In traefik mode the self-hosted OAuth Authorization Server is enabled
+# automatically and each team's OAuth flow runs on its OWN hostname (the issuer
+# is derived per-request), so you do NOT need oauth_base_url. Endpoints:
+#   /.well-known/oauth-authorization-server   /authorize   /token
+# For each team, claude.ai (and any OAuth-based MCP client) is configured with:
+#   client_id = client_secret = team.<id>.auth_token
 # After the OAuth flow the issued access_token is also auth_token, so plain
-# Bearer-token clients keep working. Leave empty to use Bearer-only auth.
+# Bearer-token clients keep working.
+#
+# oauth_base_url is only needed to pin a fixed central issuer, or in PORT mode
+# (no per-team TLS host): set it to this instance's public https URL.
 # [oauth]
 # oauth_base_url = "https://oduflow.example.com"
 

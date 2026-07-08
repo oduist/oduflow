@@ -30,6 +30,29 @@ class TestSettings:
         assert s.db_user == "odoo"
         assert s.routing_mode == "port"
 
+    def test_routing_hostname_fallback_port_mode(self, tmp_path):
+        # In port mode a team with no hostname inherits [routing].hostname.
+        toml = tmp_path / "oduflow.toml"
+        toml.write_text(
+            '[routing]\nmode = "port"\nhostname = "shared.example.com"\n[team.1]\n'
+        )
+        s = Settings.from_toml(str(toml))
+        assert s.get_team("1").hostname == "shared.example.com"
+
+    def test_routing_hostname_ignored_in_traefik_mode(self, tmp_path):
+        # In traefik mode the shared default is NOT inherited; a team without
+        # its own hostname is left empty so validate() flags the misconfig
+        # instead of silently colliding two teams on one host.
+        toml = tmp_path / "oduflow.toml"
+        toml.write_text(
+            '[routing]\nmode = "traefik"\nacme_email = "a@b.co"\n'
+            'hostname = "shared.example.com"\n[team.1]\n'
+        )
+        s = Settings.from_toml(str(toml))
+        assert s.get_team("1").hostname == ""
+        with pytest.raises(ValueError, match="hostname must be set"):
+            s.validate()
+
     def test_validate_no_teams(self):
         s = Settings()
         with pytest.raises(ValueError, match="No \\[team\\.\\*\\] sections"):

@@ -184,6 +184,9 @@ class Settings:
     # When set, Oduflow exposes /.well-known/oauth-authorization-server,
     # /authorize, and /token, and each team's auth_token doubles as
     # client_id, client_secret, and the issued access token.
+    # In traefik mode this is optional: the issuer is derived per-request from
+    # the team's own hostname (already TLS-terminated), so OAuth works without a
+    # central host. Set it only to pin a fixed issuer or in port mode.
     oauth_base_url: str = ""
 
     # Config location
@@ -217,7 +220,11 @@ class Settings:
 
     @property
     def oauth_enabled(self) -> bool:
-        return bool(self.oauth_base_url)
+        # Self-hosted OAuth is served whenever an explicit issuer is configured
+        # (oauth_base_url) or we run behind Traefik, where each team's own
+        # TLS-terminated hostname is used as a per-request issuer — no central
+        # oauth_base_url needed. Port mode still requires an explicit issuer.
+        return bool(self.oauth_base_url) or self.routing_mode == "traefik"
 
     def get_team_by_ui_password(self, password: str) -> TeamSettings | None:
         if not password:
@@ -312,6 +319,7 @@ class Settings:
         lifecycle = raw.get("lifecycle", {})
         agent = raw.get("agent", {})
         oauth = raw.get("oauth", server)  # [oauth] section or fall back to [server]
+        routing_mode = str(routing.get("mode", "port")).strip().lower()
 
         etc_dir = _resolve_etc_dir()
         base_data_dir = _resolve_data_dir(storage.get("data_dir", ""))
@@ -346,9 +354,15 @@ class Settings:
                     f"got {port_range!r}"
                 )
 
-            raw_hostname = str(
-                team_cfg.get("hostname", routing.get("hostname", "localhost"))
+            # [routing].hostname is a fallback only in port mode. In traefik
+            # mode the validator requires every team to set its own hostname;
+            # silently inheriting one shared default would make two such teams
+            # collide in get_team_by_hostname, so leave it empty and let
+            # validate() report the misconfiguration.
+            default_hostname = (
+                routing.get("hostname", "localhost") if routing_mode == "port" else ""
             )
+            raw_hostname = str(team_cfg.get("hostname", default_hostname))
             hostname = re.sub(r"^https?://", "", raw_hostname).strip()
 
             agent_env_raw = team_cfg.get("agent_env", {})
@@ -389,7 +403,7 @@ class Settings:
             disable_telemetry=bool(server.get("disable_telemetry", False)),
             allow_local_path=bool(server.get("allow_local_path", True)),
             allow_insecure_http=bool(server.get("allow_insecure_http", False)),
-            routing_mode=str(routing.get("mode", "port")).strip().lower(),
+            routing_mode=routing_mode,
             acme_email=str(routing.get("acme_email", "")).strip(),
             routing_tls=bool(routing.get("tls", True)),
             db_user=str(database.get("user", "odoo")),

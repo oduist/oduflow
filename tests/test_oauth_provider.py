@@ -41,19 +41,26 @@ def _run(coro):
 
 
 class TestOduflowOAuthProvider:
-    def test_requires_oauth_base_url(self):
+    def test_host_relative_without_oauth_base_url(self):
+        # No oauth_base_url (the traefik norm): the issuer is derived per-request
+        # from the incoming Host, so construction is allowed (host-relative mode)
+        # and uses a team hostname as the placeholder base_url.
         s = Settings(
+            routing_mode="traefik",
+            acme_email="admin@example.com",
+            oauth_base_url="",
             teams={
                 "1": TeamSettings(
                     team_id="1",
                     auth_token="tok",
+                    hostname="team1.example.com",
                     port_range_start=50000,
                     port_range_end=50100,
                 )
-            }
+            },
         )
-        with pytest.raises(ValueError, match="oauth_base_url"):
-            OduflowOAuthProvider(s)
+        provider = OduflowOAuthProvider(s)
+        assert provider._host_relative is True
 
     def test_preregistered_clients(self):
         provider = OduflowOAuthProvider(_settings())
@@ -192,3 +199,90 @@ class TestOduflowOAuthProvider:
         assert "token_endpoint" in meta
         # DCR is disabled — endpoint must not be advertised.
         assert "registration_endpoint" not in meta
+
+    def test_metadata_host_relative(self):
+        from starlette.applications import Starlette
+        from starlette.testclient import TestClient
+
+        # No fixed issuer → issuer/endpoints derived per-request from the Host.
+        provider = OduflowOAuthProvider(_settings(oauth_base_url=""))
+        assert provider._host_relative is True
+        app = Starlette(routes=provider.get_routes("/mcp"))
+        client = TestClient(app)
+
+        headers = {"host": "zipfit.oduflow.dev", "x-forwarded-proto": "https"}
+        meta = json.loads(
+            client.get("/.well-known/oauth-authorization-server", headers=headers).text
+        )
+        assert meta["issuer"].rstrip("/") == "https://zipfit.oduflow.dev"
+        assert meta["authorization_endpoint"] == "https://zipfit.oduflow.dev/authorize"
+        assert meta["token_endpoint"] == "https://zipfit.oduflow.dev/token"
+
+        prm = json.loads(
+            client.get(
+                "/.well-known/oauth-protected-resource/mcp", headers=headers
+            ).text
+        )
+        assert prm["resource"].rstrip("/") == "https://zipfit.oduflow.dev/mcp"
+        assert (
+            prm["authorization_servers"][0].rstrip("/") == "https://zipfit.oduflow.dev"
+        )
+
+        # A different Host yields a different issuer — OAuth is per-team-host.
+        other = json.loads(
+            client.get(
+                "/.well-known/oauth-authorization-server",
+                headers={"host": "other.example.com", "x-forwarded-proto": "https"},
+            ).text
+        )
+        assert other["issuer"].rstrip("/") == "https://other.example.com"
+
+    def test_auth_challenge_rewrites_resource_metadata_host(self):
+        # The 401 WWW-Authenticate resource_metadata origin must follow the
+        # request host, or fastmcp's static URL would point team B's client at
+        # team A's hostname to discover OAuth.
+        from oduflow.oauth_provider import HostRelativeAuthChallenge
+
+        static = (
+            'Bearer error="invalid_token", error_description="Authentication '
+            'required", resource_metadata="https://team-a.example.com/'
+            '.well-known/oauth-protected-resource/mcp"'
+        )
+
+        async def inner(scope, receive, send):
+            await send(
+                {
+                    "type": "http.response.start",
+                    "status": 401,
+                    "headers": [(b"www-authenticate", static.encode())],
+                }
+            )
+            await send({"type": "http.response.body", "body": b""})
+
+        sent: list = []
+
+        async def send(msg):
+            sent.append(msg)
+
+        async def receive():
+            return {"type": "http.request"}
+
+        scope = {
+            "type": "http",
+            "scheme": "http",  # Traefik terminates TLS; app sees http
+            "headers": [
+                (b"host", b"team-b.example.com"),
+                (b"x-forwarded-proto", b"https"),
+            ],
+        }
+        app = HostRelativeAuthChallenge(inner)
+        _run(app(scope, receive, send))
+
+        start = next(m for m in sent if m["type"] == "http.response.start")
+        hdr = dict(start["headers"])[b"www-authenticate"].decode()
+        assert (
+            'resource_metadata="https://team-b.example.com/.well-known/'
+            'oauth-protected-resource/mcp"' in hdr
+        )
+        # The error parts are preserved untouched.
+        assert 'error="invalid_token"' in hdr

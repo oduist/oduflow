@@ -117,12 +117,15 @@ allow_local_path = true     # allow live-mount (bind local checkout) environment
 mode = "port"               # "port" (direct host port) | "traefik" (reverse proxy with auto-HTTPS)
 # acme_email = "admin@example.com"  # required when mode = "traefik" and tls = true
 # tls = true                # traefik only. false = plain HTTP on :80, no ACME (behind a Cloudflare tunnel / TLS proxy)
-# hostname = "localhost"    # default hostname for teams that don't set their own
+# hostname = "localhost"    # port mode only: default host for teams without their own
+                            # (traefik requires each team to set its own hostname)
 
 # ── OAuth (optional) ──────────────────────────────────
-# Set to the public URL of this instance to turn Oduflow into a self-hosted
-# OAuth 2.1 Authorization Server (for Claude.ai and other OAuth MCP clients).
-# Each team's auth_token doubles as client_id, client_secret, and access token.
+# In traefik mode the self-hosted OAuth 2.1 Authorization Server is enabled
+# automatically and runs on each team's own hostname (issuer derived per-request),
+# so oauth_base_url is NOT needed. Set it only to pin a fixed issuer, or in port
+# mode: the public URL of this instance (for Claude.ai and other OAuth MCP
+# clients). Each team's auth_token doubles as client_id, client_secret, and token.
 [oauth]
 # oauth_base_url = "https://oduflow.example.com"
 
@@ -191,7 +194,7 @@ port_range = [50000, 50100]          # port range for Odoo containers [start, en
 
 | Key | Default | Description |
 |---|---|---|
-| `[oauth].oauth_base_url` | *(empty)* | Public URL of this Oduflow instance. When set, Oduflow runs a self-hosted OAuth 2.1 Authorization Server (exposes `/.well-known/oauth-authorization-server`, `/authorize`, `/token`) so OAuth-based MCP clients like Claude.ai can connect. Each team's `auth_token` doubles as `client_id`, `client_secret`, and the issued access token. Empty = plain Bearer-token auth only. See [Authentication & Security](security.md) |
+| `[oauth].oauth_base_url` | *(empty)* | Public URL of this Oduflow instance used as the OAuth issuer. Oduflow runs a self-hosted OAuth 2.1 Authorization Server (exposes `/.well-known/oauth-authorization-server`, `/authorize`, `/token`) so OAuth-based MCP clients like Claude.ai can connect; each team's `auth_token` doubles as `client_id`, `client_secret`, and the issued access token. **In traefik mode this is enabled automatically and the issuer is derived per-request from each team's own hostname — leave empty.** Set it to pin a fixed issuer, or in port mode. Empty + port mode = plain Bearer-token auth only. See [Authentication & Security](security.md) |
 
 ### Database settings
 
