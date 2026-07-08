@@ -18,6 +18,7 @@ from oduflow.naming import get_db_name, get_resource_name
 def _settings():
     s = MagicMock()
     s.prefix = "oduflow"
+    s.image_label = "oduflow.image"
     return s
 
 
@@ -37,6 +38,20 @@ def _neutralize_cmd(container) -> str | None:
 
 
 class TestNeutralizeEnvironment:
+    def test_odoo_15_skips_native_neutralize(self):
+        container = MagicMock()
+        container.labels = {"oduflow.image": "odoo:15.0"}
+        client = MagicMock()
+        client.containers.get.return_value = container
+
+        logs = sanitizer.neutralize_environment(
+            client, _settings(), _team(), "feature/foo"
+        )
+
+        container.exec_run.assert_not_called()
+        assert any("Skipped" in line and "Odoo 15" in line for line in logs)
+        assert not any("WARNING" in line for line in logs)
+
     def test_runs_neutralize_command_in_container(self):
         container = MagicMock()
         container.exec_run.return_value = (0, b"Neutralization finished")

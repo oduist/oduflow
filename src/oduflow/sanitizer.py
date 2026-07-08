@@ -1,6 +1,7 @@
 import logging
 import os
 import glob as glob_mod
+import re
 
 from docker import DockerClient
 
@@ -10,6 +11,22 @@ from oduflow.naming import get_db_name, get_repo_path, get_resource_name
 from oduflow.settings import Settings, TeamSettings
 
 logger = logging.getLogger("oduflow")
+
+
+def _detect_odoo_major_from_container(container: object, image_label: str) -> int | None:
+    """Best-effort major version from the Odoo image label."""
+    labels = getattr(container, "labels", {}) or {}
+    if not isinstance(labels, dict):
+        return None
+
+    image = labels.get(image_label, "")
+    if not isinstance(image, str):
+        return None
+
+    match = re.search(r"odoo[:/](\d+)", image)
+    if match:
+        return int(match.group(1))
+    return None
 
 
 def _run_scripts_from_dir(
@@ -130,6 +147,9 @@ def neutralize_environment(
     untouched — it only stops transmission by disabling crons; it does not
     change the database's identity.
 
+    Odoo 15.0 does not provide the native ``neutralize`` CLI command, so it is
+    skipped for that version. Custom sanitization scripts still run afterwards.
+
     Returns a list of human-readable log lines.
     """
     import docker as _docker
@@ -145,6 +165,19 @@ def neutralize_environment(
     except _docker.errors.NotFound:
         logger.warning("[NEUTRALIZE] container not found, skipping")
         logs.append("[NEUTRALIZE] WARNING: container not found, skipping")
+        return logs
+
+    image_label = getattr(settings, "image_label", "")
+    major = (
+        _detect_odoo_major_from_container(container, image_label)
+        if isinstance(image_label, str)
+        else None
+    )
+    if major is not None and major <= 15:
+        logger.info("[NEUTRALIZE] skipped for Odoo %s", major)
+        logs.append(
+            f"[NEUTRALIZE] Skipped: Odoo {major} does not provide native neutralize"
+        )
         return logs
 
     try:

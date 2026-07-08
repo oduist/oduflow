@@ -1055,7 +1055,9 @@ xfonts-75dpi
 
 When an environment is created from a template, Oduflow **automatically sanitizes** the database to prevent the test instance from sending real emails or polling mailboxes. This is enabled by default (`sanitize=True`).
 
-Sanitization uses a **two-tier** approach:
+For Odoo versions that provide it, Oduflow first runs Odoo's native `odoo neutralize` command inside the serving container, after any auto-installed modules are present. Odoo 15.0 does not include this command, so Oduflow skips the native neutralization step for Odoo 15 and continues with the custom scripts below.
+
+Custom sanitization then uses a **two-tier** approach:
 
 1. **Team-level scripts** from `{team_data_dir}/odoo_sanitize/` — managed by the administrator, shared across all environments in the team
 2. **Per-project scripts** from `.odoo_sanitize/` in the repository root — managed by the developer, specific to the project
@@ -2645,4 +2647,3 @@ License keys are RSA-signed and verified against a built-in public key. Invalid 
 For business use or integrator licenses, visit [oduflow.dev](https://oduflow.dev).
 
 ---
-
