@@ -2878,11 +2878,14 @@ def _ensure_web_ui_password(settings: Settings) -> Settings:
     hard-fail the whole HTTP transport on upgrade — which would also take down
     token-protected MCP for headless users — generate a password, persist it to
     oduflow.toml (symmetric with the fresh-install bootstrap) and reload. Skipped
-    when the operator opted into an open server (``allow_insecure_http``) or a
-    password is already set. On any write failure the caller's fail-closed check
-    still refuses to serve an open dashboard."""
+    when the operator opted into an open server (``allow_insecure_http``) or
+    every team already has a password. Uses ``all`` (not ``any``) so a team added
+    later with ``ui_password = ""`` still gets provisioned rather than being
+    silently locked out of the web UI while other teams have passwords. On any
+    write failure the caller's fail-closed check still refuses to serve an open
+    dashboard."""
     global _settings
-    if settings.allow_insecure_http or any(
+    if settings.allow_insecure_http or all(
         t.ui_password for t in settings.teams.values()
     ):
         return settings
@@ -3662,11 +3665,13 @@ def _start_http() -> None:
     # The dashboard exposes MORE than MCP (interactive shells/SQL/agent to every
     # environment, privileged service creation, credential management) and is
     # only authenticated when a team sets ui_password. Fresh installs bootstrap
-    # one and _ensure_web_ui_password just auto-provisioned one for existing
-    # configs — so reaching here with none set means both the config write failed
-    # and the operator has not opted into an open server; refuse rather than serve
-    # the dashboard unauthenticated.
-    if not settings.allow_insecure_http and not any(
+    # one and _ensure_web_ui_password just auto-provisioned one for every existing
+    # team — so reaching here with ANY team still passwordless means the config
+    # write failed and the operator has not opted into an open server. Check
+    # ``all`` (not ``any``): a single passwordless team can never log in (auth is
+    # global; empty passwords are skipped), so refuse rather than silently lock it
+    # out.
+    if not settings.allow_insecure_http and not all(
         t.ui_password for t in settings.teams.values()
     ):
         raise PrerequisiteNotMetError(

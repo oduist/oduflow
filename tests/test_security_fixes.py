@@ -73,6 +73,66 @@ class TestAutofillUiPasswords:
         assert out.strip() == src.strip()
 
 
+class TestEnsureWebUiPassword:
+    """`_ensure_web_ui_password` must provision EVERY passwordless team, not
+    skip the whole config as soon as one team already has a password."""
+
+    def _settings(self, *ui_passwords, allow_insecure_http=False):
+        from oduflow.settings import Settings, TeamSettings
+
+        return Settings(
+            allow_insecure_http=allow_insecure_http,
+            teams={
+                str(i + 1): TeamSettings(team_id=str(i + 1), ui_password=pw)
+                for i, pw in enumerate(ui_passwords)
+            },
+        )
+
+    def test_provisions_partially_configured_multiteam(self, tmp_path, monkeypatch):
+        import oduflow.server as server
+
+        cfg = tmp_path / "oduflow.toml"
+        cfg.write_text(
+            "[team.1]\n"
+            'ui_password = "already-set"\n'
+            "[team.2]\n"
+            'ui_password = ""\n',
+            encoding="utf-8",
+        )
+        # team 1 has a password, team 2 does not: the old any() guard returned
+        # early here and left team 2 locked out.
+        settings = self._settings("already-set", "")
+        monkeypatch.setattr(server, "find_toml", lambda: str(cfg))
+        sentinel = object()
+        monkeypatch.setattr(server, "_get_settings", lambda: sentinel)
+
+        result = server._ensure_web_ui_password(settings)
+
+        written = cfg.read_text(encoding="utf-8")
+        assert 'ui_password = ""' not in written
+        assert 'ui_password = "already-set"' in written
+        assert result is sentinel  # reloaded after the write
+
+    def test_skips_when_every_team_has_password(self, monkeypatch):
+        import oduflow.server as server
+
+        settings = self._settings("pw-a", "pw-b")
+        # find_toml/_get_settings must never be reached.
+        monkeypatch.setattr(
+            server, "find_toml", lambda: (_ for _ in ()).throw(AssertionError())
+        )
+        assert server._ensure_web_ui_password(settings) is settings
+
+    def test_skips_when_allow_insecure_http(self, monkeypatch):
+        import oduflow.server as server
+
+        settings = self._settings("", "", allow_insecure_http=True)
+        monkeypatch.setattr(
+            server, "find_toml", lambda: (_ for _ in ()).throw(AssertionError())
+        )
+        assert server._ensure_web_ui_password(settings) is settings
+
+
 class TestHttpRequestPathGuard:
     """`http_request_to_odoo` must reject paths that could rewrite the host
     (SSRF) before it ever builds a request."""
