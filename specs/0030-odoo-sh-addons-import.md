@@ -127,6 +127,23 @@ other, and updatability (a reachable remote) is the more useful of the two.
   two new ingest endpoints join the existing token-authed
   `/api/templates/import/*` family; rename stays behind the UI login.
 
+## Evolution
+
+- **Chunked large-payload upload (2026-07-04).** Deploying behind a Cloudflare
+  Tunnel surfaced Cloudflare's 100 MB request-body cap: the ~114 MB SQL dump (and
+  Enterprise/Themes tars, also >100 MB) were rejected at the edge with `413`
+  before reaching Oduflow. The dump and addon uploads were therefore made
+  **chunked**: the client splits the file into ≤90 MiB byte-range parts
+  (`offset`/`total` query params) and the server appends them in order,
+  assembling the file when the last part lands — mirroring how the filestore is
+  already split by hash-directory. It is resumable (the dump resumes from the
+  server's reported `dump_bytes`) and idempotent (a re-sent final part after
+  completion just reports done; an out-of-order part gets a `409` with the
+  expected offset). The legacy single-shot upload path is retained for callers
+  that don't pass `offset`. This keeps the import working under any body-size
+  cap, not just Cloudflare's. (Note: filestore hash-dir chunks are assumed
+  <100 MB; a single oversized bucket would need the same treatment.)
+
 ## History
 
 - `litnimax/madrid-v1` (2026-07-04) — addons-path import: `--with-*` flags and

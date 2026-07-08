@@ -87,6 +87,11 @@ fi
 AUTH="Authorization: Bearer ${TOKEN}"
 API="${SERVER}/api/templates/import"
 
+# Large single payloads (SQL dump, addon tarballs) are uploaded in parts so
+# they survive proxies that cap request body size — Cloudflare, for one, rejects
+# bodies over 100 MB with a 413. 90 MiB per part stays safely under that.
+PART_BYTES=$((90 * 1024 * 1024))
+
 # ---- helpers ---------------------------------------------------------------
 
 human() {  # bytes -> human readable
@@ -101,6 +106,44 @@ json_field() {  # file expr  (expr is python on obj `d`)
     python3 -c 'import sys,json
 d=json.load(open(sys.argv[1]))
 print('"$2"')' "$1" 2>/dev/null || true
+}
+
+upload_ranges() {  # file url extra_query start_offset [label]
+    # POST a local file to `url` in <=PART_BYTES parts, one request each, so no
+    # single request exceeds a proxy's body limit. Each part carries
+    # offset=<byte>&total=<size>; the server appends in order and assembles the
+    # file once the last part lands. Resumable: pass the server's current byte
+    # count as start_offset. dd reads byte ranges directly (no temp splits).
+    local file="$1" url="$2" extra="$3" off="${4:-0}" label="${5:-upload}"
+    local total len q
+    total="$(wc -c < "$file")"
+    [ "$off" -lt 0 ] && off=0
+    [ "$off" -gt "$total" ] && off=0   # stale/invalid resume point -> restart
+    while [ "$off" -lt "$total" ]; do
+        len=$PART_BYTES
+        [ $((off + len)) -gt "$total" ] && len=$((total - off))
+        q="offset=${off}&total=${total}"
+        [ -n "$extra" ] && q="${extra}&${q}"
+        local tries=0
+        while :; do
+            if dd if="$file" bs=1048576 iflag=skip_bytes,count_bytes \
+                   skip="$off" count="$len" 2>/dev/null \
+               | curl -fsS -H "$AUTH" -H "Content-Type: application/octet-stream" \
+                      -T - -X POST "${url}?${q}" >/dev/null; then
+                break
+            fi
+            tries=$((tries + 1))
+            [ "$tries" -ge 3 ] && return 1
+            sleep 2
+        done
+        off=$((off + len))
+        local pct=0
+        [ "$total" -gt 0 ] && pct=$(( off * 100 / total ))
+        printf '\r>> %s [%3d%%] %s / %s\033[K' \
+            "$label" "$pct" "$(human "$off")" "$(human "$total")" >&2
+    done
+    echo >&2
+    return 0
 }
 
 # ---- status (drives resume) ------------------------------------------------
@@ -129,6 +172,8 @@ fi
 
 have_manifest="$(json_field "$STATUS_FILE" 'd.get("progress",{}).get("manifest") and 1 or ""')"
 have_dump="$(json_field "$STATUS_FILE" 'd.get("progress",{}).get("dump") and 1 or ""')"
+have_dump_bytes="$(json_field "$STATUS_FILE" 'str(d.get("progress",{}).get("dump_bytes",0))')"
+[ -n "$have_dump_bytes" ] || have_dump_bytes=0
 done_chunks=" $(json_field "$STATUS_FILE" '" ".join(d.get("progress",{}).get("filestore_chunks",[]))') "
 done_addons=" $(json_field "$STATUS_FILE" '" ".join(d.get("progress",{}).get("addons",[]))') "
 done_remote=" $(json_field "$STATUS_FILE" '" ".join(d.get("progress",{}).get("remote_addons",[]))') "
@@ -146,10 +191,15 @@ fi
 # ---- dump ------------------------------------------------------------------
 
 if [ -z "$have_dump" ]; then
-    echo ">> uploading SQL dump ($(human "$(wc -c < "$SQL_GZ")"))"
-    # -T streams from disk; --data-binary would buffer the whole file in RAM.
-    curl -fsS -H "$AUTH" -H "Content-Type: application/gzip" \
-        -T "$SQL_GZ" -X POST "${API}/dump" >/dev/null
+    dump_total="$(wc -c < "$SQL_GZ")"
+    echo ">> uploading SQL dump ($(human "$dump_total"), resuming from $(human "$have_dump_bytes"))"
+    # Chunked so no single request exceeds a proxy body limit (e.g. Cloudflare's
+    # 100 MB); resumes from what the server already has.
+    if ! upload_ranges "$SQL_GZ" "${API}/dump" "" "$have_dump_bytes" "dump"; then
+        echo "ERROR: failed to upload SQL dump after retries." >&2
+        echo "       Re-run the same command to resume." >&2
+        exit 5
+    fi
 else
     echo ">> SQL dump already uploaded, skipping"
 fi
@@ -270,19 +320,21 @@ sanitize_addon_name() {  # path -> [a-z0-9_-] name (<=63)
 }
 
 upload_addon_files() {  # path name branch category
-    local path="$1" name="$2" branch="$3" cat="$4" tries=0
-    local base parent
+    # Addon tars can exceed a proxy body limit (Enterprise is hundreds of MB),
+    # so buffer the tar to a file and upload it in parts. The temp lives next to
+    # the backups ($HOME), which has room; the filestore is streamed elsewhere.
+    local path="$1" name="$2" branch="$3" cat="$4"
+    local base parent tmptar rc
     base="$(basename "$path")"; parent="$(dirname "$path")"
-    while :; do
-        if tar --exclude='.git' -C "$parent" -cf - "$base" \
-            | curl -fsS -H "$AUTH" -H "Content-Type: application/x-tar" \
-                   -T - -X POST "${API}/addon?name=${name}&branch=${branch}&category=${cat}" >/dev/null; then
-            return 0
-        fi
-        tries=$((tries + 1))
-        [ "$tries" -ge 3 ] && return 1
-        sleep 2
-    done
+    tmptar="$(mktemp "$HOME/.oduflow-addon-XXXXXX.tar")"
+    if ! tar --exclude='.git' -C "$parent" -cf "$tmptar" "$base"; then
+        rm -f "$tmptar"; return 1
+    fi
+    upload_ranges "$tmptar" "${API}/addon" \
+        "name=${name}&branch=${branch}&category=${cat}" 0 "addon ${name}"
+    rc=$?
+    rm -f "$tmptar"
+    return "$rc"
 }
 
 announce_addon_remote() {  # name origin branch

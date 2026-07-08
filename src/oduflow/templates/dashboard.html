@@ -1528,6 +1528,13 @@
           <div class="hint">Restores an Odoo.sh daily backup (database + filestore) into a new template of this name.</div>
         </div>
         <div class="form-group">
+          <div class="hint" style="margin-top:0;">Enterprise and Themes are proprietary Odoo code. Before downloading them, review your rights and obligations: <a href="https://oduflow.dev/odoo-sh-import-notes" target="_blank" rel="noopener">oduflow.dev/odoo-sh-import-notes</a> (opens in a new tab).</div>
+          <div class="check-row" style="margin-top:8px;">
+            <input type="checkbox" id="import-ack" onchange="onImportAckChange()" aria-controls="import-addons-options">
+            <label for="import-ack">I have read the import notes and accept responsibility for the addons I download.</label>
+          </div>
+        </div>
+        <div class="form-group" id="import-addons-options" hidden>
           <label>Also bring over addons</label>
           <div class="hint" style="margin-top:0;">The standard Odoo modules ship with the image. These options download the rest of the Odoo.sh addons-path into extra-addons for this template.</div>
           <div class="check-row" style="margin-top:8px;">
@@ -1541,13 +1548,6 @@
           <div class="check-row" style="margin-top:6px;">
             <input type="checkbox" id="import-with-extra" disabled>
             <label for="import-with-extra">Extra addons <span class="label-hint">— OCA and other repos; reachable ones stay updatable</span></label>
-          </div>
-        </div>
-        <div class="form-group">
-          <div class="hint" style="margin-top:0;">Enterprise and Themes are proprietary Odoo code. Before downloading them, review your rights and obligations: <a href="https://oduflow.dev/odoo-sh-import-notes" target="_blank" rel="noopener">oduflow.dev/odoo-sh-import-notes</a> (opens in a new tab).</div>
-          <div class="check-row" style="margin-top:8px;">
-            <input type="checkbox" id="import-ack" onchange="onImportAckChange()">
-            <label for="import-ack">I have read the import notes and accept responsibility for the addons I download.</label>
           </div>
         </div>
         <div class="form-actions">
@@ -2910,12 +2910,14 @@ function openImportOdooModal() {
     cb.disabled = true;
   });
   document.getElementById('import-ack').checked = false;
+  document.getElementById('import-addons-options').hidden = true;
   showModal('import-odoo-modal');
   document.getElementById('import-tpl-name').focus();
 }
 
 function onImportAckChange() {
   var ack = document.getElementById('import-ack').checked;
+  document.getElementById('import-addons-options').hidden = !ack;
   ['import-with-enterprise', 'import-with-themes', 'import-with-extra'].forEach(function(id) {
     var cb = document.getElementById(id);
     cb.disabled = !ack;

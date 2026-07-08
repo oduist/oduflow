@@ -982,6 +982,13 @@ def _build_routes(
         staging = team.get_import_staging_dir(template_name)  # validates name
         manifest = os.path.isfile(os.path.join(staging, "metadata.json"))
         dump = os.path.isfile(os.path.join(staging, "dump.sql.gz"))
+        # dump_bytes lets a chunked upload resume mid-file: bytes already on the
+        # server, whether the dump is complete (final file) or partial (.part).
+        if dump:
+            dump_bytes = os.path.getsize(os.path.join(staging, "dump.sql.gz"))
+        else:
+            dpart = os.path.join(staging, "dump.sql.gz.part")
+            dump_bytes = os.path.getsize(dpart) if os.path.isfile(dpart) else 0
         fs_dir = os.path.join(staging, "filestore")
         chunks: list[str] = []
         if os.path.isdir(fs_dir):
@@ -1018,11 +1025,21 @@ def _build_routes(
                             remote_addons.append(str(e["name"]))
             except (OSError, ValueError):
                 pass
+        # Partial addon tars (chunked upload in progress): received bytes per
+        # addon, so a resumed run can restart an incomplete one.
+        addon_bytes: dict[str, int] = {}
+        if os.path.isdir(staging):
+            for entry in os.listdir(staging):
+                if entry.startswith(".addon_") and entry.endswith(".tar.part"):
+                    nm = entry[len(".addon_") : -len(".tar.part")]
+                    addon_bytes[nm] = os.path.getsize(os.path.join(staging, entry))
         return {
             "manifest": manifest,
             "dump": dump,
+            "dump_bytes": dump_bytes,
             "filestore_chunks": sorted(chunks),
             "addons": sorted(addons),
+            "addon_bytes": addon_bytes,
             "remote_addons": sorted(set(remote_addons)),
         }
 
@@ -1143,6 +1160,34 @@ def _build_routes(
             return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
         return JSONResponse({"ok": True})
 
+    async def _receive_offset_chunk(
+        request: Request, part_path: str, offset: int
+    ) -> tuple[str, int]:
+        """Append a byte-range chunk to ``part_path`` at ``offset`` (in order).
+
+        Chunked uploads work around proxies that cap request body size (e.g.
+        Cloudflare's 100 MB limit) by splitting a large payload into parts the
+        server concatenates. Returns ``(state, size)`` where state is
+        ``"written"`` (appended), ``"duplicate"`` (offset already covered — a
+        resent part, discarded) or ``"gap"`` (offset beyond current size —
+        caller should 409). ``offset == 0`` truncates/starts fresh. The request
+        body is always drained so the connection closes cleanly.
+        """
+        cur = os.path.getsize(part_path) if os.path.exists(part_path) else 0
+        if offset > cur:
+            async for _ in request.stream():
+                pass
+            return "gap", cur
+        if 0 < offset < cur:
+            async for _ in request.stream():
+                pass
+            return "duplicate", cur
+        mode = "wb" if offset == 0 else "ab"
+        with open(part_path, mode) as f:
+            async for data in request.stream():
+                f.write(data)
+        return "written", os.path.getsize(part_path)
+
     async def api_import_dump(request: Request) -> JSONResponse:
         try:
             team, record = _resolve_import_token(request)
@@ -1155,18 +1200,54 @@ def _build_routes(
             return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
         os.makedirs(staging, exist_ok=True)
         dest = os.path.join(staging, "dump.sql.gz")
-        tmp = f"{dest}.part"
+        part = f"{dest}.part"
+
+        offset_raw = request.query_params.get("offset")
+        if offset_raw is None:
+            # Legacy single-shot upload (no chunking): stream straight through.
+            try:
+                with open(part, "wb") as f:
+                    async for chunk in request.stream():
+                        f.write(chunk)
+                os.replace(part, dest)
+            except Exception as e:
+                if os.path.exists(part):
+                    os.remove(part)
+                logger.exception("Failed to receive dump for %s", template_name)
+                return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+            return JSONResponse({"ok": True})
+
+        # Chunked upload: append at `offset`, complete when the part hits `total`.
+        if os.path.isfile(dest):  # already assembled — retry after completion
+            return JSONResponse(
+                {"ok": True, "received": os.path.getsize(dest), "complete": True}
+            )
         try:
-            with open(tmp, "wb") as f:
-                async for chunk in request.stream():
-                    f.write(chunk)
-            os.replace(tmp, dest)
+            offset = int(offset_raw)
+            total = int(request.query_params.get("total", "0"))
+        except ValueError:
+            return JSONResponse(
+                {"ok": False, "error": "offset and total must be integers"},
+                status_code=400,
+            )
+        try:
+            state, size = await _receive_offset_chunk(request, part, offset)
         except Exception as e:
-            if os.path.exists(tmp):
-                os.remove(tmp)
-            logger.exception("Failed to receive dump for template %s", template_name)
+            logger.exception("Failed to receive dump chunk for %s", template_name)
             return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
-        return JSONResponse({"ok": True})
+        if state == "gap":
+            return JSONResponse(
+                {
+                    "ok": False,
+                    "error": f"unexpected offset {offset}, expected {size}",
+                    "expected": size,
+                },
+                status_code=409,
+            )
+        complete = total > 0 and size >= total
+        if complete:
+            os.replace(part, dest)
+        return JSONResponse({"ok": True, "received": size, "complete": complete})
 
     async def api_import_filestore(request: Request) -> JSONResponse:
         try:
@@ -1257,30 +1338,85 @@ def _build_routes(
             return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
         addons_dir = os.path.join(staging, "addons")
         os.makedirs(staging, exist_ok=True)
-        tmp_tar = os.path.join(staging, f".addon_{name}.tar")
+        final_tar = os.path.join(staging, f".addon_{name}.tar")
+        part = f"{final_tar}.part"
+
+        def _finish() -> None:
+            """Extract the assembled tar and record the addon; clean up."""
+            try:
+                system_ops.extract_addon_dir(final_tar, addons_dir, name)
+                _record_import_addon(
+                    team,
+                    template_name,
+                    {
+                        "name": name,
+                        "kind": "local",
+                        "branch": branch,
+                        "origin_url": "",
+                        "category": category,
+                    },
+                )
+            finally:
+                if os.path.exists(final_tar):
+                    os.remove(final_tar)
+
+        offset_raw = request.query_params.get("offset")
+        if offset_raw is None:
+            # Legacy single-shot upload (no chunking).
+            try:
+                with open(part, "wb") as f:
+                    async for data in request.stream():
+                        f.write(data)
+                os.replace(part, final_tar)
+                _finish()
+            except Exception as e:
+                logger.exception(
+                    "Failed to receive addon %s for %s", name, template_name
+                )
+                return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+            finally:
+                if os.path.exists(part):
+                    os.remove(part)
+            return JSONResponse({"ok": True})
+
+        # Chunked upload: append at `offset`, extract when the part hits `total`.
+        if os.path.isdir(os.path.join(addons_dir, name)):  # already extracted
+            return JSONResponse({"ok": True, "complete": True})
         try:
-            with open(tmp_tar, "wb") as f:
-                async for data in request.stream():
-                    f.write(data)
-            system_ops.extract_addon_dir(tmp_tar, addons_dir, name)
-            _record_import_addon(
-                team,
-                template_name,
-                {
-                    "name": name,
-                    "kind": "local",
-                    "branch": branch,
-                    "origin_url": "",
-                    "category": category,
-                },
+            offset = int(offset_raw)
+            total = int(request.query_params.get("total", "0"))
+        except ValueError:
+            return JSONResponse(
+                {"ok": False, "error": "offset and total must be integers"},
+                status_code=400,
             )
+        try:
+            state, size = await _receive_offset_chunk(request, part, offset)
         except Exception as e:
-            logger.exception("Failed to receive addon %s for %s", name, template_name)
+            logger.exception(
+                "Failed to receive addon chunk %s for %s", name, template_name
+            )
             return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
-        finally:
-            if os.path.exists(tmp_tar):
-                os.remove(tmp_tar)
-        return JSONResponse({"ok": True})
+        if state == "gap":
+            return JSONResponse(
+                {
+                    "ok": False,
+                    "error": f"unexpected offset {offset}, expected {size}",
+                    "expected": size,
+                },
+                status_code=409,
+            )
+        complete = total > 0 and size >= total
+        if complete:
+            try:
+                os.replace(part, final_tar)
+                _finish()
+            except Exception as e:
+                logger.exception(
+                    "Failed to finalize addon %s for %s", name, template_name
+                )
+                return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+        return JSONResponse({"ok": True, "received": size, "complete": complete})
 
     async def api_import_addon_remote(request: Request) -> JSONResponse:
         """Announce a reachable extra repo (no files uploaded) — it is cloned
