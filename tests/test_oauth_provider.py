@@ -40,6 +40,23 @@ def _run(coro):
     return asyncio.new_event_loop().run_until_complete(coro)
 
 
+def _host_settings(*hostnames):
+    """Host-relative Settings (no oauth_base_url) with a team per hostname."""
+    return Settings(
+        oauth_base_url="",
+        teams={
+            str(i): TeamSettings(
+                team_id=str(i),
+                auth_token=f"tok-{i}",
+                hostname=h,
+                port_range_start=50000 + i * 100,
+                port_range_end=50100 + i * 100,
+            )
+            for i, h in enumerate(hostnames, start=1)
+        },
+    )
+
+
 class TestOduflowOAuthProvider:
     def test_host_relative_without_oauth_base_url(self):
         # No oauth_base_url (the traefik norm): the issuer is derived per-request
@@ -205,7 +222,9 @@ class TestOduflowOAuthProvider:
         from starlette.testclient import TestClient
 
         # No fixed issuer → issuer/endpoints derived per-request from the Host.
-        provider = OduflowOAuthProvider(_settings(oauth_base_url=""))
+        provider = OduflowOAuthProvider(
+            _host_settings("zipfit.oduflow.dev", "other.example.com")
+        )
         assert provider._host_relative is True
         app = Starlette(routes=provider.get_routes("/mcp"))
         client = TestClient(app)
@@ -275,7 +294,7 @@ class TestOduflowOAuthProvider:
                 (b"x-forwarded-proto", b"https"),
             ],
         }
-        app = HostRelativeAuthChallenge(inner)
+        app = HostRelativeAuthChallenge(inner, _host_settings("team-b.example.com"))
         _run(app(scope, receive, send))
 
         start = next(m for m in sent if m["type"] == "http.response.start")
@@ -286,3 +305,63 @@ class TestOduflowOAuthProvider:
         )
         # The error parts are preserved untouched.
         assert 'error="invalid_token"' in hdr
+
+    def test_metadata_rejects_unknown_host(self):
+        # A forged/absent host must not be reflected as the issuer: the discovery
+        # endpoints reject it with 400 rather than advertise an attacker origin
+        # or blow up on an invalid https:// URL.
+        from starlette.applications import Starlette
+        from starlette.testclient import TestClient
+
+        provider = OduflowOAuthProvider(_host_settings("zipfit.oduflow.dev"))
+        client = TestClient(Starlette(routes=provider.get_routes("/mcp")))
+
+        for path in (
+            "/.well-known/oauth-authorization-server",
+            "/.well-known/oauth-protected-resource/mcp",
+        ):
+            r = client.get(
+                path, headers={"host": "evil.com", "x-forwarded-proto": "https"}
+            )
+            assert r.status_code == 400, path
+
+    def test_auth_challenge_skips_unknown_host(self):
+        # A forged host must not be injected into the 401 challenge; the static
+        # (placeholder team) resource_metadata is left untouched.
+        from oduflow.oauth_provider import HostRelativeAuthChallenge
+
+        static = (
+            'Bearer error="invalid_token", resource_metadata='
+            '"https://team-a.example.com/.well-known/oauth-protected-resource/mcp"'
+        )
+
+        async def inner(scope, receive, send):
+            await send(
+                {
+                    "type": "http.response.start",
+                    "status": 401,
+                    "headers": [(b"www-authenticate", static.encode())],
+                }
+            )
+            await send({"type": "http.response.body", "body": b""})
+
+        sent: list = []
+
+        async def send(msg):
+            sent.append(msg)
+
+        async def receive():
+            return {"type": "http.request"}
+
+        scope = {
+            "type": "http",
+            "scheme": "http",
+            "headers": [(b"host", b"evil.com"), (b"x-forwarded-proto", b"https")],
+        }
+        app = HostRelativeAuthChallenge(inner, _host_settings("team-b.example.com"))
+        _run(app(scope, receive, send))
+
+        start = next(m for m in sent if m["type"] == "http.response.start")
+        hdr = dict(start["headers"])[b"www-authenticate"].decode()
+        assert "team-a.example.com" in hdr  # unchanged
+        assert "evil.com" not in hdr

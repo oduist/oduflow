@@ -224,7 +224,13 @@ class Settings:
         # (oauth_base_url) or we run behind Traefik, where each team's own
         # TLS-terminated hostname is used as a per-request issuer — no central
         # oauth_base_url needed. Port mode still requires an explicit issuer.
-        return bool(self.oauth_base_url) or self.routing_mode == "traefik"
+        # It also requires a team auth_token (which doubles as the OAuth client
+        # credential): without one nothing is actually served, so the flag stays
+        # False rather than reporting "OAuth ON" for a tokenless deployment.
+        has_token = any(t.auth_token for t in self.teams.values())
+        return has_token and (
+            bool(self.oauth_base_url) or self.routing_mode == "traefik"
+        )
 
     def get_team_by_ui_password(self, password: str) -> TeamSettings | None:
         if not password:

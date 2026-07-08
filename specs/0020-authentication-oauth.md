@@ -99,7 +99,10 @@ request context and threaded into per-team scoping.
   (`/.well-known/oauth-authorization-server`,
   `/.well-known/oauth-protected-resource`) for handlers that build `issuer`,
   `authorization_endpoint`, `token_endpoint`, and `resource` from the request's
-  forwarded proto/host. Each team's OAuth flow therefore runs entirely on its own
+  forwarded proto/host — validated against the registered team hostnames, so a
+  forged `X-Forwarded-Host` cannot advertise a foreign issuer (and the 401
+  `WWW-Authenticate` challenge is rewritten under the same check). Each team's
+  OAuth flow therefore runs entirely on its own
   already-certificated hostname ([[0014-team-based-multi-tenancy]]), and
   `_build_auth` enables the Authorization Server automatically whenever routing is
   traefik. `oauth_base_url` becomes **optional** — needed only to pin a fixed

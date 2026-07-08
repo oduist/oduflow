@@ -3611,7 +3611,7 @@ def _start_http() -> None:
     if getattr(auth, "_host_relative", False):
         from oduflow.oauth_provider import HostRelativeAuthChallenge
 
-        served = HostRelativeAuthChallenge(served)
+        served = HostRelativeAuthChallenge(served, settings)
 
     uvicorn.run(served, host=host, port=port, ws="websockets-sansio")
 
@@ -3635,12 +3635,8 @@ def _build_auth(settings: Settings):  # type: ignore[no-untyped-def]
     has_team_token = any(t.auth_token for t in settings.teams.values())
 
     if settings.oauth_enabled:
-        if not has_team_token:
-            logger.warning(
-                "OAuth is enabled (oauth_base_url or traefik routing) but no "
-                "team has auth_token; OAuth disabled"
-            )
-            return None
+        # oauth_enabled already implies a team auth_token (see Settings), which
+        # doubles as the OAuth client credential.
         from oduflow.oauth_provider import OduflowOAuthProvider
 
         return OduflowOAuthProvider(settings)

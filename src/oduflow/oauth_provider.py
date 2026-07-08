@@ -31,7 +31,7 @@ from mcp.shared.auth import (
 )
 from pydantic import AnyHttpUrl, AnyUrl
 from starlette.requests import Request
-from starlette.responses import Response
+from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
 
 from oduflow import env_tokens
@@ -49,10 +49,10 @@ _LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "::1", "[::1]"}
 _RESOURCE_METADATA_RE = re.compile(r'resource_metadata="([^"]+)"')
 
 
-def _origin_from_forwarded(
+def _forwarded_scheme_host(
     raw_headers: list[tuple[bytes, bytes]], fallback_scheme: str | None = None
-) -> str:
-    """External origin (``scheme://host``) from ASGI headers.
+) -> tuple[str, str]:
+    """The ``(scheme, host)`` the client reached us on, from ASGI headers.
 
     Behind Traefik the app is reached over http with the team's public host in
     the Host header and ``X-Forwarded-Proto: https``; reflect the forwarded
@@ -63,7 +63,16 @@ def _origin_from_forwarded(
     host = fwd_host or headers.get("host", "")
     fwd_proto = headers.get("x-forwarded-proto", "").split(",")[0].strip().lower()
     scheme = fwd_proto or fallback_scheme or "https"
-    return f"{scheme}://{host}"
+    return scheme, host
+
+
+def _unknown_host_response() -> JSONResponse:
+    """400 for a discovery request whose host is not a registered team — never
+    advertise an issuer derived from a forged or absent Host header."""
+    return JSONResponse(
+        {"error": "invalid_request", "error_description": "Unrecognized host."},
+        status_code=400,
+    )
 
 
 def _rewrite_resource_metadata_origin(header_value: bytes, origin: str) -> bytes:
@@ -90,17 +99,28 @@ class HostRelativeAuthChallenge:
     header, so without this rewrite team B's client would start OAuth on team A's
     hostname. We rewrite the URL's scheme+host to the host the request actually
     arrived on, keeping the path; the discovery it points to is already
-    host-relative (see OduflowOAuthProvider.get_routes).
+    host-relative (see OduflowOAuthProvider.get_routes). The rewrite only fires
+    for a host that maps to a registered team, so a forged X-Forwarded-Host can't
+    inject an attacker origin into the challenge.
     """
 
-    def __init__(self, app: Any) -> None:
+    def __init__(self, app: Any, settings: Settings) -> None:
         self.app = app
+        self._settings = settings
 
     async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
         if scope.get("type") != "http":
             await self.app(scope, receive, send)
             return
-        origin = _origin_from_forwarded(scope.get("headers", []), scope.get("scheme"))
+        scheme, host = _forwarded_scheme_host(
+            scope.get("headers", []), scope.get("scheme")
+        )
+        # Only rewrite for a host that belongs to a registered team; a forged or
+        # unexpected host is left with fastmcp's own (placeholder team) URL.
+        if self._settings.get_team_by_hostname(host) is None:
+            await self.app(scope, receive, send)
+            return
+        origin = f"{scheme}://{host}"
 
         async def send_wrapper(message: Any) -> None:
             if message.get("type") == "http.response.start" and message.get("headers"):
@@ -243,15 +263,24 @@ class OduflowOAuthProvider(InMemoryOAuthProvider):
                 patched.append(route)
         return patched
 
-    @staticmethod
-    def _request_origin(request: Request) -> str:
-        """External origin (scheme://host) the client reached us on."""
-        return _origin_from_forwarded(
+    def _validated_origin(self, request: Request) -> str | None:
+        """External origin (scheme://host) the client reached us on, but only for
+        a host that belongs to a registered team; otherwise ``None`` so the caller
+        rejects the request. This keeps a forged ``X-Forwarded-Host`` from
+        advertising an attacker-controlled issuer, and turns a missing Host into a
+        clean 400 rather than an invalid ``https://`` URL."""
+        scheme, host = _forwarded_scheme_host(
             request.scope["headers"], request.scope.get("scheme")
         )
+        if self._settings.get_team_by_hostname(host) is None:
+            return None
+        return f"{scheme}://{host}"
 
     async def _authorization_server_metadata(self, request: Request) -> Response:
-        issuer = AnyHttpUrl(self._request_origin(request))
+        origin = self._validated_origin(request)
+        if origin is None:
+            return _unknown_host_response()
+        issuer = AnyHttpUrl(origin)
         # Default the options exactly as the SDK's create_auth_routes does —
         # build_metadata dereferences them, and both are None on this provider.
         metadata = build_metadata(
@@ -267,7 +296,9 @@ class OduflowOAuthProvider(InMemoryOAuthProvider):
         )
 
     async def _protected_resource_metadata(self, request: Request) -> Response:
-        origin = self._request_origin(request)
+        origin = self._validated_origin(request)
+        if origin is None:
+            return _unknown_host_response()
         resource_path = (
             urlparse(str(self._resource_url)).path if self._resource_url else "/mcp"
         )
