@@ -34,6 +34,44 @@ def validate_template_name(template_name: str) -> str:
     return name
 
 
+def validate_env_name(env_name: str) -> str:
+    """Validate an environment/branch name and return it unchanged.
+
+    ``env_name`` becomes a filesystem path segment via
+    ``get_workspace_path`` (``os.path.join(dir, env_name.replace('/', '-'))``).
+    Slashes are folded to ``-`` there, so the only way the result can escape the
+    workspaces dir is a name that IS a traversal component (``.``/``..``) or that
+    smuggles a native path separator/NUL. Reject those (and empty/oversized
+    names) at the creation chokepoint so every derived path stays contained.
+    Legitimate git branch names (``19.0``, ``feature/x``, ``release/v1.2``) pass.
+    Returns the name **unchanged** (it is not canonicalized): a padded name like
+    ``"foo "`` is rejected rather than silently trimmed, because slugified
+    container/DB names strip the space while the workspace path keeps it — so the
+    trimmed and raw forms would collide on containers yet diverge on disk.
+    """
+    name = env_name or ""
+    if name != name.strip():
+        raise ValueError(
+            f"Invalid environment name '{env_name}': leading or trailing "
+            "whitespace is not allowed."
+        )
+    if not name or len(name) > 100:
+        raise ValueError(
+            f"Invalid environment name '{env_name}': must be 1-100 characters."
+        )
+    if "\\" in name or "\x00" in name:
+        raise ValueError(
+            f"Invalid environment name '{env_name}': backslashes and NUL bytes "
+            "are not allowed."
+        )
+    if any(seg in ("", ".", "..") for seg in name.split("/")):
+        raise ValueError(
+            f"Invalid environment name '{env_name}': '/'-separated segments must "
+            "be non-empty and not '.' or '..'."
+        )
+    return name
+
+
 def slugify_branch(env_name: str) -> str:
     slug = env_name.replace("/", "-")
     slug = re.sub(r"[^a-zA-Z0-9_-]", "", slug)

@@ -64,7 +64,13 @@ get_odoo_development_guide(version="..."), follow it immediately before
 editing code.
 """.strip()
 
-mcp = FastMCP("Oduflow", instructions=_MCP_INSTRUCTIONS)
+# mask_error_details=True: only messages from explicitly-raised ToolError (our
+# handle_errors wraps FlowError into one) reach the client. Any other exception
+# is returned as a generic "Error calling tool" without its text, so internal
+# paths, container/DB names and stack detail are not disclosed to MCP callers.
+mcp = FastMCP(
+    "Oduflow", instructions=_MCP_INSTRUCTIONS, mask_error_details=True
+)
 _locks = LockManager()
 _settings: Settings | None = None
 _instance_id: str = ""
@@ -196,6 +202,13 @@ def handle_errors(fn):
                 return result
             except FlowError as e:
                 logger.error("[%s] Error: %s", fn.__name__, e)
+                raise ToolError(str(e))
+            except ValueError as e:
+                # Intentional, developer-authored input validation (invalid
+                # env/module/template names, bad request path, …). These messages
+                # are safe to surface and helpful; every OTHER exception stays
+                # masked by mask_error_details=True so internal detail never leaks.
+                logger.error("[%s] Invalid input: %s", fn.__name__, e)
                 raise ToolError(str(e))
 
         return await anyio.to_thread.run_sync(_run)
@@ -434,7 +447,9 @@ def create_environment(
     """
     import json
 
-    resolved_env_name = env_name or branch
+    from oduflow.naming import validate_env_name
+
+    resolved_env_name = validate_env_name(env_name or branch)
     _locks.acquire_env(resolved_env_name)
     try:
         settings = _get_settings()
@@ -2784,6 +2799,90 @@ def _inject_auth_token(toml_text: str, token: str) -> str:
     return "\n".join(out) + "\n"
 
 
+def _inject_ui_password(toml_text: str, password: str) -> str:
+    """Replace the empty ``ui_password = ""`` in a freshly bootstrapped
+    oduflow.toml with a generated web-UI password, so a fresh HTTP install does
+    NOT serve the dashboard (interactive shells, SQL, agent, service creation)
+    unauthenticated. Only the first empty ui_password (team 1) is set; existing
+    user configs are never rewritten.
+    """
+    replacement = f'ui_password = "{password}"'
+    out: list[str] = []
+    injected = False
+    for raw in toml_text.splitlines():
+        if not injected and raw.split("#", 1)[0].strip() == 'ui_password = ""':
+            indent = raw[: len(raw) - len(raw.lstrip())]
+            comment = raw.split("#", 1)[1].strip() if "#" in raw else ""
+            out.append(f"{indent}{replacement}" + (f"  # {comment}" if comment else ""))
+            injected = True
+        else:
+            out.append(raw)
+    return "\n".join(out) + "\n"
+
+
+def _autofill_ui_passwords(toml_text: str) -> tuple[str, list[str]]:
+    """Fill EVERY empty ``ui_password = ""`` in an existing oduflow.toml with a
+    freshly generated password (one distinct password per team). Used to upgrade
+    older configs that predate the secure-by-default bootstrap without leaving
+    the dashboard open. Returns the rewritten text and the list of generated
+    passwords (empty if there was nothing to fill)."""
+    import secrets
+
+    out: list[str] = []
+    generated: list[str] = []
+    for raw in toml_text.splitlines():
+        if raw.split("#", 1)[0].strip() == 'ui_password = ""':
+            password = secrets.token_urlsafe(18)
+            generated.append(password)
+            indent = raw[: len(raw) - len(raw.lstrip())]
+            comment = raw.split("#", 1)[1].strip() if "#" in raw else ""
+            out.append(
+                f'{indent}ui_password = "{password}"'
+                + (f"  # {comment}" if comment else "")
+            )
+        else:
+            out.append(raw)
+    return "\n".join(out) + "\n", generated
+
+
+def _ensure_web_ui_password(settings: Settings) -> Settings:
+    """Auto-provision a web-UI password for existing configs (HTTP mode only).
+
+    Older installs shipped ``ui_password = ""`` (open dashboard). Rather than
+    hard-fail the whole HTTP transport on upgrade — which would also take down
+    token-protected MCP for headless users — generate a password, persist it to
+    oduflow.toml (symmetric with the fresh-install bootstrap) and reload. Skipped
+    when the operator opted into an open server (``allow_insecure_http``) or a
+    password is already set. On any write failure the caller's fail-closed check
+    still refuses to serve an open dashboard."""
+    global _settings
+    if settings.allow_insecure_http or any(
+        t.ui_password for t in settings.teams.values()
+    ):
+        return settings
+    import pathlib
+
+    try:
+        cfg_path = find_toml()
+        updated, generated = _autofill_ui_passwords(
+            pathlib.Path(cfg_path).read_text(encoding="utf-8")
+        )
+        if not generated:
+            return settings
+        pathlib.Path(cfg_path).write_text(updated, encoding="utf-8")
+    except Exception:
+        logger.exception("Could not auto-provision a web-UI password")
+        return settings
+    for password in generated:
+        logger.warning(
+            "Auto-generated a web-UI password (user 'admin') for a team that had "
+            "none, so upgrading does not serve the dashboard unauthenticated: %s",
+            password,
+        )
+    _settings = None
+    return _get_settings()
+
+
 def _run_reload_template(
     settings: Settings, team: TeamSettings, template_name: str, dump_path: str = ""
 ) -> None:
@@ -3346,20 +3445,27 @@ def _run_cli() -> None:
         bundled = pathlib.Path(__file__).resolve().parent / "templates" / "oduflow.toml"
         dest = os.path.join(dest_dir, "oduflow.toml")
         generated_token = secrets.token_urlsafe(24)
+        generated_ui_password = secrets.token_urlsafe(18)
         rendered = _inject_db_password(
             bundled.read_text(encoding="utf-8"), secrets.token_urlsafe(24)
         )
         rendered = _inject_auth_token(rendered, generated_token)
+        rendered = _inject_ui_password(rendered, generated_ui_password)
         with open(dest, "w", encoding="utf-8") as f:
             f.write(rendered)
         logger.info(
-            "Config created: %s (auto-generated DB password and MCP auth_token)",
+            "Config created: %s (auto-generated DB password, MCP auth_token and "
+            "web-UI password)",
             dest,
         )
         logger.info(
             "Generated MCP auth_token for team 1: %s "
             "(use as Bearer token / OAuth client_id+secret)",
             generated_token,
+        )
+        logger.info(
+            "Generated web-UI password for team 1 (user 'admin'): %s",
+            generated_ui_password,
         )
 
     global _settings
@@ -3500,6 +3606,10 @@ def _start_http() -> None:
     from fastmcp.server.http import create_streamable_http_app
 
     settings = _get_settings()
+    # Secure the dashboard on upgrades without bricking MCP: auto-provision a
+    # ui_password for existing configs that still have none. The fail-closed
+    # check below only trips if this could not write the config.
+    settings = _ensure_web_ui_password(settings)
     host = "0.0.0.0" if settings.routing_mode == "traefik" else settings.host
     port = settings.port
 
@@ -3520,6 +3630,25 @@ def _start_http() -> None:
         logger.warning(
             "HTTP transport starting WITHOUT authentication "
             "(allow_insecure_http=true) — the full MCP tool surface is open."
+        )
+
+    # Fail closed for the WEB DASHBOARD too, symmetric to the MCP check above.
+    # The dashboard exposes MORE than MCP (interactive shells/SQL/agent to every
+    # environment, privileged service creation, credential management) and is
+    # only authenticated when a team sets ui_password. Fresh installs bootstrap
+    # one and _ensure_web_ui_password just auto-provisioned one for existing
+    # configs — so reaching here with none set means both the config write failed
+    # and the operator has not opted into an open server; refuse rather than serve
+    # the dashboard unauthenticated.
+    if not settings.allow_insecure_http and not any(
+        t.ui_password for t in settings.teams.values()
+    ):
+        raise PrerequisiteNotMetError(
+            "Refusing to start the HTTP transport with an unauthenticated web "
+            "dashboard: set a [team.*] ui_password in oduflow.toml (the dashboard "
+            "exposes interactive shells, SQL and privileged service creation for "
+            "every environment). To run it open on purpose (e.g. behind your own "
+            "auth proxy), set [server] allow_insecure_http = true."
         )
 
     # With several teams, every team needs its own token: auth rejects a

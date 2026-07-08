@@ -2388,8 +2388,19 @@ function esc(s) {
   return d.innerHTML.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
+// Safe for a value placed inside a double-quoted HTML attribute, including the
+// JS-string form onclick="fn('<value>')": escapes \ and ' for the JS-string
+// context AND entity-encodes " < > & so a value can never break out of the
+// attribute (the browser HTML-decodes the entities before the JS parser sees
+// them). Order matters: encode & first, then backslash before the quote.
 function escAttr(s) {
-  return (s || '').replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+  return (s || '')
+    .replace(/&/g, '&amp;')
+    .replace(/\\/g, '\\\\')
+    .replace(/'/g, "\\'")
+    .replace(/"/g, '&quot;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
 }
 
 // Plain-text relative time ("just now", "5m ago"). Safe for attribute

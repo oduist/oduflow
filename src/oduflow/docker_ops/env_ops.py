@@ -1623,6 +1623,14 @@ def delete_environment(
     env_db = get_db_name(env_name, team.team_id)
     workspace_path = get_workspace_path(env_name, team.workspaces_dir)
 
+    # Defence in depth before the rmtree below: env_name is validated at creation,
+    # but reject any name whose derived path escapes (or equals) the workspaces
+    # dir — a "." / ".." env_name must never let a delete reach outside it.
+    _ws_root = os.path.realpath(team.workspaces_dir)
+    _target = os.path.realpath(workspace_path)
+    if _target == _ws_root or os.path.commonpath([_ws_root, _target]) != _ws_root:
+        raise NotFoundError(f"Environment '{env_name}' does not exist.")
+
     container_exists = True
     try:
         existing = client.containers.get(odoo_container_name)

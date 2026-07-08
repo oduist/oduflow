@@ -14,6 +14,22 @@ from oduflow.settings import Settings, TeamSettings
 
 logger = logging.getLogger("oduflow")
 
+# Odoo module technical names are Python identifiers ([a-z0-9_]). Validate before
+# they enter an `odoo -i/-u/-u <modules>` command string: even though exec_run
+# tokenizes via shlex.split (no shell), an unvalidated token like
+# "base --load=..." would be split into a *separate* argv flag and smuggle
+# arbitrary Odoo CLI options into the invocation (argument injection).
+_MODULE_NAME_RE = re.compile(r"^[A-Za-z0-9_]+$")
+
+
+def _validate_module_names(modules: "list[str] | tuple[str, ...]") -> None:
+    for m in modules:
+        if not _MODULE_NAME_RE.match(m or ""):
+            raise ValueError(
+                f"Invalid module name '{m}': only letters, digits and "
+                "underscores are allowed."
+            )
+
 
 def _detect_odoo_major(container: Any, image_label: str) -> int | None:
     """Best-effort major version of the Odoo running in *container*.
@@ -72,8 +88,18 @@ def run_environment_tests(
             f"Environment '{env_name}' does not exist. Use create_environment first."
         )
 
+    _validate_module_names([m.strip() for m in modules.split(",") if m.strip()])
+    # allow_fallback=False: the creds are interpolated into the odoo CLI as
+    # `-r ... -w ...`, visible in the container's process argv, and tests run
+    # tenant-controlled code inside that container — the shared superuser
+    # password must never be exposed there (cross-tenant DB access on legacy
+    # environments predating per-env credentials).
     creds = load_credentials(
-        env_name, team.workspaces_dir, settings.db_user, settings.db_password
+        env_name,
+        team.workspaces_dir,
+        settings.db_user,
+        settings.db_password,
+        allow_fallback=False,
     )
     # Use -u (upgrade), not -i (install): the module is already installed in the
     # template, and -i on an installed module is a no-op that never enters the test
@@ -168,6 +194,7 @@ def _run_odoo_module_command(
 ) -> dict[str, Any]:
     if not modules:
         raise ValueError("At least one module name is required.")
+    _validate_module_names(modules)
 
     client = get_client()
     odoo_container_name = get_resource_name(
@@ -240,17 +267,14 @@ def read_file_in_environment(
         extra={"env_name": env_name, "path": path},
     )
 
-    # Check if path exists and determine its type
-    exit_code, output = container.exec_run(
-        [
-            "sh",
-            "-c",
-            f'if [ -d "{path}" ]; then echo DIR; elif [ -f "{path}" ]; then echo FILE; else echo NOTFOUND; fi',
-        ]
-    )
-    path_type = (
-        output.decode("utf-8") if isinstance(output, bytes) else str(output)
-    ).strip()
+    # Check if path exists and determine its type. Use argv-form `test` calls so
+    # `path` is never concatenated into a shell string (no `sh -c` injection).
+    if container.exec_run(["test", "-d", path])[0] == 0:
+        path_type = "DIR"
+    elif container.exec_run(["test", "-f", path])[0] == 0:
+        path_type = "FILE"
+    else:
+        path_type = "NOTFOUND"
 
     if path_type == "NOTFOUND":
         return {"error": f"Path not found: {path}"}
@@ -428,7 +452,11 @@ def run_db_query(
         )
 
     creds = load_credentials(
-        env_name, team.workspaces_dir, settings.db_user, settings.db_password
+        env_name,
+        team.workspaces_dir,
+        settings.db_user,
+        settings.db_password,
+        allow_fallback=False,
     )
     if output_format == "human":
         cmd = ["psql", "-U", creds["pg_user"], "-d", env_db, "-c", query]
@@ -527,7 +555,11 @@ def run_odoo_shell(
         )
 
     creds = load_credentials(
-        env_name, team.workspaces_dir, settings.db_user, settings.db_password
+        env_name,
+        team.workspaces_dir,
+        settings.db_user,
+        settings.db_password,
+        allow_fallback=False,
     )
 
     # Write Python code to temp file via tar stream (avoids shell escaping)
@@ -629,6 +661,17 @@ def http_request_to_odoo(
     import urllib.error
 
     from oduflow.docker_ops.env_ops import get_environment_info
+
+    # SSRF guard: `path` is appended to the environment's own base URL. Require a
+    # single leading slash so it cannot rewrite the host — e.g. "@evil/..." would
+    # turn base_url into userinfo (http://host:port@evil/...) and "//evil/" is a
+    # protocol-relative host swap. Both would let a scoped token pivot the host
+    # process to internal services / the cloud-metadata endpoint.
+    if not path.startswith("/") or path.startswith("//"):
+        raise ValueError(
+            "path must be an absolute request path beginning with a single '/' "
+            f"(got {path!r})."
+        )
 
     info = get_environment_info(settings, team, env_name)
     base_url = info["url"]
