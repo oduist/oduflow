@@ -247,7 +247,11 @@ def _mount_filestore(
         )
         hint = ""
         if "allow_other" in error_msg or "permission" in error_msg.lower():
-            hint = " Hint: uncomment 'user_allow_other' in /etc/fuse.conf"
+            hint = (
+                " Hint: Oduflow normally runs as root, where 'allow_other' needs "
+                "no extra config. If you run it as a non-root user, uncomment "
+                "'user_allow_other' in /etc/fuse.conf."
+            )
         raise PrerequisiteNotMetError(
             f"Failed to mount filestore overlay: {error_msg}.{hint}"
         )
@@ -280,15 +284,24 @@ def _unmount_filestore(env_name: str, team: TeamSettings) -> None:
     if not os.path.isdir(merged) or not os.path.ismount(merged):
         return
 
+    # Prefer a direct, clean ``umount``: Oduflow runs as root, and umount(2) is
+    # not mediated by the AppArmor ``fusermount3`` profile shipped on Ubuntu
+    # 24.04+ (which otherwise DENIES the setuid ``fusermount`` helper, forcing
+    # the lazy fallback). ``fusermount3``/``fusermount`` stay in the chain for
+    # unprivileged/rootless deployments where umount(2) needs the helper. Lazy
+    # ``umount -l`` is the last resort only — it detaches even a busy mount,
+    # which can leave a still-bound container with a broken filestore.
     for cmd in (
+        ["umount", merged],
+        ["fusermount3", "-u", merged],
         ["fusermount", "-u", merged],
         ["umount", "-l", merged],
     ):
         try:
             subprocess.run(cmd, check=True, capture_output=True)
             logger.info(
-                "Filestore overlay unmounted (%s)",
-                cmd[-2],
+                "Filestore overlay unmounted via '%s'",
+                " ".join(cmd[:-1]),
                 extra={"env_name": env_name},
             )
             return
@@ -479,16 +492,31 @@ def _ensure_user_site_packages(container) -> None:
 
     This allows ``pip install --user`` to work inside containers where
     ``/var/lib/odoo/.local`` may not exist or may be owned by root.
+
+    Only the pip target dirs are chowned, never recursively into
+    ``.local/share``: the Odoo filestore is bind-mounted at
+    ``.local/share/Odoo/filestore/<db>`` from an overlay's read-only lower
+    layer, so ``chown -R /var/lib/odoo/.local`` would change ownership on every
+    filestore file and force fuse-overlayfs to copy the entire template
+    filestore up into this environment's upper layer — defeating the overlay
+    (each env would duplicate the full filestore instead of sharing the
+    template's lower layer).
     """
     container.exec_run(
-        "mkdir -p /var/lib/odoo/.local/lib",
+        "mkdir -p /var/lib/odoo/.local/lib /var/lib/odoo/.local/bin",
+        user="root",
+    )
+    # Non-recursive on .local so .local/share (the bind-mounted filestore) is
+    # never touched; recursive only on the pip dirs, which never hold it.
+    container.exec_run(
+        "chown odoo:odoo /var/lib/odoo/.local",
         user="root",
     )
     container.exec_run(
-        "chown -R odoo:odoo /var/lib/odoo/.local",
+        "chown -R odoo:odoo /var/lib/odoo/.local/lib /var/lib/odoo/.local/bin",
         user="root",
     )
-    logger.debug("Ensured /var/lib/odoo/.local is owned by odoo")
+    logger.debug("Ensured pip user dirs under /var/lib/odoo/.local are owned by odoo")
 
 
 def _install_pip_requirements(

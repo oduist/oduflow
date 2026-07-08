@@ -105,3 +105,50 @@ class TestInstallPipRequirements:
         assert installed is False
         assert log == ""
         assert _pip_cmd(container) is None
+
+
+def _chown_cmds(container) -> list[str]:
+    """All ``chown`` commands passed to exec_run."""
+    out = []
+    for call in container.exec_run.call_args_list:
+        cmd = call.args[0] if call.args else call.kwargs.get("cmd", "")
+        if isinstance(cmd, str) and cmd.strip().startswith("chown"):
+            out.append(cmd)
+    return out
+
+
+class TestEnsureUserSitePackages:
+    """Regression guard for the overlay copy-up bug.
+
+    ``_ensure_user_site_packages`` makes pip's ``--user`` target odoo-owned, but
+    the Odoo filestore is bind-mounted at ``.local/share/Odoo/filestore/<db>``
+    from an overlay's read-only lower layer. A recursive ``chown -R`` over the
+    whole ``/var/lib/odoo/.local`` descends into the filestore and rewrites every
+    file's owner, which forces fuse-overlayfs to copy the entire template
+    filestore up into the environment's upper layer — defeating the overlay
+    (each env duplicated the ~10 GB filestore). The chown must therefore never
+    recurse into ``.local`` / ``.local/share``.
+    """
+
+    def test_never_recursively_chowns_all_of_local(self):
+        container = _mock_container()
+        env_ops._ensure_user_site_packages(container)
+        for cmd in _chown_cmds(container):
+            assert not (
+                "-R" in cmd and cmd.rstrip().endswith("/var/lib/odoo/.local")
+            ), f"recursive chown of the whole .local copies the filestore up: {cmd!r}"
+            assert not ("-R" in cmd and "/.local/share" in cmd), (
+                f"recursive chown into .local/share hits the filestore: {cmd!r}"
+            )
+
+    def test_chowns_pip_dirs(self):
+        container = _mock_container()
+        env_ops._ensure_user_site_packages(container)
+        chowns = _chown_cmds(container)
+        # .local itself is made odoo-owned, but only non-recursively.
+        assert any(
+            c.strip() == "chown odoo:odoo /var/lib/odoo/.local" for c in chowns
+        ), chowns
+        # Both pip --user dirs are chowned (recursively is fine — no filestore).
+        assert any("/var/lib/odoo/.local/lib" in c for c in chowns), chowns
+        assert any("/var/lib/odoo/.local/bin" in c for c in chowns), chowns

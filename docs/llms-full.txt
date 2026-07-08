@@ -172,6 +172,7 @@ An opt-in, per-team hosting feature: Oduflow runs one coding-agent container per
 
 - Repository: <https://github.com/oduist/oduflow>
 - Documentation: <https://docs.oduflow.dev>
+- Troubleshooting: <https://docs.oduflow.dev/troubleshooting/>
 - License: BUSL-1.1 (Business Source License 1.1) — free for non-commercial use; commercial use requires a paid license; converts to MPL 2.0 four years after publication
 - Website: <https://oduflow.dev>
 
@@ -317,9 +318,10 @@ sudo apt install fuse-overlayfs
 
 The `/dev/fuse` device must be available (present by default on Ubuntu).
 
-In `/etc/fuse.conf`, uncomment `user_allow_other` so the Docker daemon (root) can access FUSE mountpoints created by the user:
+Oduflow mounts each environment's filestore with `fuse-overlayfs`'s `allow_other` option so the Odoo container's (non-root) user can read it. When Oduflow runs as **root** — the default and recommended setup — no further configuration is needed. Only if you run Oduflow as a **non-root user** must you uncomment `user_allow_other` in `/etc/fuse.conf`:
 
 ```bash
+# Only needed when running Oduflow as a non-root user:
 sudo sed -i 's/^#user_allow_other/user_allow_other/' /etc/fuse.conf
 ```
 
