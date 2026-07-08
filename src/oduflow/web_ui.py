@@ -2206,7 +2206,14 @@ def _build_routes(
             settings = get_settings()
             team = _get_ui_team(request)
             token = env_ops.get_env_token(settings, team, branch)
-            base = (settings.oauth_base_url or str(request.base_url)).rstrip("/")
+            # In traefik mode the MCP endpoint is served on the team's own
+            # (TLS-terminated) hostname, which is also the per-request OAuth
+            # issuer — so advertise that, not a central oauth_base_url or the
+            # internal request host. Port mode keeps the explicit issuer/base.
+            if settings.routing_mode == "traefik":
+                base = f"https://{team.hostname}"
+            else:
+                base = (settings.oauth_base_url or str(request.base_url)).rstrip("/")
             url = f"{base}/mcp/{quote(branch, safe='/')}"
             return JSONResponse({"ok": True, "result": {"url": url, "token": token}})
         except FlowError as e:

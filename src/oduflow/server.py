@@ -7,7 +7,7 @@ import os
 import re
 import sys
 import warnings
-from typing import cast
+from typing import Any, cast
 
 # Suppress a third-party deprecation warning emitted at import time by fastmcp's
 # JWT auth provider (it imports the deprecated authlib.jose module). This keeps
@@ -3732,30 +3732,40 @@ def _start_http() -> None:
     import uvicorn
 
     # Outermost shim so /mcp/<env> routes to the canonical /mcp route.
-    uvicorn.run(ScopedEnvASGI(app), host=host, port=port, ws="websockets-sansio")
+    served: Any = ScopedEnvASGI(app)
+    # When the OAuth issuer is derived per-request (traefik, no fixed
+    # oauth_base_url), also rewrite the 401 challenge's resource_metadata origin
+    # to the request host — otherwise fastmcp's static URL would send every
+    # team's client to discover OAuth on one team's hostname.
+    if getattr(auth, "_host_relative", False):
+        from oduflow.oauth_provider import HostRelativeAuthChallenge
+
+        served = HostRelativeAuthChallenge(served, settings)
+
+    uvicorn.run(served, host=host, port=port, ws="websockets-sansio")
 
 
 def _build_auth(settings: Settings):  # type: ignore[no-untyped-def]
     """Build the auth provider from settings.
 
-    Two modes (auto-detected by ``oauth_base_url``):
-    - Self-hosted OAuth Authorization Server (when oauth_base_url is set):
-      Oduflow exposes /authorize, /token, /.well-known/oauth-authorization-server.
-      Each team's auth_token doubles as client_id, client_secret, and the
-      issued access token. Suitable for claude.ai and other MCP clients that
-      require an OAuth flow.
-    - Static Bearer tokens (default when oauth_base_url is empty):
-      auth_token is consumed directly from the Authorization header.
-      Suitable for curl, CLI clients, and IDEs that don't need OAuth.
+    Two modes (auto-detected via ``settings.oauth_enabled``):
+    - Self-hosted OAuth Authorization Server — when ``oauth_base_url`` is set OR
+      routing is traefik. Oduflow exposes /authorize, /token, and
+      /.well-known/oauth-authorization-server. In traefik mode the issuer is
+      derived per-request from the team's own (TLS-terminated) hostname, so no
+      central oauth_base_url is needed; each team's OAuth flow runs on its own
+      host. Each team's auth_token doubles as client_id, client_secret, and the
+      issued access token, so Bearer-token callers keep working unchanged.
+      Suitable for claude.ai and other MCP clients that require an OAuth flow.
+    - Static Bearer tokens — port mode with no oauth_base_url: auth_token is
+      consumed directly from the Authorization header. Suitable for curl, CLI
+      clients, and IDEs that don't need OAuth.
     """
     has_team_token = any(t.auth_token for t in settings.teams.values())
 
     if settings.oauth_enabled:
-        if not has_team_token:
-            logger.warning(
-                "oauth_base_url is set but no team has auth_token; OAuth disabled"
-            )
-            return None
+        # oauth_enabled already implies a team auth_token (see Settings), which
+        # doubles as the OAuth client credential.
         from oduflow.oauth_provider import OduflowOAuthProvider
 
         return OduflowOAuthProvider(settings)

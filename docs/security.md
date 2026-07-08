@@ -28,7 +28,19 @@ When the OAuth flow completes, the issued `access_token` is exactly the team's `
 
 ### Setup
 
-In `oduflow.toml`, set the public URL of this instance and an `auth_token` per team:
+**In [traefik mode](traefik.md) it's automatic.** The Authorization Server is enabled out of the box and runs on **each team's own hostname** — the OAuth issuer is derived per request from the incoming host (which already has a Let's Encrypt certificate). Just give each team an `auth_token`; no `oauth_base_url` is needed:
+
+```toml
+[routing]
+mode = "traefik"
+acme_email = "admin@example.com"
+
+[team.1]
+hostname = "team-a.example.com"
+auth_token = "secret-token-team-1"
+```
+
+**In port mode** (no per-team TLS host), set `oauth_base_url` to the public https URL where this instance is reachable, so the issuer is a fixed, reachable endpoint:
 
 ```toml
 [oauth]
@@ -38,7 +50,7 @@ oauth_base_url = "https://your-server.com"
 auth_token = "secret-token-team-1"
 ```
 
-That's it. Oduflow now exposes:
+Either way, Oduflow exposes:
 
 - `GET /.well-known/oauth-authorization-server` — discovery metadata
 - `GET /authorize` — authorization endpoint (Authorization Code + PKCE)
@@ -49,7 +61,7 @@ Dynamic Client Registration (`/register`) is **disabled** — clients must use t
 ### Connecting from Claude.ai
 
 1. Go to Claude.ai Settings → Connectors → Add custom MCP
-2. Enter your Oduflow URL: `https://your-server.com/mcp`
+2. Enter your Oduflow URL: `https://your-server.com/mcp` (in traefik mode, the team's own hostname, e.g. `https://team-a.example.com/mcp`)
 3. In the OAuth fields enter the team's `auth_token` as **both** `Client ID` **and** `Client Secret`:
 
    ```

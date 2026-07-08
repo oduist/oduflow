@@ -1,9 +1,9 @@
 # 0020 — Authentication for MCP HTTP transport: GitHub OAuth → self-hosted OAuth Authorization Server
 
-**Status:** Adopted (self-hosted AS is current; static Bearer tokens retained)
+**Status:** Adopted (self-hosted AS is current; traefik uses a per-team, host-relative issuer; static Bearer tokens retained)
 **Type:** Architecture
 **First introduced:** `97c3fc8` "add GitHub OAuth support for MCP HTTP transport" (2026-03-13)
-**Key code today:** `server.py` (`_build_auth`, transport/auth wiring), `oauth_provider.py` (`OduflowOAuthProvider`), `settings.py` (`oauth_base_url`, per-team `auth_token`)
+**Key code today:** `server.py` (`_build_auth`, transport/auth wiring), `oauth_provider.py` (`OduflowOAuthProvider`, host-relative `get_routes`), `settings.py` (`oauth_base_url`, `oauth_enabled`, per-team `auth_token`/`hostname`)
 
 ## Context
 
@@ -84,6 +84,34 @@ request context and threaded into per-team scoping.
   MCP auth and are covered in [[0011-per-user-git-credentials]]; this record is
   only about authenticating the MCP transport.
 
+## Evolution
+
+- **Per-team, host-relative issuer (traefik).** The first self-hosted design used
+  a single global issuer (`oauth_base_url`) for every team. Behind Traefik that
+  forced a separate central hostname whose only job was to be the issuer — but
+  Traefik requests a certificate only for hostnames it actually routes (each
+  **team's** hostname, see [[0027-hard-tenant-isolation]]), so the central issuer
+  host had no cert and the OAuth discovery it advertised was unreachable. Since a
+  team is identified in the flow by its `auth_token`, not by the host, the issuer
+  never needed to be global. Oduflow now **derives the issuer per request from the
+  incoming host** in traefik mode: `OduflowOAuthProvider.get_routes` swaps the
+  SDK's static discovery-metadata endpoints
+  (`/.well-known/oauth-authorization-server`,
+  `/.well-known/oauth-protected-resource`) for handlers that build `issuer`,
+  `authorization_endpoint`, `token_endpoint`, and `resource` from the request's
+  forwarded proto/host — validated against the registered team hostnames, so a
+  forged `X-Forwarded-Host` cannot advertise a foreign issuer (and the 401
+  `WWW-Authenticate` challenge is rewritten under the same check). Each team's
+  OAuth flow therefore runs entirely on its own
+  already-certificated hostname ([[0014-team-based-multi-tenancy]]), and
+  `_build_auth` enables the Authorization Server automatically whenever routing is
+  traefik. `oauth_base_url` becomes **optional** — needed only to pin a fixed
+  issuer or in **port** mode (which has no per-team TLS host). The `/authorize`
+  and `/token` operational routes are path-only and unchanged, and static Bearer
+  tokens still work. In the same change, `[routing].hostname` is restricted to
+  port mode (in traefik every team must set its own hostname, so a shared default
+  is dead and would collide two teams on one host).
+
 ## History
 
 - `97c3fc8` (2026-03-13) — GitHub OAuth 2.1 for MCP HTTP transport alongside
@@ -95,3 +123,7 @@ request context and threaded into per-team scoping.
   OAuth vs static tokens (breaking) (#19).
 - `73aa9b9` (2026-06-10) — document self-hosted OAuth in the config reference,
   quick start, and llms docs (#33).
+- `2026-07-04` — derive the OAuth issuer per-request from the team's own hostname
+  in traefik mode (host-relative discovery metadata); enable the Authorization
+  Server automatically in traefik and make `oauth_base_url` optional there;
+  restrict `[routing].hostname` to port mode.

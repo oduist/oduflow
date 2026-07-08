@@ -83,7 +83,7 @@ MCP auth and Web Dashboard auth are independent — they use different tokens an
 
 ### Self-hosted OAuth (Claude.ai)
 
-Some MCP clients (e.g. Claude.ai Remote MCP) require an OAuth flow instead of a static Bearer token. Oduflow can act as its own OAuth 2.1 Authorization Server — no external identity provider needed. Set the public URL of this instance in `oduflow.toml`:
+Some MCP clients (e.g. Claude.ai Remote MCP) require an OAuth flow instead of a static Bearer token. Oduflow can act as its own OAuth 2.1 Authorization Server — no external identity provider needed. In [traefik mode](traefik.md) it's enabled automatically and runs on each team's own hostname, so no extra config is required. In port mode, set the public URL of this instance in `oduflow.toml`:
 
 ```toml
 [oauth]

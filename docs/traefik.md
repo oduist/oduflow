@@ -38,6 +38,10 @@ Traefik requests a **per-subdomain certificate** from Let's Encrypt each time a 
 
 Wildcard certificates (`*.dev.example.com`) via DNS-01 validation are also possible but require additional Traefik configuration with a provider-specific plugin.
 
+## OAuth on each team's hostname
+
+In traefik mode the self-hosted [OAuth Authorization Server](security.md#self-hosted-oauth-for-claudeai-and-other-mcp-clients) is enabled **automatically** and runs on **each team's own hostname** — the OAuth issuer is derived per request from the incoming host, which already has a Let's Encrypt certificate. You do **not** need to set `oauth_base_url`: point Claude.ai at `https://<team-hostname>/mcp` and complete the OAuth flow there.
+
 ## Service routing with Traefik
 
 Auxiliary services also get Traefik routing. A service named `meilisearch` with base domain `dev.example.com` becomes accessible at `https://meilisearch.dev.example.com`. Custom hostnames are also supported.

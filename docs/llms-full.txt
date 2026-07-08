@@ -385,12 +385,15 @@ allow_local_path = true     # allow live-mount (bind local checkout) environment
 [routing]
 mode = "port"               # "port" (direct host port) | "traefik" (reverse proxy with auto-HTTPS)
 # acme_email = "admin@example.com"  # required when mode = "traefik"
-# hostname = "localhost"    # default hostname for teams that don't set their own
+# hostname = "localhost"    # port mode only: default host for teams without their own
+                            # (traefik requires each team to set its own hostname)
 
 # ── OAuth (optional) ──────────────────────────────────
-# Set to the public URL of this instance to turn Oduflow into a self-hosted
-# OAuth 2.1 Authorization Server (for Claude.ai and other OAuth MCP clients).
-# Each team's auth_token doubles as client_id, client_secret, and access token.
+# In traefik mode the self-hosted OAuth 2.1 Authorization Server is enabled
+# automatically and runs on each team's own hostname (issuer derived per-request),
+# so oauth_base_url is NOT needed. Set it only to pin a fixed issuer, or in port
+# mode: the public URL of this instance (for Claude.ai and other OAuth MCP
+# clients). Each team's auth_token doubles as client_id, client_secret, and token.
 [oauth]
 # oauth_base_url = "https://oduflow.example.com"
 
@@ -457,7 +460,7 @@ port_range = [50000, 50100]          # port range for Odoo containers [start, en
 
 | Key | Default | Description |
 |---|---|---|
-| `[oauth].oauth_base_url` | *(empty)* | Public URL of this Oduflow instance. When set, Oduflow runs a self-hosted OAuth 2.1 Authorization Server (exposes `/.well-known/oauth-authorization-server`, `/authorize`, `/token`) so OAuth-based MCP clients like Claude.ai can connect. Each team's `auth_token` doubles as `client_id`, `client_secret`, and the issued access token. Empty = plain Bearer-token auth only |
+| `[oauth].oauth_base_url` | *(empty)* | Public URL of this Oduflow instance used as the OAuth issuer. Oduflow runs a self-hosted OAuth 2.1 Authorization Server (exposes `/.well-known/oauth-authorization-server`, `/authorize`, `/token`) so OAuth-based MCP clients like Claude.ai can connect; each team's `auth_token` doubles as `client_id`, `client_secret`, and the issued access token. **In traefik mode this is enabled automatically and the issuer is derived per-request from each team's own hostname — leave empty.** Set it to pin a fixed issuer, or in port mode. Empty + port mode = plain Bearer-token auth only |
 
 ### Database settings
 
@@ -2107,7 +2110,19 @@ When the OAuth flow completes, the issued `access_token` is exactly the team's `
 
 ### Setup
 
-In `oduflow.toml`, set the public URL of this instance and an `auth_token` per team:
+**In traefik mode it's automatic.** The Authorization Server is enabled out of the box and runs on **each team's own hostname** — the OAuth issuer is derived per request from the incoming host (which already has a Let's Encrypt certificate). Just give each team an `auth_token`; no `oauth_base_url` is needed:
+
+```toml
+[routing]
+mode = "traefik"
+acme_email = "admin@example.com"
+
+[team.1]
+hostname = "team-a.example.com"
+auth_token = "secret-token-team-1"
+```
+
+**In port mode** (no per-team TLS host), set `oauth_base_url` to the public https URL where this instance is reachable, so the issuer is a fixed, reachable endpoint:
 
 ```toml
 [oauth]
@@ -2117,7 +2132,7 @@ oauth_base_url = "https://your-server.com"
 auth_token = "secret-token-team-1"
 ```
 
-That's it. Oduflow now exposes:
+Either way, Oduflow exposes:
 
 - `GET /.well-known/oauth-authorization-server` — discovery metadata
 - `GET /authorize` — authorization endpoint (Authorization Code + PKCE)
@@ -2128,7 +2143,7 @@ Dynamic Client Registration (`/register`) is **disabled** — clients must use t
 ### Connecting from Claude.ai
 
 1. Go to Claude.ai Settings → Connectors → Add custom MCP
-2. Enter your Oduflow URL: `https://your-server.com/mcp`
+2. Enter your Oduflow URL: `https://your-server.com/mcp` (in traefik mode, the team's own hostname, e.g. `https://team-a.example.com/mcp`)
 3. In the OAuth fields enter the team's `auth_token` as **both** `Client ID` **and** `Client Secret`:
 
    ```
