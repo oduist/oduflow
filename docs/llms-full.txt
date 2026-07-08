@@ -172,6 +172,7 @@ An opt-in, per-team hosting feature: Oduflow runs one coding-agent container per
 
 - Repository: <https://github.com/oduist/oduflow>
 - Documentation: <https://docs.oduflow.dev>
+- Troubleshooting: <https://docs.oduflow.dev/troubleshooting/>
 - License: BUSL-1.1 (Business Source License 1.1) — free for non-commercial use; commercial use requires a paid license; converts to MPL 2.0 four years after publication
 - Website: <https://oduflow.dev>
 

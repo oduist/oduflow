@@ -105,6 +105,7 @@ nav:
       - Authentication & Security: security.md
       - Running in Docker: docker.md
       - Internals: internals.md
+      - Troubleshooting: troubleshooting.md
   - About:
       - Licensing: licensing.md
       - Changelog: changelog.md
