@@ -149,5 +149,6 @@ class TestEnsureUserSitePackages:
         assert any(
             c.strip() == "chown odoo:odoo /var/lib/odoo/.local" for c in chowns
         ), chowns
-        # The pip --user lib dir is chowned (recursively is fine — no filestore).
+        # Both pip --user dirs are chowned (recursively is fine — no filestore).
         assert any("/var/lib/odoo/.local/lib" in c for c in chowns), chowns
+        assert any("/var/lib/odoo/.local/bin" in c for c in chowns), chowns
