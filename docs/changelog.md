@@ -1,5 +1,19 @@
 # Changelog
 
+## v1.63.0
+
+### Features
+
+- **Native Odoo database neutralization** — sanitized template-based environments now run Odoo's own `odoo-bin neutralize` inside the serving container after auto-installed modules are present, then continue through the existing custom `.odoo_sanitize` scripts. This gives copied databases Odoo's module-aware baseline protections for outgoing mail, crons, payment providers, connectors and webhooks without adding a new config knob; failures remain warning-only so provisioning is not blocked. (#107)
+
+### Dashboard
+
+- **Unlicensed badge signal** — the unlicensed license badge now plays a brief red edge pulse and jolt once on dashboard load as a registration nudge, while keeping the text as the actual status signal and skipping the animation entirely for reduced-motion users. A follow-up tightened the animation cleanup path so reduced-motion sessions do not retain unused listeners. (#104, #105)
+
+### Documentation
+
+- **Release workflow captured** — a project-scoped `/publish-release` skill now records the Oduflow release flow: analyze commits since the last tag, propose the version/changelog/title for sign-off, bump and push the release commit, publish the GitHub Release that triggers PyPI and Docker, then verify artifacts. (#106)
+
 ## v1.62.0
 
 ### Features
