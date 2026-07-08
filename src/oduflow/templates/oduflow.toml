@@ -74,7 +74,7 @@ auto_delete_hours = 0             # delete stopped environments after N hours (D
 [team.1]
 hostname = "localhost"            # port: http://{hostname}:{port}, traefik: https://{slug}.{hostname}
 auth_token = ""                   # MCP bearer token / OAuth client_id+secret (auto-generated on first run; HTTP refuses to start if empty)
-ui_password = ""                  # Web UI password (empty = UI open)
+ui_password = ""                  # Web UI password (auto-generated on first run; HTTP refuses to start if empty unless allow_insecure_http)
 port_range = [50000, 50100]       # port range for Odoo containers
 # db_quota_gb = 50                # combined size cap for the team's PostgreSQL DBs (environments + templates); 0 = off
 # disk_quota_gb = 0               # cap on team files + databases via XFS project quotas (needs data dir on XFS with prjquota)

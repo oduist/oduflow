@@ -14,6 +14,7 @@ import os
 from unittest.mock import MagicMock, patch
 
 import pytest
+from fastmcp.exceptions import ToolError
 
 from oduflow.docker_ops.system_ops import _source_env_metadata
 from oduflow.settings import Settings, TeamSettings
@@ -127,7 +128,7 @@ class TestCreateFromLiveMountTemplate:
         )
         try:
             with patch("oduflow.server._resolve_team", return_value=team):
-                with pytest.raises(ValueError, match="live-mounted environment"):
+                with pytest.raises(ToolError, match="live-mounted environment"):
                     _call_tool("create_environment", branch="t", template_name="tpl")
             mock_create.assert_not_called()
         finally:
@@ -162,7 +163,7 @@ class TestCreateFromLiveMountTemplate:
             "tpl",
             {"odoo_image": "odoo:19.0", "repo_url": "", "local_path": "/gone/addons"},
         )
-        with pytest.raises(ValueError, match="does not exist"):
+        with pytest.raises(ToolError, match="does not exist"):
             _call_tool("create_environment", branch="t", template_name="tpl")
         mock_create.assert_not_called()
 

@@ -4,6 +4,7 @@ import asyncio
 import base64
 import hashlib
 import hmac
+import html
 import json
 import logging
 import os
@@ -253,9 +254,11 @@ _TEMPLATE_DIR = pathlib.Path(__file__).resolve().parent / "templates"
 
 def _render_login(error: str = "") -> str:
     """Render the login page, optionally with a server-controlled error banner."""
-    html = (_TEMPLATE_DIR / "login.html").read_text(encoding="utf-8")
-    banner = f'<div class="error">{error}</div>' if error else ""
-    return html.replace("<!--ERROR-->", banner)
+    page = (_TEMPLATE_DIR / "login.html").read_text(encoding="utf-8")
+    # Escape the message so the banner stays safe even if a future caller passes
+    # user-influenced text (today's callers pass static literals).
+    banner = f'<div class="error">{html.escape(error)}</div>' if error else ""
+    return page.replace("<!--ERROR-->", banner)
 
 
 async def _read_login_password(request: Request) -> str:
@@ -699,6 +702,12 @@ def _build_routes(
                 {"ok": False, "error": "env_name is required."},
                 status_code=400,
             )
+        from oduflow.naming import validate_env_name
+
+        try:
+            env_name = validate_env_name(env_name)
+        except ValueError as e:
+            return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
 
         # Acquire the env lock in its own try so a BusyError returns WITHOUT
         # entering the try/finally below — otherwise the finally would release a
@@ -2345,11 +2354,26 @@ def _build_routes(
                 await websocket.close(code=1011)
                 return
 
-            from oduflow.env_credentials import load_credentials
-
-            creds = load_credentials(
-                branch, team.workspaces_dir, settings.db_user, settings.db_password
+            from oduflow.env_credentials import (
+                MissingCredentialsError,
+                load_credentials,
             )
+
+            # Never open an interactive psql as the cluster superuser: that would
+            # allow \c into another team's database and COPY ... FROM PROGRAM
+            # (RCE). Require the environment's scoped role.
+            try:
+                creds = load_credentials(
+                    branch,
+                    team.workspaces_dir,
+                    settings.db_user,
+                    settings.db_password,
+                    allow_fallback=False,
+                )
+            except MissingCredentialsError as e:
+                await websocket.send_text(f"\x1b[31mError: {e}\x1b[0m\r\n")
+                await websocket.close(code=1011)
+                return
 
             exec_id = client.api.exec_create(
                 db_container.id,

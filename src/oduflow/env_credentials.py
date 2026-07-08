@@ -3,6 +3,7 @@ import logging
 import os
 import secrets
 
+from oduflow.errors import PrerequisiteNotMetError
 from oduflow.naming import get_workspace_path, slugify_branch
 
 logger = logging.getLogger("oduflow")
@@ -49,17 +50,40 @@ def create_credentials(
     return creds
 
 
+class MissingCredentialsError(PrerequisiteNotMetError):
+    """No per-environment PostgreSQL credentials exist and fallback is disallowed."""
+
+
 def load_credentials(
     env_name: str,
     workspaces_dir: str,
     fallback_user: str,
     fallback_password: str,
+    *,
+    allow_fallback: bool = True,
 ) -> dict[str, str]:
+    """Load an environment's scoped PostgreSQL credentials.
+
+    When the per-environment credentials file is missing, callers that perform
+    *arbitrary* SQL/shell against the environment (interactive psql, run_db_query,
+    run_odoo_shell) must pass ``allow_fallback=False``: the fallback is the
+    cluster **superuser**, and handing it to those surfaces would let a tenant
+    ``\\c`` into another team's database or ``COPY ... FROM PROGRAM`` for RCE.
+    Fixed, admin-time operations keep the fallback so legacy environments still
+    work.
+    """
     workspace_path = get_workspace_path(env_name, workspaces_dir)
     creds_path = os.path.join(workspace_path, _CREDENTIALS_FILE)
     if os.path.isfile(creds_path):
         with open(creds_path) as f:
             return json.load(f)
+    if not allow_fallback:
+        raise MissingCredentialsError(
+            f"Environment '{env_name}' has no scoped database credentials. "
+            "Recreate or update the environment to provision a per-environment "
+            "PostgreSQL role (the shared superuser is never used for interactive "
+            "or arbitrary queries)."
+        )
     return {"pg_user": fallback_user, "pg_password": fallback_password}
 
 

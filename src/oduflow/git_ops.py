@@ -95,6 +95,15 @@ def _store_git_credentials(
 def setup_repo_auth(repo_url: str, cred_file: str) -> dict[str, str]:
     clean_url, host, username, password = _parse_authenticated_url(repo_url)
 
+    # SSRF guard (parity with validate_repo_url): refuse to store credentials for
+    # — or run `git ls-remote` against — loopback / link-local (cloud metadata) /
+    # unspecified hosts. Otherwise a caller could point this at an internal host
+    # and exfiltrate the presented PAT (git sends the stored credential to that
+    # host). Internal RFC1918 git servers stay allowed (allow_private=True).
+    from oduflow.url_safety import assert_allowed_host
+
+    assert_allowed_host(host, allow_private=True)
+
     _store_git_credentials(host, username, password, cred_file)
 
     env = git_env_for_team(cred_file)
