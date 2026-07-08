@@ -1,5 +1,28 @@
 # Changelog
 
+## v1.65.0
+
+### Features
+
+- **Per-team OAuth issuer with host-relative discovery** — in traefik mode, each team's OAuth Authorization Server derives its issuer from the incoming Host, so each team runs OAuth on its own already-certificated hostname with no need for a central `oauth_base_url`. `OduflowOAuthProvider` makes discovery metadata host-relative, `HostRelativeAuthChallenge` rewrites 401 challenge origins, and `[routing].hostname` is now validated per-mode (shared default deleted in traefik). (#112)
+
+### Security
+
+- **Hardened web-UI and MCP surfaces** — fresh installs and upgrades now bootstrap a `ui_password` so the dashboard is never served unauthenticated; the interactive shell, SQL, agent, and service-creation surfaces are fail-closed. Closed two SSRF vectors (`http_request_to_odoo` path rewrite and `setup_repo_auth` loopback/link-local validation), removed the shared-PostgreSQL-superuser fallback so tenants cannot cross databases on legacy envs, added validation guards and escaped output across the surface. (#110)
+- **psql WebSocket branch validation** — `ws_sql_terminal` now validates the branch path param before lookup to close an opaque resolution path in scoped-credentials. (#114)
+
+### Bug Fixes
+
+- **Overlay filestore no longer duplicated into each environment** — `_ensure_user_site_packages` was recursively chowning `.local/share`, causing fuse-overlayfs to copy the entire template filestore (~10 GB) into each env's upper layer, defeating overlay space savings. Now chowns only the pip dirs non-recursively, keeping filestore overlay-bound. (#113)
+- **Overlay unmount now works on Ubuntu 24.04 with enforced fusermount AppArmor profile** — switched mount cleanup to try clean `umount` first (not mediated by the fusermount3 profile on Ubuntu 24.04+), falling back to `fusermount`/`fusermount3` helpers and lazy `umount -l` only as a last resort. (#113)
+- **Multi-team UI password provisioning for newly-added passwordless teams** — `_ensure_web_ui_password` was using `any()` so a multi-team config with one team already set would skip provisioning for others, locking them out. Now uses `all()` to provision every team and enforce that all are set at startup. (#114)
+- **Template clone now reassigns objects owned by any non-env role** — when creating an environment from a template imported via `import_template_from_odoo`, objects owned by roles other than the template env's own role were not reassigned, leaving the new env unable to touch them. Now reassigns all non-env-role-owned objects unconditionally. (#111)
+- **Native Odoo neutralize skipped for Odoo 15** — the official `odoo:15.0` image does not include the `odoo neutralize` CLI, so Oduflow now skips it for Odoo 15 and tries only for Odoo 16+, keeping custom `.odoo_sanitize` scripts as the baseline. (#109)
+
+### Documentation & Testing
+
+- **Per-team OAuth decision record** — specs/0020 captures the evolution from a static `oauth_base_url` to host-relative issuer discovery. (#112)
+
 ## v1.64.0
 
 ### Features
