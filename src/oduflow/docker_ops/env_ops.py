@@ -911,17 +911,19 @@ def create_environment(
     )
 
     if template_name is not None:
-        # A template DB's objects are owned by the superuser that created the
-        # template. DDL during module upgrades requires ownership, so reassign
-        # every object that superuser still owns to the per-environment role.
-        # This replaces granting the env role membership in the superuser role,
-        # which would let it SET ROLE to superuser (cross-tenant RCE, #40).
-        # Odoo connects as the env role and never SET ROLEs, so per-object
-        # ownership — not role membership — is what actually enables its DDL.
-        # Linked (SERIAL/identity) sequences are skipped: they follow their
-        # table's owner automatically.
+        # A template DB's objects are owned by whatever role created them —
+        # normally the superuser (pg_restore --no-owner), but the plain-SQL /
+        # import_template_from_odoo path (psql without --no-owner) can leave
+        # objects owned by the source env's per-env role (e.g. u_2_fs19). DDL
+        # during module upgrades requires ownership, so reassign every object
+        # NOT already owned by this env's role to it. This replaces granting the
+        # env role membership in the superuser role, which would let it SET ROLE
+        # to superuser (cross-tenant RCE, #40). Odoo connects as the env role and
+        # never SET ROLEs, so per-object ownership — not role membership — is what
+        # actually enables its DDL. Linked (SERIAL/identity) sequences are
+        # skipped: they follow their table's owner automatically. System roles
+        # (pg_*) are left untouched.
         new_user = env_creds["pg_user"]
-        old_user = settings.db_user
         _exec_sql(
             client,
             settings,
@@ -936,7 +938,7 @@ def create_environment(
             DECLARE r RECORD;
             BEGIN
               FOR r IN SELECT n.nspname FROM pg_namespace n JOIN pg_roles o ON n.nspowner = o.oid
-                       WHERE o.rolname = '{old_user}'
+                       WHERE o.rolname <> '{new_user}' AND o.rolname NOT LIKE 'pg\_%'
                          AND n.nspname NOT LIKE 'pg\_%' AND n.nspname <> 'information_schema'
               LOOP EXECUTE format('ALTER SCHEMA %I OWNER TO %I', r.nspname, '{new_user}'); END LOOP;
 
@@ -944,7 +946,7 @@ def create_environment(
                        FROM pg_class c
                        JOIN pg_namespace n ON c.relnamespace = n.oid
                        JOIN pg_roles o ON c.relowner = o.oid
-                       WHERE o.rolname = '{old_user}'
+                       WHERE o.rolname <> '{new_user}' AND o.rolname NOT LIKE 'pg\_%'
                          AND n.nspname NOT LIKE 'pg\_%' AND n.nspname <> 'information_schema'
                          AND c.relkind IN ('r', 'p', 'S', 'v', 'm', 'f')
                          AND NOT (c.relkind = 'S' AND EXISTS (
@@ -960,7 +962,7 @@ def create_environment(
                        FROM pg_proc p
                        JOIN pg_namespace n ON p.pronamespace = n.oid
                        JOIN pg_roles o ON p.proowner = o.oid
-                       WHERE o.rolname = '{old_user}'
+                       WHERE o.rolname <> '{new_user}' AND o.rolname NOT LIKE 'pg\_%'
                          AND n.nspname NOT LIKE 'pg\_%' AND n.nspname <> 'information_schema'
               LOOP EXECUTE format('ALTER ROUTINE %s OWNER TO %I', r.sig, '{new_user}'); END LOOP;
             END $$;
