@@ -2338,7 +2338,18 @@ def _build_routes(
         try:
             import docker as _docker
             from oduflow.docker_ops.client import get_client as _get_client
-            from oduflow.naming import get_db_name
+            from oduflow.naming import get_db_name, validate_env_name
+
+            # Validate before deriving DB/credential paths, matching the REST
+            # create handler: a name like ".." would otherwise resolve
+            # get_workspace_path one level above the workspaces dir when loading
+            # scoped credentials. Reject it explicitly instead of failing opaquely.
+            try:
+                validate_env_name(branch)
+            except ValueError as e:
+                await websocket.send_text(f"\x1b[31mError: {e}\x1b[0m\r\n")
+                await websocket.close(code=1008)
+                return
 
             settings = get_settings()
             team = _get_ui_team(websocket)
