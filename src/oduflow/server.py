@@ -369,6 +369,8 @@ def update_extra_repo(name: str, ctx: Context = None) -> str:
 
 def _format_fetch_summary(summary: dict) -> str:
     name = summary["name"]
+    if summary.get("local"):
+        return f"Extra repo '{name}' is local (no remote) — nothing to pull."
     if summary["up_to_date"]:
         return f"Extra repo '{name}': already up to date."
     parts = [f"Extra repo '{name}' updated:"]
@@ -923,6 +925,30 @@ def delete_template(template_name: str, ctx: Context = None) -> str:
     team = _resolve_team(ctx)
     result = system_ops.delete_template(settings, team, template_name)
     return f"Template '{result['template_name']}' deleted. Template DB '{result['template_db']}' removed."
+
+
+@mcp.tool()
+@handle_errors
+@with_team_lock
+def rename_template(template_name: str, new_name: str, ctx: Context = None) -> str:
+    """
+    Rename a template profile — renames its directory and PostgreSQL template DB.
+
+    Refused if any environment was created from this template (its template
+    reference is fixed at creation time and cannot be updated on a running
+    environment): delete those environments first, or leave the template as is.
+
+    Args:
+        template_name: Current name of the template.
+        new_name: New name for the template.
+    """
+    settings = _get_settings()
+    team = _resolve_team(ctx)
+    result = system_ops.rename_template(settings, team, template_name, new_name)
+    return (
+        f"Template '{result['old_name']}' renamed to '{result['template_name']}' "
+        f"(DB '{result['template_db']}')."
+    )
 
 
 # =============================================================================

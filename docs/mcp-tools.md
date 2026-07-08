@@ -35,6 +35,7 @@ All tools are accessible via MCP clients (Cursor, Cline, Amp, etc.) and the CLI 
 | `save_as_template` | ✓ | ⚠️ Save a branch DB + filestore as a new template |
 | `list_templates` | | List available template profiles |
 | `delete_template` | ✓ | ⚠️ Delete a template profile (DB + files) |
+| `rename_template` | ✓ | Rename a template (directory + PostgreSQL template DB); refused if any environment uses it |
 | `import_template_from_odoo` | ✓ | Import a template from a running Odoo instance via database manager API |
 | `refresh_template` | ✓ | ⚠️ Re-apply a template's filestore to live overlay environments (preserves env changes by default; `reset_env_changes=True` discards them — destructive) |
 | **Auxiliary Services** | | |

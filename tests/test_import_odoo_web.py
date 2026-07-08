@@ -208,6 +208,206 @@ def test_bad_token_rejected(tmp_path):
     assert r.json()["ok"] is False
 
 
+def test_dump_chunked_upload(tmp_path):
+    client, _s, team = _client(tmp_path)
+    token, _ = _mint(client, "zipfit")
+    hdr = {"Authorization": f"Bearer {token}"}
+    payload = b"0123456789ABCDEFGHIJ"  # 20 bytes
+    total = len(payload)
+
+    r = client.post(
+        f"/api/templates/import/dump?offset=0&total={total}",
+        headers=hdr,
+        content=payload[:12],
+    )
+    assert r.status_code == 200
+    j = r.json()
+    assert j["ok"] is True and j["complete"] is False and j["received"] == 12
+
+    st = client.get("/api/templates/import/status", headers=hdr).json()
+    assert st["progress"]["dump"] is False
+    assert st["progress"]["dump_bytes"] == 12
+
+    r = client.post(
+        f"/api/templates/import/dump?offset=12&total={total}",
+        headers=hdr,
+        content=payload[12:],
+    )
+    assert r.json()["complete"] is True
+    staging = team.get_import_staging_dir("zipfit")
+    assert open(os.path.join(staging, "dump.sql.gz"), "rb").read() == payload
+
+    st = client.get("/api/templates/import/status", headers=hdr).json()
+    assert st["progress"]["dump"] is True
+    assert st["progress"]["dump_bytes"] == total
+
+    # Idempotent: a re-sent final chunk after completion just reports complete.
+    r = client.post(
+        f"/api/templates/import/dump?offset=12&total={total}",
+        headers=hdr,
+        content=payload[12:],
+    )
+    assert r.json()["complete"] is True
+
+
+def test_dump_chunk_gap_returns_409(tmp_path):
+    client, _s, _t = _client(tmp_path)
+    token, _ = _mint(client, "zipfit")
+    hdr = {"Authorization": f"Bearer {token}"}
+    r = client.post(
+        "/api/templates/import/dump?offset=5&total=20", headers=hdr, content=b"xxxxx"
+    )
+    assert r.status_code == 409
+    assert r.json()["expected"] == 0
+
+
+def test_dump_chunk_resume_from_reported_bytes(tmp_path):
+    client, _s, team = _client(tmp_path)
+    token, _ = _mint(client, "zipfit")
+    hdr = {"Authorization": f"Bearer {token}"}
+    payload = b"abcdefghijklmnop"  # 16 bytes
+    total = len(payload)
+    client.post(
+        f"/api/templates/import/dump?offset=0&total={total}",
+        headers=hdr,
+        content=payload[:6],
+    )
+    # A fresh token (previous expired mid-upload) still sees progress on disk.
+    token2, _ = _mint(client, "zipfit")
+    hdr2 = {"Authorization": f"Bearer {token2}"}
+    st = client.get("/api/templates/import/status", headers=hdr2).json()
+    off = st["progress"]["dump_bytes"]
+    assert off == 6
+    r = client.post(
+        f"/api/templates/import/dump?offset={off}&total={total}",
+        headers=hdr2,
+        content=payload[off:],
+    )
+    assert r.json()["complete"] is True
+    staging = team.get_import_staging_dir("zipfit")
+    assert open(os.path.join(staging, "dump.sql.gz"), "rb").read() == payload
+
+
+def test_addon_chunked_upload(tmp_path):
+    client, _s, team = _client(tmp_path)
+    token, _ = _mint(client, "zipfit")
+    hdr = {"Authorization": f"Bearer {token}"}
+    tar = _tar_bytes({"enterprise_src/mod/__manifest__.py": b"{}"})
+    total = len(tar)
+    half = total // 2
+
+    r = client.post(
+        f"/api/templates/import/addon?name=enterprise&branch=18.0&offset=0&total={total}",
+        headers=hdr,
+        content=tar[:half],
+    )
+    assert r.json()["complete"] is False
+    st = client.get("/api/templates/import/status", headers=hdr).json()
+    assert st["progress"]["addon_bytes"]["enterprise"] == half
+
+    r = client.post(
+        f"/api/templates/import/addon?name=enterprise&branch=18.0&offset={half}&total={total}",
+        headers=hdr,
+        content=tar[half:],
+    )
+    assert r.json()["complete"] is True
+    staging = team.get_import_staging_dir("zipfit")
+    assert os.path.isfile(
+        os.path.join(staging, "addons", "enterprise", "mod", "__manifest__.py")
+    )
+    entries = json.loads(open(os.path.join(staging, "addons.json")).read())
+    assert entries[0] == {
+        "name": "enterprise",
+        "kind": "local",
+        "branch": "18.0",
+        "origin_url": "",
+        "category": "",
+    }
+    st = client.get("/api/templates/import/status", headers=hdr).json()
+    assert st["progress"]["addons"] == ["enterprise"]
+
+
+def test_addon_upload_and_status(tmp_path):
+    client, _s, team = _client(tmp_path)
+    token, _ = _mint(client, "zipfit")
+    hdr = {"Authorization": f"Bearer {token}"}
+    tar = _tar_bytes({"enterprise_src/sale_ent/__manifest__.py": b"{}"})
+    r = client.post(
+        "/api/templates/import/addon?name=enterprise&branch=18.0&category=enterprise",
+        headers=hdr,
+        content=tar,
+    )
+    assert r.status_code == 200 and r.json()["ok"] is True
+    staging = team.get_import_staging_dir("zipfit")
+    assert os.path.isfile(
+        os.path.join(staging, "addons", "enterprise", "sale_ent", "__manifest__.py")
+    )
+    entries = json.loads(open(os.path.join(staging, "addons.json")).read())
+    assert entries[0]["name"] == "enterprise"
+    assert entries[0]["kind"] == "local"
+    assert entries[0]["branch"] == "18.0"
+    st = client.get("/api/templates/import/status", headers=hdr).json()
+    assert st["progress"]["addons"] == ["enterprise"]
+
+
+def test_addon_remote_announce(tmp_path):
+    client, _s, _t = _client(tmp_path)
+    token, _ = _mint(client, "zipfit")
+    hdr = {"Authorization": f"Bearer {token}"}
+    r = client.post(
+        "/api/templates/import/addon-remote",
+        headers=hdr,
+        json={
+            "name": "oca-account-reconcile",
+            "origin_url": "https://github.com/OCA/account-reconcile.git",
+            "branch": "18.0",
+        },
+    )
+    assert r.status_code == 200 and r.json()["ok"] is True
+    st = client.get("/api/templates/import/status", headers=hdr).json()
+    assert st["progress"]["remote_addons"] == ["oca-account-reconcile"]
+
+
+def test_addon_invalid_name_rejected(tmp_path):
+    client, _s, _t = _client(tmp_path)
+    token, _ = _mint(client, "zipfit")
+    hdr = {"Authorization": f"Bearer {token}"}
+    r = client.post(
+        "/api/templates/import/addon?name=bad/name",
+        headers=hdr,
+        content=_tar_bytes({"x/y": b"z"}),
+    )
+    assert r.status_code == 400
+
+
+def test_addon_remote_requires_origin(tmp_path):
+    client, _s, _t = _client(tmp_path)
+    token, _ = _mint(client, "zipfit")
+    hdr = {"Authorization": f"Bearer {token}"}
+    r = client.post(
+        "/api/templates/import/addon-remote",
+        headers=hdr,
+        json={"name": "foo", "branch": "18.0"},
+    )
+    assert r.status_code == 400
+
+
+def test_import_token_flags_in_command(tmp_path):
+    client, _s, _t = _client(tmp_path)
+    r = client.post(
+        "/api/templates/import-token",
+        json={
+            "template_name": "zipfit",
+            "with_enterprise": True,
+            "with_extra_addons": True,
+        },
+    )
+    data = r.json()
+    assert "--with-enterprise" in data["command"]
+    assert "--with-extra-addons" in data["command"]
+    assert "--with-themes" not in data["command"]
+
+
 def test_filestore_tar_zip_slip_is_skipped(tmp_path):
     dest = tmp_path / "fs"
     dest.mkdir()

@@ -8,11 +8,19 @@
 # the filestore is tarred on the fly and streamed straight to the upload.
 #
 # The upload is resumable: on a re-run it asks the server what it already has
-# and only sends the missing pieces (manifest, dump, or individual filestore
-# hash-directories).
+# and only sends the missing pieces (manifest, dump, individual filestore
+# hash-directories, or addon repositories).
 #
 #   curl -sSfL https://YOUR-ODUFLOW/import-odoo.sh | bash -s -- \
 #        --server https://YOUR-ODUFLOW --token <TOKEN>
+#
+# Optional flags (usually set for you by the dashboard checkboxes) also bring
+# over the addons Odoo.sh ran with, beyond the standard modules in the image:
+#   --with-enterprise    download Odoo Enterprise into a local extra-addons repo
+#   --with-themes        download Odoo Themes into a local extra-addons repo
+#   --with-extra-addons  add the extra repos (OCA etc.): reachable ones are
+#                        cloned from their origin (stay updatable), private ones
+#                        are downloaded as local extra-addons repos
 #
 # The --token is minted by the "Import from Odoo.sh" button in the Oduflow
 # dashboard and is valid for 15 minutes.
@@ -20,14 +28,20 @@ set -euo pipefail
 
 SERVER=""
 TOKEN=""
+WITH_ENTERPRISE=0
+WITH_THEMES=0
+WITH_EXTRA=0
 while [ $# -gt 0 ]; do
     case "$1" in
         --server) SERVER="${2:-}"; shift 2 ;;
         --server=*) SERVER="${1#*=}"; shift ;;
         --token) TOKEN="${2:-}"; shift 2 ;;
         --token=*) TOKEN="${1#*=}"; shift ;;
+        --with-enterprise) WITH_ENTERPRISE=1; shift ;;
+        --with-themes) WITH_THEMES=1; shift ;;
+        --with-extra-addons) WITH_EXTRA=1; shift ;;
         -h|--help)
-            grep '^#' "$0" | sed 's/^# \{0,1\}//' | head -n 20
+            grep '^#' "$0" | sed 's/^# \{0,1\}//' | head -n 28
             exit 0 ;;
         *) echo "ERROR: unknown argument: $1" >&2; exit 2 ;;
     esac
@@ -73,6 +87,11 @@ fi
 AUTH="Authorization: Bearer ${TOKEN}"
 API="${SERVER}/api/templates/import"
 
+# Large single payloads (SQL dump, addon tarballs) are uploaded in parts so
+# they survive proxies that cap request body size — Cloudflare, for one, rejects
+# bodies over 100 MB with a 413. 90 MiB per part stays safely under that.
+PART_BYTES=$((90 * 1024 * 1024))
+
 # ---- helpers ---------------------------------------------------------------
 
 human() {  # bytes -> human readable
@@ -87,6 +106,44 @@ json_field() {  # file expr  (expr is python on obj `d`)
     python3 -c 'import sys,json
 d=json.load(open(sys.argv[1]))
 print('"$2"')' "$1" 2>/dev/null || true
+}
+
+upload_ranges() {  # file url extra_query start_offset [label]
+    # POST a local file to `url` in <=PART_BYTES parts, one request each, so no
+    # single request exceeds a proxy's body limit. Each part carries
+    # offset=<byte>&total=<size>; the server appends in order and assembles the
+    # file once the last part lands. Resumable: pass the server's current byte
+    # count as start_offset. dd reads byte ranges directly (no temp splits).
+    local file="$1" url="$2" extra="$3" off="${4:-0}" label="${5:-upload}"
+    local total len q
+    total="$(wc -c < "$file")"
+    [ "$off" -lt 0 ] && off=0
+    [ "$off" -gt "$total" ] && off=0   # stale/invalid resume point -> restart
+    while [ "$off" -lt "$total" ]; do
+        len=$PART_BYTES
+        [ $((off + len)) -gt "$total" ] && len=$((total - off))
+        q="offset=${off}&total=${total}"
+        [ -n "$extra" ] && q="${extra}&${q}"
+        local tries=0
+        while :; do
+            if dd if="$file" bs=1048576 iflag=skip_bytes,count_bytes \
+                   skip="$off" count="$len" 2>/dev/null \
+               | curl -fsS -H "$AUTH" -H "Content-Type: application/octet-stream" \
+                      -T - -X POST "${url}?${q}" >/dev/null; then
+                break
+            fi
+            tries=$((tries + 1))
+            [ "$tries" -ge 3 ] && return 1
+            sleep 2
+        done
+        off=$((off + len))
+        local pct=0
+        [ "$total" -gt 0 ] && pct=$(( off * 100 / total ))
+        printf '\r>> %s [%3d%%] %s / %s\033[K' \
+            "$label" "$pct" "$(human "$off")" "$(human "$total")" >&2
+    done
+    echo >&2
+    return 0
 }
 
 # ---- status (drives resume) ------------------------------------------------
@@ -115,7 +172,11 @@ fi
 
 have_manifest="$(json_field "$STATUS_FILE" 'd.get("progress",{}).get("manifest") and 1 or ""')"
 have_dump="$(json_field "$STATUS_FILE" 'd.get("progress",{}).get("dump") and 1 or ""')"
+have_dump_bytes="$(json_field "$STATUS_FILE" 'str(d.get("progress",{}).get("dump_bytes",0))')"
+[ -n "$have_dump_bytes" ] || have_dump_bytes=0
 done_chunks=" $(json_field "$STATUS_FILE" '" ".join(d.get("progress",{}).get("filestore_chunks",[]))') "
+done_addons=" $(json_field "$STATUS_FILE" '" ".join(d.get("progress",{}).get("addons",[]))') "
+done_remote=" $(json_field "$STATUS_FILE" '" ".join(d.get("progress",{}).get("remote_addons",[]))') "
 
 # ---- manifest --------------------------------------------------------------
 
@@ -130,10 +191,15 @@ fi
 # ---- dump ------------------------------------------------------------------
 
 if [ -z "$have_dump" ]; then
-    echo ">> uploading SQL dump ($(human "$(wc -c < "$SQL_GZ")"))"
-    # -T streams from disk; --data-binary would buffer the whole file in RAM.
-    curl -fsS -H "$AUTH" -H "Content-Type: application/gzip" \
-        -T "$SQL_GZ" -X POST "${API}/dump" >/dev/null
+    dump_total="$(wc -c < "$SQL_GZ")"
+    echo ">> uploading SQL dump ($(human "$dump_total"), resuming from $(human "$have_dump_bytes"))"
+    # Chunked so no single request exceeds a proxy body limit (e.g. Cloudflare's
+    # 100 MB); resumes from what the server already has.
+    if ! upload_ranges "$SQL_GZ" "${API}/dump" "" "$have_dump_bytes" "dump"; then
+        echo "ERROR: failed to upload SQL dump after retries." >&2
+        echo "       Re-run the same command to resume." >&2
+        exit 5
+    fi
 else
     echo ">> SQL dump already uploaded, skipping"
 fi
@@ -208,6 +274,145 @@ for c in "${remaining[@]}"; do
 done
 progress "$total_bytes" "$total_bytes" "complete"
 echo >&2
+
+# ---- addons (optional: enterprise / themes / extra repos) ------------------
+#
+# The daily backup holds only the database and filestore; the addons Odoo.sh
+# runs with live on the build filesystem. When asked (--with-*), inspect the
+# running server's --addons-path, classify each entry, and bring over what the
+# image doesn't already ship. Reachable extra repos are announced by their
+# origin (Oduflow clones them, keeping them updatable); everything else is
+# tarred and streamed as a local (remote-less) extra-addons repo.
+
+detect_addons_path() {
+    # Prefer the live odoo-bin command line (source of truth), fall back to the
+    # generated odoo.conf. Only the "--addons-path=..." (=-joined) form is used
+    # by Odoo.sh.
+    local ap
+    # -e is essential: without it ps only lists processes sharing the caller's
+    # controlling terminal, and the odoo-bin daemon (started outside the SSH
+    # tty) would never be seen — detection would always fall through to
+    # odoo.conf. Verified empirically on an Odoo.sh shell.
+    ap="$(ps -eww -o args= 2>/dev/null | tr ' ' '\n' \
+          | grep -m1 -E '^--addons-path=' | sed 's/^--addons-path=//')" || true
+    if [ -n "$ap" ]; then printf '%s' "$ap"; return 0; fi
+    local conf="$HOME/.config/odoo/odoo.conf"
+    if [ -f "$conf" ]; then
+        ap="$(grep -E '^[[:space:]]*addons_path[[:space:]]*=' "$conf" \
+              | head -n1 | sed -E 's/^[^=]*=[[:space:]]*//')" || true
+        if [ -n "$ap" ]; then printf '%s' "$ap"; return 0; fi
+    fi
+    return 1
+}
+
+addon_branch() {  # path -> current branch name (may be empty / "HEAD")
+    git -C "$1" rev-parse --abbrev-ref HEAD 2>/dev/null || true
+}
+
+sanitize_addon_name() {  # path -> [a-z0-9_-] name (<=63)
+    local raw="$1" rel
+    case "$raw" in
+        */src/user/*) rel="${raw##*/src/user/}" ;;
+        *) rel="$(basename "$raw")" ;;
+    esac
+    rel="$(printf '%s' "$rel" | tr '[:upper:]/' '[:lower:]-' | tr -cd 'a-z0-9_-')"
+    printf '%s' "${rel:0:63}"
+}
+
+upload_addon_files() {  # path name branch category
+    # Addon tars can exceed a proxy body limit (Enterprise is hundreds of MB),
+    # so buffer the tar to a file and upload it in parts. The temp lives next to
+    # the backups ($HOME), which has room; the filestore is streamed elsewhere.
+    local path="$1" name="$2" branch="$3" cat="$4"
+    local base parent tmptar rc
+    base="$(basename "$path")"; parent="$(dirname "$path")"
+    tmptar="$(mktemp "$HOME/.oduflow-addon-XXXXXX.tar")"
+    if ! tar --exclude='.git' -C "$parent" -cf "$tmptar" "$base"; then
+        rm -f "$tmptar"; return 1
+    fi
+    upload_ranges "$tmptar" "${API}/addon" \
+        "name=${name}&branch=${branch}&category=${cat}" 0 "addon ${name}"
+    rc=$?
+    rm -f "$tmptar"
+    return "$rc"
+}
+
+announce_addon_remote() {  # name origin branch
+    curl -fsS -H "$AUTH" -H "Content-Type: application/json" \
+        --data-binary "$(printf '{"name":"%s","origin_url":"%s","branch":"%s"}' "$1" "$2" "$3")" \
+        -X POST "${API}/addon-remote" >/dev/null
+}
+
+process_addons() {
+    local addons_path="$1"
+    local p base name origin branch
+    local IFS=','
+    local -a paths
+    read -ra paths <<< "$addons_path"
+    for p in "${paths[@]}"; do
+        p="${p%/}"
+        [ -n "$p" ] && [ -d "$p" ] || continue
+        case "$p" in
+            */src/odoo/addons|*/src/odoo/odoo/addons) continue ;;  # in the image
+            */src/user) continue ;;                                # customer's own repo
+            */src/enterprise)
+                [ "$WITH_ENTERPRISE" = 1 ] || continue
+                name="enterprise"; branch="$(addon_branch "$p")"
+                if [[ "$done_addons" == *" $name "* ]]; then
+                    echo ">> enterprise: already uploaded, skipping"; continue
+                fi
+                echo ">> enterprise: uploading ($(du -sh "$p" 2>/dev/null | cut -f1))"
+                upload_addon_files "$p" "$name" "$branch" "enterprise" \
+                    || { echo "ERROR: failed to upload enterprise addons." >&2; exit 5; }
+                ;;
+            */src/themes)
+                [ "$WITH_THEMES" = 1 ] || continue
+                name="themes"; branch="$(addon_branch "$p")"
+                if [[ "$done_addons" == *" $name "* ]]; then
+                    echo ">> themes: already uploaded, skipping"; continue
+                fi
+                echo ">> themes: uploading ($(du -sh "$p" 2>/dev/null | cut -f1))"
+                upload_addon_files "$p" "$name" "$branch" "themes" \
+                    || { echo "ERROR: failed to upload themes." >&2; exit 5; }
+                ;;
+            *)
+                [ "$WITH_EXTRA" = 1 ] || continue
+                name="$(sanitize_addon_name "$p")"
+                [ -n "$name" ] || continue
+                origin="$(git -C "$p" remote get-url origin 2>/dev/null || true)"
+                branch="$(addon_branch "$p")"
+                case "$origin" in
+                    https://*)
+                        if [[ "$done_remote" == *" $name "* ]]; then
+                            echo ">> extra '$name': already announced, skipping"; continue
+                        fi
+                        echo ">> extra '$name': from remote $origin @ ${branch:-?}"
+                        announce_addon_remote "$name" "$origin" "$branch" \
+                            || { echo "ERROR: failed to announce extra repo '$name'." >&2; exit 5; }
+                        ;;
+                    *)
+                        if [[ "$done_addons" == *" $name "* ]]; then
+                            echo ">> extra '$name': already uploaded, skipping"; continue
+                        fi
+                        echo ">> extra '$name': uploading files (origin: ${origin:-none})"
+                        upload_addon_files "$p" "$name" "$branch" "extra" \
+                            || { echo "ERROR: failed to upload extra repo '$name'." >&2; exit 5; }
+                        ;;
+                esac
+                ;;
+        esac
+    done
+}
+
+if [ "$WITH_ENTERPRISE" = 1 ] || [ "$WITH_THEMES" = 1 ] || [ "$WITH_EXTRA" = 1 ]; then
+    ADDONS_PATH="$(detect_addons_path || true)"
+    if [ -z "$ADDONS_PATH" ]; then
+        echo ">> WARNING: could not determine the Odoo addons-path; skipping addon download." >&2
+        echo "   (the database and filestore import continues normally)" >&2
+    else
+        process_addons "$ADDONS_PATH"
+    fi
+fi
 
 # ---- finalize --------------------------------------------------------------
 
