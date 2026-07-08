@@ -302,16 +302,35 @@ def _destroy_traefik(
 
 def _wait_pg_ready(client: DockerClient, settings: Settings, timeout: int = 30) -> None:
     container = client.containers.get(settings.shared_db_container)
-    for i in range(timeout):
-        exit_code, _ = container.exec_run(["pg_isready", "-U", settings.db_user])
-        if exit_code == 0:
-            exit_code2, _ = container.exec_run(
-                ["psql", "-U", settings.db_user, "-d", "postgres", "-tAc", "SELECT 1;"]
-            )
-            if exit_code2 == 0:
-                return
+    for _ in range(timeout):
+        try:
+            exit_code, _ = container.exec_run(["pg_isready", "-U", settings.db_user])
+            if exit_code == 0:
+                exit_code2, _ = container.exec_run(
+                    [
+                        "psql",
+                        "-U",
+                        settings.db_user,
+                        "-d",
+                        "postgres",
+                        "-tAc",
+                        "SELECT 1;",
+                    ]
+                )
+                if exit_code2 == 0:
+                    return
+        except docker.errors.APIError:
+            # The DB container isn't running yet — still starting, or restarting
+            # after a crash (e.g. the disk filled up). Docker's exec_create then
+            # returns 409. Treat it as "not ready" and retry instead of letting a
+            # transient state crash the whole server startup (which systemd would
+            # turn into a restart loop).
+            pass
         time.sleep(1)
-    raise PrerequisiteNotMetError(f"PostgreSQL did not become ready within {timeout}s")
+    raise PrerequisiteNotMetError(
+        f"PostgreSQL ({settings.shared_db_container}) did not become ready within "
+        f"{timeout}s. Check its logs: docker logs {settings.shared_db_container}"
+    )
 
 
 def _exec_sql(
@@ -2142,6 +2161,27 @@ def delete_template(
     settings: Settings, team: TeamSettings, template_name: str
 ) -> dict[str, str]:
     client = get_client()
+
+    # Refuse if any environment was created from this template: its filestore is
+    # the overlay lower layer for those envs (see env_ops._mount_filestore), so
+    # deleting it would yank the base out from under a live overlay and break it.
+    # Mirrors the same guard in rename_template.
+    filters = {
+        "label": [
+            f"{settings.managed_label}=true",
+            f"{settings.team_label}={team.team_id}",
+        ]
+    }
+    dependent: list[str] = []
+    for c in client.containers.list(all=True, filters=filters):
+        if c.labels.get("oduflow.template", "none") == template_name:
+            dependent.append(c.labels.get(settings.branch_label, c.name))
+    if dependent:
+        raise ConflictError(
+            f"Cannot delete template '{template_name}': used by environments: "
+            f"{', '.join(dependent)}. Delete those environments first."
+        )
+
     tpl_db = get_template_db_name(template_name, team.team_id)
 
     if _db_exists(client, settings, tpl_db):
