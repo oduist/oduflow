@@ -1,5 +1,21 @@
 # Changelog
 
+## v1.64.0
+
+### Features
+
+- **Odoo.sh addons-path import** — extend push-based import to carry over the addons-path Odoo.sh ran with, supporting Enterprise, Themes, and extra repos. The client detects the live addons-path, classifies each entry, tars private repos and announces reachable extras to the server. Also adds `rename_template` MCP tool, REST endpoint, and dashboard button to rename template directories and their PostgreSQL backing databases. (#108)
+- **Chunked Odoo.sh import uploads** — split large SQL dumps and addon tarballs into resumable chunks to pass proxy body-size limits (e.g., Cloudflare's 100 MB cap). Resume state is derived from what is already staged on disk. (#108)
+- **Local extra-addons repos** — `extra_addons.create_local_repo` seeds a remote-less bare repo from files with a `.local` marker; fetch short-circuits so worktree creation never attempts a remote pull. (#108)
+
+### Dashboard
+
+- **Import acknowledgement gate** — Enterprise/Themes/Extra addon checkboxes now gated behind a licensing acknowledgment, linking to `oduflow.dev/odoo-sh-import-notes` for documentation. (#108)
+
+### Documentation & Testing
+
+- **Odoo.sh import decision record** — specs/0030 captures the architecture and rationale for the resumable, push-based import model. (#108)
+
 ## v1.63.0
 
 ### Features
