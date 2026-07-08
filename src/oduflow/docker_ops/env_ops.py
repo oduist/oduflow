@@ -247,7 +247,11 @@ def _mount_filestore(
         )
         hint = ""
         if "allow_other" in error_msg or "permission" in error_msg.lower():
-            hint = " Hint: uncomment 'user_allow_other' in /etc/fuse.conf"
+            hint = (
+                " Hint: Oduflow normally runs as root, where 'allow_other' needs "
+                "no extra config. If you run it as a non-root user, uncomment "
+                "'user_allow_other' in /etc/fuse.conf."
+            )
         raise PrerequisiteNotMetError(
             f"Failed to mount filestore overlay: {error_msg}.{hint}"
         )
