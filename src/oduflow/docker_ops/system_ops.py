@@ -1492,27 +1492,37 @@ def import_from_odoo(
     master_pwd: str,
     db_name: str = "",
     template_name: str = "",
+    without_filestore: bool = False,
 ) -> dict[str, object]:
     """Import a template from a running Odoo instance via its database manager API.
 
-    Downloads a full backup (SQL + filestore), extracts it into the template
+    Downloads a ZIP backup, extracts it into the template
     directory, reads manifest.json to determine the Odoo version, saves
     metadata.json, and loads the dump into PostgreSQL as a template DB.
     """
     import urllib.request
-    import urllib.parse
     import zipfile
 
     from oduflow.url_safety import assert_allowed_url
 
     base = odoo_url.rstrip("/")
+    validate_template_name(template_name)
+    template_dir = team.get_template_dir(template_name)
+    tpl_db = get_template_db_name(template_name, team.team_id)
 
     # SSRF guard: importing a DB from a URL is a clearly-external operation, so
     # block loopback, the cloud metadata endpoint, and internal RFC1918 hosts.
     assert_allowed_url(base, allow_private=False)
 
+    if os.path.exists(template_dir):
+        raise ConflictError(f"Template '{template_name}' already exists.")
+
+    client = get_client()
+    if _db_exists(client, settings, tpl_db):
+        raise ConflictError(f"Template '{template_name}' already exists.")
+
     # Gate on the DB quota before downloading a potentially huge backup.
-    check_db_quota(get_client(), settings, team)
+    check_db_quota(client, settings, team)
 
     # 1. Resolve database name
     if not db_name:
@@ -1549,6 +1559,12 @@ def import_from_odoo(
             f"--{boundary}\r\n"
             f'Content-Disposition: form-data; name="{field_name}"\r\n\r\n'
             f"{field_value}\r\n"
+        )
+    if without_filestore:
+        parts.append(
+            f"--{boundary}\r\n"
+            f'Content-Disposition: form-data; name="filestore"\r\n\r\n'
+            "false\r\n"
         )
     parts.append(f"--{boundary}--\r\n")
     multipart_body = "".join(parts).encode("utf-8")
@@ -1590,8 +1606,6 @@ def import_from_odoo(
     # 3. Extract ZIP
     from oduflow.docker_ops import env_ops
 
-    client = get_client()
-    template_dir = team.get_template_dir(template_name)
     template_sql_path = os.path.join(template_dir, "dump.sql")
     template_filestore_path = team.get_template_filestore_path(template_name)
 
@@ -1618,51 +1632,54 @@ def import_from_odoo(
                     shutil.copyfileobj(src, dst)
                 logger.info("Extracted dump.sql to %s", template_sql_path)
 
-                # Extract filestore
-                if os.path.exists(template_filestore_path):
-                    shutil.rmtree(template_filestore_path)
-                os.makedirs(template_filestore_path, exist_ok=True)
+                if without_filestore:
+                    logger.info("Skipped filestore extraction for %s", template_name)
+                else:
+                    # Extract filestore
+                    if os.path.exists(template_filestore_path):
+                        shutil.rmtree(template_filestore_path)
+                    os.makedirs(template_filestore_path, exist_ok=True)
 
-                fs_prefix = "filestore/"
-                for member in zf.namelist():
-                    if not member.startswith(fs_prefix):
-                        continue
-                    rel = member[len(fs_prefix) :]
-                    if not rel:
-                        continue
-                    # Skip checklist/ symlink-like entries
-                    if rel.startswith("checklist/"):
-                        continue
-                    target = os.path.join(template_filestore_path, rel)
-                    # Reject any member that escapes the filestore dir (zip-slip).
-                    if not _is_within_directory(template_filestore_path, target):
-                        logger.warning(
-                            "Skipping unsafe archive member outside filestore: %s",
-                            member,
-                        )
-                        continue
-                    if member.endswith("/"):
-                        os.makedirs(target, exist_ok=True)
-                    else:
-                        os.makedirs(os.path.dirname(target), exist_ok=True)
-                        with zf.open(member) as src, open(target, "wb") as dst:
-                            shutil.copyfileobj(src, dst)
+                    fs_prefix = "filestore/"
+                    for member in zf.namelist():
+                        if not member.startswith(fs_prefix):
+                            continue
+                        rel = member[len(fs_prefix) :]
+                        if not rel:
+                            continue
+                        # Skip checklist/ symlink-like entries
+                        if rel.startswith("checklist/"):
+                            continue
+                        target = os.path.join(template_filestore_path, rel)
+                        # Reject any member that escapes the filestore dir (zip-slip).
+                        if not _is_within_directory(template_filestore_path, target):
+                            logger.warning(
+                                "Skipping unsafe archive member outside filestore: %s",
+                                member,
+                            )
+                            continue
+                        if member.endswith("/"):
+                            os.makedirs(target, exist_ok=True)
+                        else:
+                            os.makedirs(os.path.dirname(target), exist_ok=True)
+                            with zf.open(member) as src, open(target, "wb") as dst:
+                                shutil.copyfileobj(src, dst)
 
-                fs_count = sum(
-                    1
-                    for f in pathlib.Path(template_filestore_path).rglob("*")
-                    if f.is_file()
-                )
-                logger.info(
-                    "Extracted filestore to %s (%d files)",
-                    template_filestore_path,
-                    fs_count,
-                )
+                    fs_count = sum(
+                        1
+                        for f in pathlib.Path(template_filestore_path).rglob("*")
+                        if f.is_file()
+                    )
+                    logger.info(
+                        "Extracted filestore to %s (%d files)",
+                        template_filestore_path,
+                        fs_count,
+                    )
 
             # chown the new lower layer so the odoo user can read it through the
             # overlay once it is remounted.
             major = manifest.get("major_version", "")
-            if major:
+            if major and not without_filestore:
                 try:
                     uid_gid = get_odoo_uid_gid(client, f"odoo:{major}")
                     uid_str, gid_str = uid_gid.split(":")
@@ -1695,6 +1712,7 @@ def import_from_odoo(
         "odoo_version": manifest.get("version", ""),
         "pg_version": manifest.get("pg_version", ""),
         "modules": manifest.get("modules", {}),
+        "includes_filestore": not without_filestore,
     }
     _update_template_sizes(team, settings, template_name, metadata)
     logger.info("Metadata saved for template %s", template_name)
@@ -1712,6 +1730,7 @@ def import_from_odoo(
         "template_db": result["template_db"],
         "restore_seconds": result.get("restore_seconds", 0),
         "zip_size_mb": round(zip_size_mb, 1),
+        "includes_filestore": not without_filestore,
         "affected_envs": affected_envs,
         "remount_failures": remount_failures,
     }

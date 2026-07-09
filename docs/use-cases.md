@@ -190,8 +190,9 @@ Options:
 
 - `--db-name <db>` — specify the database name (auto-detected if only one DB exists)
 - `--template-name <name>` — template profile name (default: `default`)
+- `--without-filestore` — request a database-only ZIP backup without filestore files
 
-This is also available as an MCP tool (`import_template_from_odoo`) for AI agents.
+This is also available as an MCP tool (`import_template_from_odoo`) for AI agents; pass `without_filestore=true` for a database-only import.
 
 **From Odoo Database Manager (manual):**
 

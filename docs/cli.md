@@ -66,10 +66,10 @@ oduflow list-templates [--team 1]
 oduflow delete-template <template_name> [--team 1]
 
 # Import a template from a running Odoo instance
-oduflow import-template <odoo_url> <master_pwd> --template-name myproject [--db-name <db>] [--team 1]
+oduflow import-template <odoo_url> <master_pwd> --template-name myproject [--db-name <db>] [--without-filestore] [--team 1]
 ```
 
-`template-from-env`, `refresh-template`, `import-template`, and `reload-template --source` are **non-destructive** for live overlay environments: each is unmounted and remounted against the new template filestore while keeping its `upper` changes. Use `--reset-env-changes` (on `template-from-env`/`refresh-template`) to reset environments to the clean baseline instead.
+`template-from-env`, `refresh-template`, and `reload-template --source` are **non-destructive** for live overlay environments: each is unmounted and remounted against the new template filestore while keeping its `upper` changes. Use `--reset-env-changes` (on `template-from-env`/`refresh-template`) to reset environments to the clean baseline instead. `import-template` creates a new template and refuses an existing template name.
 
 ## Service Commands
 

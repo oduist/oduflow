@@ -68,9 +68,7 @@ editing code.
 # handle_errors wraps FlowError into one) reach the client. Any other exception
 # is returned as a generic "Error calling tool" without its text, so internal
 # paths, container/DB names and stack detail are not disclosed to MCP callers.
-mcp = FastMCP(
-    "Oduflow", instructions=_MCP_INSTRUCTIONS, mask_error_details=True
-)
+mcp = FastMCP("Oduflow", instructions=_MCP_INSTRUCTIONS, mask_error_details=True)
 _locks = LockManager()
 _settings: Settings | None = None
 _instance_id: str = ""
@@ -717,12 +715,13 @@ def import_template_from_odoo(
     master_pwd: str,
     db_name: str = "",
     template_name: str = "default",
+    without_filestore: bool = False,
     ctx: Context = None,
 ) -> str:
     """
     Import a template from a running Odoo instance via its database manager API.
 
-    Downloads a full backup (SQL + filestore), extracts it into the template
+    Downloads a ZIP backup, extracts it into the template
     directory, detects the Odoo version from the backup manifest, and loads
     the dump into PostgreSQL as a template database.
 
@@ -731,6 +730,7 @@ def import_template_from_odoo(
         master_pwd: Odoo master password (database manager password).
         db_name: Name of the database to back up. If empty, auto-detected (fails if multiple DBs exist).
         template_name: Name of the template profile to create.
+        without_filestore: If true, request a ZIP backup without filestore files.
     """
     settings = _get_settings()
     team = _resolve_team(ctx)
@@ -741,6 +741,7 @@ def import_template_from_odoo(
         master_pwd=master_pwd,
         db_name=db_name,
         template_name=template_name,
+        without_filestore=without_filestore,
     )
     lines = [
         f"Template '{result['template_name']}' imported successfully!",
@@ -748,6 +749,8 @@ def import_template_from_odoo(
         f"Odoo version: {result['odoo_version']}",
         f"Odoo image: {result['odoo_image']}",
         f"Template DB: {result['template_db']}",
+        "Filestore: "
+        + ("included" if result.get("includes_filestore") else "not included"),
         f"Backup size: {result['zip_size_mb']} MB",
         f"DB restore time: {result['restore_seconds']}s",
     ]
@@ -3032,6 +3035,7 @@ def _run_import_template(
     master_pwd: str,
     db_name: str = "",
     template_name: str = "",
+    without_filestore: bool = False,
 ) -> None:
     result = system_ops.import_from_odoo(
         settings,
@@ -3040,6 +3044,7 @@ def _run_import_template(
         master_pwd=master_pwd,
         db_name=db_name,
         template_name=template_name,
+        without_filestore=without_filestore,
     )
     lines = [
         f"Template '{result['template_name']}' imported successfully!",
@@ -3047,6 +3052,8 @@ def _run_import_template(
         f"Odoo version: {result['odoo_version']}",
         f"Odoo image: {result['odoo_image']}",
         f"Template DB: {result['template_db']}",
+        "Filestore: "
+        + ("included" if result.get("includes_filestore") else "not included"),
         f"Backup size: {result['zip_size_mb']} MB",
         f"DB restore time: {result['restore_seconds']}s",
     ]
@@ -3373,6 +3380,11 @@ def _run_cli() -> None:
     p_import.add_argument(
         "--template-name", required=True, help="Template profile name"
     )
+    p_import.add_argument(
+        "--without-filestore",
+        action="store_true",
+        help="Request a database-only ZIP backup without filestore files",
+    )
     p_import.add_argument("--team", default="1", help="Team ID (default: 1)")
 
     p_lt = sub.add_parser("list-templates", help="List available template profiles")
@@ -3603,6 +3615,7 @@ def _run_cli() -> None:
             master_pwd=args.master_pwd,
             db_name=args.db_name,
             template_name=args.template_name,
+            without_filestore=args.without_filestore,
         )
         return
 

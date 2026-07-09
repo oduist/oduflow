@@ -125,7 +125,7 @@ oduflow reload-template default --source s3://mybucket/prod/ --quiet
 The source directory should contain `dump.pgdump` (or `dump.sql`) and optionally `filestore/`. Files are synced using `aws s3 sync` (S3) or `rsync` (local), then the template DB is reloaded.
 
 !!! info "Non-destructive for live environments"
-    When `--source` replaces the template filestore, live overlay environments on that template are automatically unmounted and remounted against the new lower layer, **keeping their filestore changes**. The same applies to `import-template` re-imports.
+    When `--source` replaces the template filestore, live overlay environments on that template are automatically unmounted and remounted against the new lower layer, **keeping their filestore changes**. `import-template` creates a new template and refuses an existing template name.
 
 ## Listing and Dropping Templates
 
