@@ -5,7 +5,7 @@
 ### Features
 
 - **Per-team OAuth issuer with host-relative discovery** — in traefik mode, each team's OAuth Authorization Server derives its issuer from the incoming Host, so each team runs OAuth on its own already-certificated hostname with no need for a central `oauth_base_url`. `OduflowOAuthProvider` makes discovery metadata host-relative, `HostRelativeAuthChallenge` rewrites 401 challenge origins, and `[routing].hostname` is now validated per-mode (shared default deleted in traefik). (#112)
-- **Database-only Odoo template import** — `oduflow import-template` and `import_template_from_odoo` now accept `--without-filestore` / `without_filestore=True`, requesting a ZIP backup without filestore files while preserving manifest-based version detection.
+- **Database-only Odoo template import** — `oduflow import-template` and `import_template_from_odoo` now accept `--without-filestore` / `without_filestore=True`, requesting a PostgreSQL custom-format dump without filestore files and deriving template metadata after restore.
 
 ### Security
 

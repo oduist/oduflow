@@ -721,16 +721,15 @@ def import_template_from_odoo(
     """
     Import a template from a running Odoo instance via its database manager API.
 
-    Downloads a ZIP backup, extracts it into the template
-    directory, detects the Odoo version from the backup manifest, and loads
-    the dump into PostgreSQL as a template database.
+    Downloads a full ZIP backup or database-only PostgreSQL custom dump and
+    loads it into PostgreSQL as a template database.
 
     Args:
         odoo_url: Base URL of the Odoo instance (e.g. "https://my-odoo.example.com").
         master_pwd: Odoo master password (database manager password).
         db_name: Name of the database to back up. If empty, auto-detected (fails if multiple DBs exist).
         template_name: Name of the template profile to create.
-        without_filestore: If true, request a ZIP backup without filestore files.
+        without_filestore: If true, request a database-only PostgreSQL custom dump.
     """
     settings = _get_settings()
     team = _resolve_team(ctx)
@@ -3383,7 +3382,7 @@ def _run_cli() -> None:
     p_import.add_argument(
         "--without-filestore",
         action="store_true",
-        help="Request a database-only ZIP backup without filestore files",
+        help="Request a database-only PostgreSQL custom dump",
     )
     p_import.add_argument("--team", default="1", help="Team ID (default: 1)")
 

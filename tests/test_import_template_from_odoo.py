@@ -41,6 +41,10 @@ def _zip_backup() -> bytes:
     return payload.getvalue()
 
 
+def _dump_backup() -> bytes:
+    return b"PGDMP custom dump bytes"
+
+
 class _Response:
     def __init__(self, body: bytes, content_type: str = "application/octet-stream"):
         self._body = io.BytesIO(body)
@@ -84,9 +88,23 @@ def _patch_import_dependencies(monkeypatch, backup_requests):
         },
     )
 
+    def fake_exec_sql(_client, _settings, sql, db="postgres"):
+        if "name='base'" in sql:
+            return "18.0.1.0"
+        if "SHOW server_version" in sql:
+            return "16"
+        if "json_object_agg" in sql:
+            return json.dumps({"base": "18.0.1.0", "web": "18.0.1.0"})
+        raise AssertionError(f"Unexpected SQL against {db}: {sql}")
+
+    monkeypatch.setattr(system_ops, "_exec_sql", fake_exec_sql)
+
     def fake_urlopen(req, timeout=0):
         if req.full_url.endswith("/web/database/backup"):
-            backup_requests.append(req.data.decode("utf-8"))
+            body = req.data.decode("utf-8")
+            backup_requests.append(body)
+            if "dump" in body:
+                return _Response(_dump_backup())
             return _Response(_zip_backup(), "application/zip")
         raise AssertionError(f"Unexpected request: {req.full_url}")
 
@@ -117,7 +135,7 @@ def test_import_from_odoo_default_zip_omits_filestore_field(monkeypatch, tmp_pat
     )
 
 
-def test_import_from_odoo_without_filestore_sends_false_and_skips_files(
+def test_import_from_odoo_without_filestore_uses_custom_dump_and_skips_files(
     monkeypatch, tmp_path
 ):
     team, settings = _team_and_settings(tmp_path)
@@ -135,14 +153,18 @@ def test_import_from_odoo_without_filestore_sends_false_and_skips_files(
     )
 
     assert result["includes_filestore"] is False
-    assert 'name="filestore"' in backup_requests[0]
-    assert "false" in backup_requests[0]
+    assert 'name="backup_format"' in backup_requests[0]
+    assert "dump" in backup_requests[0]
+    assert 'name="filestore"' not in backup_requests[0]
     assert os.path.isfile(team.get_template_sql_path("dbonly"))
+    assert os.path.basename(team.get_template_sql_path("dbonly")) == "dump.pgdump"
     assert not os.path.exists(team.get_template_filestore_path("dbonly"))
     with open(team.get_template_metadata_path("dbonly")) as f:
         metadata = json.load(f)
     assert metadata["includes_filestore"] is False
     assert metadata["filestore_size_mb"] == 0.0
+    assert metadata["odoo_image"] == "odoo:18.0"
+    assert metadata["modules"] == {"base": "18.0.1.0", "web": "18.0.1.0"}
 
 
 def test_import_from_odoo_existing_template_dir_fails_before_network(

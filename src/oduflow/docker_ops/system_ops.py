@@ -115,6 +115,48 @@ def _normalize_extra_addons(raw_addons) -> dict[str, str]:
     return {}
 
 
+def _odoo_major_from_module_version(module_version: str) -> str:
+    parts = module_version.split(".")
+    if len(parts) >= 2 and parts[0].isdigit() and parts[1].isdigit():
+        return f"{parts[0]}.{parts[1]}"
+    return ""
+
+
+def _read_template_manifest_from_db(
+    client: DockerClient, settings: Settings, template_db: str
+) -> dict[str, object]:
+    """Build Odoo backup-like manifest metadata from a restored database."""
+    version = _exec_sql(
+        client,
+        settings,
+        "SELECT COALESCE(latest_version, '') FROM ir_module_module "
+        "WHERE name='base' AND state='installed' LIMIT 1;",
+        db=template_db,
+    ).strip()
+    major_version = _odoo_major_from_module_version(version)
+    pg_version = _exec_sql(client, settings, "SHOW server_version;", db=template_db)
+    modules_raw = _exec_sql(
+        client,
+        settings,
+        "SELECT COALESCE(json_object_agg(name, latest_version), '{}'::json)::text "
+        "FROM ir_module_module WHERE state='installed';",
+        db=template_db,
+    )
+    try:
+        modules = json.loads(modules_raw) if modules_raw else {}
+    except json.JSONDecodeError:
+        logger.warning(
+            "Could not parse module manifest from %s: %s", template_db, modules_raw
+        )
+        modules = {}
+    return {
+        "version": version,
+        "major_version": major_version,
+        "pg_version": pg_version,
+        "modules": modules,
+    }
+
+
 def _resolve_conf(name: str) -> pathlib.Path:
     """Return /etc/oduflow/{name} if present, otherwise the bundled copy."""
     etc_path = _get_etc_dir() / name
@@ -1496,9 +1538,8 @@ def import_from_odoo(
 ) -> dict[str, object]:
     """Import a template from a running Odoo instance via its database manager API.
 
-    Downloads a ZIP backup, extracts it into the template
-    directory, reads manifest.json to determine the Odoo version, saves
-    metadata.json, and loads the dump into PostgreSQL as a template DB.
+    Downloads a full ZIP backup or DB-only custom dump, saves metadata.json,
+    and loads the dump into PostgreSQL as a template DB.
     """
     import urllib.request
     import zipfile
@@ -1549,22 +1590,17 @@ def import_from_odoo(
     # 2. Download backup
     logger.info("Downloading backup from %s (db=%s)...", base, db_name)
     boundary = "----OduflowBoundary"
+    backup_format = "dump" if without_filestore else "zip"
     parts = []
     for field_name, field_value in [
         ("master_pwd", master_pwd),
         ("name", db_name),
-        ("backup_format", "zip"),
+        ("backup_format", backup_format),
     ]:
         parts.append(
             f"--{boundary}\r\n"
             f'Content-Disposition: form-data; name="{field_name}"\r\n\r\n'
             f"{field_value}\r\n"
-        )
-    if without_filestore:
-        parts.append(
-            f"--{boundary}\r\n"
-            f'Content-Disposition: form-data; name="filestore"\r\n\r\n'
-            "false\r\n"
         )
     parts.append(f"--{boundary}--\r\n")
     multipart_body = "".join(parts).encode("utf-8")
@@ -1577,7 +1613,7 @@ def import_from_odoo(
     )
 
     download_start = time.monotonic()
-    tmp_zip = os.path.join(team.data_dir, "tmp_odoo_backup.zip")
+    tmp_backup = os.path.join(team.data_dir, f"tmp_odoo_backup.{backup_format}")
     os.makedirs(team.data_dir, exist_ok=True)
     try:
         with urllib.request.urlopen(req, timeout=600) as resp:
@@ -1589,7 +1625,7 @@ def import_from_odoo(
                     -1,
                     f"Unexpected response (Content-Type: {content_type}): {body}",
                 )
-            with open(tmp_zip, "wb") as f:
+            with open(tmp_backup, "wb") as f:
                 while True:
                     chunk = resp.read(1024 * 1024)
                     if not chunk:
@@ -1600,13 +1636,17 @@ def import_from_odoo(
         raise ExternalCommandError("odoo backup", e.code, f"HTTP {e.code}: {body}")
 
     download_elapsed = time.monotonic() - download_start
-    zip_size_mb = os.path.getsize(tmp_zip) / (1024 * 1024)
-    logger.info("Backup downloaded in %.1fs (%.1f MB)", download_elapsed, zip_size_mb)
+    backup_size_mb = os.path.getsize(tmp_backup) / (1024 * 1024)
+    logger.info(
+        "Backup downloaded in %.1fs (%.1f MB)", download_elapsed, backup_size_mb
+    )
 
-    # 3. Extract ZIP
+    # 3. Stage dump/filestore files
     from oduflow.docker_ops import env_ops
 
-    template_sql_path = os.path.join(template_dir, "dump.sql")
+    template_sql_path = os.path.join(
+        template_dir, "dump.pgdump" if without_filestore else "dump.sql"
+    )
     template_filestore_path = team.get_template_filestore_path(template_name)
 
     os.makedirs(template_dir, exist_ok=True)
@@ -1621,20 +1661,24 @@ def import_from_odoo(
         with env_ops.remount_template_overlays(
             client, settings, team, template_name
         ) as remount:
-            with zipfile.ZipFile(tmp_zip, "r") as zf:
-                # Extract manifest.json
-                if "manifest.json" in zf.namelist():
-                    with zf.open("manifest.json") as mf:
-                        manifest = json.load(mf)
+            if without_filestore:
+                shutil.copy2(tmp_backup, template_sql_path)
+                logger.info("Saved DB-only dump to %s", template_sql_path)
+            else:
+                with zipfile.ZipFile(tmp_backup, "r") as zf:
+                    # Extract manifest.json
+                    if "manifest.json" in zf.namelist():
+                        with zf.open("manifest.json") as mf:
+                            manifest = json.load(mf)
 
-                # Extract dump.sql
-                with zf.open("dump.sql") as src, open(template_sql_path, "wb") as dst:
-                    shutil.copyfileobj(src, dst)
-                logger.info("Extracted dump.sql to %s", template_sql_path)
+                    # Extract dump.sql
+                    with (
+                        zf.open("dump.sql") as src,
+                        open(template_sql_path, "wb") as dst,
+                    ):
+                        shutil.copyfileobj(src, dst)
+                    logger.info("Extracted dump.sql to %s", template_sql_path)
 
-                if without_filestore:
-                    logger.info("Skipped filestore extraction for %s", template_name)
-                else:
                     # Extract filestore
                     if os.path.exists(template_filestore_path):
                         shutil.rmtree(template_filestore_path)
@@ -1679,7 +1723,7 @@ def import_from_odoo(
             # chown the new lower layer so the odoo user can read it through the
             # overlay once it is remounted.
             major = manifest.get("major_version", "")
-            if major and not without_filestore:
+            if major:
                 try:
                     uid_gid = get_odoo_uid_gid(client, f"odoo:{major}")
                     uid_str, gid_str = uid_gid.split(":")
@@ -1696,8 +1740,8 @@ def import_from_odoo(
         affected_envs = remount.affected
         remount_failures = remount.failures
     finally:
-        if os.path.exists(tmp_zip):
-            os.remove(tmp_zip)
+        if os.path.exists(tmp_backup):
+            os.remove(tmp_backup)
 
     # 4. Determine Odoo image from manifest
     major_version = manifest.get("major_version", "")
@@ -1719,6 +1763,24 @@ def import_from_odoo(
 
     # 6. Load dump into PostgreSQL
     result = reload_template(settings, team, template_name=template_name)
+    if without_filestore:
+        manifest = _read_template_manifest_from_db(
+            client, settings, str(result["template_db"])
+        )
+        major_version = manifest.get("major_version", "")
+        odoo_image = f"odoo:{major_version}" if major_version else ""
+        metadata.update(
+            {
+                "odoo_image": odoo_image,
+                "odoo_version": manifest.get("version", ""),
+                "pg_version": manifest.get("pg_version", ""),
+                "modules": manifest.get("modules", {}),
+            }
+        )
+        _update_template_sizes(team, settings, template_name, metadata)
+        logger.info(
+            "Metadata updated from restored template DB %s", result["template_db"]
+        )
 
     return {
         "status": "imported",
@@ -1729,7 +1791,7 @@ def import_from_odoo(
         "odoo_version": manifest.get("version", ""),
         "template_db": result["template_db"],
         "restore_seconds": result.get("restore_seconds", 0),
-        "zip_size_mb": round(zip_size_mb, 1),
+        "zip_size_mb": round(backup_size_mb, 1),
         "includes_filestore": not without_filestore,
         "affected_envs": affected_envs,
         "remount_failures": remount_failures,

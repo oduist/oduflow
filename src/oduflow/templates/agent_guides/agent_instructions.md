@@ -157,7 +157,7 @@ Extra addons repositories (Odoo Enterprise, OCA, your own shared addons) are clo
 | Tool | When to use |
 |---|---|
 | `list_templates` | List available database template profiles |
-| `import_template_from_odoo(odoo_url, master_pwd, db_name?, template_name?, without_filestore=False)` | Import a template from a running Odoo instance via its database manager API. Set `without_filestore=True` for a database-only ZIP backup. Requires explicit user permission |
+| `import_template_from_odoo(odoo_url, master_pwd, db_name?, template_name?, without_filestore=False)` | Import a template from a running Odoo instance via its database manager API. Set `without_filestore=True` for a database-only PostgreSQL custom dump. Requires explicit user permission |
 | `save_as_template(env_name, reset_env_changes=False)` | Make a branch the new template baseline. Other overlay environments on this template are remounted against the new baseline, **keeping their filestore changes by default** (non-destructive); `reset_env_changes=True` discards them. The source env is always reset. Requires explicit user permission |
 | `refresh_template(template_name, reset_env_changes=False)` | Re-apply a template's current filestore to live overlay environments, keeping their changes (non-destructive); `reset_env_changes=True` resets them to the template baseline. Use after the template filestore changed on disk or to re-sync a skipped env. Requires explicit user permission |
 | `delete_template(template_name)` | ⚠️ **Destructive**. Remove a template profile. Requires explicit user permission |
