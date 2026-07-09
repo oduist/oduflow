@@ -12,7 +12,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from oduflow.docker_ops import system_ops
-from oduflow.errors import ConflictError
+from oduflow.errors import ConflictError, NotFoundError
 from oduflow.settings import Settings, TeamSettings
 
 
@@ -81,3 +81,14 @@ def test_ignores_envs_of_other_templates(settings, team):
 
     assert result["status"] == "dropped"
     assert not os.path.isdir(tpl_dir)
+
+
+def test_missing_template_raises_not_found(settings, team):
+    client = _client([])
+
+    with (
+        patch("oduflow.docker_ops.system_ops.get_client", return_value=client),
+        patch("oduflow.docker_ops.system_ops._db_exists", return_value=False),
+    ):
+        with pytest.raises(NotFoundError, match="Template 'prod' not found"):
+            system_ops.delete_template(settings, team, "prod")

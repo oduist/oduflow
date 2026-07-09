@@ -178,7 +178,7 @@ def test_import_from_odoo_existing_template_dir_fails_before_network(
     get_client = MagicMock()
     monkeypatch.setattr(system_ops, "get_client", get_client)
 
-    with pytest.raises(ConflictError, match="already exists"):
+    with pytest.raises(ConflictError, match="Template directory already exists"):
         system_ops.import_from_odoo(
             settings,
             team,
@@ -204,7 +204,7 @@ def test_import_from_odoo_existing_template_db_fails_before_network(
     monkeypatch.setattr(system_ops, "_db_exists", lambda *a, **k: True)
     monkeypatch.setattr(system_ops, "check_db_quota", quota)
 
-    with pytest.raises(ConflictError, match="already exists"):
+    with pytest.raises(ConflictError, match="Template database already exists"):
         system_ops.import_from_odoo(
             settings,
             team,

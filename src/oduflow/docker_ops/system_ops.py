@@ -1556,11 +1556,11 @@ def import_from_odoo(
     assert_allowed_url(base, allow_private=False)
 
     if os.path.exists(template_dir):
-        raise ConflictError(f"Template '{template_name}' already exists.")
+        raise ConflictError(f"Template directory already exists: {template_dir}")
 
     client = get_client()
     if _db_exists(client, settings, tpl_db):
-        raise ConflictError(f"Template '{template_name}' already exists.")
+        raise ConflictError(f"Template database already exists: {tpl_db}")
 
     # Gate on the DB quota before downloading a potentially huge backup.
     check_db_quota(client, settings, team)
@@ -2264,8 +2264,14 @@ def delete_template(
         )
 
     tpl_db = get_template_db_name(template_name, team.team_id)
+    db_exists = _db_exists(client, settings, tpl_db)
+    template_dir_path = team.get_template_dir(template_name)
+    dir_exists = os.path.isdir(template_dir_path)
 
-    if _db_exists(client, settings, tpl_db):
+    if not db_exists and not dir_exists:
+        raise NotFoundError(f"Template '{template_name}' not found.")
+
+    if db_exists:
         _wait_pg_ready(client, settings)
         _exec_sql(
             client,
@@ -2275,8 +2281,7 @@ def delete_template(
         _exec_sql(client, settings, f'DROP DATABASE IF EXISTS "{tpl_db}" WITH (FORCE);')
         logger.info("Dropped template DB %s", tpl_db)
 
-    template_dir_path = team.get_template_dir(template_name)
-    if os.path.isdir(template_dir_path):
+    if dir_exists:
         shutil.rmtree(template_dir_path)
         logger.info("Removed template directory %s", template_dir_path)
 
