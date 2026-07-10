@@ -68,9 +68,7 @@ editing code.
 # handle_errors wraps FlowError into one) reach the client. Any other exception
 # is returned as a generic "Error calling tool" without its text, so internal
 # paths, container/DB names and stack detail are not disclosed to MCP callers.
-mcp = FastMCP(
-    "Oduflow", instructions=_MCP_INSTRUCTIONS, mask_error_details=True
-)
+mcp = FastMCP("Oduflow", instructions=_MCP_INSTRUCTIONS, mask_error_details=True)
 _locks = LockManager()
 _settings: Settings | None = None
 _instance_id: str = ""
@@ -717,20 +715,21 @@ def import_template_from_odoo(
     master_pwd: str,
     db_name: str = "",
     template_name: str = "default",
+    without_filestore: bool = False,
     ctx: Context = None,
 ) -> str:
     """
     Import a template from a running Odoo instance via its database manager API.
 
-    Downloads a full backup (SQL + filestore), extracts it into the template
-    directory, detects the Odoo version from the backup manifest, and loads
-    the dump into PostgreSQL as a template database.
+    Downloads a full ZIP backup or database-only PostgreSQL custom dump and
+    loads it into PostgreSQL as a template database.
 
     Args:
         odoo_url: Base URL of the Odoo instance (e.g. "https://my-odoo.example.com").
         master_pwd: Odoo master password (database manager password).
         db_name: Name of the database to back up. If empty, auto-detected (fails if multiple DBs exist).
         template_name: Name of the template profile to create.
+        without_filestore: If true, request a database-only PostgreSQL custom dump.
     """
     settings = _get_settings()
     team = _resolve_team(ctx)
@@ -741,6 +740,7 @@ def import_template_from_odoo(
         master_pwd=master_pwd,
         db_name=db_name,
         template_name=template_name,
+        without_filestore=without_filestore,
     )
     lines = [
         f"Template '{result['template_name']}' imported successfully!",
@@ -748,6 +748,8 @@ def import_template_from_odoo(
         f"Odoo version: {result['odoo_version']}",
         f"Odoo image: {result['odoo_image']}",
         f"Template DB: {result['template_db']}",
+        "Filestore: "
+        + ("included" if result.get("includes_filestore") else "not included"),
         f"Backup size: {result['zip_size_mb']} MB",
         f"DB restore time: {result['restore_seconds']}s",
     ]
@@ -807,6 +809,56 @@ def refresh_template(
             f"No live overlay environments use template '{template_name}'; "
             "nothing to do."
         ]
+    if failures:
+        lines.append(
+            "⚠️ Remount issues:\n"
+            + "\n".join(f"- {env}: {msg}" for env, msg in failures)
+        )
+    return "\n".join(lines)
+
+
+@mcp.tool()
+@handle_errors
+@with_team_lock
+def attach_filestore(
+    template_name: str,
+    source: str,
+    reset_env_changes: bool = False,
+    strip_prefix: str = "auto",
+    ctx: Context = None,
+) -> str:
+    """
+    Attach or replace a template filestore from a directory, rsync/ssh source, or archive.
+
+    The source may be a local directory, a local .zip/.tar/.tar.gz archive, an
+    rsync:// URL, or an SSH-style rsync source such as user@host:/path. Archive
+    and directory sources are normalized to the Odoo filestore layout
+    (XX/<sha1>). strip_prefix="auto" detects a wrapper directory such as the
+    database name; pass an explicit prefix when auto-detection is ambiguous.
+    """
+    settings = _get_settings()
+    team = _resolve_team(ctx)
+    result = system_ops.attach_filestore(
+        settings,
+        team,
+        template_name,
+        source,
+        reset_env_changes=reset_env_changes,
+        strip_prefix=strip_prefix,
+    )
+    affected = cast("list[str]", result.get("affected_envs", []))
+    failures = cast("list[tuple[str, str]]", result.get("remount_failures", []))
+    lines = [
+        f"Filestore attached to template '{result['template_name']}'.",
+        f"Source: {result['source']} ({result['source_kind']})",
+        f"Strip prefix: {result.get('strip_prefix') or '<none>'}",
+        f"Files: {result['filestore_files']}",
+        f"Filestore size: {result['filestore_size_mb']} MB",
+        f"Mode: {'overlay' if result.get('use_overlay') else 'copy'}",
+    ]
+    if affected:
+        verb = "Reset" if reset_env_changes else "Remounted (changes preserved)"
+        lines.append(f"{verb} filestore overlays for: {', '.join(affected)}")
     if failures:
         lines.append(
             "⚠️ Remount issues:\n"
@@ -3016,6 +3068,42 @@ def _run_refresh_template(
     print("\n".join(lines))
 
 
+def _run_attach_filestore(
+    settings: Settings,
+    team: TeamSettings,
+    template_name: str,
+    source: str,
+    reset_env_changes: bool = False,
+    strip_prefix: str = "auto",
+) -> None:
+    result = system_ops.attach_filestore(
+        settings,
+        team,
+        template_name,
+        source,
+        reset_env_changes=reset_env_changes,
+        strip_prefix=strip_prefix,
+    )
+    lines = [
+        f"Filestore attached to template '{result['template_name']}'.",
+        f"Source: {result['source']} ({result['source_kind']})",
+        f"Strip prefix: {result.get('strip_prefix') or '<none>'}",
+        f"Files: {result['filestore_files']}",
+        f"Filestore size: {result['filestore_size_mb']} MB",
+        f"Mode: {'overlay' if result.get('use_overlay') else 'copy'}",
+    ]
+    affected = cast("list[str]", result.get("affected_envs", []))
+    failures = cast("list[tuple[str, str]]", result.get("remount_failures", []))
+    if affected:
+        verb = "Reset" if reset_env_changes else "Remounted (changes preserved)"
+        lines.append(f"{verb} filestore overlays for: {', '.join(affected)}")
+    if failures:
+        lines.append(
+            "Remount issues:\n" + "\n".join(f"- {env}: {msg}" for env, msg in failures)
+        )
+    print("\n".join(lines))
+
+
 def _run_delete_template(
     settings: Settings, team: TeamSettings, template_name: str
 ) -> None:
@@ -3032,6 +3120,7 @@ def _run_import_template(
     master_pwd: str,
     db_name: str = "",
     template_name: str = "",
+    without_filestore: bool = False,
 ) -> None:
     result = system_ops.import_from_odoo(
         settings,
@@ -3040,6 +3129,7 @@ def _run_import_template(
         master_pwd=master_pwd,
         db_name=db_name,
         template_name=template_name,
+        without_filestore=without_filestore,
     )
     lines = [
         f"Template '{result['template_name']}' imported successfully!",
@@ -3047,6 +3137,8 @@ def _run_import_template(
         f"Odoo version: {result['odoo_version']}",
         f"Odoo image: {result['odoo_image']}",
         f"Template DB: {result['template_db']}",
+        "Filestore: "
+        + ("included" if result.get("includes_filestore") else "not included"),
         f"Backup size: {result['zip_size_mb']} MB",
         f"DB restore time: {result['restore_seconds']}s",
     ]
@@ -3353,6 +3445,28 @@ def _run_cli() -> None:
     )
     p_refresh.add_argument("--team", default="1", help="Team ID (default: 1)")
 
+    p_attach_fs = sub.add_parser(
+        "attach-filestore",
+        help="Attach or replace a template filestore from a directory, rsync/ssh source, or archive",
+    )
+    p_attach_fs.add_argument("template_name", help="Template profile name")
+    p_attach_fs.add_argument(
+        "source",
+        help="Local dir/archive, rsync:// source, or SSH rsync source user@host:/path",
+    )
+    p_attach_fs.add_argument(
+        "--strip-prefix",
+        default="auto",
+        help='Archive/source wrapper prefix to strip; "auto" detects it, "none" strips nothing',
+    )
+    p_attach_fs.add_argument(
+        "--reset-env-changes",
+        action="store_true",
+        help="Discard environments' filestore changes (destructive). "
+        "Default: preserve them.",
+    )
+    p_attach_fs.add_argument("--team", default="1", help="Team ID (default: 1)")
+
     p_drop_tpl = sub.add_parser(
         "delete-template", help="Delete a template profile (template DB + files)"
     )
@@ -3372,6 +3486,11 @@ def _run_cli() -> None:
     )
     p_import.add_argument(
         "--template-name", required=True, help="Template profile name"
+    )
+    p_import.add_argument(
+        "--without-filestore",
+        action="store_true",
+        help="Request a database-only PostgreSQL custom dump",
     )
     p_import.add_argument("--team", default="1", help="Team ID (default: 1)")
 
@@ -3591,6 +3710,17 @@ def _run_cli() -> None:
         )
         return
 
+    if args.command == "attach-filestore":
+        _run_attach_filestore(
+            _settings,
+            _cli_team(),
+            template_name=args.template_name,
+            source=args.source,
+            reset_env_changes=args.reset_env_changes,
+            strip_prefix=args.strip_prefix,
+        )
+        return
+
     if args.command == "delete-template":
         _run_delete_template(_settings, _cli_team(), template_name=args.template_name)
         return
@@ -3603,6 +3733,7 @@ def _run_cli() -> None:
             master_pwd=args.master_pwd,
             db_name=args.db_name,
             template_name=args.template_name,
+            without_filestore=args.without_filestore,
         )
         return
 

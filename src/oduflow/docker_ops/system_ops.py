@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import contextlib
 import gzip
 import json
 import logging
 import os
 import pathlib
+import re
+import shlex
 import shutil
+import stat
 import subprocess
 import tarfile
 import time
@@ -37,6 +41,18 @@ _PACKAGE_ROOT = pathlib.Path(__file__).resolve().parents[1]
 _BUNDLED_PG_CONF = _PACKAGE_ROOT / "templates" / "postgresql.conf"
 _BUNDLED_ODOO_CONF = _PACKAGE_ROOT / "templates" / "odoo.conf"
 _BUNDLED_SANITIZE_DIR = _PACKAGE_ROOT / "templates"
+_PG_RESTORE_HELPER_IMAGE = "postgres:17"
+_FILESTORE_HASH_RE = re.compile(r"^[0-9a-f]{40}$", re.IGNORECASE)
+_ARCHIVE_SUFFIXES = (
+    ".zip",
+    ".tar",
+    ".tar.gz",
+    ".tgz",
+    ".tar.bz2",
+    ".tbz2",
+    ".tar.xz",
+    ".txz",
+)
 
 
 def _is_within_directory(directory: str, target: str) -> bool:
@@ -113,6 +129,298 @@ def _normalize_extra_addons(raw_addons) -> dict[str, str]:
         )
         return {}
     return {}
+
+
+def _is_filestore_relpath(rel_path: str) -> bool:
+    parts = rel_path.strip("/").split("/")
+    if len(parts) != 2:
+        return False
+    chunk, filename = parts
+    return (
+        len(chunk) == 2
+        and all(c in "0123456789abcdefABCDEF" for c in chunk)
+        and bool(_FILESTORE_HASH_RE.match(filename))
+        and filename[:2].lower() == chunk.lower()
+    )
+
+
+def _clean_archive_member_name(name: str) -> str:
+    normalized = name.replace("\\", "/").strip("/")
+    if (
+        not normalized
+        or normalized.startswith("../")
+        or "/../" in normalized
+        or normalized == ".."
+    ):
+        return ""
+    return normalized
+
+
+def _detect_filestore_strip_prefix(paths: list[str]) -> str:
+    candidates: dict[str, int] = {}
+    for path in paths:
+        clean = _clean_archive_member_name(path)
+        if not clean:
+            continue
+        parts = clean.split("/")
+        for idx in range(len(parts) - 1):
+            rel = "/".join(parts[idx : idx + 2])
+            if _is_filestore_relpath(rel):
+                prefix = "/".join(parts[:idx])
+                candidates[prefix] = candidates.get(prefix, 0) + 1
+                break
+    if not candidates:
+        raise PrerequisiteNotMetError(
+            "Could not detect an Odoo filestore layout. Expected files like "
+            "'60/609e7ca59cc05bf0de7233c6781a381b742a2931'. "
+            "Use --strip-prefix if the archive has an unusual wrapper path."
+        )
+    best_count = max(candidates.values())
+    best = sorted(prefix for prefix, count in candidates.items() if count == best_count)
+    if len(best) > 1:
+        shown = ", ".join(prefix or "<none>" for prefix in best[:5])
+        raise PrerequisiteNotMetError(
+            "Could not choose a unique filestore prefix; candidates: "
+            f"{shown}. Pass --strip-prefix explicitly."
+        )
+    return best[0]
+
+
+def _normalize_strip_prefix(strip_prefix: str, paths: list[str]) -> str:
+    value = (strip_prefix or "auto").strip().strip("/")
+    if value == "auto":
+        return _detect_filestore_strip_prefix(paths)
+    if value in {"", ".", "none"}:
+        return ""
+    return value
+
+
+def _strip_filestore_prefix(path: str, prefix: str) -> str:
+    clean = _clean_archive_member_name(path)
+    if not clean:
+        return ""
+    if not prefix:
+        return clean
+    if clean == prefix:
+        return ""
+    prefix_slash = prefix.rstrip("/") + "/"
+    if not clean.startswith(prefix_slash):
+        return ""
+    return clean[len(prefix_slash) :]
+
+
+def _copy_normalized_filestore_tree(
+    source_dir: str, dest_dir: str, strip_prefix: str = "auto"
+) -> tuple[int, str]:
+    file_paths: list[str] = []
+    for root, _dirs, files in os.walk(source_dir):
+        for name in files:
+            path = os.path.join(root, name)
+            rel = os.path.relpath(path, source_dir).replace(os.sep, "/")
+            file_paths.append(rel)
+    prefix = _normalize_strip_prefix(strip_prefix, file_paths)
+    written = 0
+    for rel in file_paths:
+        stripped = _strip_filestore_prefix(rel, prefix)
+        if not stripped or not _is_filestore_relpath(stripped):
+            continue
+        src = os.path.join(source_dir, rel.replace("/", os.sep))
+        if os.path.islink(src):
+            logger.warning("Skipping symlink in filestore source: %s", rel)
+            continue
+        target = os.path.join(dest_dir, stripped)
+        if not _is_within_directory(dest_dir, target):
+            continue
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+        shutil.copy2(src, target)
+        written += 1
+    if written == 0:
+        raise PrerequisiteNotMetError(
+            "No filestore files were copied. Check the source path or pass "
+            "--strip-prefix explicitly."
+        )
+    return written, prefix
+
+
+def _is_archive_source(source: str) -> bool:
+    return source.lower().endswith(_ARCHIVE_SUFFIXES)
+
+
+def _zip_member_is_symlink(info) -> bool:
+    return stat.S_IFMT(info.external_attr >> 16) == stat.S_IFLNK
+
+
+def _extract_zip_filestore(
+    archive_path: str, dest_dir: str, strip_prefix: str = "auto"
+) -> tuple[int, str]:
+    import zipfile
+
+    with zipfile.ZipFile(archive_path, "r") as zf:
+        file_infos = [
+            info
+            for info in zf.infolist()
+            if not info.is_dir() and not _zip_member_is_symlink(info)
+        ]
+        prefix = _normalize_strip_prefix(
+            strip_prefix, [info.filename for info in file_infos]
+        )
+        written = 0
+        for info in file_infos:
+            stripped = _strip_filestore_prefix(info.filename, prefix)
+            if not stripped or not _is_filestore_relpath(stripped):
+                continue
+            target = os.path.join(dest_dir, stripped)
+            if not _is_within_directory(dest_dir, target):
+                logger.warning(
+                    "Skipping unsafe archive member outside filestore: %s",
+                    info.filename,
+                )
+                continue
+            os.makedirs(os.path.dirname(target), exist_ok=True)
+            with zf.open(info) as src, open(target, "wb") as dst:
+                shutil.copyfileobj(src, dst)
+            written += 1
+    if written == 0:
+        raise PrerequisiteNotMetError(
+            "No filestore files were extracted. Check the archive or pass "
+            "--strip-prefix explicitly."
+        )
+    return written, prefix
+
+
+def _extract_tar_filestore(
+    archive_path: str, dest_dir: str, strip_prefix: str = "auto"
+) -> tuple[int, str]:
+    with tarfile.open(archive_path, "r:*") as tf:
+        members = [member for member in tf.getmembers() if member.isfile()]
+        prefix = _normalize_strip_prefix(
+            strip_prefix, [member.name for member in members]
+        )
+        written = 0
+        for member in members:
+            stripped = _strip_filestore_prefix(member.name, prefix)
+            if not stripped or not _is_filestore_relpath(stripped):
+                continue
+            target = os.path.join(dest_dir, stripped)
+            if not _is_within_directory(dest_dir, target):
+                logger.warning(
+                    "Skipping unsafe tar member outside filestore: %s", member.name
+                )
+                continue
+            src = tf.extractfile(member)
+            if src is None:
+                continue
+            os.makedirs(os.path.dirname(target), exist_ok=True)
+            with src, open(target, "wb") as dst:
+                shutil.copyfileobj(src, dst)
+            written += 1
+    if written == 0:
+        raise PrerequisiteNotMetError(
+            "No filestore files were extracted. Check the archive or pass "
+            "--strip-prefix explicitly."
+        )
+    return written, prefix
+
+
+def _extract_archive_filestore(
+    archive_path: str, dest_dir: str, strip_prefix: str = "auto"
+) -> tuple[int, str]:
+    if archive_path.lower().endswith(".zip"):
+        return _extract_zip_filestore(archive_path, dest_dir, strip_prefix)
+    return _extract_tar_filestore(archive_path, dest_dir, strip_prefix)
+
+
+def _is_remote_rsync_source(source: str) -> bool:
+    if source.startswith("rsync://"):
+        return True
+    if os.path.exists(source):
+        return False
+    return bool(re.match(r"^[^/\s:]+:.+", source))
+
+
+def _run_rsync_source(source: str, dest: str) -> None:
+    source_arg = source.rstrip("/") + "/"
+    dest_arg = dest.rstrip("/") + "/"
+    logger.info("Rsync filestore source: %s -> %s", source_arg, dest_arg)
+    subprocess.run(
+        ["rsync", "-a", "--delete", source_arg, dest_arg],
+        check=True,
+        capture_output=True,
+    )
+
+
+def _stage_filestore_source(
+    source: str,
+    raw_dir: str,
+    prepared_dir: str,
+    strip_prefix: str = "auto",
+) -> tuple[int, str, str]:
+    if os.path.isfile(source):
+        if not _is_archive_source(source):
+            raise PrerequisiteNotMetError(
+                "Filestore source file must be a supported archive: "
+                ".zip, .tar, .tar.gz, .tgz, .tar.bz2, .tbz2, .tar.xz, or .txz."
+            )
+        files, prefix = _extract_archive_filestore(source, prepared_dir, strip_prefix)
+        return files, prefix, "archive"
+
+    if os.path.isdir(source):
+        _run_rsync_source(source, raw_dir)
+        files, prefix = _copy_normalized_filestore_tree(
+            raw_dir, prepared_dir, strip_prefix
+        )
+        return files, prefix, "rsync"
+
+    if _is_remote_rsync_source(source):
+        _run_rsync_source(source, raw_dir)
+        files, prefix = _copy_normalized_filestore_tree(
+            raw_dir, prepared_dir, strip_prefix
+        )
+        return files, prefix, "rsync"
+
+    raise NotFoundError(f"Filestore source not found: {source}")
+
+
+def _odoo_major_from_module_version(module_version: str) -> str:
+    parts = module_version.split(".")
+    if len(parts) >= 2 and parts[0].isdigit() and parts[1].isdigit():
+        return f"{parts[0]}.{parts[1]}"
+    return ""
+
+
+def _read_template_manifest_from_db(
+    client: DockerClient, settings: Settings, template_db: str
+) -> dict[str, object]:
+    """Build Odoo backup-like manifest metadata from a restored database."""
+    version = _exec_sql(
+        client,
+        settings,
+        "SELECT COALESCE(latest_version, '') FROM ir_module_module "
+        "WHERE name='base' AND state='installed' LIMIT 1;",
+        db=template_db,
+    ).strip()
+    major_version = _odoo_major_from_module_version(version)
+    pg_version = _exec_sql(client, settings, "SHOW server_version;", db=template_db)
+    modules_raw = _exec_sql(
+        client,
+        settings,
+        "SELECT COALESCE(json_object_agg(name, latest_version), '{}'::json)::text "
+        "FROM ir_module_module WHERE state='installed';",
+        db=template_db,
+    )
+    try:
+        modules = json.loads(modules_raw) if modules_raw else {}
+    except json.JSONDecodeError:
+        logger.warning(
+            "Could not parse module manifest from %s: %s", template_db, modules_raw
+        )
+        modules = {}
+    return {
+        "version": version,
+        "major_version": major_version,
+        "pg_version": pg_version,
+        "modules": modules,
+    }
 
 
 def _resolve_conf(name: str) -> pathlib.Path:
@@ -478,6 +786,68 @@ def _copy_file_to_container(
             container.put_archive(dest_dir, f)
     finally:
         os.remove(tmp_path)
+
+
+def _convert_custom_dump_to_sql_with_helper(
+    client: DockerClient,
+    settings: Settings,
+    dump_path: str,
+    *,
+    is_gzipped: bool,
+) -> tuple[int, str, str]:
+    """Convert a custom dump to plain SQL with a newer pg_restore client."""
+    dump_dir = os.path.abspath(os.path.dirname(dump_path))
+    dump_name = os.path.basename(dump_path)
+    container_path = f"/backup/{dump_name}"
+    sql_path = os.path.join(dump_dir, "dump.sql")
+    container_sql_path = "/backup/dump.sql"
+    if is_gzipped:
+        command = [
+            "bash",
+            "-c",
+            "set -o pipefail; "
+            f"gunzip -c {shlex.quote(container_path)} | "
+            "pg_restore --no-owner "
+            f"-f {shlex.quote(container_sql_path)}",
+        ]
+    else:
+        command = [
+            "pg_restore",
+            "--no-owner",
+            "-f",
+            container_sql_path,
+            container_path,
+        ]
+
+    with contextlib.suppress(Exception):
+        client.images.pull(_PG_RESTORE_HELPER_IMAGE)
+
+    helper_name = f"{settings.prefix}pg-restore-helper-{time.time_ns()}"
+    helper = None
+    try:
+        helper = client.containers.run(
+            _PG_RESTORE_HELPER_IMAGE,
+            name=helper_name,
+            detach=True,
+            volumes={dump_dir: {"bind": "/backup", "mode": "rw"}},
+            command=command,
+            labels={settings.managed_label: "true", settings.system_label: "true"},
+        )
+        wait_result = helper.wait()
+        exit_code = int(wait_result.get("StatusCode", -1))
+        logs = helper.logs(stdout=True, stderr=True).decode("utf-8", errors="replace")
+        return exit_code, logs, sql_path
+    except docker.errors.APIError as exc:
+        return -1, str(exc), sql_path
+    finally:
+        if helper is not None:
+            with contextlib.suppress(Exception):
+                helper.remove(force=True)
+
+
+def _is_pg_restore_archive_version_error(output: str) -> bool:
+    output = output.lower()
+    return "unsupported version" in output and "file header" in output
 
 
 def _copy_file_from_container(
@@ -853,8 +1223,67 @@ def reload_template(
     output_str = output.decode("utf-8") if isinstance(output, bytes) else str(output)
 
     if exit_code != 0:
-        logger.error("DB restore failed after %.1fs: %s", restore_elapsed, output_str)
-        raise ExternalCommandError(restore_tool, exit_code, output_str)
+        if restore_tool == "pg_restore" and _is_pg_restore_archive_version_error(
+            output_str
+        ):
+            logger.warning(
+                "pg_restore in %s cannot read dump archive; retrying with %s helper",
+                settings.shared_db_container,
+                _PG_RESTORE_HELPER_IMAGE,
+            )
+            _exec_sql(
+                client,
+                settings,
+                f'DROP DATABASE IF EXISTS "{tpl_db}" WITH (FORCE);',
+            )
+            _exec_sql(
+                client, settings, f'CREATE DATABASE "{tpl_db}" TABLESPACE "{ts_name}";'
+            )
+            helper_start = time.monotonic()
+            helper_exit, helper_output, helper_sql_path = (
+                _convert_custom_dump_to_sql_with_helper(
+                    client, settings, resolved_dump, is_gzipped=is_gzipped
+                )
+            )
+            restore_elapsed += time.monotonic() - helper_start
+            if helper_exit != 0:
+                exit_code = helper_exit
+                output_str = helper_output
+            else:
+                helper_tmp_name = os.path.basename(helper_sql_path)
+                _copy_file_to_container(db_container, helper_sql_path, "/tmp")
+                psql_cmd = [
+                    "psql",
+                    "-U",
+                    settings.db_user,
+                    "-d",
+                    tpl_db,
+                    "-f",
+                    f"/tmp/{helper_tmp_name}",
+                ]
+                psql_start = time.monotonic()
+                exit_code, output = db_container.exec_run(psql_cmd)
+                restore_elapsed += time.monotonic() - psql_start
+                output_str = (
+                    output.decode("utf-8") if isinstance(output, bytes) else str(output)
+                )
+                restore_tool = "psql"
+                template_dir = os.path.abspath(team.get_template_dir(template_name))
+                if (
+                    exit_code == 0
+                    and dump_path is None
+                    and os.path.abspath(resolved_dump).startswith(template_dir + os.sep)
+                    and os.path.abspath(helper_sql_path)
+                    != os.path.abspath(resolved_dump)
+                ):
+                    with contextlib.suppress(OSError):
+                        os.remove(resolved_dump)
+
+        if exit_code != 0:
+            logger.error(
+                "DB restore failed after %.1fs: %s", restore_elapsed, output_str
+            )
+            raise ExternalCommandError(restore_tool, exit_code, output_str)
 
     if output_str.strip():
         logger.info("DB restore output: %s", output_str)
@@ -1378,6 +1807,107 @@ def refresh_template(
     }
 
 
+def attach_filestore(
+    settings: Settings,
+    team: TeamSettings,
+    template_name: str,
+    source: str,
+    *,
+    reset_env_changes: bool = False,
+    strip_prefix: str = "auto",
+) -> dict[str, object]:
+    """Attach or replace a template filestore from a directory, rsync source, or archive."""
+    from oduflow.docker_ops import env_ops
+
+    validate_template_name(template_name)
+    client = get_client()
+    tpl_dir = team.get_template_dir(template_name)
+    tpl_db = get_template_db_name(template_name, team.team_id)
+    if not os.path.isdir(tpl_dir) and not _db_exists(client, settings, tpl_db):
+        raise NotFoundError(f"Template '{template_name}' not found.")
+    os.makedirs(tpl_dir, exist_ok=True)
+
+    staging_root = os.path.join(
+        team.data_dir,
+        ".attach_filestore",
+        template_name.replace("/", "-"),
+        str(time.time_ns()),
+    )
+    raw_dir = os.path.join(staging_root, "raw")
+    prepared_dir = os.path.join(staging_root, "prepared")
+    os.makedirs(raw_dir, exist_ok=True)
+    os.makedirs(prepared_dir, exist_ok=True)
+
+    try:
+        try:
+            file_count, detected_prefix, source_kind = _stage_filestore_source(
+                source, raw_dir, prepared_dir, strip_prefix
+            )
+        except subprocess.CalledProcessError as exc:
+            stderr = exc.stderr.decode("utf-8", errors="replace") if exc.stderr else ""
+            stdout = exc.stdout.decode("utf-8", errors="replace") if exc.stdout else ""
+            raise ExternalCommandError("rsync", exc.returncode, stderr or stdout)
+
+        metadata_path = team.get_template_metadata_path(template_name)
+        metadata: dict[str, object] = {}
+        if os.path.isfile(metadata_path):
+            try:
+                with open(metadata_path) as f:
+                    metadata = json.load(f)
+            except (OSError, json.JSONDecodeError):
+                metadata = {}
+
+        target_filestore = team.get_template_filestore_path(template_name)
+        with env_ops.remount_template_overlays(
+            client,
+            settings,
+            team,
+            template_name,
+            reset_upper=reset_env_changes,
+        ) as remount:
+            if os.path.exists(target_filestore):
+                shutil.rmtree(target_filestore)
+            os.makedirs(os.path.dirname(target_filestore), exist_ok=True)
+            os.rename(prepared_dir, target_filestore)
+
+            odoo_image = str(metadata.get("odoo_image") or "")
+            if odoo_image:
+                try:
+                    uid_gid = get_odoo_uid_gid(client, odoo_image)
+                    uid_str, gid_str = uid_gid.split(":")
+                    chown_recursive(
+                        target_filestore,
+                        int(uid_str),
+                        int(gid_str),
+                        client,
+                        odoo_image,
+                    )
+                    logger.info("Template filestore chowned to %s", uid_gid)
+                except Exception as exc:  # noqa: BLE001 - chown is best-effort
+                    logger.warning("Could not chown template filestore: %s", exc)
+
+        metadata["includes_filestore"] = True
+        metadata["use_overlay"] = None
+        metadata = _update_template_sizes(team, settings, template_name, metadata)
+
+        return {
+            "status": "attached",
+            "template_name": template_name,
+            "source": source,
+            "source_kind": source_kind,
+            "strip_prefix": detected_prefix,
+            "filestore": target_filestore,
+            "filestore_files": file_count,
+            "filestore_size_mb": metadata.get("filestore_size_mb", 0.0),
+            "use_overlay": metadata.get("use_overlay"),
+            "affected_envs": remount.affected,
+            "remount_failures": remount.failures,
+            "reset_env_changes": reset_env_changes,
+        }
+    finally:
+        shutil.rmtree(staging_root, ignore_errors=True)
+
+
 def destroy_system(settings: Settings) -> dict[str, str]:
     client = get_client()
     logger.info("Destroying system")
@@ -1492,27 +2022,36 @@ def import_from_odoo(
     master_pwd: str,
     db_name: str = "",
     template_name: str = "",
+    without_filestore: bool = False,
 ) -> dict[str, object]:
     """Import a template from a running Odoo instance via its database manager API.
 
-    Downloads a full backup (SQL + filestore), extracts it into the template
-    directory, reads manifest.json to determine the Odoo version, saves
-    metadata.json, and loads the dump into PostgreSQL as a template DB.
+    Downloads a full ZIP backup or DB-only custom dump, saves metadata.json,
+    and loads the dump into PostgreSQL as a template DB.
     """
     import urllib.request
-    import urllib.parse
     import zipfile
 
     from oduflow.url_safety import assert_allowed_url
 
     base = odoo_url.rstrip("/")
+    validate_template_name(template_name)
+    template_dir = team.get_template_dir(template_name)
+    tpl_db = get_template_db_name(template_name, team.team_id)
 
     # SSRF guard: importing a DB from a URL is a clearly-external operation, so
     # block loopback, the cloud metadata endpoint, and internal RFC1918 hosts.
     assert_allowed_url(base, allow_private=False)
 
+    if os.path.exists(template_dir):
+        raise ConflictError(f"Template directory already exists: {template_dir}")
+
+    client = get_client()
+    if _db_exists(client, settings, tpl_db):
+        raise ConflictError(f"Template database already exists: {tpl_db}")
+
     # Gate on the DB quota before downloading a potentially huge backup.
-    check_db_quota(get_client(), settings, team)
+    check_db_quota(client, settings, team)
 
     # 1. Resolve database name
     if not db_name:
@@ -1539,11 +2078,12 @@ def import_from_odoo(
     # 2. Download backup
     logger.info("Downloading backup from %s (db=%s)...", base, db_name)
     boundary = "----OduflowBoundary"
+    backup_format = "dump" if without_filestore else "zip"
     parts = []
     for field_name, field_value in [
         ("master_pwd", master_pwd),
         ("name", db_name),
-        ("backup_format", "zip"),
+        ("backup_format", backup_format),
     ]:
         parts.append(
             f"--{boundary}\r\n"
@@ -1561,7 +2101,7 @@ def import_from_odoo(
     )
 
     download_start = time.monotonic()
-    tmp_zip = os.path.join(team.data_dir, "tmp_odoo_backup.zip")
+    tmp_backup = os.path.join(team.data_dir, f"tmp_odoo_backup.{backup_format}")
     os.makedirs(team.data_dir, exist_ok=True)
     try:
         with urllib.request.urlopen(req, timeout=600) as resp:
@@ -1573,7 +2113,7 @@ def import_from_odoo(
                     -1,
                     f"Unexpected response (Content-Type: {content_type}): {body}",
                 )
-            with open(tmp_zip, "wb") as f:
+            with open(tmp_backup, "wb") as f:
                 while True:
                     chunk = resp.read(1024 * 1024)
                     if not chunk:
@@ -1584,15 +2124,17 @@ def import_from_odoo(
         raise ExternalCommandError("odoo backup", e.code, f"HTTP {e.code}: {body}")
 
     download_elapsed = time.monotonic() - download_start
-    zip_size_mb = os.path.getsize(tmp_zip) / (1024 * 1024)
-    logger.info("Backup downloaded in %.1fs (%.1f MB)", download_elapsed, zip_size_mb)
+    backup_size_mb = os.path.getsize(tmp_backup) / (1024 * 1024)
+    logger.info(
+        "Backup downloaded in %.1fs (%.1f MB)", download_elapsed, backup_size_mb
+    )
 
-    # 3. Extract ZIP
+    # 3. Stage dump/filestore files
     from oduflow.docker_ops import env_ops
 
-    client = get_client()
-    template_dir = team.get_template_dir(template_name)
-    template_sql_path = os.path.join(template_dir, "dump.sql")
+    template_sql_path = os.path.join(
+        template_dir, "dump.pgdump" if without_filestore else "dump.sql"
+    )
     template_filestore_path = team.get_template_filestore_path(template_name)
 
     os.makedirs(template_dir, exist_ok=True)
@@ -1607,57 +2149,64 @@ def import_from_odoo(
         with env_ops.remount_template_overlays(
             client, settings, team, template_name
         ) as remount:
-            with zipfile.ZipFile(tmp_zip, "r") as zf:
-                # Extract manifest.json
-                if "manifest.json" in zf.namelist():
-                    with zf.open("manifest.json") as mf:
-                        manifest = json.load(mf)
+            if without_filestore:
+                shutil.copy2(tmp_backup, template_sql_path)
+                logger.info("Saved DB-only dump to %s", template_sql_path)
+            else:
+                with zipfile.ZipFile(tmp_backup, "r") as zf:
+                    # Extract manifest.json
+                    if "manifest.json" in zf.namelist():
+                        with zf.open("manifest.json") as mf:
+                            manifest = json.load(mf)
 
-                # Extract dump.sql
-                with zf.open("dump.sql") as src, open(template_sql_path, "wb") as dst:
-                    shutil.copyfileobj(src, dst)
-                logger.info("Extracted dump.sql to %s", template_sql_path)
+                    # Extract dump.sql
+                    with (
+                        zf.open("dump.sql") as src,
+                        open(template_sql_path, "wb") as dst,
+                    ):
+                        shutil.copyfileobj(src, dst)
+                    logger.info("Extracted dump.sql to %s", template_sql_path)
 
-                # Extract filestore
-                if os.path.exists(template_filestore_path):
-                    shutil.rmtree(template_filestore_path)
-                os.makedirs(template_filestore_path, exist_ok=True)
+                    # Extract filestore
+                    if os.path.exists(template_filestore_path):
+                        shutil.rmtree(template_filestore_path)
+                    os.makedirs(template_filestore_path, exist_ok=True)
 
-                fs_prefix = "filestore/"
-                for member in zf.namelist():
-                    if not member.startswith(fs_prefix):
-                        continue
-                    rel = member[len(fs_prefix) :]
-                    if not rel:
-                        continue
-                    # Skip checklist/ symlink-like entries
-                    if rel.startswith("checklist/"):
-                        continue
-                    target = os.path.join(template_filestore_path, rel)
-                    # Reject any member that escapes the filestore dir (zip-slip).
-                    if not _is_within_directory(template_filestore_path, target):
-                        logger.warning(
-                            "Skipping unsafe archive member outside filestore: %s",
-                            member,
-                        )
-                        continue
-                    if member.endswith("/"):
-                        os.makedirs(target, exist_ok=True)
-                    else:
-                        os.makedirs(os.path.dirname(target), exist_ok=True)
-                        with zf.open(member) as src, open(target, "wb") as dst:
-                            shutil.copyfileobj(src, dst)
+                    fs_prefix = "filestore/"
+                    for member in zf.namelist():
+                        if not member.startswith(fs_prefix):
+                            continue
+                        rel = member[len(fs_prefix) :]
+                        if not rel:
+                            continue
+                        # Skip checklist/ symlink-like entries
+                        if rel.startswith("checklist/"):
+                            continue
+                        target = os.path.join(template_filestore_path, rel)
+                        # Reject any member that escapes the filestore dir (zip-slip).
+                        if not _is_within_directory(template_filestore_path, target):
+                            logger.warning(
+                                "Skipping unsafe archive member outside filestore: %s",
+                                member,
+                            )
+                            continue
+                        if member.endswith("/"):
+                            os.makedirs(target, exist_ok=True)
+                        else:
+                            os.makedirs(os.path.dirname(target), exist_ok=True)
+                            with zf.open(member) as src, open(target, "wb") as dst:
+                                shutil.copyfileobj(src, dst)
 
-                fs_count = sum(
-                    1
-                    for f in pathlib.Path(template_filestore_path).rglob("*")
-                    if f.is_file()
-                )
-                logger.info(
-                    "Extracted filestore to %s (%d files)",
-                    template_filestore_path,
-                    fs_count,
-                )
+                    fs_count = sum(
+                        1
+                        for f in pathlib.Path(template_filestore_path).rglob("*")
+                        if f.is_file()
+                    )
+                    logger.info(
+                        "Extracted filestore to %s (%d files)",
+                        template_filestore_path,
+                        fs_count,
+                    )
 
             # chown the new lower layer so the odoo user can read it through the
             # overlay once it is remounted.
@@ -1679,8 +2228,8 @@ def import_from_odoo(
         affected_envs = remount.affected
         remount_failures = remount.failures
     finally:
-        if os.path.exists(tmp_zip):
-            os.remove(tmp_zip)
+        if os.path.exists(tmp_backup):
+            os.remove(tmp_backup)
 
     # 4. Determine Odoo image from manifest
     major_version = manifest.get("major_version", "")
@@ -1695,12 +2244,31 @@ def import_from_odoo(
         "odoo_version": manifest.get("version", ""),
         "pg_version": manifest.get("pg_version", ""),
         "modules": manifest.get("modules", {}),
+        "includes_filestore": not without_filestore,
     }
     _update_template_sizes(team, settings, template_name, metadata)
     logger.info("Metadata saved for template %s", template_name)
 
     # 6. Load dump into PostgreSQL
     result = reload_template(settings, team, template_name=template_name)
+    if without_filestore:
+        manifest = _read_template_manifest_from_db(
+            client, settings, str(result["template_db"])
+        )
+        major_version = manifest.get("major_version", "")
+        odoo_image = f"odoo:{major_version}" if major_version else ""
+        metadata.update(
+            {
+                "odoo_image": odoo_image,
+                "odoo_version": manifest.get("version", ""),
+                "pg_version": manifest.get("pg_version", ""),
+                "modules": manifest.get("modules", {}),
+            }
+        )
+        _update_template_sizes(team, settings, template_name, metadata)
+        logger.info(
+            "Metadata updated from restored template DB %s", result["template_db"]
+        )
 
     return {
         "status": "imported",
@@ -1711,7 +2279,8 @@ def import_from_odoo(
         "odoo_version": manifest.get("version", ""),
         "template_db": result["template_db"],
         "restore_seconds": result.get("restore_seconds", 0),
-        "zip_size_mb": round(zip_size_mb, 1),
+        "zip_size_mb": round(backup_size_mb, 1),
+        "includes_filestore": not without_filestore,
         "affected_envs": affected_envs,
         "remount_failures": remount_failures,
     }
@@ -2183,8 +2752,14 @@ def delete_template(
         )
 
     tpl_db = get_template_db_name(template_name, team.team_id)
+    db_exists = _db_exists(client, settings, tpl_db)
+    template_dir_path = team.get_template_dir(template_name)
+    dir_exists = os.path.isdir(template_dir_path)
 
-    if _db_exists(client, settings, tpl_db):
+    if not db_exists and not dir_exists:
+        raise NotFoundError(f"Template '{template_name}' not found.")
+
+    if db_exists:
         _wait_pg_ready(client, settings)
         _exec_sql(
             client,
@@ -2194,8 +2769,7 @@ def delete_template(
         _exec_sql(client, settings, f'DROP DATABASE IF EXISTS "{tpl_db}" WITH (FORCE);')
         logger.info("Dropped template DB %s", tpl_db)
 
-    template_dir_path = team.get_template_dir(template_name)
-    if os.path.isdir(template_dir_path):
+    if dir_exists:
         shutil.rmtree(template_dir_path)
         logger.info("Removed template directory %s", template_dir_path)
 

@@ -5,6 +5,8 @@
 ### Features
 
 - **Per-team OAuth issuer with host-relative discovery** — in traefik mode, each team's OAuth Authorization Server derives its issuer from the incoming Host, so each team runs OAuth on its own already-certificated hostname with no need for a central `oauth_base_url`. `OduflowOAuthProvider` makes discovery metadata host-relative, `HostRelativeAuthChallenge` rewrites 401 challenge origins, and `[routing].hostname` is now validated per-mode (shared default deleted in traefik). (#112)
+- **Database-only Odoo template import** — `oduflow import-template` and `import_template_from_odoo` now accept `--without-filestore` / `without_filestore=True`, requesting a PostgreSQL custom-format dump without filestore files and deriving template metadata after restore.
+- **Attach separate template filestores** — new `oduflow attach-filestore` CLI and `attach_filestore` MCP tool attach or replace a template filestore after a database-only import. Sources can be local directories, zip/tar archives, `rsync://` URLs, or SSH rsync paths; wrapper directories such as the database name are auto-detected and live overlay env changes are preserved by default.
 
 ### Security
 
@@ -17,6 +19,8 @@
 - **Overlay unmount now works on Ubuntu 24.04 with enforced fusermount AppArmor profile** — switched mount cleanup to try clean `umount` first (not mediated by the fusermount3 profile on Ubuntu 24.04+), falling back to `fusermount`/`fusermount3` helpers and lazy `umount -l` only as a last resort. (#113)
 - **Multi-team UI password provisioning for newly-added passwordless teams** — `_ensure_web_ui_password` was using `any()` so a multi-team config with one team already set would skip provisioning for others, locking them out. Now uses `all()` to provision every team and enforce that all are set at startup. (#114)
 - **Template clone now reassigns objects owned by any non-env role** — when creating an environment from a template imported via `import_template_from_odoo`, objects owned by roles other than the template env's own role were not reassigned, leaving the new env unable to touch them. Now reassigns all non-env-role-owned objects unconditionally. (#111)
+- **Odoo template import now refuses existing template names** — `import-template` fails before DB listing or backup download if the target template directory or template database already exists, avoiding accidental overwrites.
+- **Database-only template import can restore newer custom dumps** — when the shared PostgreSQL container's `pg_restore` cannot read a custom dump archive version, Oduflow converts it to plain SQL with a temporary `postgres:17` helper container and restores that SQL through the shared database container.
 - **Native Odoo neutralize skipped for Odoo 15** — the official `odoo:15.0` image does not include the `odoo neutralize` CLI, so Oduflow now skips it for Odoo 15 and tries only for Odoo 16+, keeping custom `.odoo_sanitize` scripts as the baseline. (#109)
 
 ### Documentation & Testing

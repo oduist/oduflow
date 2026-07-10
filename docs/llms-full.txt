@@ -149,8 +149,9 @@ Same JSON format in `claude_desktop_config.json` or `.amp/settings.json`.
 - `create_service` / `delete_service` / `restart_service` / `update_service` / `list_services` / `get_service_info` / `get_service_logs` / `run_service_command` — manage auxiliary services
 - `list_service_presets` / `restore_service` / `delete_service_preset` — manage service presets
 - `save_as_template` / `delete_template` / `list_templates` — template management
-- `import_template_from_odoo` — import a template from a running Odoo instance
+- `import_template_from_odoo` — import a template from a running Odoo instance; optional `without_filestore` imports database-only
 - `refresh_template` — re-apply a template's filestore to live overlay environments (preserves env changes by default; `reset_env_changes=True` is destructive)
+- `attach_filestore` — attach/replace a template filestore from a local dir, archive, `rsync://`, or SSH rsync source; preserves env changes by default
 - `setup_repo_auth` — cache git credentials for private repositories
 - `add_extra_repo` / `list_extra_repos` / `update_extra_repo` / `delete_extra_repo` — manage extra addons repositories
 - `get_agent_instructions` — get AI agent instructions for using Oduflow
@@ -781,8 +782,11 @@ Options:
 
 - `--db-name <db>` — specify the database name (auto-detected if only one DB exists)
 - `--template-name <name>` — template profile name (default: `default`)
+- `--without-filestore` — request a database-only PostgreSQL custom dump without filestore files
 
-This is also available as an MCP tool (`import_template_from_odoo`) for AI agents.
+This is also available as an MCP tool (`import_template_from_odoo`) for AI agents; pass `without_filestore=true` for a database-only import.
+
+If the database dump and filestore are delivered separately, import with `--without-filestore` first, then run `oduflow attach-filestore <template> <source>` when the filestore archive, local directory, or rsync/SSH source is ready. See [Database Dump and Separate Filestore](templates.md#database-dump-and-separate-filestore) for the full sequence.
 
 **From Odoo Database Manager (manual):**
 
@@ -918,6 +922,53 @@ This operation:
 !!! warning
     **Destructive operation**: All other environments lose their filestore deltas and are reset to the new baseline.
 
+## Database Dump and Separate Filestore
+
+Production backups are often delivered as two artifacts: a database dump first and a filestore archive or directory later. Use this flow when you imported a template with `--without-filestore`, or when a manual backup gives you the database and filestore separately.
+
+```bash
+# 1. Import the database only from a running Odoo instance
+oduflow import-template https://my-odoo.example.com master_password \
+  --db-name odoo19-mirage \
+  --template-name prod \
+  --without-filestore
+
+# 2. Attach the filestore when it is available
+oduflow attach-filestore prod /backups/odoo19-mirage-filestore.zip
+
+# 3. Create environments from the complete template
+oduflow call create_environment '{"branch":"dev","template_name":"prod"}'
+```
+
+`attach-filestore` replaces the template's filestore and updates `metadata.json` (`includes_filestore`, `filestore_size_mb`, and `use_overlay`). It does not reload the database.
+
+Supported sources:
+
+```bash
+# Local archive; entries like odoo19-mirage/60/<sha1> are normalized to 60/<sha1>
+oduflow attach-filestore prod /backups/odoo19-mirage-filestore.zip
+
+# Local directory
+oduflow attach-filestore prod /backups/odoo19-mirage/filestore
+
+# Remote rsync over SSH
+oduflow attach-filestore prod odoo@example.com:/srv/odoo/.local/share/Odoo/filestore/odoo19-mirage
+
+# rsync daemon URL
+oduflow attach-filestore prod rsync://backup.example.com/odoo/filestore/odoo19-mirage
+```
+
+Archives may be `.zip`, `.tar`, `.tar.gz`, `.tgz`, `.tar.bz2`, `.tbz2`, `.tar.xz`, or `.txz`. Local directories and remote sources are copied with `rsync -a --delete`, so `rsync` must be installed on the Oduflow host and reachable over SSH for `user@host:/path` sources.
+
+Oduflow detects the wrapper prefix automatically by looking for Odoo filestore paths shaped like `XX/<40-character sha1>`. For example, an archive containing `odoo19-mirage/60/609e7ca59cc05bf0de7233c6781a381b742a2931` is installed as `filestore/60/609e7ca59cc05bf0de7233c6781a381b742a2931`. If a source has multiple possible wrappers, pass the prefix explicitly:
+
+```bash
+oduflow attach-filestore prod /backups/filestore.zip --strip-prefix odoo19-mirage
+oduflow attach-filestore prod /backups/filestore.zip --strip-prefix none
+```
+
+Like `template-from-env`, this is non-destructive for live overlay environments by default: Oduflow remounts them against the new template filestore while preserving their `upper` changes. Pass `--reset-env-changes` only when you intentionally want those environments reset to the new baseline. Copy-mode environments are independent copies and are not changed by attaching a new template filestore.
+
 ## Reloading a Template
 
 Update the template from a newer production dump without touching the filestore:
@@ -987,6 +1038,7 @@ The `use_overlay` flag determines whether new environments use fuse-overlayfs (f
 | Update the template from a newer production dump | `oduflow reload-template default --dump-path /path/to/new.dump` |
 | Sync template from S3 and reload | `oduflow reload-template default --source s3://bucket/prod/` |
 | Save a branch environment as template | `oduflow template-from-env my-branch --template-name default` |
+| Attach a separately delivered filestore | `oduflow attach-filestore default /backups/filestore.zip` |
 | List all templates | `oduflow list-templates` |
 | Delete a template | `oduflow delete-template myproject` |
 
@@ -1772,8 +1824,9 @@ All tools are accessible via MCP clients (Cursor, Cline, Amp, etc.) and the CLI 
 | `save_as_template` | ✓ | ⚠️ Save a branch DB + filestore as a new template |
 | `list_templates` | | List available template profiles |
 | `delete_template` | ✓ | ⚠️ Delete a template profile (DB + files) |
-| `import_template_from_odoo` | ✓ | Import a template from a running Odoo instance via database manager API |
+| `import_template_from_odoo` | ✓ | Import a template from a running Odoo instance via database manager API; optional `without_filestore` requests a database-only PostgreSQL custom dump |
 | `refresh_template` | ✓ | ⚠️ Re-apply a template's filestore to live overlay environments (preserves env changes by default; `reset_env_changes=True` discards them — destructive) |
+| `attach_filestore` | ✓ | Attach or replace a template filestore from a local directory, archive, `rsync://` URL, or SSH rsync source; normalizes wrapper paths and preserves live env changes by default |
 | **Auxiliary Services** | | |
 | `create_service` | ✓ | Create a managed service container (e.g. Redis, Meilisearch). Supports `host_mode`, `volumes`, `privileged`, `net_admin` (adds `NET_ADMIN` capability for VPN/tun/iptables) |
 | `delete_service` | ✓ | Stop and remove a service container |
@@ -1865,7 +1918,7 @@ oduflow list-templates [--team 1]
 oduflow delete-template <template_name> [--team 1]
 
 # Import a template from a running Odoo instance
-oduflow import-template <odoo_url> <master_pwd> --template-name myproject [--db-name <db>] [--team 1]
+oduflow import-template <odoo_url> <master_pwd> --template-name myproject [--db-name <db>] [--without-filestore] [--team 1]
 ```
 
 ## Service Commands
