@@ -11,7 +11,6 @@ from oduflow.chunkstore.backup import list_revisions
 from oduflow.chunkstore.chunker import Chunker, derive_table
 from oduflow.chunkstore.format import (
     ChunkCorruptedError,
-    chunk_key,
     decode_chunk,
     encode_chunk,
     ensure_config,
@@ -143,7 +142,7 @@ def small_config_storage(tmp_path, monkeypatch):
     monkeypatch.setattr(backup_mod, "META_MAX_SIZE", 4096)
 
     storage = LocalStorage(str(tmp_path / "store"))
-    config = ensure_config(storage)
+    ensure_config(storage)
     # Rewrite config with small data-chunk parameters.
     import json
 

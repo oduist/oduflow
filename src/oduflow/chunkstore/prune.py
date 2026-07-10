@@ -34,7 +34,6 @@ import datetime
 import json
 import logging
 from dataclasses import dataclass, field
-from typing import Any
 
 from oduflow.chunkstore.backup import list_revisions, load_revision
 from oduflow.chunkstore.format import (
