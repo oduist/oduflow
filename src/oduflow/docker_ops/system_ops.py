@@ -1034,6 +1034,164 @@ def _ensure_pg_container(
     logger.info("Created container %s", settings.shared_db_container)
 
 
+def _prod_pg_conf_path(settings: Settings) -> str:
+    return os.path.join(settings.etc_dir, "postgresql-prod.conf")
+
+
+def _ensure_prod_pg_conf(settings: Settings) -> str:
+    """Auto-generate the production postgresql.conf once (``# KEEP`` contract:
+    an existing file is never rewritten — delete it to regenerate)."""
+    path = _prod_pg_conf_path(settings)
+    if os.path.isfile(path):
+        return path
+    from oduflow import prod_tune
+    from oduflow.pg_tune import detect_resources
+
+    res = detect_resources()
+    content = prod_tune.generate_prod_postgresql_conf(
+        res["total_ram_mb"],
+        res["cpu_count"],
+        source=res["source"],
+        oduflow_version=_get_oduflow_version(),
+    )
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(content)
+    logger.info(
+        "Config: %s (auto-tuned production profile: %d vCPU, %d MB RAM)",
+        path,
+        res["cpu_count"],
+        int(res["total_ram_mb"]),
+    )
+    return path
+
+
+def _ensure_prod_pg_container(
+    client: DockerClient, settings: Settings, system_labels: dict[str, str]
+) -> None:
+    """Start (or create) the production PostgreSQL container.
+
+    Unlike the dev instance there is no /tablespaces mount: everything stays
+    inside PGDATA so cluster-level WAL archiving and base backups (WAL-G)
+    cover the whole state. The wal-g binary and config directories are
+    bind-mounted read-only so backups can be enabled or reconfigured later
+    without recreating the container. No ports are published — production
+    Odoo containers reach it over the team networks.
+    """
+    from oduflow import walg
+
+    try:
+        db_container = client.containers.get(settings.prod_db_container)
+        if db_container.status != "running":
+            db_container.start()
+        return
+    except docker.errors.NotFound:
+        pass
+
+    conf_path = _ensure_prod_pg_conf(settings)
+    os.makedirs(walg.bin_host_dir(settings), exist_ok=True)
+    os.makedirs(walg.conf_host_dir(settings), exist_ok=True)
+    client.containers.run(
+        settings.prod_postgres_image or settings.postgres_image,
+        name=settings.prod_db_container,
+        detach=True,
+        network=settings.shared_network,
+        volumes={
+            settings.prod_db_volume: {
+                "bind": "/var/lib/postgresql/data",
+                "mode": "rw",
+            },
+            conf_path: {
+                "bind": "/etc/postgresql/postgresql.conf",
+                "mode": "ro",
+            },
+            walg.bin_host_dir(settings): {"bind": walg.BIN_MOUNT, "mode": "ro"},
+            walg.conf_host_dir(settings): {"bind": walg.CONF_MOUNT, "mode": "ro"},
+        },
+        command=["postgres", "-c", "config_file=/etc/postgresql/postgresql.conf"],
+        environment={
+            "POSTGRES_USER": settings.db_user,
+            "POSTGRES_PASSWORD": settings.db_password,
+        },
+        labels={**system_labels, "oduflow.prod": "true"},
+        restart_policy={"Name": "unless-stopped"},
+    )
+    logger.info("Created container %s", settings.prod_db_container)
+
+
+def prod_infra_exists(client: DockerClient, settings: Settings) -> bool:
+    try:
+        client.containers.get(settings.prod_db_container)
+        return True
+    except docker.errors.NotFound:
+        return False
+
+
+def _prod_infra_required(client: DockerClient, settings: Settings) -> bool:
+    if prod_infra_exists(client, settings):
+        return True
+    from oduflow import production_registry
+
+    return any(
+        production_registry.list_productions(team) for team in settings.teams.values()
+    )
+
+
+def ensure_prod_infra(
+    client: DockerClient, settings: Settings, *, force: bool = False
+) -> bool:
+    """Provision the production tier (idempotent, lazy).
+
+    Runs on every server start and from create_production (``force=True``).
+    Dev-only installs never grow a second PostgreSQL: without ``force`` this
+    is a no-op until a production exists or the container is already there.
+    Returns True when the production infra is up.
+    """
+    from oduflow import production_registry, walg
+
+    if not force and not _prod_infra_required(client, settings):
+        return False
+
+    system_labels = {settings.managed_label: "true", settings.system_label: "true"}
+
+    try:
+        client.volumes.get(settings.prod_db_volume)
+    except docker.errors.NotFound:
+        client.volumes.create(settings.prod_db_volume, labels=system_labels)
+        logger.info("Created volume %s", settings.prod_db_volume)
+
+    # WAL-G binary + config. Best-effort: a github outage must not block
+    # server startup or production provisioning — backups just stay off
+    # (archive_command remains the no-op) until the next start succeeds.
+    walg_ok = False
+    try:
+        walg.ensure_walg(settings)
+        walg_ok = True
+    except Exception as exc:
+        logger.warning("wal-g unavailable (backups disabled for now): %s", exc)
+    walg.write_walg_config(settings)
+
+    _ensure_prod_pg_container(client, settings, system_labels)
+    _wait_pg_ready(client, settings, container_name=settings.prod_db_container)
+
+    # Attach the (possibly new) prod DB to every team network.
+    for team in settings.teams.values():
+        ensure_team_network(client, settings, team)
+
+    try:
+        walg.apply_archive_command(
+            client, settings, enabled=walg_ok and settings.backup is not None
+        )
+    except Exception as exc:
+        logger.warning("Could not set production archive_command: %s", exc)
+
+    # A server that died mid-deploy leaves deploy_in_progress flags behind.
+    for team in settings.teams.values():
+        production_registry.clear_stale_deploy_flags(team)
+
+    return True
+
+
 def ensure_team_tablespace(
     client: DockerClient, settings: Settings, team: TeamSettings
 ) -> str:
@@ -1085,9 +1243,10 @@ def ensure_team_network(
 
     Environment/service containers join only their team network, so one
     tenant's code can never reach another tenant's containers. The shared
-    PostgreSQL container (password-protected, per-env roles) and Traefik (in
-    traefik mode) are attached to every team network — they are the only
-    cross-team surface. Idempotent and cheap.
+    PostgreSQL containers (password-protected, per-env roles; dev and — when
+    provisioned — production) and Traefik (in traefik mode) are attached to
+    every team network — they are the only cross-team surface. Idempotent
+    and cheap.
     """
     net_name = get_team_network_name(team.team_id, settings.prefix)
     try:
@@ -1104,7 +1263,9 @@ def ensure_team_network(
         logger.info("Created network %s", net_name)
         _ensure_iptables_accept(client, net_name)
 
-    infra = [settings.shared_db_container]
+    # The production DB is lazily provisioned; the get-or-skip below already
+    # tolerates its absence.
+    infra = [settings.shared_db_container, settings.prod_db_container]
     if settings.routing_mode == "traefik":
         infra.append(settings.traefik_container)
     for container_name in infra:
@@ -1175,6 +1336,14 @@ def init_system(
 
     for team in settings.teams.values():
         ensure_team_network(client, settings, team)
+
+    # Production tier (second PG cluster + WAL-G): lazily provisioned — a
+    # no-op until the first production exists. Best-effort so a production
+    # infra hiccup never blocks dev environments from starting.
+    try:
+        ensure_prod_infra(client, settings)
+    except Exception:
+        logger.exception("Production infra initialization failed")
 
     # Per-team coding-agent containers. init_system runs on every server
     # start, so oduflow.toml is applied here: enabled teams get their container
