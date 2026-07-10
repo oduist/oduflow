@@ -98,22 +98,43 @@ oduflow refresh-template default --reset-env-changes   # discard env deltas (des
 
 Use this after changing the template filestore on disk, or to re-sync an environment that was busy/skipped during an import or save.
 
-## Attaching a Separate Filestore
+## Database Dump and Separate Filestore
 
-When the database dump and filestore are delivered separately, import or reload the database first, then attach the filestore:
+Production backups are often delivered as two artifacts: a database dump first and a filestore archive or directory later. Use this flow when you imported a template with `--without-filestore`, or when a manual backup gives you the database and filestore separately.
+
+```bash
+# 1. Import the database only from a running Odoo instance
+oduflow import-template https://my-odoo.example.com master_password \
+  --db-name odoo19-mirage \
+  --template-name prod \
+  --without-filestore
+
+# 2. Attach the filestore when it is available
+oduflow attach-filestore prod /backups/odoo19-mirage-filestore.zip
+
+# 3. Create environments from the complete template
+oduflow call create_environment '{"branch":"dev","template_name":"prod"}'
+```
+
+`attach-filestore` replaces the template's filestore and updates `metadata.json` (`includes_filestore`, `filestore_size_mb`, and `use_overlay`). It does not reload the database.
+
+Supported sources:
 
 ```bash
 # Local archive; entries like odoo19-mirage/60/<sha1> are normalized to 60/<sha1>
-oduflow attach-filestore default /backups/odoo19-mirage-filestore.zip
+oduflow attach-filestore prod /backups/odoo19-mirage-filestore.zip
 
 # Local directory
-oduflow attach-filestore default /backups/odoo19-mirage/filestore
+oduflow attach-filestore prod /backups/odoo19-mirage/filestore
 
 # Remote rsync over SSH
-oduflow attach-filestore default odoo@example.com:/srv/odoo/.local/share/Odoo/filestore/odoo19-mirage
+oduflow attach-filestore prod odoo@example.com:/srv/odoo/.local/share/Odoo/filestore/odoo19-mirage
+
+# rsync daemon URL
+oduflow attach-filestore prod rsync://backup.example.com/odoo/filestore/odoo19-mirage
 ```
 
-Archives may be `.zip`, `.tar`, `.tar.gz`, `.tgz`, `.tar.bz2`, `.tbz2`, `.tar.xz`, or `.txz`. Local directories and remote sources are copied with `rsync -a --delete`.
+Archives may be `.zip`, `.tar`, `.tar.gz`, `.tgz`, `.tar.bz2`, `.tbz2`, `.tar.xz`, or `.txz`. Local directories and remote sources are copied with `rsync -a --delete`, so `rsync` must be installed on the Oduflow host and reachable over SSH for `user@host:/path` sources.
 
 Oduflow detects the wrapper prefix automatically by looking for Odoo filestore paths shaped like `XX/<40-character sha1>`. For example, an archive containing `odoo19-mirage/60/609e7ca59cc05bf0de7233c6781a381b742a2931` is installed as `filestore/60/609e7ca59cc05bf0de7233c6781a381b742a2931`. If a source has multiple possible wrappers, pass the prefix explicitly:
 
@@ -122,7 +143,7 @@ oduflow attach-filestore default /backups/filestore.zip --strip-prefix odoo19-mi
 oduflow attach-filestore default /backups/filestore.zip --strip-prefix none
 ```
 
-Like `template-from-env`, this is non-destructive for live overlay environments by default: Oduflow remounts them against the new template filestore while preserving their `upper` changes. Pass `--reset-env-changes` only when you intentionally want those environments reset to the new baseline.
+Like `template-from-env`, this is non-destructive for live overlay environments by default: Oduflow remounts them against the new template filestore while preserving their `upper` changes. Pass `--reset-env-changes` only when you intentionally want those environments reset to the new baseline. Copy-mode environments are independent copies and are not changed by attaching a new template filestore.
 
 ## Reloading a Template
 
