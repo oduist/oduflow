@@ -52,6 +52,9 @@ oduflow template-from-env <branch> --template-name myproject [--reset-env-change
 # (non-destructive by default; --reset-env-changes discards env deltas)
 oduflow refresh-template <template_name> [--reset-env-changes] [--team 1]
 
+# Attach or replace a template filestore from a local dir, archive, rsync://, or SSH rsync source
+oduflow attach-filestore <template_name> <source> [--strip-prefix auto|none|PREFIX] [--reset-env-changes] [--team 1]
+
 # Reload template DB from a dump file
 oduflow reload-template <template_name> [--dump-path /path/to/new.dump] [--team 1]
 
@@ -69,7 +72,7 @@ oduflow delete-template <template_name> [--team 1]
 oduflow import-template <odoo_url> <master_pwd> --template-name myproject [--db-name <db>] [--without-filestore] [--team 1]
 ```
 
-`template-from-env`, `refresh-template`, and `reload-template --source` are **non-destructive** for live overlay environments: each is unmounted and remounted against the new template filestore while keeping its `upper` changes. Use `--reset-env-changes` (on `template-from-env`/`refresh-template`) to reset environments to the clean baseline instead. `import-template` creates a new template and refuses an existing template name.
+`template-from-env`, `refresh-template`, `attach-filestore`, and `reload-template --source` are **non-destructive** for live overlay environments: each is unmounted and remounted against the new template filestore while keeping its `upper` changes. Use `--reset-env-changes` (on `template-from-env`/`refresh-template`/`attach-filestore`) to reset environments to the clean baseline instead. `import-template` creates a new template and refuses an existing template name.
 
 ## Service Commands
 

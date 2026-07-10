@@ -98,6 +98,32 @@ oduflow refresh-template default --reset-env-changes   # discard env deltas (des
 
 Use this after changing the template filestore on disk, or to re-sync an environment that was busy/skipped during an import or save.
 
+## Attaching a Separate Filestore
+
+When the database dump and filestore are delivered separately, import or reload the database first, then attach the filestore:
+
+```bash
+# Local archive; entries like odoo19-mirage/60/<sha1> are normalized to 60/<sha1>
+oduflow attach-filestore default /backups/odoo19-mirage-filestore.zip
+
+# Local directory
+oduflow attach-filestore default /backups/odoo19-mirage/filestore
+
+# Remote rsync over SSH
+oduflow attach-filestore default odoo@example.com:/srv/odoo/.local/share/Odoo/filestore/odoo19-mirage
+```
+
+Archives may be `.zip`, `.tar`, `.tar.gz`, `.tgz`, `.tar.bz2`, `.tbz2`, `.tar.xz`, or `.txz`. Local directories and remote sources are copied with `rsync -a --delete`.
+
+Oduflow detects the wrapper prefix automatically by looking for Odoo filestore paths shaped like `XX/<40-character sha1>`. For example, an archive containing `odoo19-mirage/60/609e7ca59cc05bf0de7233c6781a381b742a2931` is installed as `filestore/60/609e7ca59cc05bf0de7233c6781a381b742a2931`. If a source has multiple possible wrappers, pass the prefix explicitly:
+
+```bash
+oduflow attach-filestore default /backups/filestore.zip --strip-prefix odoo19-mirage
+oduflow attach-filestore default /backups/filestore.zip --strip-prefix none
+```
+
+Like `template-from-env`, this is non-destructive for live overlay environments by default: Oduflow remounts them against the new template filestore while preserving their `upper` changes. Pass `--reset-env-changes` only when you intentionally want those environments reset to the new baseline.
+
 ## Reloading a Template
 
 Update the template from a newer production dump without touching the filestore:
@@ -172,5 +198,6 @@ The `use_overlay` flag determines whether new environments use fuse-overlayfs (f
 | Save a branch environment as template (keep other envs' changes) | `oduflow template-from-env my-branch --template-name default` |
 | Save a branch as template and reset all other envs | `oduflow template-from-env my-branch --template-name default --reset-env-changes` |
 | Re-apply a template's filestore to live envs | `oduflow refresh-template default` |
+| Attach a separately delivered filestore | `oduflow attach-filestore default /backups/filestore.zip` |
 | List all templates | `oduflow list-templates` |
 | Delete a template | `oduflow delete-template myproject` |

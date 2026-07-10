@@ -817,6 +817,56 @@ def refresh_template(
     return "\n".join(lines)
 
 
+@mcp.tool()
+@handle_errors
+@with_team_lock
+def attach_filestore(
+    template_name: str,
+    source: str,
+    reset_env_changes: bool = False,
+    strip_prefix: str = "auto",
+    ctx: Context = None,
+) -> str:
+    """
+    Attach or replace a template filestore from a directory, rsync/ssh source, or archive.
+
+    The source may be a local directory, a local .zip/.tar/.tar.gz archive, an
+    rsync:// URL, or an SSH-style rsync source such as user@host:/path. Archive
+    and directory sources are normalized to the Odoo filestore layout
+    (XX/<sha1>). strip_prefix="auto" detects a wrapper directory such as the
+    database name; pass an explicit prefix when auto-detection is ambiguous.
+    """
+    settings = _get_settings()
+    team = _resolve_team(ctx)
+    result = system_ops.attach_filestore(
+        settings,
+        team,
+        template_name,
+        source,
+        reset_env_changes=reset_env_changes,
+        strip_prefix=strip_prefix,
+    )
+    affected = cast("list[str]", result.get("affected_envs", []))
+    failures = cast("list[tuple[str, str]]", result.get("remount_failures", []))
+    lines = [
+        f"Filestore attached to template '{result['template_name']}'.",
+        f"Source: {result['source']} ({result['source_kind']})",
+        f"Strip prefix: {result.get('strip_prefix') or '<none>'}",
+        f"Files: {result['filestore_files']}",
+        f"Filestore size: {result['filestore_size_mb']} MB",
+        f"Mode: {'overlay' if result.get('use_overlay') else 'copy'}",
+    ]
+    if affected:
+        verb = "Reset" if reset_env_changes else "Remounted (changes preserved)"
+        lines.append(f"{verb} filestore overlays for: {', '.join(affected)}")
+    if failures:
+        lines.append(
+            "⚠️ Remount issues:\n"
+            + "\n".join(f"- {env}: {msg}" for env, msg in failures)
+        )
+    return "\n".join(lines)
+
+
 # =============================================================================
 # MCP Tools — Agent guides
 # =============================================================================
@@ -3018,6 +3068,42 @@ def _run_refresh_template(
     print("\n".join(lines))
 
 
+def _run_attach_filestore(
+    settings: Settings,
+    team: TeamSettings,
+    template_name: str,
+    source: str,
+    reset_env_changes: bool = False,
+    strip_prefix: str = "auto",
+) -> None:
+    result = system_ops.attach_filestore(
+        settings,
+        team,
+        template_name,
+        source,
+        reset_env_changes=reset_env_changes,
+        strip_prefix=strip_prefix,
+    )
+    lines = [
+        f"Filestore attached to template '{result['template_name']}'.",
+        f"Source: {result['source']} ({result['source_kind']})",
+        f"Strip prefix: {result.get('strip_prefix') or '<none>'}",
+        f"Files: {result['filestore_files']}",
+        f"Filestore size: {result['filestore_size_mb']} MB",
+        f"Mode: {'overlay' if result.get('use_overlay') else 'copy'}",
+    ]
+    affected = cast("list[str]", result.get("affected_envs", []))
+    failures = cast("list[tuple[str, str]]", result.get("remount_failures", []))
+    if affected:
+        verb = "Reset" if reset_env_changes else "Remounted (changes preserved)"
+        lines.append(f"{verb} filestore overlays for: {', '.join(affected)}")
+    if failures:
+        lines.append(
+            "Remount issues:\n" + "\n".join(f"- {env}: {msg}" for env, msg in failures)
+        )
+    print("\n".join(lines))
+
+
 def _run_delete_template(
     settings: Settings, team: TeamSettings, template_name: str
 ) -> None:
@@ -3359,6 +3445,28 @@ def _run_cli() -> None:
     )
     p_refresh.add_argument("--team", default="1", help="Team ID (default: 1)")
 
+    p_attach_fs = sub.add_parser(
+        "attach-filestore",
+        help="Attach or replace a template filestore from a directory, rsync/ssh source, or archive",
+    )
+    p_attach_fs.add_argument("template_name", help="Template profile name")
+    p_attach_fs.add_argument(
+        "source",
+        help="Local dir/archive, rsync:// source, or SSH rsync source user@host:/path",
+    )
+    p_attach_fs.add_argument(
+        "--strip-prefix",
+        default="auto",
+        help='Archive/source wrapper prefix to strip; "auto" detects it, "none" strips nothing',
+    )
+    p_attach_fs.add_argument(
+        "--reset-env-changes",
+        action="store_true",
+        help="Discard environments' filestore changes (destructive). "
+        "Default: preserve them.",
+    )
+    p_attach_fs.add_argument("--team", default="1", help="Team ID (default: 1)")
+
     p_drop_tpl = sub.add_parser(
         "delete-template", help="Delete a template profile (template DB + files)"
     )
@@ -3599,6 +3707,17 @@ def _run_cli() -> None:
             _cli_team(),
             template_name=args.template_name,
             reset_env_changes=args.reset_env_changes,
+        )
+        return
+
+    if args.command == "attach-filestore":
+        _run_attach_filestore(
+            _settings,
+            _cli_team(),
+            template_name=args.template_name,
+            source=args.source,
+            reset_env_changes=args.reset_env_changes,
+            strip_prefix=args.strip_prefix,
         )
         return
 

@@ -151,6 +151,7 @@ Same JSON format in `claude_desktop_config.json` or `.amp/settings.json`.
 - `save_as_template` / `delete_template` / `list_templates` — template management
 - `import_template_from_odoo` — import a template from a running Odoo instance; optional `without_filestore` imports database-only
 - `refresh_template` — re-apply a template's filestore to live overlay environments (preserves env changes by default; `reset_env_changes=True` is destructive)
+- `attach_filestore` — attach/replace a template filestore from a local dir, archive, `rsync://`, or SSH rsync source; preserves env changes by default
 - `setup_repo_auth` — cache git credentials for private repositories
 - `add_extra_repo` / `list_extra_repos` / `update_extra_repo` / `delete_extra_repo` — manage extra addons repositories
 - `get_agent_instructions` — get AI agent instructions for using Oduflow
@@ -1775,6 +1776,7 @@ All tools are accessible via MCP clients (Cursor, Cline, Amp, etc.) and the CLI 
 | `delete_template` | ✓ | ⚠️ Delete a template profile (DB + files) |
 | `import_template_from_odoo` | ✓ | Import a template from a running Odoo instance via database manager API; optional `without_filestore` requests a database-only PostgreSQL custom dump |
 | `refresh_template` | ✓ | ⚠️ Re-apply a template's filestore to live overlay environments (preserves env changes by default; `reset_env_changes=True` discards them — destructive) |
+| `attach_filestore` | ✓ | Attach or replace a template filestore from a local directory, archive, `rsync://` URL, or SSH rsync source; normalizes wrapper paths and preserves live env changes by default |
 | **Auxiliary Services** | | |
 | `create_service` | ✓ | Create a managed service container (e.g. Redis, Meilisearch). Supports `host_mode`, `volumes`, `privileged`, `net_admin` (adds `NET_ADMIN` capability for VPN/tun/iptables) |
 | `delete_service` | ✓ | Stop and remove a service container |
