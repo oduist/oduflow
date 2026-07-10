@@ -17,6 +17,9 @@ dependencies = [
     "cryptography",
     "itsdangerous",
     "tomli>=2.0; python_version < '3.11'",
+    # Production backup subsystem: S3 client + per-chunk compression.
+    "boto3",
+    "zstandard",
 ]
 
 [project.urls]
