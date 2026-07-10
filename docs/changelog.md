@@ -19,7 +19,7 @@
 - **Multi-team UI password provisioning for newly-added passwordless teams** — `_ensure_web_ui_password` was using `any()` so a multi-team config with one team already set would skip provisioning for others, locking them out. Now uses `all()` to provision every team and enforce that all are set at startup. (#114)
 - **Template clone now reassigns objects owned by any non-env role** — when creating an environment from a template imported via `import_template_from_odoo`, objects owned by roles other than the template env's own role were not reassigned, leaving the new env unable to touch them. Now reassigns all non-env-role-owned objects unconditionally. (#111)
 - **Odoo template import now refuses existing template names** — `import-template` fails before DB listing or backup download if the target template directory or template database already exists, avoiding accidental overwrites.
-- **Database-only template import can restore newer custom dumps** — when the shared PostgreSQL container's `pg_restore` cannot read a custom dump archive version, Oduflow retries through a temporary `postgres:17` helper container before surfacing the restore failure.
+- **Database-only template import can restore newer custom dumps** — when the shared PostgreSQL container's `pg_restore` cannot read a custom dump archive version, Oduflow converts it to plain SQL with a temporary `postgres:17` helper container and restores that SQL through the shared database container.
 - **Native Odoo neutralize skipped for Odoo 15** — the official `odoo:15.0` image does not include the `odoo neutralize` CLI, so Oduflow now skips it for Odoo 15 and tries only for Odoo 16+, keeping custom `.odoo_sanitize` scripts as the baseline. (#109)
 
 ### Documentation & Testing

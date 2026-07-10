@@ -541,10 +541,10 @@ class TestReloadTemplate:
 
     def test_restore_retries_unsupported_archive_with_helper(self, mock_docker_client):
         db_container = MagicMock()
-        db_container.exec_run.return_value = (
-            1,
-            b"pg_restore: error: unsupported version (1.16) in file header",
-        )
+        db_container.exec_run.side_effect = [
+            (1, b"pg_restore: error: unsupported version (1.16) in file header"),
+            (0, b"helper sql restored"),
+        ]
         mock_docker_client.containers.get.return_value = db_container
 
         with (
@@ -557,17 +557,20 @@ class TestReloadTemplate:
                 return_value="oduflow_team_1",
             ),
             patch("oduflow.docker_ops.system_ops._is_text_dump", return_value=False),
-            patch("oduflow.docker_ops.system_ops._copy_file_to_container"),
+            patch("oduflow.docker_ops.system_ops._copy_file_to_container") as copy_file,
             patch("oduflow.docker_ops.system_ops._update_template_sizes"),
             patch(
-                "oduflow.docker_ops.system_ops._restore_custom_dump_with_helper",
-                return_value=(0, "helper restored"),
+                "oduflow.docker_ops.system_ops._convert_custom_dump_to_sql_with_helper",
+                return_value=(0, "converted", "/tmp/flow-test/templates/mytpl/dump.sql"),
             ) as helper,
         ):
             result = system_ops.reload_template(TEST_SETTINGS, TEST_TEAM, "mytpl")
 
         assert result["status"] == "reloaded"
         helper.assert_called_once()
+        assert copy_file.call_args_list[-1].args[1].endswith("dump.sql")
+        psql_cmd = db_container.exec_run.call_args_list[-1].args[0]
+        assert psql_cmd[0] == "psql"
         assert any(
             'DROP DATABASE IF EXISTS "oduflow_template_1_mytpl"' in call.args[2]
             for call in sql.call_args_list

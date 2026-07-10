@@ -525,18 +525,19 @@ def _copy_file_to_container(
         os.remove(tmp_path)
 
 
-def _restore_custom_dump_with_helper(
+def _convert_custom_dump_to_sql_with_helper(
     client: DockerClient,
     settings: Settings,
     dump_path: str,
-    template_db: str,
     *,
     is_gzipped: bool,
-) -> tuple[int, str]:
-    """Run a newer pg_restore client from a temporary helper container."""
+) -> tuple[int, str, str]:
+    """Convert a custom dump to plain SQL with a newer pg_restore client."""
     dump_dir = os.path.abspath(os.path.dirname(dump_path))
     dump_name = os.path.basename(dump_path)
     container_path = f"/backup/{dump_name}"
+    sql_path = os.path.join(dump_dir, "dump.sql")
+    container_sql_path = "/backup/dump.sql"
     if is_gzipped:
         command = [
             "bash",
@@ -544,20 +545,14 @@ def _restore_custom_dump_with_helper(
             "set -o pipefail; "
             f"gunzip -c {shlex.quote(container_path)} | "
             "pg_restore --no-owner "
-            f"-h {shlex.quote(settings.shared_db_container)} "
-            f"-U {shlex.quote(settings.db_user)} "
-            f"-d {shlex.quote(template_db)}",
+            f"-f {shlex.quote(container_sql_path)}",
         ]
     else:
         command = [
             "pg_restore",
             "--no-owner",
-            "-h",
-            settings.shared_db_container,
-            "-U",
-            settings.db_user,
-            "-d",
-            template_db,
+            "-f",
+            container_sql_path,
             container_path,
         ]
 
@@ -571,18 +566,16 @@ def _restore_custom_dump_with_helper(
             _PG_RESTORE_HELPER_IMAGE,
             name=helper_name,
             detach=True,
-            network=settings.shared_network,
-            environment={"PGPASSWORD": settings.db_password},
-            volumes={dump_dir: {"bind": "/backup", "mode": "ro"}},
+            volumes={dump_dir: {"bind": "/backup", "mode": "rw"}},
             command=command,
             labels={settings.managed_label: "true", settings.system_label: "true"},
         )
         wait_result = helper.wait()
         exit_code = int(wait_result.get("StatusCode", -1))
         logs = helper.logs(stdout=True, stderr=True).decode("utf-8", errors="replace")
-        return exit_code, logs
+        return exit_code, logs, sql_path
     except docker.errors.APIError as exc:
-        return -1, str(exc)
+        return -1, str(exc), sql_path
     finally:
         if helper is not None:
             with contextlib.suppress(Exception):
@@ -985,10 +978,44 @@ def reload_template(
                 client, settings, f'CREATE DATABASE "{tpl_db}" TABLESPACE "{ts_name}";'
             )
             helper_start = time.monotonic()
-            exit_code, output_str = _restore_custom_dump_with_helper(
-                client, settings, resolved_dump, tpl_db, is_gzipped=is_gzipped
+            helper_exit, helper_output, helper_sql_path = (
+                _convert_custom_dump_to_sql_with_helper(
+                    client, settings, resolved_dump, is_gzipped=is_gzipped
+                )
             )
             restore_elapsed += time.monotonic() - helper_start
+            if helper_exit != 0:
+                exit_code = helper_exit
+                output_str = helper_output
+            else:
+                helper_tmp_name = os.path.basename(helper_sql_path)
+                _copy_file_to_container(db_container, helper_sql_path, "/tmp")
+                psql_cmd = [
+                    "psql",
+                    "-U",
+                    settings.db_user,
+                    "-d",
+                    tpl_db,
+                    "-f",
+                    f"/tmp/{helper_tmp_name}",
+                ]
+                psql_start = time.monotonic()
+                exit_code, output = db_container.exec_run(psql_cmd)
+                restore_elapsed += time.monotonic() - psql_start
+                output_str = (
+                    output.decode("utf-8") if isinstance(output, bytes) else str(output)
+                )
+                restore_tool = "psql"
+                template_dir = os.path.abspath(team.get_template_dir(template_name))
+                if (
+                    dump_path is None
+                    and os.path.abspath(resolved_dump).startswith(
+                        template_dir + os.sep
+                    )
+                    and os.path.abspath(helper_sql_path) != os.path.abspath(resolved_dump)
+                ):
+                    with contextlib.suppress(OSError):
+                        os.remove(resolved_dump)
 
         if exit_code != 0:
             logger.error(
