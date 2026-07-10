@@ -1,0 +1,624 @@
+"""Production backup orchestration: snapshots, restore, status, prune.
+
+A **snapshot** is the per-production restorable unit: a consistent triple
+of (database pg_dump, filestore chunkstore revision, deployed commit sha)
+bound together by a manifest. Snapshots restore ONE production without
+touching the others in the shared cluster — WAL-G (see :mod:`oduflow.walg`)
+covers the complementary cluster-level disaster recovery / PITR.
+
+Ordering inside a snapshot: database FIRST, then filestore. Odoo's DB
+references filestore blobs by content hash; files written after the DB dump
+are harmless extras, whereas the reverse order could reference blobs
+missing from the filestore copy.
+
+S3 layout (bucket + prefix from [backup])::
+
+    {prefix}/walg/                                    (cluster, see walg.py)
+    {prefix}/snapshots/{team}/{prod}/db/{id}.pgdump
+    {prefix}/snapshots/{team}/{prod}/manifests/{id}.json
+    {prefix}/filestore/{team}/                        (chunkstore, per team)
+
+The chunkstore is per-team (not per-production): a team's productions are
+often clones of each other, so cross-production dedup pays; the team
+boundary preserves tenant isolation. Manifests are cached locally
+({team.data_dir}/production/{prod}/snapshots/) with S3 as the source of
+truth (survives cache loss / server reinstall).
+"""
+
+from __future__ import annotations
+
+import datetime
+import hashlib
+import json
+import logging
+import os
+import shutil
+import tempfile
+from typing import Any
+
+from oduflow import chunkstore, production_registry, s3_client
+from oduflow.chunkstore.prune import parse_keep, select_revisions_to_keep
+from oduflow.docker_ops import production_ops
+from oduflow.docker_ops.client import chown_recursive, get_client, get_odoo_uid_gid
+from oduflow.docker_ops.system_ops import (
+    _copy_file_to_container,
+    _exec_sql,
+    drop_signaling_sequences,
+    reassign_db_ownership,
+)
+from oduflow.env_credentials import load_credentials
+from oduflow.errors import (
+    ExternalCommandError,
+    NotFoundError,
+    PrerequisiteNotMetError,
+)
+from oduflow.naming import prod_env_name
+from oduflow.settings import BackupSettings, Settings, TeamSettings
+
+logger = logging.getLogger("oduflow")
+
+
+def _require_backup(settings: Settings) -> BackupSettings:
+    if settings.backup is None:
+        raise PrerequisiteNotMetError(
+            "Backups are not configured. Add a [backup] section (bucket, "
+            "access_key, secret_key) to oduflow.toml and restart."
+        )
+    return settings.backup
+
+
+def filestore_storage(settings: Settings, team: TeamSettings) -> s3_client.S3Storage:
+    backup = _require_backup(settings)
+    return s3_client.S3Storage(backup, f"{backup.prefix}/filestore/{team.team_id}")
+
+
+def _snapshot_prefix(backup: BackupSettings, team: TeamSettings, name: str) -> str:
+    return f"{backup.prefix}/snapshots/{team.team_id}/{name}"
+
+
+def _manifest_cache_dir(team: TeamSettings, name: str) -> str:
+    return os.path.join(team.data_dir, "production", name, "snapshots")
+
+
+def _cache_manifest(team: TeamSettings, name: str, manifest: dict[str, Any]) -> None:
+    cache_dir = _manifest_cache_dir(team, name)
+    os.makedirs(cache_dir, exist_ok=True)
+    path = os.path.join(cache_dir, f"{manifest['id']}.json")
+    with open(path, "w") as f:
+        json.dump(manifest, f, indent=2)
+
+
+def _now_utc() -> datetime.datetime:
+    return datetime.datetime.now(datetime.timezone.utc)
+
+
+def _snapshot_id(now: datetime.datetime | None = None) -> str:
+    return (now or _now_utc()).strftime("%Y%m%dT%H%M%SZ")
+
+
+def _dump_stream(container: Any, db_user: str, db_name: str):
+    """Yield pg_dump -Fc stdout frames from a docker exec stream."""
+    exit_stream = container.exec_run(
+        ["pg_dump", "-U", db_user, "-Fc", db_name],
+        stream=True,
+        demux=True,
+    )
+    for stdout, stderr in exit_stream.output:
+        if stderr:
+            logger.debug("pg_dump stderr: %s", stderr[-500:])
+        if stdout:
+            yield stdout
+
+
+def snapshot_production(
+    settings: Settings,
+    team: TeamSettings,
+    name: str,
+    *,
+    trigger: str = "mcp",
+    note: str = "",
+) -> dict[str, Any]:
+    """Take a snapshot (DB dump + filestore revision + manifest) to S3.
+
+    The caller holds the production's lock. The manifest is uploaded LAST:
+    a snapshot without a manifest does not exist (orphaned dump/chunks are
+    reclaimed by prune).
+    """
+    backup = _require_backup(settings)
+    production_registry.get_production(team, name)
+    client = get_client()
+    env_name = prod_env_name(name)
+    db_name = production_ops.prod_db_name(team, name)
+    filestore_dir = production_ops.prod_filestore_dir(team, name)
+
+    from oduflow.git_ops import rev_parse
+    from oduflow.naming import get_repo_path
+
+    commit = ""
+    repo_path = get_repo_path(env_name, team.workspaces_dir)
+    if os.path.isdir(repo_path):
+        try:
+            commit = rev_parse(repo_path)
+        except Exception:
+            commit = ""
+
+    snapshot_id = _snapshot_id()
+    prefix = _snapshot_prefix(backup, team, name)
+    db_key = f"{prefix}/db/{snapshot_id}.pgdump"
+    started = _now_utc().isoformat()
+
+    # 1. Database: stream pg_dump straight into a multipart upload — no
+    # temp disk. -Fc is internally compressed and MVCC-consistent.
+    pg = client.containers.get(settings.prod_db_container)
+    s3 = s3_client.make_client(backup)
+    digest = hashlib.sha256()
+
+    def _hashing_frames() -> Any:
+        for frame in _dump_stream(pg, settings.db_user, db_name):
+            digest.update(frame)
+            yield frame
+
+    db_bytes = s3_client.multipart_upload_stream(
+        s3, backup.bucket, db_key, _hashing_frames()
+    )
+    if db_bytes == 0:
+        raise ExternalCommandError(
+            "pg_dump", 1, f"pg_dump of {db_name} produced no output"
+        )
+
+    # 2. Filestore: chunkstore revision (incremental, deduplicated).
+    if os.path.isdir(filestore_dir):
+        fs_result = chunkstore.backup(
+            filestore_dir, filestore_storage(settings, team), name
+        )
+        filestore_info = {
+            "revision": fs_result.revision,
+            "files": fs_result.files,
+            "bytes": fs_result.total_bytes,
+            "new_chunks": fs_result.new_chunks,
+            "uploaded_bytes": fs_result.uploaded_bytes,
+        }
+    else:
+        filestore_info = {"revision": 0, "files": 0, "bytes": 0}
+
+    # 3. Manifest (uploaded last — commits the snapshot).
+    manifest = {
+        "id": snapshot_id,
+        "team": team.team_id,
+        "production": name,
+        "created_at": started,
+        "finished_at": _now_utc().isoformat(),
+        "trigger": trigger,
+        "note": note,
+        "commit_sha": commit,
+        "db": {"key": db_key, "sha256": digest.hexdigest(), "bytes": db_bytes},
+        "filestore": filestore_info,
+    }
+    s3.put_object(
+        Bucket=backup.bucket,
+        Key=f"{prefix}/manifests/{snapshot_id}.json",
+        Body=json.dumps(manifest, indent=2).encode("utf-8"),
+    )
+    _cache_manifest(team, name, manifest)
+    production_registry.set_nested(
+        team,
+        name,
+        "backup",
+        {
+            "last_snapshot_id": snapshot_id,
+            "last_snapshot_at": manifest["finished_at"],
+            "last_result": "success",
+            "last_error": "",
+        },
+    )
+    logger.info(
+        "Snapshot %s of production '%s': db %d bytes, filestore rev %s",
+        snapshot_id,
+        name,
+        db_bytes,
+        filestore_info.get("revision"),
+    )
+    return manifest
+
+
+def list_snapshots(
+    settings: Settings,
+    team: TeamSettings,
+    name: str,
+    *,
+    refresh: bool = False,
+) -> list[dict[str, Any]]:
+    """Snapshot manifests, oldest first. Local cache is the fast path;
+    ``refresh`` re-lists S3 (source of truth) and reconciles the cache."""
+    production_registry.get_production(team, name)
+    cache_dir = _manifest_cache_dir(team, name)
+
+    if refresh:
+        backup = _require_backup(settings)
+        storage = s3_client.S3Storage(backup, _snapshot_prefix(backup, team, name))
+        os.makedirs(cache_dir, exist_ok=True)
+        seen = set()
+        for key in storage.list("manifests/"):
+            try:
+                manifest = json.loads(storage.get(key).decode("utf-8"))
+                _cache_manifest(team, name, manifest)
+                seen.add(f"{manifest['id']}.json")
+            except Exception:
+                logger.warning("Unreadable manifest %s", key)
+        for stale in os.listdir(cache_dir):
+            if stale.endswith(".json") and stale not in seen:
+                os.remove(os.path.join(cache_dir, stale))
+
+    manifests = []
+    if os.path.isdir(cache_dir):
+        for entry in sorted(os.listdir(cache_dir)):
+            if not entry.endswith(".json"):
+                continue
+            try:
+                with open(os.path.join(cache_dir, entry)) as f:
+                    manifests.append(json.load(f))
+            except (json.JSONDecodeError, OSError):
+                continue
+    return manifests
+
+
+def _load_manifest(
+    settings: Settings, team: TeamSettings, name: str, snapshot_id: str
+) -> dict[str, Any]:
+    path = os.path.join(_manifest_cache_dir(team, name), f"{snapshot_id}.json")
+    if os.path.isfile(path):
+        with open(path) as f:
+            manifest: dict[str, Any] = json.load(f)
+            return manifest
+    backup = _require_backup(settings)
+    storage = s3_client.S3Storage(backup, _snapshot_prefix(backup, team, name))
+    key = f"manifests/{snapshot_id}.json"
+    if not storage.exists(key):
+        raise NotFoundError(
+            f"Snapshot '{snapshot_id}' not found for production '{name}' "
+            "(list_production_snapshots refresh=true to re-sync from S3)."
+        )
+    manifest = json.loads(storage.get(key).decode("utf-8"))
+    _cache_manifest(team, name, manifest)
+    return manifest
+
+
+def restore_production(
+    settings: Settings,
+    team: TeamSettings,
+    name: str,
+    snapshot_id: str,
+) -> dict[str, Any]:
+    """Restore a production's database + filestore from a snapshot.
+
+    Swap-based, so a failed restore never leaves a half-written live state:
+    the dump is restored into ``{db}__restore`` and swapped in by rename;
+    the filestore is rebuilt into a sibling directory and swapped by
+    rename. The caller holds the production's lock.
+    """
+    backup = _require_backup(settings)
+    record = production_registry.get_production(team, name)
+    manifest = _load_manifest(settings, team, name, snapshot_id)
+    client = get_client()
+    env_name = prod_env_name(name)
+    db_name = production_ops.prod_db_name(team, name)
+    filestore_dir = production_ops.prod_filestore_dir(team, name)
+    pg_container = settings.prod_db_container
+
+    # Free disk pre-check for the dump download.
+    tmp_root = os.path.join(team.data_dir, "tmp")
+    os.makedirs(tmp_root, exist_ok=True)
+    need = int(manifest["db"]["bytes"]) * 2
+    free = shutil.disk_usage(tmp_root).free
+    if free < need:
+        raise PrerequisiteNotMetError(
+            f"Not enough free disk for restore: need ~{need // 1024**2} MB "
+            f"in {tmp_root}, have {free // 1024**2} MB."
+        )
+
+    container = production_ops._get_container(client, settings, team, name)
+    was_running = container is not None and container.status == "running"
+    if container is not None and was_running:
+        container.stop()
+
+    restore_db = f"{db_name}__restore"
+    old_db = f"{db_name}__old"
+    swapped = False
+    try:
+        # ------------------------ database ------------------------------
+        with tempfile.TemporaryDirectory(dir=tmp_root) as tmpdir:
+            dump_path = os.path.join(tmpdir, f"{snapshot_id}.pgdump")
+            s3 = s3_client.make_client(backup)
+            s3.download_file(backup.bucket, manifest["db"]["key"], dump_path)
+            digest = hashlib.sha256()
+            with open(dump_path, "rb") as f:
+                for block in iter(lambda: f.read(1024 * 1024), b""):
+                    digest.update(block)
+            if digest.hexdigest() != manifest["db"]["sha256"]:
+                raise ExternalCommandError(
+                    "restore", 1, "Downloaded dump failed sha256 verification."
+                )
+            pg = client.containers.get(pg_container)
+            _copy_file_to_container(pg, dump_path, "/tmp")
+            in_container = f"/tmp/{os.path.basename(dump_path)}"
+
+        _exec_sql(
+            client,
+            settings,
+            f'DROP DATABASE IF EXISTS "{restore_db}" WITH (FORCE);',
+            container_name=pg_container,
+        )
+        _exec_sql(
+            client,
+            settings,
+            f'CREATE DATABASE "{restore_db}";',
+            container_name=pg_container,
+        )
+        exit_code, output = pg.exec_run(
+            [
+                "pg_restore",
+                "-U",
+                settings.db_user,
+                "--no-owner",
+                "-j",
+                "2",
+                "-d",
+                restore_db,
+                in_container,
+            ]
+        )
+        pg.exec_run(["rm", "-f", in_container])
+        if exit_code != 0:
+            text = output.decode("utf-8", errors="replace") if output else ""
+            raise ExternalCommandError("pg_restore", exit_code, text[-2000:])
+
+        creds = load_credentials(
+            env_name, team.workspaces_dir, settings.db_user, settings.db_password
+        )
+        reassign_db_ownership(
+            client, settings, restore_db, creds["pg_user"], container_name=pg_container
+        )
+        drop_signaling_sequences(
+            client, settings, restore_db, container_name=pg_container
+        )
+
+        # Swap: terminate live connections, rename out, rename in.
+        _exec_sql(
+            client,
+            settings,
+            f'DROP DATABASE IF EXISTS "{old_db}" WITH (FORCE);',
+            container_name=pg_container,
+        )
+        _exec_sql(
+            client,
+            settings,
+            "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
+            f"WHERE datname = '{db_name}';",
+            container_name=pg_container,
+        )
+        _exec_sql(
+            client,
+            settings,
+            f'ALTER DATABASE "{db_name}" RENAME TO "{old_db}";',
+            container_name=pg_container,
+        )
+        try:
+            _exec_sql(
+                client,
+                settings,
+                f'ALTER DATABASE "{restore_db}" RENAME TO "{db_name}";',
+                container_name=pg_container,
+            )
+            swapped = True
+        except BaseException:
+            # Roll the old database back into place.
+            _exec_sql(
+                client,
+                settings,
+                f'ALTER DATABASE "{old_db}" RENAME TO "{db_name}";',
+                container_name=pg_container,
+            )
+            raise
+
+        # ------------------------ filestore ------------------------------
+        fs_revision = int(manifest.get("filestore", {}).get("revision", 0) or 0)
+        if fs_revision > 0:
+            restore_dir = f"{filestore_dir}.restore-{snapshot_id}"
+            if os.path.isdir(restore_dir):
+                shutil.rmtree(restore_dir)
+            chunkstore.restore(
+                filestore_storage(settings, team), name, fs_revision, restore_dir
+            )
+            odoo_image = record.get("odoo_image", "")
+            if odoo_image:
+                uid_str, gid_str = get_odoo_uid_gid(client, odoo_image).split(":")
+                chown_recursive(
+                    restore_dir, int(uid_str), int(gid_str), client, odoo_image
+                )
+            old_dir = f"{filestore_dir}.old-{snapshot_id}"
+            if os.path.isdir(filestore_dir):
+                os.replace(filestore_dir, old_dir)
+            os.replace(restore_dir, filestore_dir)
+            if os.path.isdir(old_dir):
+                shutil.rmtree(old_dir, ignore_errors=True)
+
+        # Old database dropped only after everything else succeeded.
+        _exec_sql(
+            client,
+            settings,
+            f'DROP DATABASE IF EXISTS "{old_db}" WITH (FORCE);',
+            container_name=pg_container,
+        )
+    finally:
+        if not swapped:
+            # Failed before the swap: clean the half-restored database.
+            try:
+                _exec_sql(
+                    client,
+                    settings,
+                    f'DROP DATABASE IF EXISTS "{restore_db}" WITH (FORCE);',
+                    container_name=pg_container,
+                )
+            except Exception:
+                pass
+        if container is not None and was_running:
+            try:
+                container.start()
+            except Exception:
+                logger.exception("Could not restart production '%s'", name)
+
+    healthy = production_ops.wait_production_healthy(
+        client, settings, team, name, timeout=180
+    )
+    production_registry.update_production(team, name, {"unhealthy": not healthy})
+    production_registry.set_nested(
+        team, name, "backup", {"last_restore_id": snapshot_id}
+    )
+
+    warning = ""
+    current_commit = ""
+    from oduflow.git_ops import rev_parse
+    from oduflow.naming import get_repo_path
+
+    repo_path = get_repo_path(env_name, team.workspaces_dir)
+    if os.path.isdir(repo_path):
+        try:
+            current_commit = rev_parse(repo_path)
+        except Exception:
+            current_commit = ""
+    if (
+        manifest.get("commit_sha")
+        and current_commit
+        and (manifest["commit_sha"] != current_commit)
+    ):
+        warning = (
+            f"Snapshot was taken at commit {manifest['commit_sha'][:10]} but the "
+            f"checkout is at {current_commit[:10]} — consider "
+            f'rollback_production(to_commit="{manifest["commit_sha"][:10]}") '
+            "so the code matches the data."
+        )
+
+    production_ops.append_deploy(
+        team,
+        name,
+        {
+            "ts_start": _now_utc().isoformat(),
+            "ts_end": _now_utc().isoformat(),
+            "trigger": "restore",
+            "from_commit": current_commit,
+            "to_commit": current_commit,
+            "action": f"restore:{snapshot_id}",
+            "status": "success" if healthy else "rollback_failed",
+            "error": "" if healthy else "Health check failed after restore.",
+        },
+    )
+    return {
+        "name": name,
+        "snapshot_id": snapshot_id,
+        "healthy": healthy,
+        "warning": warning,
+        "db_bytes": manifest["db"]["bytes"],
+        "filestore_revision": manifest.get("filestore", {}).get("revision", 0),
+    }
+
+
+def backup_status(settings: Settings, team: TeamSettings) -> dict[str, Any]:
+    """Backup posture: per-production snapshot state + cluster WAL-G state."""
+    from oduflow import walg
+
+    status: dict[str, Any] = {
+        "configured": settings.backup is not None,
+        "productions": {},
+        "walg": {},
+        "s3": {},
+    }
+    for name, record in production_registry.list_productions(team).items():
+        status["productions"][name] = record.get("backup", {})
+    if settings.backup is None:
+        return status
+    status["s3"] = s3_client.check_s3(settings.backup)
+    try:
+        client = get_client()
+        backups = walg.backup_list(client, settings)
+        status["walg"] = {
+            "base_backups": len(backups),
+            "latest_base_backup": (backups[-1] if backups else {}),
+            "archiver": walg.archiver_status(client, settings),
+        }
+    except Exception as exc:
+        status["walg"] = {"error": str(exc)}
+    return status
+
+
+def prune_backups(settings: Settings, team: TeamSettings) -> dict[str, Any]:
+    """Apply retention to snapshots (manifests + dumps) and the chunkstore.
+
+    Retention is decided ONCE at the manifest level; the chunkstore then
+    keeps exactly the filestore revisions the surviving manifests
+    reference (lockstep — no orphaned or dangling references).
+    """
+    backup = _require_backup(settings)
+    keep_pairs = parse_keep(backup.keep)
+    now = _now_utc()
+    deleted_snapshots: list[str] = []
+    keep_revisions: dict[str, set[int]] = {}
+
+    for name in production_registry.list_productions(team):
+        manifests = list_snapshots(settings, team, name, refresh=True)
+        dated = []
+        by_id: dict[str, dict[str, Any]] = {}
+        for index, manifest in enumerate(manifests, start=1):
+            by_id[manifest["id"]] = manifest
+            created = datetime.datetime.fromisoformat(manifest["created_at"])
+            if created.tzinfo is None:
+                created = created.replace(tzinfo=datetime.timezone.utc)
+            dated.append((index, created))
+        ids = [m["id"] for m in manifests]
+        keep_set = select_revisions_to_keep(dated, keep_pairs, now)
+        keep_ids = {ids[i - 1] for i in keep_set}
+
+        storage = s3_client.S3Storage(backup, _snapshot_prefix(backup, team, name))
+        revisions: set[int] = set()
+        for snapshot_id in ids:
+            manifest = by_id[snapshot_id]
+            if snapshot_id in keep_ids:
+                rev = int(manifest.get("filestore", {}).get("revision", 0) or 0)
+                if rev:
+                    revisions.add(rev)
+                continue
+            storage.delete(f"manifests/{snapshot_id}.json")
+            storage.delete(f"db/{snapshot_id}.pgdump")
+            cache_path = os.path.join(
+                _manifest_cache_dir(team, name), f"{snapshot_id}.json"
+            )
+            if os.path.isfile(cache_path):
+                os.remove(cache_path)
+            deleted_snapshots.append(f"{name}/{snapshot_id}")
+        keep_revisions[name] = revisions
+
+    prune_result = chunkstore.prune(
+        filestore_storage(settings, team), keep_revisions=keep_revisions, now=now
+    )
+    return {
+        "deleted_snapshots": deleted_snapshots,
+        "chunkstore": {
+            "deleted_revisions": prune_result.deleted_revisions,
+            "fossilized_chunks": prune_result.fossilized_chunks,
+            "deleted_chunks": prune_result.deleted_chunks,
+            "resurrected_chunks": prune_result.resurrected_chunks,
+        },
+    }
+
+
+def register_pre_update_hook() -> None:
+    """Hook a best-effort snapshot before every production deploy."""
+
+    def _pre_update_snapshot(settings: Settings, team: TeamSettings, name: str) -> None:
+        if settings.backup is None:
+            return
+        snapshot_production(settings, team, name, trigger="pre-update")
+
+    # Idempotent registration (server startup may run more than once in tests).
+    names = {getattr(h, "__name__", "") for h in production_ops.pre_update_hooks}
+    if "_pre_update_snapshot" not in names:
+        production_ops.pre_update_hooks.append(_pre_update_snapshot)

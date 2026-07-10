@@ -3064,6 +3064,229 @@ def production_deploys(name: str, limit: int = 20, ctx: Context = None) -> str:
 @mcp.tool()
 @handle_errors
 @with_prod_lock
+def snapshot_production(name: str, note: str = "", ctx: Context = None) -> str:
+    """
+    Take a snapshot of a production to S3: database dump + deduplicated
+    filestore revision + manifest (with the deployed commit sha). Snapshots
+    are the per-production restore unit (restore_production).
+
+    Requires a [backup] section in oduflow.toml.
+
+    Args:
+        name: The production name.
+        note: Optional free-form note stored in the manifest.
+    """
+    from oduflow import backup_ops
+
+    settings = _get_settings()
+    team = _resolve_team(ctx)
+    manifest = backup_ops.snapshot_production(
+        settings, team, name, trigger="mcp", note=note
+    )
+    return (
+        f"Snapshot {manifest['id']} of production '{name}' completed.\n"
+        f"Database: {manifest['db']['bytes']} bytes (sha256 "
+        f"{manifest['db']['sha256'][:12]}…)\n"
+        f"Filestore: revision {manifest['filestore'].get('revision')} "
+        f"({manifest['filestore'].get('files', 0)} files, "
+        f"{manifest['filestore'].get('uploaded_bytes', 0)} bytes uploaded)\n"
+        f"Commit: {manifest.get('commit_sha', '')[:10]}"
+    )
+
+
+@mcp.tool()
+@handle_errors
+def list_production_snapshots(
+    name: str, refresh: bool = False, ctx: Context = None
+) -> str:
+    """
+    List a production's snapshots (oldest first): id, created_at, sizes,
+    commit sha.
+
+    Args:
+        name: The production name.
+        refresh: Re-list S3 (source of truth) instead of the local cache.
+    """
+    from oduflow import backup_ops
+
+    settings = _get_settings()
+    team = _resolve_team(ctx)
+    manifests = backup_ops.list_snapshots(settings, team, name, refresh=refresh)
+    if not manifests:
+        return (
+            f"No snapshots for production '{name}'. Use snapshot_production "
+            "or wait for the scheduled backup."
+        )
+    import json as _json
+
+    return _json.dumps(manifests, indent=2)
+
+
+@mcp.tool()
+@handle_errors
+@with_prod_lock
+def restore_production(
+    name: str, snapshot_id: str, confirm: str = "", ctx: Context = None
+) -> str:
+    """
+    Restore a production's DATABASE and FILESTORE from a snapshot.
+    DESTRUCTIVE for current data (swap-based: a failed restore leaves the
+    previous state in place). The code checkout is NOT touched — a warning
+    is returned if it does not match the snapshot's commit.
+
+    Args:
+        name: The production name.
+        snapshot_id: Snapshot to restore (see list_production_snapshots).
+        confirm: Must equal the production name (safety check).
+    """
+    if confirm != name:
+        raise ToolError(
+            f'Confirmation failed: pass confirm="{name}" to restore this production.'
+        )
+    from oduflow import backup_ops
+
+    settings = _get_settings()
+    team = _resolve_team(ctx)
+    result = backup_ops.restore_production(settings, team, name, snapshot_id)
+    lines = [
+        f"Production '{name}' restored from snapshot {snapshot_id}.",
+        f"Healthy: {result['healthy']}",
+    ]
+    if result.get("warning"):
+        lines.append(f"WARNING: {result['warning']}")
+    return "\n".join(lines)
+
+
+@mcp.tool()
+@handle_errors
+def production_backup_status(ctx: Context = None) -> str:
+    """
+    Backup posture for the team: per-production snapshot state (schedule,
+    last snapshot, last error) and cluster WAL-G state (base backups, WAL
+    archiver health, S3 reachability).
+    """
+    from oduflow import backup_ops
+
+    settings = _get_settings()
+    team = _resolve_team(ctx)
+    status = backup_ops.backup_status(settings, team)
+    import json as _json
+
+    return _json.dumps(status, indent=2)
+
+
+@mcp.tool()
+@handle_errors
+@with_prod_lock
+def set_production_backup_schedule(
+    name: str, schedule: str, ctx: Context = None
+) -> str:
+    """
+    Override a production's daily snapshot time.
+
+    Args:
+        name: The production name.
+        schedule: "HH:MM" (server-local time) or "off" to disable scheduled
+                snapshots for this production. Default (unset) follows
+                [backup] snapshot_time.
+    """
+    schedule = schedule.strip().lower()
+    if schedule != "off" and not re.match(r"^([01]\d|2[0-3]):[0-5]\d$", schedule):
+        raise ToolError('schedule must be "HH:MM" (24h) or "off"')
+    team = _resolve_team(ctx)
+    production_registry.get_production(team, name)
+    production_registry.set_nested(team, name, "backup", {"schedule": schedule})
+    return f"Snapshot schedule for production '{name}' set to {schedule}."
+
+
+@mcp.tool()
+@handle_errors
+def prune_production_backups(ctx: Context = None) -> str:
+    """
+    Apply the retention policy ([backup] keep) to the team's snapshots and
+    filestore chunk store now (runs weekly on schedule anyway). Uses safe
+    two-step fossil collection — chunks are only permanently deleted on a
+    later prune after every production has produced a newer revision.
+    """
+    from oduflow import backup_ops
+
+    settings = _get_settings()
+    team = _resolve_team(ctx)
+    _locks.acquire_team(team.team_id)
+    try:
+        result = backup_ops.prune_backups(settings, team)
+    finally:
+        _locks.release_team(team.team_id)
+    import json as _json
+
+    return _json.dumps(result, indent=2)
+
+
+@mcp.tool()
+@handle_errors
+def restore_cluster_pitr(
+    target_time: str = "", confirm: str = "", ctx: Context = None
+) -> str:
+    """
+    DISASTER RECOVERY: restore the WHOLE production PostgreSQL cluster from
+    WAL-G (base backup + WAL replay). Affects EVERY production database at
+    once — for restoring a single production use restore_production.
+
+    Also the "resurrect production elsewhere" path: a fresh Oduflow server
+    with the same [backup] section can rebuild the cluster from S3.
+
+    The current data directory is displaced inside the volume (not
+    destroyed); production Odoo containers are stopped and restarted.
+
+    Args:
+        target_time: Optional PITR target, e.g. "2026-07-10 12:00:00+00"
+                (empty = replay the whole archive to the latest state).
+        confirm: Must equal "RESTORE-CLUSTER" (safety check).
+    """
+    if confirm != "RESTORE-CLUSTER":
+        raise ToolError(
+            'Confirmation failed: pass confirm="RESTORE-CLUSTER" to restore '
+            "the whole production cluster."
+        )
+    from oduflow import walg
+
+    settings = _get_settings()
+    _resolve_team(ctx)  # authenticate the caller; PITR spans all teams
+    _locks.acquire_env("prod:__cluster__")
+    try:
+        client = system_ops.get_client()
+        # Stop every production Odoo container (all teams share the cluster).
+        stopped: list[str] = []
+        for team_cfg in settings.teams.values():
+            for prod_name in production_registry.list_productions(team_cfg):
+                container = production_ops._get_container(
+                    client, settings, team_cfg, prod_name
+                )
+                if container is not None and container.status == "running":
+                    container.stop()
+                    stopped.append(f"{team_cfg.team_id}/{prod_name}")
+        result = walg.pitr_restore_cluster(settings, target_time=target_time)
+        for entry in stopped:
+            team_id, prod_name = entry.split("/", 1)
+            try:
+                production_ops.start_production(
+                    settings, settings.teams[team_id], prod_name
+                )
+            except Exception as exc:
+                logger.warning("Could not restart production %s: %s", entry, exc)
+    finally:
+        _locks.release_env("prod:__cluster__")
+    return (
+        f"Cluster restored to {result['target_time']}. Previous data "
+        f"directory kept inside the volume as {result['displaced_data_dir']} "
+        f"(remove manually after verifying). Restarted productions: "
+        f"{', '.join(stopped) or 'none'}."
+    )
+
+
+@mcp.tool()
+@handle_errors
+@with_prod_lock
 def delete_production(
     name: str,
     confirm: str = "",
@@ -3111,6 +3334,11 @@ def _ensure_initialized(settings: Settings) -> None:
     _copy_bundled_configs()
     prereqs.ensure_fuse_overlayfs()
     system_ops.init_system(settings)
+
+    # Snapshot-before-deploy hook (no-op while [backup] is unconfigured).
+    from oduflow import backup_ops
+
+    backup_ops.register_pre_update_hook()
 
     import pathlib
     import shutil

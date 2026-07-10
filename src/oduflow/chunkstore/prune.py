@@ -136,6 +136,7 @@ def _collect(
     keep: list[tuple[int, int]],
     now: datetime.datetime,
     result: PruneResult,
+    keep_revisions: dict[str, set[int]] | None = None,
 ) -> None:
     """Step 1: retention → fossilize newly-unreferenced chunks."""
     kept_refs: set[str] = set()
@@ -159,7 +160,14 @@ def _collect(
                 kept_refs.update(
                     _revision_chunk_hashes(storage, config, snapshot_id, revision)
                 )
-        keep_set = select_revisions_to_keep(dated, keep, now)
+        if keep_revisions is not None:
+            # Caller-driven retention (Oduflow keeps filestore revisions in
+            # lockstep with snapshot manifests). The newest revision is
+            # still always kept — an in-progress backup baseline.
+            keep_set = set(keep_revisions.get(snapshot_id, set()))
+            keep_set.add(revisions[-1])
+        else:
+            keep_set = select_revisions_to_keep(dated, keep, now)
         for revision, _created in dated:
             if revision in keep_set:
                 kept_refs.update(
@@ -277,15 +285,24 @@ def _sweep(
 def prune(
     storage: Storage,
     *,
-    keep: list[tuple[int, int]],
+    keep: list[tuple[int, int]] | None = None,
+    keep_revisions: dict[str, set[int]] | None = None,
     now: datetime.datetime | None = None,
 ) -> PruneResult:
-    """Run both prune steps (sweep mature collections, then collect anew)."""
+    """Run both prune steps (sweep mature collections, then collect anew).
+
+    Retention comes either from ``keep`` (interval:age pairs applied to
+    revision timestamps) or from ``keep_revisions`` (an explicit
+    {snapshot_id: revisions} map — used by Oduflow to keep filestore
+    revisions in lockstep with snapshot manifests).
+    """
+    if keep is None and keep_revisions is None:
+        raise ValueError("prune requires keep or keep_revisions")
     config = ensure_config(storage)
     now = now or datetime.datetime.now(datetime.timezone.utc)
     result = PruneResult()
     _sweep(storage, config, now, result)
-    _collect(storage, config, keep, now, result)
+    _collect(storage, config, keep or [], now, result, keep_revisions)
     return result
 
 

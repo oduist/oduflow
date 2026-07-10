@@ -35,8 +35,10 @@ import json
 import logging
 import os
 import re
+import datetime as _dt
 import tarfile
 import tempfile
+import time
 import urllib.request
 
 from typing import Any
@@ -344,4 +346,152 @@ def archiver_status(client: Any, settings: Settings) -> dict[str, Any]:
         "last_archived_time": parts[2],
         "failed_count": int(parts[3] or 0),
         "last_failed_time": parts[4],
+    }
+
+
+# ---------------------------------------------------------------------------
+# Cluster PITR (disaster recovery)
+# ---------------------------------------------------------------------------
+
+_PITR_TIMEOUT = 1800  # WAL replay can take a while
+
+
+def pitr_restore_cluster(
+    settings: Settings,
+    *,
+    target_time: str = "",
+) -> dict[str, Any]:
+    """Restore the WHOLE production cluster from WAL-G (base backup + WAL).
+
+    This is the disaster-recovery path — it affects EVERY production
+    database in the cluster at once (per-production restores use snapshots
+    instead, see backup_ops). Also the "resurrect production elsewhere"
+    path: a fresh Oduflow install pointed at the same [backup] section can
+    rebuild the cluster from S3.
+
+    Flow (the caller holds a cluster-wide lock and has stopped production
+    Odoo containers):
+
+    1. stop + remove the production PG container (its data volume stays);
+    2. in a helper container on that volume: move the current PGDATA
+       contents aside (``.pitr-old-{ts}/`` — nothing is destroyed),
+       ``wal-g backup-fetch`` the base backup, write ``recovery.signal``
+       and the restore_command (+ recovery_target_time when given);
+    3. recreate the PG container and wait for recovery to finish
+       (pg_is_in_recovery() = false — with no recovery target PostgreSQL
+       replays the whole archive and promotes).
+
+    The displaced data dir is left in the volume for manual cleanup.
+    """
+    from oduflow.docker_ops.client import get_client
+    from oduflow.docker_ops.system_ops import (
+        _ensure_prod_pg_container,
+        _exec_sql,
+        _wait_pg_ready,
+    )
+
+    if settings.backup is None:
+        raise PrerequisiteNotMetError(
+            "Cluster PITR requires a configured [backup] section."
+        )
+    client = get_client()
+    ensure_walg(settings)
+    write_walg_config(settings)
+
+    image = settings.prod_postgres_image or settings.postgres_image
+    stamp = _dt.datetime.now(_dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    old_dir = f".pitr-old-{stamp}"
+
+    # 1. Stop + remove the PG container (volume persists).
+    try:
+        container = client.containers.get(settings.prod_db_container)
+        container.stop()
+        container.remove()
+    except Exception:
+        pass
+
+    # 2. Helper container: displace PGDATA, fetch, write recovery config.
+    recovery_conf = (
+        f"restore_command = '{WALG_BIN} --config {WALG_CONF} wal-fetch %f %p'\n"
+    )
+    if target_time:
+        safe_time = target_time.replace("'", "")
+        recovery_conf += (
+            f"recovery_target_time = '{safe_time}'\n"
+            "recovery_target_action = 'promote'\n"
+        )
+    script = (
+        "set -e\n"
+        f"mkdir -p /vol/{old_dir}\n"
+        f"find /vol -mindepth 1 -maxdepth 1 ! -name '.pitr-old-*' "
+        f"-exec mv {{}} /vol/{old_dir}/ \\;\n"
+        f"{WALG_BIN} --config {WALG_CONF} backup-fetch /vol LATEST\n"
+        f'printf "%b" "{recovery_conf}" >> /vol/postgresql.auto.conf\n'
+        "touch /vol/recovery.signal\n"
+        "chown -R postgres:postgres /vol\n"
+        "chmod 700 /vol\n"
+    )
+    helper = client.containers.run(
+        image,
+        name=f"{settings.prod_db_container}-pitr-{stamp}",
+        detach=True,
+        entrypoint=["sh", "-c", script],
+        volumes={
+            settings.prod_db_volume: {"bind": "/vol", "mode": "rw"},
+            bin_host_dir(settings): {"bind": BIN_MOUNT, "mode": "ro"},
+            conf_host_dir(settings): {"bind": CONF_MOUNT, "mode": "ro"},
+        },
+    )
+    try:
+        status = helper.wait(timeout=_PITR_TIMEOUT)
+        exit_code = (
+            status.get("StatusCode", -1) if isinstance(status, dict) else int(status)
+        )
+        logs = helper.logs().decode("utf-8", errors="replace")
+    finally:
+        try:
+            helper.remove(force=True)
+        except Exception:
+            pass
+    if exit_code != 0:
+        raise ExternalCommandError("wal-g backup-fetch (PITR)", exit_code, logs[-3000:])
+
+    # 3. Recreate the container; PostgreSQL replays WAL and promotes.
+    system_labels = {settings.managed_label: "true", settings.system_label: "true"}
+    _ensure_prod_pg_container(client, settings, system_labels)
+    _wait_pg_ready(
+        client,
+        settings,
+        timeout=_PITR_TIMEOUT,
+        container_name=settings.prod_db_container,
+    )
+    deadline = time.monotonic() + _PITR_TIMEOUT
+    while time.monotonic() < deadline:
+        try:
+            in_recovery = _exec_sql(
+                client,
+                settings,
+                "SELECT pg_is_in_recovery();",
+                container_name=settings.prod_db_container,
+            )
+            if in_recovery.strip() in ("f", "false"):
+                break
+        except Exception:
+            pass
+        time.sleep(5)
+    else:
+        raise ExternalCommandError(
+            "PITR recovery",
+            1,
+            f"Cluster did not finish recovery within {_PITR_TIMEOUT}s — check "
+            f"docker logs {settings.prod_db_container}",
+        )
+
+    # Re-apply the archive command (postgresql.auto.conf was rebuilt).
+    apply_archive_command(client, settings, enabled=True)
+    logger.info("Cluster PITR complete (old data kept in volume as %s)", old_dir)
+    return {
+        "status": "restored",
+        "target_time": target_time or "latest",
+        "displaced_data_dir": old_dir,
     }
