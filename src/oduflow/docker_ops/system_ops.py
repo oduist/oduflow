@@ -800,6 +800,100 @@ def _drop_pg_role(
     logger.info("Dropped PG role '%s'", username)
 
 
+def reassign_db_ownership(
+    client: DockerClient,
+    settings: Settings,
+    db_name: str,
+    new_user: str,
+    *,
+    container_name: str | None = None,
+) -> None:
+    """Reassign every object in *db_name* not owned by *new_user* to it.
+
+    A restored/cloned database's objects are owned by whatever role created
+    them — normally the superuser, but plain-SQL imports can leave objects
+    owned by a source env's role. DDL during module upgrades requires
+    ownership, so transfer it per-object instead of granting superuser-role
+    membership (which would be a cross-tenant RCE, #40). Linked
+    (SERIAL/identity) sequences are skipped: they follow their table's owner
+    automatically. System roles (pg_*) are left untouched.
+    """
+    _exec_sql(
+        client,
+        settings,
+        f'ALTER SCHEMA public OWNER TO "{new_user}";',
+        db=db_name,
+        container_name=container_name,
+    )
+    _exec_sql(
+        client,
+        settings,
+        rf"""
+        DO $$
+        DECLARE r RECORD;
+        BEGIN
+          FOR r IN SELECT n.nspname FROM pg_namespace n JOIN pg_roles o ON n.nspowner = o.oid
+                   WHERE o.rolname <> '{new_user}' AND o.rolname NOT LIKE 'pg\_%'
+                     AND n.nspname NOT LIKE 'pg\_%' AND n.nspname <> 'information_schema'
+          LOOP EXECUTE format('ALTER SCHEMA %I OWNER TO %I', r.nspname, '{new_user}'); END LOOP;
+
+          FOR r IN SELECT c.relkind AS kind, n.nspname AS sch, c.relname AS rel
+                   FROM pg_class c
+                   JOIN pg_namespace n ON c.relnamespace = n.oid
+                   JOIN pg_roles o ON c.relowner = o.oid
+                   WHERE o.rolname <> '{new_user}' AND o.rolname NOT LIKE 'pg\_%'
+                     AND n.nspname NOT LIKE 'pg\_%' AND n.nspname <> 'information_schema'
+                     AND c.relkind IN ('r', 'p', 'S', 'v', 'm', 'f')
+                     AND NOT (c.relkind = 'S' AND EXISTS (
+                         SELECT 1 FROM pg_depend d
+                         WHERE d.classid = 'pg_class'::regclass AND d.objid = c.oid
+                           AND d.refclassid = 'pg_class'::regclass AND d.deptype IN ('a', 'i')))
+          LOOP EXECUTE format('ALTER %s %I.%I OWNER TO %I',
+               CASE r.kind WHEN 'S' THEN 'SEQUENCE' WHEN 'v' THEN 'VIEW'
+                           WHEN 'm' THEN 'MATERIALIZED VIEW' WHEN 'f' THEN 'FOREIGN TABLE'
+                           ELSE 'TABLE' END, r.sch, r.rel, '{new_user}'); END LOOP;
+
+          FOR r IN SELECT p.oid::regprocedure AS sig
+                   FROM pg_proc p
+                   JOIN pg_namespace n ON p.pronamespace = n.oid
+                   JOIN pg_roles o ON p.proowner = o.oid
+                   WHERE o.rolname <> '{new_user}' AND o.rolname NOT LIKE 'pg\_%'
+                     AND n.nspname NOT LIKE 'pg\_%' AND n.nspname <> 'information_schema'
+          LOOP EXECUTE format('ALTER ROUTINE %s OWNER TO %I', r.sig, '{new_user}'); END LOOP;
+        END $$;
+        """,
+        db=db_name,
+        container_name=container_name,
+    )
+
+
+def drop_signaling_sequences(
+    client: DockerClient,
+    settings: Settings,
+    db_name: str,
+    *,
+    container_name: str | None = None,
+) -> None:
+    """Drop Odoo signaling sequences carried over from a source database.
+
+    Odoo re-creates them on first startup (CREATE SEQUENCE without IF NOT
+    EXISTS), so leftovers cause DuplicateTable errors.
+    """
+    _exec_sql(
+        client,
+        settings,
+        "DO $$ DECLARE r RECORD; BEGIN "
+        "FOR r IN SELECT c.relname FROM pg_class c "
+        "WHERE c.relkind = 'S' "
+        "AND (c.relname LIKE 'base_registry_signaling%' "
+        "OR c.relname LIKE 'base_cache_signaling%') "
+        "LOOP EXECUTE 'DROP SEQUENCE IF EXISTS ' || quote_ident(r.relname); "
+        "END LOOP; END $$;",
+        db=db_name,
+        container_name=container_name,
+    )
+
+
 def _db_exists(
     client: DockerClient,
     settings: Settings,

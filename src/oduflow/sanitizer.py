@@ -13,7 +13,9 @@ from oduflow.settings import Settings, TeamSettings
 logger = logging.getLogger("oduflow")
 
 
-def _detect_odoo_major_from_container(container: object, image_label: str) -> int | None:
+def _detect_odoo_major_from_container(
+    container: object, image_label: str
+) -> int | None:
     """Best-effort major version from the Odoo image label."""
     labels = getattr(container, "labels", {}) or {}
     if not isinstance(labels, dict):

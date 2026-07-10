@@ -612,6 +612,7 @@ def generate_odoo_conf(
     output_path: str,
     extra_paths: list[str],
     main_addons_path: str = "/mnt/extra-addons",
+    overrides: dict[str, str] | None = None,
 ) -> str:
     parser = configparser.RawConfigParser()
     parser.optionxform = str
@@ -627,6 +628,11 @@ def generate_odoo_conf(
         if p not in parts:
             parts.append(p)
     parser.set("options", "addons_path", ",".join(parts))
+
+    # Applied after the merge: the production profile injects auto-tuned
+    # worker/limit settings that must win over whatever the base conf says.
+    for key, value in (overrides or {}).items():
+        parser.set("options", key, value)
 
     # Strip DB connection keys — these are managed via container env vars
     # (HOST, USER, PASSWORD).  If left in the conf file the Odoo entrypoint
