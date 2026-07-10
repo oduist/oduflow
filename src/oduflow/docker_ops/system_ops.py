@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import contextlib
 import gzip
 import json
 import logging
 import os
 import pathlib
+import shlex
 import shutil
 import subprocess
 import tarfile
@@ -37,6 +39,7 @@ _PACKAGE_ROOT = pathlib.Path(__file__).resolve().parents[1]
 _BUNDLED_PG_CONF = _PACKAGE_ROOT / "templates" / "postgresql.conf"
 _BUNDLED_ODOO_CONF = _PACKAGE_ROOT / "templates" / "odoo.conf"
 _BUNDLED_SANITIZE_DIR = _PACKAGE_ROOT / "templates"
+_PG_RESTORE_HELPER_IMAGE = "postgres:17"
 
 
 def _is_within_directory(directory: str, target: str) -> bool:
@@ -522,6 +525,75 @@ def _copy_file_to_container(
         os.remove(tmp_path)
 
 
+def _restore_custom_dump_with_helper(
+    client: DockerClient,
+    settings: Settings,
+    dump_path: str,
+    template_db: str,
+    *,
+    is_gzipped: bool,
+) -> tuple[int, str]:
+    """Run a newer pg_restore client from a temporary helper container."""
+    dump_dir = os.path.abspath(os.path.dirname(dump_path))
+    dump_name = os.path.basename(dump_path)
+    container_path = f"/backup/{dump_name}"
+    if is_gzipped:
+        command = [
+            "bash",
+            "-c",
+            "set -o pipefail; "
+            f"gunzip -c {shlex.quote(container_path)} | "
+            "pg_restore --no-owner "
+            f"-h {shlex.quote(settings.shared_db_container)} "
+            f"-U {shlex.quote(settings.db_user)} "
+            f"-d {shlex.quote(template_db)}",
+        ]
+    else:
+        command = [
+            "pg_restore",
+            "--no-owner",
+            "-h",
+            settings.shared_db_container,
+            "-U",
+            settings.db_user,
+            "-d",
+            template_db,
+            container_path,
+        ]
+
+    with contextlib.suppress(Exception):
+        client.images.pull(_PG_RESTORE_HELPER_IMAGE)
+
+    helper_name = f"{settings.prefix}pg-restore-helper-{time.time_ns()}"
+    helper = None
+    try:
+        helper = client.containers.run(
+            _PG_RESTORE_HELPER_IMAGE,
+            name=helper_name,
+            detach=True,
+            network=settings.shared_network,
+            environment={"PGPASSWORD": settings.db_password},
+            volumes={dump_dir: {"bind": "/backup", "mode": "ro"}},
+            command=command,
+            labels={settings.managed_label: "true", settings.system_label: "true"},
+        )
+        wait_result = helper.wait()
+        exit_code = int(wait_result.get("StatusCode", -1))
+        logs = helper.logs(stdout=True, stderr=True).decode("utf-8", errors="replace")
+        return exit_code, logs
+    except docker.errors.APIError as exc:
+        return -1, str(exc)
+    finally:
+        if helper is not None:
+            with contextlib.suppress(Exception):
+                helper.remove(force=True)
+
+
+def _is_pg_restore_archive_version_error(output: str) -> bool:
+    output = output.lower()
+    return "unsupported version" in output and "file header" in output
+
+
 def _copy_file_from_container(
     container: docker.models.containers.Container, container_path: str, dest_path: str
 ) -> None:
@@ -895,8 +967,34 @@ def reload_template(
     output_str = output.decode("utf-8") if isinstance(output, bytes) else str(output)
 
     if exit_code != 0:
-        logger.error("DB restore failed after %.1fs: %s", restore_elapsed, output_str)
-        raise ExternalCommandError(restore_tool, exit_code, output_str)
+        if (
+            restore_tool == "pg_restore"
+            and _is_pg_restore_archive_version_error(output_str)
+        ):
+            logger.warning(
+                "pg_restore in %s cannot read dump archive; retrying with %s helper",
+                settings.shared_db_container,
+                _PG_RESTORE_HELPER_IMAGE,
+            )
+            _exec_sql(
+                client,
+                settings,
+                f'DROP DATABASE IF EXISTS "{tpl_db}" WITH (FORCE);',
+            )
+            _exec_sql(
+                client, settings, f'CREATE DATABASE "{tpl_db}" TABLESPACE "{ts_name}";'
+            )
+            helper_start = time.monotonic()
+            exit_code, output_str = _restore_custom_dump_with_helper(
+                client, settings, resolved_dump, tpl_db, is_gzipped=is_gzipped
+            )
+            restore_elapsed += time.monotonic() - helper_start
+
+        if exit_code != 0:
+            logger.error(
+                "DB restore failed after %.1fs: %s", restore_elapsed, output_str
+            )
+            raise ExternalCommandError(restore_tool, exit_code, output_str)
 
     if output_str.strip():
         logger.info("DB restore output: %s", output_str)
