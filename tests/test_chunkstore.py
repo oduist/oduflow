@@ -407,3 +407,30 @@ class TestLocalStorage:
         storage.put("snapshots/erp/3", b"{}")
         storage.put("snapshots/erp/2", b"{}")
         assert list_revisions(storage, "erp") == [1, 2, 3]
+
+
+class TestPruneKeepRevisions:
+    def test_explicit_keep_revisions(self, small_config_storage, tmp_path):
+        """Caller-driven retention keeps exactly the named revisions (plus
+        the newest) — the lockstep mode used by backup_ops."""
+        rng = random.Random(21)
+        storage = small_config_storage
+        src = tmp_path / "src"
+        _make_tree(str(src), {"a.bin": rng.randbytes(20_000)})
+        for _ in range(3):
+            with open(src / "a.bin", "wb") as f:
+                f.write(rng.randbytes(20_000))
+            chunkstore.backup(str(src), storage, "erp")
+        assert list_revisions(storage, "erp") == [1, 2, 3]
+
+        chunkstore.prune(storage, keep_revisions={"erp": {2}})
+        assert list_revisions(storage, "erp") == [2, 3]
+
+        # Both survivors restore.
+        for rev in (2, 3):
+            dst = tmp_path / f"dst{rev}"
+            chunkstore.restore(storage, "erp", rev, str(dst))
+
+    def test_prune_requires_a_policy(self, small_config_storage):
+        with pytest.raises(ValueError, match="keep"):
+            chunkstore.prune(small_config_storage)
