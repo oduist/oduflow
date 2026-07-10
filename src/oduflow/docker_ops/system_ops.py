@@ -1270,7 +1270,8 @@ def reload_template(
                 restore_tool = "psql"
                 template_dir = os.path.abspath(team.get_template_dir(template_name))
                 if (
-                    dump_path is None
+                    exit_code == 0
+                    and dump_path is None
                     and os.path.abspath(resolved_dump).startswith(template_dir + os.sep)
                     and os.path.abspath(helper_sql_path)
                     != os.path.abspath(resolved_dump)
