@@ -2966,6 +2966,104 @@ def set_production_auto_update(name: str, enabled: bool, ctx: Context = None) ->
 @mcp.tool()
 @handle_errors
 @with_prod_lock
+def update_production(
+    name: str,
+    install: str = "",
+    upgrade: str = "",
+    restart: bool = False,
+    ctx: Context = None,
+) -> str:
+    """
+    Deploy the latest commits of a production's branch — with AUTOMATIC CODE
+    ROLLBACK on failure.
+
+    Pulls the branch (and extra-addon worktrees), decides or applies the
+    Odoo action, then verifies the deploy (module exit codes + health
+    check). If the deploy fails, the checkout is reset to the previous
+    commit, the config is re-applied and the container restarted. The
+    DATABASE is never rolled back automatically — restore a snapshot
+    manually if module upgrades left it inconsistent.
+
+    Drive it like pull_and_apply:
+    - EXPLICIT: pass install/upgrade (comma-separated modules) or restart=True.
+    - AUTO (all empty): changed files are classified automatically. Note:
+      in production a "refresh"-class change (XML/JS) still restarts the
+      container (no --dev=xml in production).
+
+    Args:
+        name: The production name.
+        install: Comma-separated modules to install (-i).
+        upgrade: Comma-separated modules to upgrade (-u).
+        restart: Restart the container (for Python-only changes).
+    """
+    settings = _get_settings()
+    team = _resolve_team(ctx)
+    install_list = [m.strip() for m in install.split(",") if m.strip()]
+    upgrade_list = [m.strip() for m in upgrade.split(",") if m.strip()]
+    result = production_ops.update_production(
+        settings,
+        team,
+        name,
+        install=install_list or None,
+        upgrade=upgrade_list or None,
+        restart=restart,
+        trigger="mcp",
+    )
+    header = f"[{result.get('action', 'none')}] {result.get('message', '')}".strip()
+    output = result.get("output", "")
+    commit = result.get("commit", "")
+    lines = [header, f"Deployed commit: {commit[:10]}" if commit else ""]
+    body = "\n".join(line for line in lines if line)
+    if output:
+        return _maybe_cache(output, body, "update_production", f"name={name}")
+    return body
+
+
+@mcp.tool()
+@handle_errors
+@with_prod_lock
+def rollback_production(name: str, to_commit: str = "", ctx: Context = None) -> str:
+    """
+    Manually roll a production's CODE back to a previous commit and restart.
+    (The database is not touched — restore a snapshot for data rollback.)
+
+    Args:
+        name: The production name.
+        to_commit: Target commit sha (or any git ref present in the checkout).
+                Empty = the previous deploy's starting commit.
+    """
+    settings = _get_settings()
+    team = _resolve_team(ctx)
+    result = production_ops.rollback_production(
+        settings, team, name, to_commit, trigger="mcp"
+    )
+    return result["message"]
+
+
+@mcp.tool()
+@handle_errors
+def production_deploys(name: str, limit: int = 20, ctx: Context = None) -> str:
+    """
+    Deploy history of a production (newest last): commits, actions, modules,
+    status (success / rolled_back / rollback_failed), errors.
+
+    Args:
+        name: The production name.
+        limit: Max number of records (default 20).
+    """
+    team = _resolve_team(ctx)
+    production_registry.get_production(team, name)
+    deploys = production_ops.read_deploys(team, name, limit=limit)
+    if not deploys:
+        return f"No deploys recorded for production '{name}'."
+    import json as _json
+
+    return _json.dumps(deploys, indent=2)
+
+
+@mcp.tool()
+@handle_errors
+@with_prod_lock
 def delete_production(
     name: str,
     confirm: str = "",
