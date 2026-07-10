@@ -109,6 +109,41 @@ class TeamSettings:
         return os.path.join(self.data_dir, ".git-credentials")
 
 
+_HHMM_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
+_KEEP_PAIR_RE = re.compile(r"^\d+:\d+$")
+
+
+@dataclass(frozen=True)
+class BackupSettings:
+    """S3 backup configuration for production hosting ([backup] TOML section).
+
+    Presence of the section (bucket + access_key + secret_key) enables the
+    whole backup subsystem: WAL-G continuous archiving of the production
+    PostgreSQL cluster, scheduled per-production snapshots (pg_dump +
+    filestore chunkstore revision), and retention/prune. Everything beyond
+    the three required keys has sensible defaults.
+    """
+
+    bucket: str
+    access_key: str
+    secret_key: str
+    # Empty endpoint = AWS S3. Set for MinIO / Cloudflare R2 / other
+    # S3-compatible stores (implies path-style addressing).
+    endpoint: str = ""
+    region: str = ""
+    prefix: str = "oduflow"
+    # Daily schedules, server-local time "HH:MM".
+    snapshot_time: str = "02:00"
+    basebackup_time: str = "03:30"
+    # Snapshot retention: "interval_days:older_than_days" pairs, duplicacy
+    # -keep style, largest age first. Default: keep everything younger than
+    # 7 days, one per day up to 30 days, one per week up to a year, one per
+    # month beyond that is not kept (0:365 would drop older ones entirely).
+    keep: tuple[str, ...] = ("30:180", "7:30", "1:7")
+    # Number of WAL-G base backups retained (wal-g delete retain FULL n).
+    walg_keep_full: int = 7
+
+
 @dataclass(frozen=True)
 class ExtraRoute:
     """A static Traefik route: an external hostname forwarded to an arbitrary
@@ -187,6 +222,20 @@ class Settings:
     shared_db_volume: str = "oduflow-db-data"
     traefik_container: str = "oduflow-traefik"
     traefik_acme_volume: str = "oduflow-traefik-acme"
+
+    # Production hosting ([production] TOML section — every key optional).
+    # Productions themselves are created at runtime via MCP/UI and live in
+    # per-team registries (productions.json), not in TOML. The production
+    # PostgreSQL cluster is physically separate from the dev one and is
+    # provisioned lazily (first production or existing container).
+    prod_db_container: str = "oduflow-prod-db"
+    prod_db_volume: str = "oduflow-prod-db-data"
+    prod_postgres_image: str = ""  # empty = [database].image
+    prod_walg_version: str = ""  # empty = version pinned in walg.py
+    prod_workers_cap: int = 8  # upper bound for auto-tuned Odoo workers
+
+    # Backup subsystem ([backup] TOML section); None = backups disabled.
+    backup: BackupSettings | None = None
 
     # Docker labels
     prefix: str = "oduflow-"
@@ -363,6 +412,28 @@ class Settings:
                 "with a non-empty auth_token."
             )
 
+        if self.prod_workers_cap < 1:
+            raise ValueError("[production] workers_cap must be >= 1")
+
+        if self.backup is not None:
+            b = self.backup
+            for label, value in (
+                ("snapshot_time", b.snapshot_time),
+                ("basebackup_time", b.basebackup_time),
+            ):
+                if not _HHMM_RE.match(value):
+                    raise ValueError(
+                        f"[backup] {label} must be 'HH:MM' (24h), got {value!r}"
+                    )
+            for pair in b.keep:
+                if not _KEEP_PAIR_RE.match(pair):
+                    raise ValueError(
+                        "[backup] keep entries must be 'interval_days:age_days' "
+                        f"pairs, got {pair!r}"
+                    )
+            if b.walg_keep_full < 1:
+                raise ValueError("[backup] walg_keep_full must be >= 1")
+
     @staticmethod
     def from_toml(path: str) -> Settings:
         with open(path, "rb") as f:
@@ -374,8 +445,10 @@ class Settings:
         storage = raw.get("storage", {})
         lifecycle = raw.get("lifecycle", {})
         agent = raw.get("agent", {})
+        production = raw.get("production", {})
         oauth = raw.get("oauth", server)  # [oauth] section or fall back to [server]
         routing_mode = str(routing.get("mode", "port")).strip().lower()
+        backup = _parse_backup_section(raw.get("backup", {}))
 
         etc_dir = _resolve_etc_dir()
         base_data_dir = _resolve_data_dir(storage.get("data_dir", ""))
@@ -498,10 +571,48 @@ class Settings:
             auto_stop_hours=int(lifecycle.get("auto_stop_hours", 48)),
             auto_delete_hours=int(lifecycle.get("auto_delete_hours", 0)),
             oauth_base_url=str(oauth.get("oauth_base_url", "")).strip(),
+            prod_postgres_image=str(production.get("postgres_image", "")).strip(),
+            prod_walg_version=str(production.get("walg_version", "")).strip(),
+            prod_workers_cap=int(production.get("workers_cap", 8)),
+            backup=backup,
             etc_dir=etc_dir,
             toml_path=path,
             teams=teams,
         )
+
+
+def _parse_backup_section(backup_raw: dict[str, object]) -> BackupSettings | None:
+    """Parse the [backup] TOML section into BackupSettings.
+
+    Absent/empty section → None (backups disabled). A partially configured
+    section (some of bucket/access_key/secret_key missing) is a hard error —
+    silently disabled backups would be worse than a startup failure.
+    """
+    if not backup_raw:
+        return None
+    bucket = str(backup_raw.get("bucket", "")).strip()
+    access_key = str(backup_raw.get("access_key", "")).strip()
+    secret_key = str(backup_raw.get("secret_key", "")).strip()
+    if not (bucket and access_key and secret_key):
+        raise ValueError(
+            "[backup] section requires all of: bucket, access_key, secret_key "
+            "(remove the section entirely to disable backups)."
+        )
+    keep_raw = backup_raw.get("keep", ["30:180", "7:30", "1:7"])
+    if not isinstance(keep_raw, list):
+        raise ValueError(f"[backup] keep must be a list of strings, got {keep_raw!r}")
+    return BackupSettings(
+        bucket=bucket,
+        access_key=access_key,
+        secret_key=secret_key,
+        endpoint=str(backup_raw.get("endpoint", "")).strip(),
+        region=str(backup_raw.get("region", "")).strip(),
+        prefix=str(backup_raw.get("prefix", "oduflow")).strip().strip("/") or "oduflow",
+        snapshot_time=str(backup_raw.get("snapshot_time", "02:00")).strip(),
+        basebackup_time=str(backup_raw.get("basebackup_time", "03:30")).strip(),
+        keep=tuple(str(p).strip() for p in keep_raw),
+        walg_keep_full=int(str(backup_raw.get("walg_keep_full", 7))),
+    )
 
 
 def find_toml() -> str:

@@ -168,3 +168,45 @@ class TestGetTemplateDbName:
     )
     def test_accepts_valid_names(self, good):
         assert validate_template_name(good) == good
+
+
+class TestProdNaming:
+    @pytest.mark.parametrize("good", ["erp", "erp-main", "a", "x1", "client2-erp"])
+    def test_accepts_valid_prod_names(self, good):
+        from oduflow.naming import prod_env_name, validate_prod_name
+
+        assert validate_prod_name(good) == good
+        assert prod_env_name(good) == f"prod-{good}"
+
+    @pytest.mark.parametrize(
+        "bad",
+        [
+            "",
+            "ERP",  # uppercase
+            "-erp",  # leading dash
+            "erp/main",  # slash
+            "erp_main",  # underscore
+            "a b",
+            "a" * 32,  # too long
+            "erp;drop",
+            "../etc",
+        ],
+    )
+    def test_rejects_bad_prod_names(self, bad):
+        from oduflow.naming import validate_prod_name
+
+        with pytest.raises(ValueError, match="Invalid production name"):
+            validate_prod_name(bad)
+
+    def test_prod_env_name_feeds_existing_helpers(self):
+        # The derived internal name flows through the shared naming chain
+        # unchanged: dashes survive slugification, so DB/container names stay
+        # aligned with the prod-{name} namespace.
+        from oduflow.naming import prod_env_name
+
+        env = prod_env_name("erp")
+        assert get_db_name(env, "2") == "oduflow_2_prod-erp"
+        assert get_resource_name(env, "odoo", "oduflow-", "2") == (
+            "oduflow-2-prod-erp-odoo"
+        )
+        assert get_workspace_path(env, "/data/ws") == "/data/ws/prod-erp"

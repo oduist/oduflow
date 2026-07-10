@@ -12,7 +12,7 @@ def test_create_pg_role_revokes_superuser_membership():
 
     issued: list[str] = []
 
-    def _fake_exec(_client, _settings, sql, db=None):
+    def _fake_exec(_client, _settings, sql, db=None, container_name=None):
         issued.append(sql)
         return ""
 
