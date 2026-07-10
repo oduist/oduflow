@@ -842,6 +842,330 @@ def restart_production(
 
 
 # ---------------------------------------------------------------------------
+# Update engine with automatic code rollback
+# ---------------------------------------------------------------------------
+
+
+def _now_iso() -> str:
+    return datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+
+def _worktree_heads(team: TeamSettings, name: str) -> dict[str, str]:
+    """HEAD of every extra-addon worktree (rollback targets)."""
+    from oduflow.git_ops import rev_parse
+
+    heads: dict[str, str] = {}
+    extra_dir = os.path.join(_workspace(team, name), "extra")
+    if not os.path.isdir(extra_dir):
+        return heads
+    for repo_name in os.listdir(extra_dir):
+        wt_path = os.path.join(extra_dir, repo_name)
+        if os.path.isdir(os.path.join(wt_path, ".git")) or os.path.isfile(
+            os.path.join(wt_path, ".git")
+        ):
+            try:
+                heads[wt_path] = rev_parse(wt_path)
+            except Exception:
+                continue
+    return heads
+
+
+def _reset_code(repo_path: str, old_head: str, worktree_heads: dict[str, str]) -> None:
+    """git reset --hard the main repo and every extra worktree."""
+    from oduflow.git_ops import reset_hard
+
+    reset_hard(repo_path, old_head)
+    for wt_path, head in worktree_heads.items():
+        try:
+            reset_hard(wt_path, head)
+        except Exception as exc:
+            logger.warning("Could not reset worktree %s: %s", wt_path, exc)
+
+
+def update_production(
+    settings: Settings,
+    team: TeamSettings,
+    name: str,
+    *,
+    install: list[str] | None = None,
+    upgrade: list[str] | None = None,
+    restart: bool = False,
+    trigger: str = "mcp",
+) -> dict[str, Any]:
+    """Pull the production's branch and apply the right action — with
+    automatic CODE rollback on failure.
+
+    Reuses the shared pull→classify→apply engine
+    (:func:`env_ops.pull_environment`), with production semantics on top:
+
+    - ``refresh`` is promoted to ``restart`` (no ``--dev=xml`` in prod —
+      any changed file requires at least a container restart);
+    - the deploy is verified (module exit codes + in-container health
+      poll); on failure the checkout (and extra worktrees) are reset to
+      the pre-update commits, the conf is re-applied and the container
+      restarted. The DATABASE is never rolled back automatically —
+      restoring a snapshot is a manual, explicit operation;
+    - every outcome lands in deploys.json and the registry flags.
+
+    The caller must hold the production's lock.
+    """
+    from oduflow import production_registry
+    from oduflow.docker_ops.env_ops import pull_environment
+    from oduflow.git_ops import rev_parse
+
+    production_registry.get_production(team, name)  # NotFoundError if absent
+    client = get_client()
+    env_name = prod_env_name(name)
+    repo_path = get_repo_path(env_name, team.workspaces_dir)
+    if not os.path.isdir(repo_path):
+        raise NotFoundError(
+            f"Production '{name}' has no repository checkout at {repo_path}."
+        )
+    container = _require_container(client, settings, team, name)
+
+    ts_start = _now_iso()
+    old_head = rev_parse(repo_path)
+    old_worktrees = _worktree_heads(team, name)
+    production_registry.update_production(team, name, {"deploy_in_progress": True})
+
+    deploy: dict[str, Any] = {
+        "ts_start": ts_start,
+        "trigger": trigger,
+        "from_commit": old_head,
+        "to_commit": old_head,
+        "action": "none",
+        "modules_installed": [],
+        "modules_upgraded": [],
+        "exit_code": 0,
+        "status": "success",
+        "error": "",
+        "changed_files_count": 0,
+    }
+
+    try:
+        for hook in list(pre_update_hooks):
+            try:
+                hook(settings, team, name)
+            except Exception as exc:
+                logger.warning(
+                    "pre-update hook %s failed (deploy continues): %s",
+                    getattr(hook, "__name__", hook),
+                    exc,
+                )
+
+        result = pull_environment(
+            settings,
+            team,
+            env_name,
+            install=install,
+            upgrade=upgrade,
+            restart=restart,
+        )
+        new_head = rev_parse(repo_path)
+        deploy.update(
+            {
+                "to_commit": new_head,
+                "action": result.get("action", "none"),
+                "modules_installed": result.get("modules_installed", []),
+                "modules_upgraded": result.get("modules_upgraded", []),
+                "exit_code": int(result.get("exit_code", 0) or 0),
+                "changed_files_count": len(result.get("changed_files", []) or []),
+            }
+        )
+
+        if result.get("action") == "none" and new_head == old_head:
+            # Nothing pulled, nothing applied — not a deploy.
+            production_registry.update_production(
+                team, name, {"deploy_in_progress": False}
+            )
+            return {**result, "name": name, "commit": new_head}
+
+        # Production runs without --dev=xml: a "refresh" outcome (XML/JS
+        # only) still requires a restart to serve the new code.
+        if result.get("action") == "refresh":
+            container.restart()
+            deploy["action"] = "restart"
+            result["action"] = "restart"
+            result["message"] = (
+                "Changes applied; container restarted (production serves "
+                "without --dev=xml)."
+            )
+
+        ok = deploy["exit_code"] == 0 and wait_production_healthy(
+            client, settings, team, name, timeout=180
+        )
+        if ok:
+            production_registry.update_production(
+                team, name, {"deploy_in_progress": False, "unhealthy": False}
+            )
+            deploy["ts_end"] = _now_iso()
+            append_deploy(team, name, deploy)
+            return {
+                **result,
+                "name": name,
+                "commit": new_head,
+                "deploy": deploy,
+            }
+
+        # ------------------------- rollback (code only) -------------------
+        logger.error(
+            "Production '%s' deploy failed (exit_code=%s) — rolling back code %s -> %s",
+            name,
+            deploy["exit_code"],
+            new_head[:10],
+            old_head[:10],
+        )
+        rollback_error = ""
+        try:
+            _reset_code(repo_path, old_head, old_worktrees)
+            reapply_prod_odoo_conf(settings, team, name, container)
+            container.restart()
+            recovered = wait_production_healthy(
+                client, settings, team, name, timeout=120
+            )
+        except Exception as exc:
+            recovered = False
+            rollback_error = str(exc)
+
+        deploy["ts_end"] = _now_iso()
+        if recovered:
+            deploy["status"] = "rolled_back"
+            deploy["error"] = (
+                f"Deploy failed (exit_code={deploy['exit_code']}); code "
+                f"reverted to {old_head[:10]}."
+            )
+            production_registry.update_production(
+                team, name, {"deploy_in_progress": False, "unhealthy": False}
+            )
+            append_deploy(team, name, deploy)
+            return {
+                "action": "rolled_back",
+                "name": name,
+                "commit": old_head,
+                "failed_commit": new_head,
+                "exit_code": deploy["exit_code"],
+                "output": result.get("output", ""),
+                "deploy": deploy,
+                "message": (
+                    f"Deploy of {new_head[:10]} FAILED; code was rolled back "
+                    f"to {old_head[:10]} and the production is healthy again. "
+                    "The DATABASE was NOT rolled back — if module upgrades "
+                    "left it inconsistent, restore a snapshot manually "
+                    "(restore_production)."
+                ),
+            }
+
+        deploy["status"] = "rollback_failed"
+        deploy["error"] = rollback_error or (
+            "Rollback restart did not become healthy within 120s."
+        )
+        production_registry.update_production(
+            team, name, {"deploy_in_progress": False, "unhealthy": True}
+        )
+        append_deploy(team, name, deploy)
+        return {
+            "action": "rollback_failed",
+            "name": name,
+            "commit": old_head,
+            "failed_commit": new_head,
+            "exit_code": deploy["exit_code"],
+            "output": result.get("output", ""),
+            "deploy": deploy,
+            "message": (
+                f"Deploy of {new_head[:10]} FAILED and the rollback to "
+                f"{old_head[:10]} did not recover either — the production is "
+                "marked UNHEALTHY. The container is left running for "
+                "diagnosis (production_logs). The database was not touched."
+            ),
+        }
+    except BaseException as exc:
+        # Unexpected failure (network, docker, ...): record and re-flag.
+        deploy["ts_end"] = _now_iso()
+        deploy["status"] = "error"
+        deploy["error"] = str(exc)
+        production_registry.update_production(
+            team, name, {"deploy_in_progress": False, "unhealthy": True}
+        )
+        append_deploy(team, name, deploy)
+        raise
+
+
+def rollback_production(
+    settings: Settings,
+    team: TeamSettings,
+    name: str,
+    to_commit: str = "",
+    *,
+    trigger: str = "mcp",
+) -> dict[str, Any]:
+    """Manual code-only rollback to *to_commit* (default: the previous
+    deploy's starting commit). The caller must hold the production's lock."""
+    from oduflow import production_registry
+    from oduflow.git_ops import rev_parse
+
+    production_registry.get_production(team, name)
+    client = get_client()
+    env_name = prod_env_name(name)
+    repo_path = get_repo_path(env_name, team.workspaces_dir)
+    container = _require_container(client, settings, team, name)
+
+    current = rev_parse(repo_path)
+    target = (to_commit or "").strip()
+    if not target:
+        deploys = read_deploys(team, name, limit=0)
+        # Latest deploy that actually moved the code forward.
+        for entry in reversed(deploys):
+            if entry.get("from_commit") and entry["from_commit"] != current:
+                target = entry["from_commit"]
+                break
+    if not target:
+        raise PrerequisiteNotMetError(
+            f"No previous commit recorded for production '{name}'. Pass "
+            "to_commit explicitly (see get_production_info commits)."
+        )
+    # Validate the target exists in the checkout before resetting. The
+    # ^{commit} peel forces git to resolve the object (a bare 40-hex sha
+    # would otherwise "parse" without existing).
+    try:
+        target = rev_parse(repo_path, f"{target}^{{commit}}")
+    except Exception:
+        raise NotFoundError(
+            f"Commit '{to_commit}' not found in the production checkout."
+        )
+
+    ts_start = _now_iso()
+    _reset_code(repo_path, target, {})
+    reapply_prod_odoo_conf(settings, team, name, container)
+    container.restart()
+    healthy = wait_production_healthy(client, settings, team, name, timeout=120)
+
+    production_registry.update_production(team, name, {"unhealthy": not healthy})
+    deploy = {
+        "ts_start": ts_start,
+        "ts_end": _now_iso(),
+        "trigger": trigger,
+        "from_commit": current,
+        "to_commit": target,
+        "action": "rollback",
+        "exit_code": 0,
+        "status": "success" if healthy else "rollback_failed",
+        "error": "" if healthy else "Health check failed after rollback.",
+    }
+    append_deploy(team, name, deploy)
+    return {
+        "action": "rollback",
+        "name": name,
+        "commit": target,
+        "previous_commit": current,
+        "healthy": healthy,
+        "message": (
+            f"Code rolled back {current[:10]} -> {target[:10]}"
+            + ("." if healthy else ", but the health check FAILED — check logs.")
+        ),
+    }
+
+
+# ---------------------------------------------------------------------------
 # List / info / logs
 # ---------------------------------------------------------------------------
 

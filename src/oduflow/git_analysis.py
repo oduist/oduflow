@@ -18,7 +18,7 @@ def _trace(msg: str, *args: object) -> None:
 
 
 MANIFEST_KEYS_WITH_FILES = ("data", "demo", "assets", "qweb")
-RESTART_REQUIRED_PATHS = {".oduflow/odoo.conf"}
+RESTART_REQUIRED_PATHS = {".oduflow/odoo.conf", ".oduflow/odoo.prod.conf"}
 
 _FIELD_RE = re.compile(r"^\s*\w+\s*=\s*fields\..*", re.MULTILINE)
 _VIEW_TAG_RE = re.compile(r"<(tree|list|form)\b([^>]*)/?>")
