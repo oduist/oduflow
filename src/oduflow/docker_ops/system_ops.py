@@ -608,8 +608,16 @@ def _destroy_traefik(
         pass
 
 
-def _wait_pg_ready(client: DockerClient, settings: Settings, timeout: int = 30) -> None:
-    container = client.containers.get(settings.shared_db_container)
+def _wait_pg_ready(
+    client: DockerClient,
+    settings: Settings,
+    timeout: int = 30,
+    *,
+    container_name: str | None = None,
+) -> None:
+    # container_name selects the PostgreSQL instance: the shared dev one by
+    # default, or the production cluster (settings.prod_db_container).
+    container = client.containers.get(container_name or settings.shared_db_container)
     for _ in range(timeout):
         try:
             exit_code, _ = container.exec_run(["pg_isready", "-U", settings.db_user])
@@ -636,15 +644,20 @@ def _wait_pg_ready(client: DockerClient, settings: Settings, timeout: int = 30) 
             pass
         time.sleep(1)
     raise PrerequisiteNotMetError(
-        f"PostgreSQL ({settings.shared_db_container}) did not become ready within "
-        f"{timeout}s. Check its logs: docker logs {settings.shared_db_container}"
+        f"PostgreSQL ({container.name}) did not become ready within "
+        f"{timeout}s. Check its logs: docker logs {container.name}"
     )
 
 
 def _exec_sql(
-    client: DockerClient, settings: Settings, sql: str, db: str = "postgres"
+    client: DockerClient,
+    settings: Settings,
+    sql: str,
+    db: str = "postgres",
+    *,
+    container_name: str | None = None,
 ) -> str:
-    container = client.containers.get(settings.shared_db_container)
+    container = client.containers.get(container_name or settings.shared_db_container)
     exit_code, output = container.exec_run(
         ["psql", "-U", settings.db_user, "-d", db, "-tAc", sql]
     )
@@ -704,7 +717,13 @@ def check_db_quota(
 
 
 def _create_pg_role(
-    client: DockerClient, settings: Settings, username: str, password: str, db_name: str
+    client: DockerClient,
+    settings: Settings,
+    username: str,
+    password: str,
+    db_name: str,
+    *,
+    container_name: str | None = None,
 ) -> None:
     safe_pw = password.replace("'", "''")
     _exec_sql(
@@ -715,6 +734,7 @@ def _create_pg_role(
         f"CREATE ROLE \"{username}\" LOGIN PASSWORD '{safe_pw}'; "
         f"END IF; "
         f"END $$;",
+        container_name=container_name,
     )
     # Always sync the password — the role may already exist with a stale password
     # from a previously deleted environment.
@@ -722,37 +742,76 @@ def _create_pg_role(
         client,
         settings,
         f"ALTER ROLE \"{username}\" WITH LOGIN PASSWORD '{safe_pw}';",
+        container_name=container_name,
     )
-    _exec_sql(client, settings, f'ALTER DATABASE "{db_name}" OWNER TO "{username}";')
+    _exec_sql(
+        client,
+        settings,
+        f'ALTER DATABASE "{db_name}" OWNER TO "{username}";',
+        container_name=container_name,
+    )
     # Ensure the env role is NOT a member of the superuser role. Ownership of
     # template objects (needed for DDL during module upgrades) is handled by the
     # per-object reassignment in create_environment instead; superuser-role
     # membership would let the env role SET ROLE to superuser — a cross-tenant
     # RCE (#40). The REVOKE also de-escalates roles created before this change.
-    _exec_sql(client, settings, f'REVOKE "{settings.db_user}" FROM "{username}";')
+    _exec_sql(
+        client,
+        settings,
+        f'REVOKE "{settings.db_user}" FROM "{username}";',
+        container_name=container_name,
+    )
     logger.info("Created/ensured PG role '%s' for database '%s'", username, db_name)
 
 
-def _drop_pg_role(client: DockerClient, settings: Settings, username: str) -> None:
+def _drop_pg_role(
+    client: DockerClient,
+    settings: Settings,
+    username: str,
+    *,
+    container_name: str | None = None,
+) -> None:
     if username == settings.db_user:
         return
     try:
-        _exec_sql(client, settings, f'REVOKE "{settings.db_user}" FROM "{username}";')
+        _exec_sql(
+            client,
+            settings,
+            f'REVOKE "{settings.db_user}" FROM "{username}";',
+            container_name=container_name,
+        )
     except Exception:
         pass
     try:
-        _exec_sql(client, settings, f'DROP OWNED BY "{username}";')
+        _exec_sql(
+            client,
+            settings,
+            f'DROP OWNED BY "{username}";',
+            container_name=container_name,
+        )
     except Exception:
         pass
-    _exec_sql(client, settings, f'DROP ROLE IF EXISTS "{username}";')
+    _exec_sql(
+        client,
+        settings,
+        f'DROP ROLE IF EXISTS "{username}";',
+        container_name=container_name,
+    )
     logger.info("Dropped PG role '%s'", username)
 
 
-def _db_exists(client: DockerClient, settings: Settings, db_name: str) -> bool:
+def _db_exists(
+    client: DockerClient,
+    settings: Settings,
+    db_name: str,
+    *,
+    container_name: str | None = None,
+) -> bool:
     result = _exec_sql(
         client,
         settings,
         f"SELECT 1 FROM pg_database WHERE datname='{db_name}';",
+        container_name=container_name,
     )
     return result == "1"
 
