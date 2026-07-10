@@ -25,8 +25,10 @@ from oduflow.docker_ops.system_ops import (
     _exec_sql,
     _resolve_instance_conf,
     check_db_quota,
+    drop_signaling_sequences,
     ensure_team_tablespace,
     ensure_team_network,
+    reassign_db_ownership,
 )
 from oduflow.docker_ops.stats import default_env_limits
 from oduflow.env_credentials import create_credentials, load_credentials
@@ -696,6 +698,66 @@ def _init_empty_database(
     return "[INIT] odoo -i base completed successfully"
 
 
+def _clone_repo(
+    repo_url: str,
+    branch: str,
+    repo_path: str,
+    team: TeamSettings,
+    *,
+    git_user: str = "",
+    depth: int = 1,
+    timeout: int = 60,
+) -> None:
+    """Clone *branch* of *repo_url* into *repo_path* with team credentials.
+
+    ``depth=1`` (default) is the dev-environment shallow clone; production
+    passes ``depth=0`` for a full clone — commit history is the point there
+    (rollback targets, deploy history display).
+    """
+    git_env = git_env_for_team(team.git_credentials_file())
+
+    from oduflow.git_ops import inject_credential_user
+
+    clone_url = inject_credential_user(repo_url, git_user)
+
+    auth_keywords = (
+        "Authentication failed",
+        "could not read Username",
+        "Permission denied",
+        "Repository not found",
+        "terminal prompts disabled",
+        "Invalid username or password",
+    )
+
+    cmd = ["git", "clone", "--branch", branch]
+    if depth > 0:
+        cmd += ["--depth", str(depth)]
+    cmd += [clone_url, repo_path]
+    try:
+        subprocess.run(
+            cmd,
+            check=True,
+            capture_output=True,
+            timeout=timeout,
+            env=git_env,
+        )
+    except subprocess.CalledProcessError as e:
+        error_msg = e.stderr.decode("utf-8") if e.stderr else str(e)
+        if any(kw.lower() in error_msg.lower() for kw in auth_keywords):
+            raise RepoAuthError(
+                f"Git authentication failed for {sanitize_repo_url(repo_url)}. "
+                f"Call 'setup_repo_auth' first to cache credentials."
+            )
+        raise ExternalCommandError("git clone", e.returncode, error_msg)
+    except subprocess.TimeoutExpired:
+        raise ExternalCommandError(
+            "git clone",
+            -1,
+            f"Repository clone timed out ({timeout}s). Repository may be too "
+            "large or network is slow.",
+        )
+
+
 def create_environment(
     settings: Settings,
     team: TeamSettings,
@@ -712,6 +774,13 @@ def create_environment(
     local_path: str = "",
 ) -> dict[str, Any]:
     env_name = env_name or branch
+    from oduflow.naming import PROD_ENV_PREFIX
+
+    if env_name.startswith(PROD_ENV_PREFIX):
+        raise ConflictError(
+            f"Environment names starting with '{PROD_ENV_PREFIX}' are reserved "
+            "for production environments. Use create_production instead."
+        )
     start_time = time.time()
     try:
         client = get_client()
@@ -877,56 +946,13 @@ def create_environment(
         # against this snapshot. Git is deliberately ignored in live-mount mode.
         _write_local_snapshot(repo_path, env_name, team)
     else:
-        git_env = git_env_for_team(team.git_credentials_file())
-
-        from oduflow.git_ops import inject_credential_user
-
-        clone_url = inject_credential_user(repo_url, git_user)
-
-        auth_keywords = (
-            "Authentication failed",
-            "could not read Username",
-            "Permission denied",
-            "Repository not found",
-            "terminal prompts disabled",
-            "Invalid username or password",
+        _clone_repo(
+            repo_url,
+            branch,
+            repo_path,
+            team,
+            git_user=git_user,
         )
-
-        try:
-            subprocess.run(
-                [
-                    "git",
-                    "clone",
-                    "--branch",
-                    branch,
-                    "--depth",
-                    "1",
-                    clone_url,
-                    repo_path,
-                ],
-                check=True,
-                capture_output=True,
-                timeout=60,
-                env=git_env,
-            )
-        except subprocess.CalledProcessError as e:
-            error_msg = e.stderr.decode("utf-8") if e.stderr else str(e)
-            if any(kw.lower() in error_msg.lower() for kw in auth_keywords):
-                raise RepoAuthError(
-                    f"Git authentication failed for {sanitize_repo_url(repo_url)}. "
-                    f"Call 'setup_repo_auth' first to cache credentials."
-                )
-            raise ExternalCommandError(
-                "git clone",
-                e.returncode,
-                _redact_repo_urls(error_msg, clone_url, repo_url),
-            )
-        except subprocess.TimeoutExpired:
-            raise ExternalCommandError(
-                "git clone",
-                -1,
-                "Repository clone timed out (60s). Repository may be too large or network is slow.",
-            )
 
     # --- Extra addons worktrees ---
     extra_mount_paths = []
@@ -966,76 +992,11 @@ def create_environment(
         # normally the superuser (pg_restore --no-owner), but the plain-SQL /
         # import_template_from_odoo path (psql without --no-owner) can leave
         # objects owned by the source env's per-env role (e.g. u_2_fs19). DDL
-        # during module upgrades requires ownership, so reassign every object
-        # NOT already owned by this env's role to it. This replaces granting the
-        # env role membership in the superuser role, which would let it SET ROLE
-        # to superuser (cross-tenant RCE, #40). Odoo connects as the env role and
-        # never SET ROLEs, so per-object ownership — not role membership — is what
-        # actually enables its DDL. Linked (SERIAL/identity) sequences are
-        # skipped: they follow their table's owner automatically. System roles
-        # (pg_*) are left untouched.
-        new_user = env_creds["pg_user"]
-        _exec_sql(
-            client,
-            settings,
-            f'ALTER SCHEMA public OWNER TO "{new_user}";',
-            db=env_db,
-        )
-        _exec_sql(
-            client,
-            settings,
-            rf"""
-            DO $$
-            DECLARE r RECORD;
-            BEGIN
-              FOR r IN SELECT n.nspname FROM pg_namespace n JOIN pg_roles o ON n.nspowner = o.oid
-                       WHERE o.rolname <> '{new_user}' AND o.rolname NOT LIKE 'pg\_%'
-                         AND n.nspname NOT LIKE 'pg\_%' AND n.nspname <> 'information_schema'
-              LOOP EXECUTE format('ALTER SCHEMA %I OWNER TO %I', r.nspname, '{new_user}'); END LOOP;
-
-              FOR r IN SELECT c.relkind AS kind, n.nspname AS sch, c.relname AS rel
-                       FROM pg_class c
-                       JOIN pg_namespace n ON c.relnamespace = n.oid
-                       JOIN pg_roles o ON c.relowner = o.oid
-                       WHERE o.rolname <> '{new_user}' AND o.rolname NOT LIKE 'pg\_%'
-                         AND n.nspname NOT LIKE 'pg\_%' AND n.nspname <> 'information_schema'
-                         AND c.relkind IN ('r', 'p', 'S', 'v', 'm', 'f')
-                         AND NOT (c.relkind = 'S' AND EXISTS (
-                             SELECT 1 FROM pg_depend d
-                             WHERE d.classid = 'pg_class'::regclass AND d.objid = c.oid
-                               AND d.refclassid = 'pg_class'::regclass AND d.deptype IN ('a', 'i')))
-              LOOP EXECUTE format('ALTER %s %I.%I OWNER TO %I',
-                   CASE r.kind WHEN 'S' THEN 'SEQUENCE' WHEN 'v' THEN 'VIEW'
-                               WHEN 'm' THEN 'MATERIALIZED VIEW' WHEN 'f' THEN 'FOREIGN TABLE'
-                               ELSE 'TABLE' END, r.sch, r.rel, '{new_user}'); END LOOP;
-
-              FOR r IN SELECT p.oid::regprocedure AS sig
-                       FROM pg_proc p
-                       JOIN pg_namespace n ON p.pronamespace = n.oid
-                       JOIN pg_roles o ON p.proowner = o.oid
-                       WHERE o.rolname <> '{new_user}' AND o.rolname NOT LIKE 'pg\_%'
-                         AND n.nspname NOT LIKE 'pg\_%' AND n.nspname <> 'information_schema'
-              LOOP EXECUTE format('ALTER ROUTINE %s OWNER TO %I', r.sig, '{new_user}'); END LOOP;
-            END $$;
-            """,
-            db=env_db,
-        )
-
-        # Drop Odoo signaling sequences carried over from the template DB.
-        # Odoo re-creates them on first startup (CREATE SEQUENCE without
-        # IF NOT EXISTS), so leftover sequences cause DuplicateTable errors.
-        _exec_sql(
-            client,
-            settings,
-            "DO $$ DECLARE r RECORD; BEGIN "
-            "FOR r IN SELECT c.relname FROM pg_class c "
-            "WHERE c.relkind = 'S' "
-            "AND (c.relname LIKE 'base_registry_signaling%' "
-            "OR c.relname LIKE 'base_cache_signaling%') "
-            "LOOP EXECUTE 'DROP SEQUENCE IF EXISTS ' || quote_ident(r.relname); "
-            "END LOOP; END $$;",
-            db=env_db,
-        )
+        # during module upgrades requires ownership; Odoo connects as the env
+        # role and never SET ROLEs, so per-object ownership — not role
+        # membership — is what actually enables its DDL.
+        reassign_db_ownership(client, settings, env_db, env_creds["pg_user"])
+        drop_signaling_sequences(client, settings, env_db)
         logger.info(
             "Post-clone fixup done for '%s': ownership transferred, signaling sequences dropped",
             env_db,
@@ -2272,6 +2233,15 @@ def _reapply_odoo_conf(
     time — a plain restart reuses the stale copy, so this must run before a
     restart whenever the source ``odoo.conf`` changed.
     """
+    labels = container.labels if isinstance(container.labels, dict) else {}
+    if labels.get("oduflow.prod") == "true":
+        # Production uses its own conf chain (odoo.prod.conf + tuned worker
+        # overrides). Local import: production_ops composes env_ops helpers.
+        from oduflow.docker_ops.production_ops import reapply_prod_odoo_conf
+
+        return reapply_prod_odoo_conf(
+            settings, team, labels.get("oduflow.prod_name", ""), container
+        )
     repo_path = get_repo_path(env_name, team.workspaces_dir)
     workspace_path = get_workspace_path(env_name, team.workspaces_dir)
     repo_odoo_conf = os.path.join(repo_path, ".oduflow", "odoo.conf")

@@ -108,6 +108,27 @@ def prod_env_name(name: str) -> str:
     return f"{PROD_ENV_PREFIX}{name}"
 
 
+_DOMAIN_RE = re.compile(
+    r"^[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?"
+    r"(\.[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?)+$"
+)
+
+
+def validate_domain(domain: str) -> str:
+    """Validate a production domain (FQDN) and return it lowercased.
+
+    The value lands in a Traefik ``Host(...)`` rule and in URLs, so only a
+    plain dotted hostname is accepted — no scheme, port, path or wildcard.
+    """
+    normalized = (domain or "").strip().lower().rstrip(".")
+    if not normalized or len(normalized) > 253 or not _DOMAIN_RE.match(normalized):
+        raise ValueError(
+            f"Invalid domain '{domain}': expected a fully-qualified hostname "
+            "like erp.example.com (no scheme, port, or wildcard)."
+        )
+    return normalized
+
+
 def slugify_branch(env_name: str) -> str:
     slug = env_name.replace("/", "-")
     slug = re.sub(r"[^a-zA-Z0-9_-]", "", slug)

@@ -27,13 +27,14 @@ from fastmcp.exceptions import ToolError
 from oduflow.docker_ops import (
     env_ops,
     odoo_ops,
+    production_ops,
     service_ops,
     service_presets,
     system_ops,
     volume_file_ops,
     volume_ops,
 )
-from oduflow import activity, git_ops, migrations, quotas, reaper
+from oduflow import activity, git_ops, migrations, production_registry, quotas, reaper
 from oduflow import settings as settings_module
 from oduflow.errors import FlowError, NotFoundError, PrerequisiteNotMetError
 from oduflow.locking import LockManager
@@ -232,6 +233,16 @@ def with_env_lock(fn: Callable[P, R]) -> Callable[P, R]:
         env_name = cast(str, raw_env_name)
         ctx = cast("Context | None", kwargs.get("ctx"))
         team = _resolve_team(ctx)
+        # Dev environment tools must never operate on the production
+        # namespace (their name-derived container/DB chains would resolve to
+        # production resources). Productions have their own tool stack.
+        from oduflow.naming import PROD_ENV_PREFIX
+
+        if env_name.startswith(PROD_ENV_PREFIX):
+            raise ToolError(
+                f"'{env_name}' is a production environment. Use the "
+                "*_production tools instead of the dev environment tools."
+            )
         _locks.acquire_env(env_name, team.team_id)
         try:
             try:
@@ -272,6 +283,31 @@ def with_team_lock(fn: Callable[P, R]) -> Callable[P, R]:
             return fn(*args, **kwargs)
         finally:
             _locks.release_team(team.team_id)
+
+    return wrapper
+
+
+def prod_lock_key(team_id: str, name: str) -> str:
+    """Lock key for a production — team-scoped so two teams' same-named
+    productions never contend (unlike raw env keys)."""
+    return f"prod:{team_id}:{name}"
+
+
+def with_prod_lock(fn):
+    """Acquire the production's lock before executing the tool function."""
+
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        name = kwargs.get("name") or (args[0] if args else None)
+        if not name:
+            raise ToolError("name is required")
+        team = _resolve_team(kwargs.get("ctx"))
+        key = prod_lock_key(team.team_id, name)
+        _locks.acquire_env(key)
+        try:
+            return fn(*args, **kwargs)
+        finally:
+            _locks.release_env(key)
 
     return wrapper
 
@@ -2716,6 +2752,253 @@ def delete_file_in_volume(
     if "error" in result:
         return f"Error: {result['error']}"
     return f"Deleted: {result['path']}"
+
+
+# =============================================================================
+# MCP Tools — Production hosting
+# =============================================================================
+
+
+@mcp.tool()
+@handle_errors
+@with_prod_lock
+def create_production(
+    name: str,
+    repo_url: str,
+    branch: str,
+    domain: str,
+    odoo_image: str,
+    git_user: str = "",
+    extra_addons: dict[str, str] | None = None,
+    auto_update: bool = False,
+    template_name: str = "",
+    ctx: Context = None,
+) -> str:
+    """
+    Create a PRODUCTION Odoo environment (long-lived, own domain, dedicated
+    production PostgreSQL cluster, auto-tuned workers, no sanitization).
+
+    Productions are rarely created and rarely deleted — they live on and get
+    updated (update_production). Requires routing_mode = "traefik".
+
+    Args:
+        name: Production name, e.g. "erp" (lowercase letters/digits/dashes).
+        repo_url: HTTPS git repository URL.
+        branch: Git branch to deploy (full history is kept).
+        domain: The production's public domain, e.g. "erp.customer.com"
+                (DNS must point at this server; TLS via Let's Encrypt).
+        odoo_image: Docker image, e.g. "odoo:18.0".
+        git_user: Optional git username for credential matching.
+        extra_addons: Optional {repo_name: branch} extra addon repos.
+        auto_update: Deploy automatically on GitHub push webhooks.
+        template_name: Optional template to seed the database and filestore
+                from (e.g. an import of the customer's existing production).
+                Empty = fresh database (odoo -i base).
+    """
+    settings = _get_settings()
+    team = _resolve_team(ctx)
+    git_ops.validate_repo_url(repo_url)
+    result = production_ops.create_production(
+        settings,
+        team,
+        name,
+        repo_url,
+        branch,
+        domain,
+        odoo_image,
+        git_user=git_user,
+        extra_addons=env_ops._normalize_extra_addons(extra_addons),
+        auto_update=auto_update,
+        template_name=template_name or None,
+    )
+    lines = [
+        f"Production '{name}' created in {result['elapsed_seconds']}s.",
+        f"URL: {result['url']}",
+        f"Database: {result['database']} (cluster: oduflow-prod-db)",
+        f"Deployed commit: {result['commit'][:10]}",
+        f"Container: {result['odoo_container']}",
+    ]
+    if result.get("setup_logs"):
+        lines.append("\nSetup:\n" + "\n".join(result["setup_logs"]))
+    lines.append(
+        "\nNote: point the domain's DNS at this server. Use update_production "
+        "to deploy new commits (failed updates roll the code back "
+        "automatically)."
+    )
+    return "\n".join(lines)
+
+
+@mcp.tool()
+@handle_errors
+def list_productions(ctx: Context = None) -> str:
+    """
+    List the team's production environments with status, domain, deployed
+    commit, and last deploy result.
+    """
+    settings = _get_settings()
+    team = _resolve_team(ctx)
+    prods = production_ops.list_productions(settings, team)
+    if not prods:
+        return "No productions found. Use create_production to provision one."
+    import json as _json
+
+    return _json.dumps(prods, indent=2)
+
+
+@mcp.tool()
+@handle_errors
+def get_production_info(name: str, ctx: Context = None) -> str:
+    """
+    Detailed information about a production: status, health, deployed commit,
+    recent branch commits, deploy history, and backup state.
+
+    Args:
+        name: The production name.
+    """
+    settings = _get_settings()
+    team = _resolve_team(ctx)
+    info = production_ops.get_production_info(settings, team, name)
+    import json as _json
+
+    return _json.dumps(info, indent=2)
+
+
+@mcp.tool()
+@handle_errors
+def production_logs(
+    name: str,
+    n_lines: int = 100,
+    grep: str = "",
+    level: str = "",
+    ctx: Context = None,
+) -> str:
+    """
+    Fetch logs from a production's Odoo container.
+
+    Args:
+        name: The production name.
+        n_lines: Number of log lines to return (default 100).
+        grep: Optional case-insensitive substring filter.
+        level: Optional log level filter (e.g. "ERROR", "WARNING").
+    """
+    settings = _get_settings()
+    team = _resolve_team(ctx)
+    logs = production_ops.production_logs(
+        settings, team, name, n_lines=n_lines, grep=grep, level=level
+    )
+    return _maybe_cache(
+        logs,
+        f"Logs for production '{name}':",
+        "production_logs",
+        f"name={name}",
+    )
+
+
+@mcp.tool()
+@handle_errors
+@with_prod_lock
+def start_production(name: str, ctx: Context = None) -> str:
+    """
+    Start a stopped production environment.
+
+    Args:
+        name: The production name.
+    """
+    settings = _get_settings()
+    team = _resolve_team(ctx)
+    result = production_ops.start_production(settings, team, name)
+    return f"Production '{name}' started ({result['odoo_container']})."
+
+
+@mcp.tool()
+@handle_errors
+@with_prod_lock
+def stop_production(name: str, ctx: Context = None) -> str:
+    """
+    Stop a production environment. WARNING: takes the production offline.
+
+    Args:
+        name: The production name.
+    """
+    settings = _get_settings()
+    team = _resolve_team(ctx)
+    result = production_ops.stop_production(settings, team, name)
+    return f"Production '{name}' stopped ({result['odoo_container']})."
+
+
+@mcp.tool()
+@handle_errors
+@with_prod_lock
+def restart_production(name: str, ctx: Context = None) -> str:
+    """
+    Restart a production's Odoo container (brief downtime).
+
+    Args:
+        name: The production name.
+    """
+    settings = _get_settings()
+    team = _resolve_team(ctx)
+    result = production_ops.restart_production(settings, team, name)
+    return f"Production '{name}' restarted ({result['odoo_container']})."
+
+
+@mcp.tool()
+@handle_errors
+@with_prod_lock
+def set_production_auto_update(name: str, enabled: bool, ctx: Context = None) -> str:
+    """
+    Enable/disable automatic deployment of GitHub push webhooks for a
+    production. When enabled, a push to the production's branch triggers
+    update_production in the background (with automatic code rollback on
+    failure).
+
+    Args:
+        name: The production name.
+        enabled: True to deploy automatically on push.
+    """
+    team = _resolve_team(ctx)
+    production_registry.get_production(team, name)
+    production_registry.update_production(team, name, {"auto_update": bool(enabled)})
+    state = "enabled" if enabled else "disabled"
+    return f"Auto-update {state} for production '{name}'."
+
+
+@mcp.tool()
+@handle_errors
+@with_prod_lock
+def delete_production(
+    name: str,
+    confirm: str = "",
+    drop_database: bool = False,
+    ctx: Context = None,
+) -> str:
+    """
+    Delete a production environment. The container and registry record are
+    removed; the DATABASE and workspace (filestore, repo, deploy history)
+    are KEPT unless drop_database=true.
+
+    Args:
+        name: The production name.
+        confirm: Must equal the production name (safety check).
+        drop_database: Also drop the database and delete the workspace.
+    """
+    if confirm != name:
+        raise ToolError(
+            f'Confirmation failed: pass confirm="{name}" to delete this production.'
+        )
+    settings = _get_settings()
+    team = _resolve_team(ctx)
+    result = production_ops.delete_production(
+        settings, team, name, drop_database=drop_database
+    )
+    lines = [f"Production '{name}' deleted."]
+    if result["kept"]:
+        lines.append(
+            "Kept (pass drop_database=true to remove): " + ", ".join(result["kept"])
+        )
+    if result["warnings"]:
+        lines.append("Warnings: " + "; ".join(result["warnings"]))
+    return "\n".join(lines)
 
 
 # =============================================================================

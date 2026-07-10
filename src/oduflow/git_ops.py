@@ -339,6 +339,68 @@ def pull_repo(
     return old_head, [f for f in result.stdout.strip().splitlines() if f]
 
 
+def rev_parse(repo_path: str, ref: str = "HEAD") -> str:
+    """Commit hash of *ref* in *repo_path*."""
+    try:
+        return subprocess.run(
+            ["git", "-C", repo_path, "rev-parse", ref],
+            check=True,
+            capture_output=True,
+            text=True,
+            env=_GIT_BASE_ENV,
+        ).stdout.strip()
+    except subprocess.CalledProcessError as e:
+        raise ExternalCommandError("git rev-parse", e.returncode, e.stderr or "")
+
+
+def reset_hard(repo_path: str, ref: str) -> None:
+    """``git reset --hard <ref>`` — the code-rollback primitive."""
+    try:
+        subprocess.run(
+            ["git", "-C", repo_path, "reset", "--hard", ref],
+            check=True,
+            capture_output=True,
+            text=True,
+            env=_GIT_BASE_ENV,
+        )
+    except subprocess.CalledProcessError as e:
+        raise ExternalCommandError("git reset --hard", e.returncode, e.stderr or "")
+
+
+def log_commits(repo_path: str, n: int = 20) -> list[dict[str, str]]:
+    """Recent commits of the checkout, newest first.
+
+    Returns ``[{sha, short, subject, author, date}]``; used to display a
+    production's branch history and pick rollback targets.
+    """
+    sep = "\x1f"
+    fmt = sep.join(["%H", "%h", "%s", "%an", "%cI"])
+    try:
+        out = subprocess.run(
+            ["git", "-C", repo_path, "log", f"-{n}", f"--pretty=format:{fmt}"],
+            check=True,
+            capture_output=True,
+            text=True,
+            env=_GIT_BASE_ENV,
+        ).stdout
+    except subprocess.CalledProcessError as e:
+        raise ExternalCommandError("git log", e.returncode, e.stderr or "")
+    commits = []
+    for line in out.splitlines():
+        parts = line.split(sep)
+        if len(parts) == 5:
+            commits.append(
+                {
+                    "sha": parts[0],
+                    "short": parts[1],
+                    "subject": parts[2],
+                    "author": parts[3],
+                    "date": parts[4],
+                }
+            )
+    return commits
+
+
 def parse_manifest(manifest_path: str) -> dict[str, Any]:
     """Parse an Odoo __manifest__.py file and return its dict."""
     import ast

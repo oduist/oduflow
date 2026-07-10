@@ -93,10 +93,7 @@ class TestEnsureWebUiPassword:
 
         cfg = tmp_path / "oduflow.toml"
         cfg.write_text(
-            "[team.1]\n"
-            'ui_password = "already-set"\n'
-            "[team.2]\n"
-            'ui_password = ""\n',
+            '[team.1]\nui_password = "already-set"\n[team.2]\nui_password = ""\n',
             encoding="utf-8",
         )
         # team 1 has a password, team 2 does not: the old any() guard returned
