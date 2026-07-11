@@ -2447,6 +2447,26 @@ function escAttr(s) {
     .replace(/>/g, '&gt;');
 }
 
+// Reads a fetch Response without throwing on an empty / non-JSON body.
+// Always returns a {ok, error, ...} object. A non-2xx response whose body
+// isn't JSON (e.g. a reverse-proxy timeout page on a long request) yields a
+// legible "HTTP <status>: <body>" instead of a cryptic DOMException from
+// r.json() surfacing as "Connection error: The string did not match the
+// expected pattern.".
+async function readResult(r) {
+  var text = '';
+  try { text = await r.text(); } catch (e) { text = ''; }
+  try { return JSON.parse(text); }
+  catch (e) {
+    return {
+      ok: false,
+      error: (text && text.trim())
+        ? ('HTTP ' + r.status + ': ' + text.trim().slice(0, 300))
+        : ('HTTP ' + r.status + (r.statusText ? ' ' + r.statusText : ''))
+    };
+  }
+}
+
 // Plain-text relative time ("just now", "5m ago"). Safe for attribute
 // values (via esc); formatDate below wraps it in markup — never use
 // formatDate inside an attribute.
@@ -3263,13 +3283,13 @@ async function submitCreate() {
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify(payload)
     });
-    var data = await r.json();
-    if (data.ok) {
+    var data = await readResult(r);
+    if (r.ok && data.ok) {
       closeCreateModal();
       showToast('Environment "' + branch + '" created');
       await loadEnvironments(true);
     } else {
-      errEl.textContent = data.error || 'Creation failed';
+      errEl.textContent = data.error || ('Creation failed (HTTP ' + r.status + ')');
       errEl.style.display = 'block';
     }
   } catch (e) {
