@@ -97,17 +97,31 @@ def _snapshot_id(now: datetime.datetime | None = None) -> str:
 
 
 def _dump_stream(container: Any, db_user: str, db_name: str):
-    """Yield pg_dump -Fc stdout frames from a docker exec stream."""
-    exit_stream = container.exec_run(
-        ["pg_dump", "-U", db_user, "-Fc", db_name],
-        stream=True,
-        demux=True,
-    )
-    for stdout, stderr in exit_stream.output:
+    """Yield pg_dump -Fc stdout frames from a docker exec stream.
+
+    Uses the low-level exec API so the command's exit code can be inspected
+    after the stream drains: with ``stream=True`` docker-py leaves
+    ``exit_code=None`` and never raises on failure, so a pg_dump that dies
+    mid-dump would otherwise stream a truncated archive that gets recorded as a
+    healthy snapshot. Raising here (after the last frame, before the generator
+    is exhausted) makes ``multipart_upload_stream`` abort the upload and
+    ``snapshot_production`` fail before writing the manifest — no corrupt
+    snapshot is ever committed.
+    """
+    api = container.client.api
+    exec_id = api.exec_create(container.id, ["pg_dump", "-U", db_user, "-Fc", db_name])[
+        "Id"
+    ]
+    for stdout, stderr in api.exec_start(exec_id, stream=True, demux=True):
         if stderr:
             logger.debug("pg_dump stderr: %s", stderr[-500:])
         if stdout:
             yield stdout
+    exit_code = api.exec_inspect(exec_id).get("ExitCode")
+    if exit_code:
+        raise ExternalCommandError(
+            "pg_dump", exit_code, f"pg_dump of {db_name} exited with code {exit_code}"
+        )
 
 
 def snapshot_production(

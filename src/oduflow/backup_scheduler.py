@@ -166,6 +166,7 @@ def _run_snapshot_job(
     locks: LockManager,
     name: str,
     now: datetime.datetime,
+    fire: datetime.datetime,
 ) -> None:
     from oduflow import backup_ops
     from oduflow.server import prod_lock_key
@@ -181,7 +182,16 @@ def _run_snapshot_job(
     }
     try:
         record = production_registry.get_production(team, name)
-        attempts = int(record.get("backup", {}).get("slot_attempts", 0) or 0)
+        prev_backup = record.get("backup", {}) or {}
+        # A new schedule slot resets the retry budget: the counter only ever
+        # cleared on success before, so a slot that exhausted its attempts left
+        # the counter high and starved subsequent slots of retries.
+        prev_attempt = _parse_ts(str(prev_backup.get("last_attempt_at", "")))
+        attempts = (
+            0
+            if prev_attempt is None or prev_attempt < fire
+            else int(prev_backup.get("slot_attempts", 0) or 0)
+        )
         backup_state["slot_attempts"] = attempts + 1
         production_registry.set_nested(team, name, "backup", backup_state)
         manifest = backup_ops.snapshot_production(
@@ -225,15 +235,24 @@ def _run_snapshot_job(
 
 
 def _run_basebackup_job(
-    settings: Settings, locks: LockManager, now: datetime.datetime
+    settings: Settings,
+    locks: LockManager,
+    now: datetime.datetime,
+    fire: datetime.datetime,
 ) -> None:
     from oduflow import walg
     from oduflow.docker_ops.client import get_client
 
     state = _load_cluster_state(settings)
     base = state.setdefault("basebackup", {})
+    prev_attempt = _parse_ts(str(base.get("last_attempt_at", "")))
+    attempts = (
+        0
+        if prev_attempt is None or prev_attempt < fire
+        else int(base.get("slot_attempts", 0) or 0)
+    )
     base["last_attempt_at"] = now.isoformat()
-    base["slot_attempts"] = int(base.get("slot_attempts", 0) or 0) + 1
+    base["slot_attempts"] = attempts + 1
     _save_cluster_state(settings, state)
     try:
         locks.acquire_env("prod:__cluster__")
@@ -257,14 +276,23 @@ def _run_basebackup_job(
 
 
 def _run_prune_job(
-    settings: Settings, locks: LockManager, now: datetime.datetime
+    settings: Settings,
+    locks: LockManager,
+    now: datetime.datetime,
+    fire: datetime.datetime,
 ) -> None:
     from oduflow import backup_ops
 
     state = _load_cluster_state(settings)
     prune_state = state.setdefault("prune", {})
+    prev_attempt = _parse_ts(str(prune_state.get("last_attempt_at", "")))
+    attempts = (
+        0
+        if prev_attempt is None or prev_attempt < fire
+        else int(prune_state.get("slot_attempts", 0) or 0)
+    )
     prune_state["last_attempt_at"] = now.isoformat()
-    prune_state["slot_attempts"] = int(prune_state.get("slot_attempts", 0) or 0) + 1
+    prune_state["slot_attempts"] = attempts + 1
     _save_cluster_state(settings, state)
     ok = True
     for team in settings.teams.values():
@@ -349,7 +377,7 @@ def tick(settings: Settings, locks: LockManager) -> None:
                 int(backup_state.get("slot_attempts", 0) or 0),
             )
             if due:
-                _run_snapshot_job(settings, team, locks, name, now)
+                _run_snapshot_job(settings, team, locks, name, now, fire)
 
     # Cluster jobs only make sense once the production tier exists.
     from oduflow.docker_ops.client import get_client
@@ -371,7 +399,7 @@ def tick(settings: Settings, locks: LockManager) -> None:
         _parse_ts(str(base.get("last_attempt_at", ""))),
         int(base.get("slot_attempts", 0) or 0),
     ):
-        _run_basebackup_job(settings, locks, now)
+        _run_basebackup_job(settings, locks, now, fire)
 
     prune_state = state.get("prune", {})
     fire = last_fire_time(now, _PRUNE_TIME, weekday=_PRUNE_WEEKDAY)
@@ -382,7 +410,7 @@ def tick(settings: Settings, locks: LockManager) -> None:
         _parse_ts(str(prune_state.get("last_attempt_at", ""))),
         int(prune_state.get("slot_attempts", 0) or 0),
     ):
-        _run_prune_job(settings, locks, now)
+        _run_prune_job(settings, locks, now, fire)
 
 
 def start_backup_scheduler(

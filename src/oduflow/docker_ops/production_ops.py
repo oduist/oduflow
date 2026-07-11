@@ -694,6 +694,9 @@ def create_production(
                 "to_commit": head,
                 "action": "create",
                 "status": "success",
+                # Extra-addon worktree HEADs at this deployed state, so a later
+                # rollback to this commit can revert the addons in lockstep.
+                "worktrees": _worktree_heads(team, name),
             },
         )
     except BaseException:
@@ -882,6 +885,19 @@ def _reset_code(repo_path: str, old_head: str, worktree_heads: dict[str, str]) -
             logger.warning("Could not reset worktree %s: %s", wt_path, exc)
 
 
+def _worktrees_for_commit(
+    team: TeamSettings, name: str, target: str
+) -> dict[str, str] | None:
+    """Extra-addon worktree HEADs recorded for the deploy that produced
+    *target* (most recent match), or None when no deploy recorded them (e.g.
+    a manual rollback to an arbitrary commit)."""
+    for entry in reversed(read_deploys(team, name, limit=0)):
+        worktrees = entry.get("worktrees")
+        if entry.get("to_commit") == target and isinstance(worktrees, dict):
+            return {str(k): str(v) for k, v in worktrees.items()}
+    return None
+
+
 def update_production(
     settings: Settings,
     team: TeamSettings,
@@ -999,6 +1015,9 @@ def update_production(
                 team, name, {"deploy_in_progress": False, "unhealthy": False}
             )
             deploy["ts_end"] = _now_iso()
+            # Extra-addon worktree HEADs at this deployed state (pull advanced
+            # them), so a later rollback to new_head reverts them in lockstep.
+            deploy["worktrees"] = _worktree_heads(team, name)
             append_deploy(team, name, deploy)
             return {
                 **result,
@@ -1079,12 +1098,21 @@ def update_production(
             ),
         }
     except BaseException as exc:
-        # Unexpected failure (network, docker, ...): record and re-flag.
+        # Unexpected failure (network, docker, ...): record and re-flag. Only
+        # mark unhealthy if the running container is actually not serving — a
+        # transient pull failure (e.g. a GitHub blip on an auto_update deploy)
+        # leaves the code unchanged and the site up, and must not flag a
+        # healthy production (the flag would otherwise stick, since a later
+        # no-op poll does not clear it).
         deploy["ts_end"] = _now_iso()
         deploy["status"] = "error"
         deploy["error"] = str(exc)
+        try:
+            serving = wait_production_healthy(client, settings, team, name, timeout=15)
+        except Exception:
+            serving = False
         production_registry.update_production(
-            team, name, {"deploy_in_progress": False, "unhealthy": True}
+            team, name, {"deploy_in_progress": False, "unhealthy": not serving}
         )
         append_deploy(team, name, deploy)
         raise
@@ -1129,12 +1157,20 @@ def rollback_production(
     try:
         target = rev_parse(repo_path, f"{target}^{{commit}}")
     except Exception:
-        raise NotFoundError(
-            f"Commit '{to_commit}' not found in the production checkout."
-        )
+        raise NotFoundError(f"Commit '{target}' not found in the production checkout.")
 
     ts_start = _now_iso()
-    _reset_code(repo_path, target, {})
+    # Revert extra-addon worktrees in lockstep with the main repo when the
+    # target deploy recorded their HEADs; otherwise reset only the main
+    # checkout (an arbitrary manual commit has no recorded worktree state).
+    matched_worktrees = _worktrees_for_commit(team, name, target)
+    _reset_code(repo_path, target, matched_worktrees or {})
+    worktree_note = ""
+    if matched_worktrees is None and _worktree_heads(team, name):
+        worktree_note = (
+            " Extra-addon worktrees were left at their current HEAD (no "
+            "recorded worktree state for this commit)."
+        )
     reapply_prod_odoo_conf(settings, team, name, container)
     container.restart()
     healthy = wait_production_healthy(client, settings, team, name, timeout=120)
@@ -1161,6 +1197,7 @@ def rollback_production(
         "message": (
             f"Code rolled back {current[:10]} -> {target[:10]}"
             + ("." if healthy else ", but the health check FAILED — check logs.")
+            + worktree_note
         ),
     }
 

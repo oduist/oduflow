@@ -248,6 +248,80 @@ def write_walg_config(settings: Settings) -> str | None:
     return path
 
 
+# postgres uid:gid inside a given PG image, cached: walg.json must be readable
+# by the container's postgres user, but the server writes it as a different uid.
+_pg_uid_gid_cache: dict[str, tuple[int, int]] = {}
+
+
+def _postgres_uid_gid(client: Any, image: str) -> tuple[int, int]:
+    """Detect the ``postgres`` account's uid:gid inside *image* (cached).
+
+    The official postgres image's default user is root, so a bare ``id`` would
+    report root; ask specifically for the ``postgres`` account. Falls back to
+    ``999:999`` (the official image's value) if detection fails.
+    """
+    if image in _pg_uid_gid_cache:
+        return _pg_uid_gid_cache[image]
+    uid_gid = (999, 999)
+    try:
+        raw = (
+            client.containers.run(image, ["id", "postgres"], entrypoint="", remove=True)
+            .decode()
+            .strip()
+        )
+        uid_m = re.search(r"uid=(\d+)", raw)
+        gid_m = re.search(r"gid=(\d+)", raw)
+        if uid_m and gid_m:
+            uid_gid = (int(uid_m.group(1)), int(gid_m.group(1)))
+    except Exception as exc:
+        logger.warning(
+            "Could not detect postgres uid:gid from %s (%s); assuming 999:999",
+            image,
+            exc,
+        )
+    _pg_uid_gid_cache[image] = uid_gid
+    return uid_gid
+
+
+def apply_walg_config_ownership(settings: Settings, client: Any) -> None:
+    """Make walg.json readable by the production PG container's postgres user.
+
+    walg.json is written ``0600`` owned by the Oduflow server's uid, but wal-g
+    reads it from inside the PG container as the ``postgres`` user — the
+    ``archive_command`` and every ``backup-push``/``backup-list``/``delete``
+    run as ``postgres``. A ``0600`` file owned by a different uid is unreadable
+    there, so WAL archiving and base backups fail silently. chown only the file
+    (not the directory, so the server keeps rewriting it and postgres can still
+    traverse the ``0755`` dir) to the postgres uid:gid, keeping mode ``0600`` so
+    the S3 credentials stay owner-only. Best-effort: failure is logged, not
+    raised (the health check surfaces a broken archiver).
+    """
+    path = os.path.join(conf_host_dir(settings), "walg.json")
+    if not os.path.isfile(path):
+        return
+    image = settings.prod_postgres_image or settings.postgres_image
+    uid, gid = _postgres_uid_gid(client, image)
+    try:
+        os.chown(path, uid, gid)
+        return
+    except PermissionError:
+        pass  # non-root host (e.g. macOS): chown in a throwaway container
+    except OSError as exc:
+        logger.warning("Could not chown walg.json to postgres: %s", exc)
+        return
+    try:
+        client.containers.run(
+            image,
+            f"chown {uid}:{gid} /mnt/walg/walg.json",
+            entrypoint="",
+            user="root",
+            remove=True,
+            volumes={conf_host_dir(settings): {"bind": "/mnt/walg", "mode": "rw"}},
+        )
+    except Exception as exc:
+        logger.warning("Could not chown walg.json to postgres: %s", exc)
+
+
 def archive_command(enabled: bool) -> str:
     if not enabled:
         return "/bin/true"
@@ -397,6 +471,7 @@ def pitr_restore_cluster(
     client = get_client()
     ensure_walg(settings)
     write_walg_config(settings)
+    apply_walg_config_ownership(settings, client)
 
     image = settings.prod_postgres_image or settings.postgres_image
     stamp = _dt.datetime.now(_dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")

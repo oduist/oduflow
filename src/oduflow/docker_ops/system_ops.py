@@ -1266,6 +1266,9 @@ def ensure_prod_infra(
     walg.write_walg_config(settings)
 
     _ensure_prod_pg_container(client, settings, system_labels)
+    # walg.json must be readable by the container's postgres user (see
+    # apply_walg_config_ownership); do it once the PG image is present.
+    walg.apply_walg_config_ownership(settings, client)
     _wait_pg_ready(client, settings, container_name=settings.prod_db_container)
 
     # Attach the (possibly new) prod DB to every team network.
