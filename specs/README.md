@@ -49,6 +49,7 @@ precursors).
 | [0028](0028-scoped-environment-mcp-access.md) | 2026-07-03 | Scoped single-environment MCP access: `/mcp/<env>` + per-environment tokens |
 | [0029](0029-agent-console-and-chat.md) | 2026-07-03 | Per-team coding agent: browser console and ACP chat |
 | [0030](0030-odoo-sh-addons-import.md) | 2026-07-04 | Odoo.sh import brings the addons-path (Enterprise/Themes/extra) + local extra-addons + template rename |
+| [0031](0031-production-hosting.md) | 2026-07-11 | Production hosting: dedicated PG cluster, WAL-G/S3 backups, snapshots, auto-rollback deploys |
 
 ## Design docs
 

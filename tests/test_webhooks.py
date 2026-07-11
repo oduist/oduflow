@@ -155,7 +155,7 @@ class TestHandleGithubEvent:
         )
         secret = production_registry.get_webhook_secret(team)
         push = _push_body("https://github.com/org/erp.git", "production")
-        with patch.object(webhooks, "_deploy_in_background") as deploy:
+        with patch.object(webhooks, "_deploy_in_background"):
             status, body = webhooks.handle_github_event(
                 settings,
                 LockManager(),

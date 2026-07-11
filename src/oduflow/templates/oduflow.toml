@@ -68,6 +68,30 @@ auto_delete_hours = 0             # delete stopped environments after N hours (D
 # [oauth]
 # oauth_base_url = "https://oduflow.example.com"
 
+# ── Production hosting ────────────────────────────────
+# Productions (long-lived customer environments with their own domain and a
+# dedicated production PostgreSQL cluster) are created at runtime via the
+# create_production MCP tool or the dashboard's Production tab — not here.
+# Both sections are optional. See https://docs.oduflow.dev/production/
+# [production]
+# postgres_image = ""             # default: [database].image
+# workers_cap = 8                 # upper bound for auto-tuned Odoo workers
+
+# S3 backups for productions: continuous WAL archiving (WAL-G), scheduled
+# snapshots (pg_dump + deduplicated filestore) and retention. Presence of
+# the section (bucket + keys) enables the whole backup subsystem.
+# [backup]
+# bucket = ""
+# access_key = ""
+# secret_key = ""
+# endpoint = ""                   # empty = AWS; set for MinIO/R2 (path-style implied)
+# region = ""
+# prefix = "oduflow"
+# snapshot_time = "02:00"         # daily per-production snapshots (server-local time)
+# basebackup_time = "03:30"       # daily WAL-G base backup
+# keep = ["30:180", "7:30", "1:7"]  # snapshot retention: "interval_days:age_days"
+# walg_keep_full = 7              # WAL-G base backups retained
+
 # ── Teams ─────────────────────────────────────────────
 # Each team gets isolated workspaces, templates, credentials and services.
 # At least one [team.*] section is required.
