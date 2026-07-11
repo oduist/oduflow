@@ -126,6 +126,7 @@ def _deploy_in_background(
     from oduflow.server import prod_lock_key
 
     key = prod_lock_key(team.team_id, name)
+    pending_key = f"{team.team_id}/{name}"
     try:
         if not locks.acquire_env_blocking(key, _LOCK_TIMEOUT_SECONDS):
             logger.warning(
@@ -138,7 +139,7 @@ def _deploy_in_background(
         # Holding the lock: this run is no longer "pending" — a new push
         # arriving from here on may queue the next one.
         with _guard:
-            _pending.discard(f"{team.team_id}/{name}")
+            _pending.discard(pending_key)
         try:
             result = production_ops.update_production(
                 settings, team, name, trigger="webhook"
@@ -152,6 +153,13 @@ def _deploy_in_background(
             locks.release_env(key)
     except Exception:
         logger.exception("Webhook deploy of production '%s' failed", name)
+    finally:
+        # Safety net: the lock-timeout early return (and any exception raised
+        # before the discard above) must never leak the coalescing slot — a
+        # stuck key would make dispatch_push drop every future push for this
+        # production until the server restarts. discard is idempotent.
+        with _guard:
+            _pending.discard(pending_key)
 
 
 def dispatch_push(

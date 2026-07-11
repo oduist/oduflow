@@ -134,8 +134,49 @@ class TestTick:
         production_registry.create_production(team, "erp", {})
         locks = LockManager()
         locks.acquire_env("prod:1:erp")  # simulate a deploy in flight
+        now = datetime.datetime.now().astimezone()
         with patch("oduflow.backup_ops.snapshot_production") as snap:
-            sched._run_snapshot_job(
-                settings, team, locks, "erp", datetime.datetime.now().astimezone()
-            )
+            sched._run_snapshot_job(settings, team, locks, "erp", now, now)
         snap.assert_not_called()
+
+
+class TestSlotAttemptsReset:
+    """A new schedule slot resets the retry budget (the counter previously
+    only ever cleared on success, starving later slots of retries)."""
+
+    def test_new_slot_resets_attempts(self, settings, team):
+        production_registry.create_production(team, "erp", {})
+        # Yesterday's slot exhausted its attempts.
+        production_registry.set_nested(
+            team,
+            "erp",
+            "backup",
+            {"slot_attempts": 3, "last_attempt_at": _dt(9, 2, 1).isoformat()},
+        )
+        fire = _dt(10, 2, 0)  # today's slot, newer than the last attempt
+        with patch(
+            "oduflow.backup_ops.snapshot_production", side_effect=Exception("boom")
+        ):
+            sched._run_snapshot_job(
+                settings, team, LockManager(), "erp", _dt(10, 8), fire
+            )
+        backup = production_registry.get_production(team, "erp")["backup"]
+        assert backup["slot_attempts"] == 1  # reset to 0, then this attempt
+
+    def test_same_slot_increments_attempts(self, settings, team):
+        production_registry.create_production(team, "erp", {})
+        production_registry.set_nested(
+            team,
+            "erp",
+            "backup",
+            {"slot_attempts": 1, "last_attempt_at": _dt(10, 2, 5).isoformat()},
+        )
+        fire = _dt(10, 2, 0)  # same slot the last attempt already belonged to
+        with patch(
+            "oduflow.backup_ops.snapshot_production", side_effect=Exception("boom")
+        ):
+            sched._run_snapshot_job(
+                settings, team, LockManager(), "erp", _dt(10, 8), fire
+            )
+        backup = production_registry.get_production(team, "erp")["backup"]
+        assert backup["slot_attempts"] == 2  # kept and incremented
