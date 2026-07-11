@@ -4363,7 +4363,10 @@ def _start_stdio() -> None:
     """Start the MCP server (stdio transport)."""
     import asyncio
 
+    from oduflow.backup_scheduler import start_backup_scheduler
+
     reaper.start_reaper(_get_settings, _locks)
+    start_backup_scheduler(_get_settings, _locks)
     try:
         asyncio.run(mcp.run_stdio_async())
     except KeyboardInterrupt:
@@ -4455,6 +4458,10 @@ def _start_http() -> None:
     mcp.add_middleware(ScopedAccessMiddleware(build_env_param_tools(mcp)))
 
     reaper.start_reaper(_get_settings, _locks)
+
+    from oduflow.backup_scheduler import start_backup_scheduler
+
+    start_backup_scheduler(_get_settings, _locks)
 
     from oduflow.web_ui import mount_web_ui
 
