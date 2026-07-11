@@ -296,6 +296,59 @@
   .badge-pulse { animation: badge-pulse 0.9s cubic-bezier(0.22, 1, 0.36, 1) 2; }
   .badge-privileged { background: color-mix(in oklab, var(--red) 20%, transparent); color: var(--red); margin-left: 6px; }
   .badge-netadmin { background: color-mix(in oklab, var(--accent) 20%, transparent); color: var(--accent); margin-left: 6px; }
+  /* Production tab */
+  .prod-webhook {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 8px 16px;
+    margin-bottom: 12px;
+    font-size: var(--text-sm);
+  }
+  .prod-mono { font-family: var(--font-mono); color: var(--text-dim); }
+  .prod-section {
+    border-top: 1px solid var(--border);
+    margin-top: 12px;
+    padding-top: 12px;
+    font-size: var(--text-sm);
+  }
+  .prod-section table { width: 100%; border-collapse: collapse; }
+  .prod-section th, .prod-section td {
+    text-align: left;
+    padding: 4px 10px 4px 0;
+    border-bottom: 1px solid var(--border);
+    font-size: var(--text-xs);
+  }
+  .prod-section th { color: var(--text-dim); font-weight: 600; }
+  .prod-logs-pre {
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    background: var(--surface-raised);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 10px;
+    max-height: 320px;
+    overflow: auto;
+    white-space: pre-wrap;
+  }
+  /* Health chips (system bar) — status is always textual, never color-only */
+  .health-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-size: var(--text-2xs);
+    font-family: var(--font-mono);
+    color: var(--text-dim);
+  }
+  .health-chip .health-state { font-weight: 600; }
+  .health-chip[data-state="ok"] .health-state { color: var(--green); }
+  .health-chip[data-state="warn"] .health-state { color: var(--yellow); }
+  .health-chip[data-state="error"] .health-state { color: var(--red); }
+  .health-chip[data-state="off"] .health-state { color: var(--text-dim); }
   .env-url { margin-bottom: 10px; }
   .env-url a {
     color: var(--accent);
@@ -1146,6 +1199,7 @@
 
 <div class="tabs">
   <button class="tab-btn active" data-tab="environments" onclick="switchTab('environments')">Environments</button>
+  <button class="tab-btn" data-tab="production" onclick="switchTab('production')">Production</button>
   <button class="tab-btn" data-tab="services" onclick="switchTab('services')">Services</button>
   <button class="tab-btn" data-tab="volumes" onclick="switchTab('volumes')">Volumes</button>
   <button class="tab-btn" data-tab="extra-addons" onclick="switchTab('extra-addons')">Extra Addons</button>
@@ -1164,6 +1218,18 @@
     </div>
   </div>
   <div id="env-list"></div>
+</div>
+
+<div id="tab-production" class="tab-content">
+  <div class="tab-toolbar">
+    <button class="btn-create" onclick="openCreateProductionModal()">+ Create Production</button>
+  </div>
+  <div id="prod-webhook-box" class="prod-webhook" style="display:none">
+    <span>GitHub webhook: <code id="prod-webhook-url" class="prod-mono"></code></span>
+    <button class="btn" onclick="copyToClipboard(document.getElementById('prod-webhook-url').textContent, 'Webhook URL copied')">Copy URL</button>
+    <button class="btn" onclick="copyToClipboard(_prodWebhookSecret, 'Webhook secret copied')">Copy secret</button>
+  </div>
+  <div id="prod-list"></div>
 </div>
 
 <div id="tab-templates" class="tab-content">
@@ -1592,6 +1658,7 @@
   <span>CPU: <span class="sys-val" id="sys-cpu">—</span></span>
   <span>RAM: <span class="sys-val" id="sys-ram">—</span></span>
   <span>Load: <span class="sys-val" id="sys-load">—</span></span>
+  <span id="health-chips"></span>
   <div class="min-dock" id="min-dock" aria-label="Minimized windows"></div>
 </div>
 
@@ -2861,6 +2928,7 @@ function switchTab(name) {
   document.querySelectorAll('.tab-content').forEach(function(el) {
     el.classList.toggle('active', el.id === 'tab-' + name);
   });
+  if (name === 'production') loadProductions();
   if (name === 'templates') loadTemplates();
   if (name === 'services') loadServices();
   if (name === 'volumes') loadVolumes();
@@ -3312,6 +3380,9 @@ function resetTimers() {
   refreshTimer = setInterval(function() {
     loadEnvironments();
     loadStats();
+    loadHealth();
+    var prodTab = document.getElementById('tab-production');
+    if (prodTab && prodTab.classList.contains('active')) loadProductions();
   }, ms);
 }
 
@@ -4896,9 +4967,357 @@ console.log(
   'color: #9b9fa5; padding-left: 6px;'
 );
 
+// --- Production hosting ---------------------------------------------------
+
+const API_PRODUCTIONS = '/api/productions';
+var cachedProds = [];
+var _prodWebhookSecret = '';
+var _prodOpen = {};  // name -> 'deploys' | 'snapshots' | 'logs' | undefined
+
+function prodBadgeClass(status) {
+  if (status === 'running') return 'badge-running';
+  if (status === 'stopped') return 'badge-stopped';
+  if (status === 'deploying') return 'badge-busy';
+  return 'badge-exited';  // unhealthy / broken
+}
+
+async function loadProductions() {
+  try {
+    var r = await fetch(API_PRODUCTIONS);
+    var data = await r.json();
+    if (!data.ok) { showToast(data.error || 'Failed to load productions', true); return; }
+    cachedProds = data.productions || [];
+    window._prodBackupConfigured = !!data.backup_configured;
+    _prodWebhookSecret = (data.webhook && data.webhook.secret) || '';
+    var box = document.getElementById('prod-webhook-box');
+    if (box) {
+      if (_prodWebhookSecret) {
+        box.style.display = '';
+        document.getElementById('prod-webhook-url').textContent =
+          location.origin + (data.webhook.path || '/api/webhooks/github');
+      } else {
+        box.style.display = 'none';
+      }
+    }
+    renderProductions();
+  } catch (e) {
+    showToast('Connection error: ' + e.message, true);
+  }
+}
+
+function renderProductions() {
+  var el = document.getElementById('prod-list');
+  if (!el) return;
+  if (!cachedProds.length) {
+    el.innerHTML = '<div class="empty">No productions yet.<br>' +
+      '<span class="empty-hint">Create one here or over MCP: <code>create_production(name="erp", ...)</code>. ' +
+      'Productions run on a dedicated PostgreSQL cluster with their own domain, tuned workers and S3 backups.</span></div>';
+    return;
+  }
+  el.innerHTML = cachedProds.map(function(p) {
+    var last = p.last_deploy;
+    var lastHtml = last
+      ? '<span>Last deploy: <strong>' + esc(last.action || '') + '</strong> ' +
+        '<span class="badge ' + (last.status === 'success' ? 'badge-running' : 'badge-exited') + '">' + esc(last.status || '') + '</span> ' +
+        (last.ts_end ? formatDate(last.ts_end) : '') + '</span>'
+      : '<span>Last deploy: <strong>—</strong></span>';
+    var backup = p.backup || {};
+    var snapHtml = backup.last_snapshot_id
+      ? '<span>Snapshot: <strong class="prod-mono">' + esc(backup.last_snapshot_id) + '</strong></span>'
+      : '<span>Snapshot: <strong>—</strong></span>';
+    var open = _prodOpen[p.name];
+    return '<div class="env-card" data-prod="' + esc(p.name) + '">' +
+      '<div class="env-header">' +
+        '<div class="left">' +
+          '<span class="branch-name">' + esc(p.name) + '</span>' +
+          '<a class="repo-link prod-mono" href="' + escAttr(p.url) + '" target="_blank" rel="noopener">' + esc(p.domain) + '</a>' +
+          '<span class="badge ' + prodBadgeClass(p.status) + '">' + esc(p.status) + '</span>' +
+          (p.auto_update ? '<span class="badge badge-neutral" title="Deploys automatically on GitHub push">auto</span>' : '') +
+        '</div>' +
+        '<div class="env-actions">' +
+          '<button class="btn btn-sync" title="Pull the branch and deploy (failed deploys roll the code back)" onclick="prodUpdate(\'' + escAttr(p.name) + '\')">Update</button>' +
+          '<button class="btn btn-restart" title="Roll the code back to the previous deploy" onclick="prodRollback(\'' + escAttr(p.name) + '\')">Rollback</button>' +
+          (window._prodBackupConfigured
+            ? '<button class="btn" title="Snapshot the database and filestore to S3 now" onclick="prodSnapshot(\'' + escAttr(p.name) + '\')">Snapshot</button>'
+            : '') +
+          '<button class="btn btn-logs" onclick="prodToggle(\'' + escAttr(p.name) + '\',\'logs\')">Logs</button>' +
+          '<div class="menu-wrap">' +
+            '<button class="btn btn-more" onclick="toggleMenu(event)" aria-haspopup="menu" aria-expanded="false">More &#9662;</button>' +
+            '<div class="menu" role="menu">' +
+              '<button role="menuitem" onclick="prodToggle(\'' + escAttr(p.name) + '\',\'deploys\')">Deploy history</button>' +
+              (window._prodBackupConfigured
+                ? '<button role="menuitem" onclick="prodToggle(\'' + escAttr(p.name) + '\',\'snapshots\')">Snapshots &amp; restore</button>'
+                : '') +
+              '<button role="menuitem" onclick="prodAutoUpdate(\'' + escAttr(p.name) + '\',' + (p.auto_update ? 'false' : 'true') + ')">' +
+                (p.auto_update ? 'Disable auto-deploy' : 'Enable auto-deploy') + '</button>' +
+              (p.status === 'stopped'
+                ? '<button role="menuitem" onclick="prodAction(\'' + escAttr(p.name) + '\',\'start\')">Start</button>'
+                : '<button role="menuitem" onclick="prodAction(\'' + escAttr(p.name) + '\',\'stop\')">Stop</button>') +
+              '<button role="menuitem" onclick="prodAction(\'' + escAttr(p.name) + '\',\'restart\')">Restart</button>' +
+              '<button role="menuitem" class="danger" onclick="prodDelete(\'' + escAttr(p.name) + '\')">Delete</button>' +
+            '</div>' +
+          '</div>' +
+        '</div>' +
+      '</div>' +
+      '<div class="env-meta">' +
+        '<span>Branch: <strong class="prod-mono">' + esc(p.branch) + ' @ ' + esc(p.commit_short || '?') + '</strong></span>' +
+        '<span>Image: <strong class="prod-mono">' + esc(p.odoo_image) + '</strong></span>' +
+        '<span>DB: <strong class="prod-mono">' + esc(p.db_name) + '</strong></span>' +
+        lastHtml +
+        snapHtml +
+      '</div>' +
+      (open ? '<div class="prod-section" id="prod-section-' + esc(p.name) + '">Loading…</div>' : '') +
+    '</div>';
+  }).join('');
+  Object.keys(_prodOpen).forEach(function(name) {
+    if (_prodOpen[name]) _loadProdSection(name, _prodOpen[name]);
+  });
+}
+
+function prodToggle(name, section) {
+  _prodOpen[name] = _prodOpen[name] === section ? undefined : section;
+  renderProductions();
+}
+
+async function _loadProdSection(name, section) {
+  var el = document.getElementById('prod-section-' + name);
+  if (!el) return;
+  try {
+    if (section === 'logs') {
+      var r = await fetch(API_PRODUCTIONS + '/' + encodeURIComponent(name) + '/logs?lines=200');
+      var data = await r.json();
+      el.innerHTML = data.ok
+        ? '<div class="prod-logs-pre">' + esc(data.logs || '(no output)') + '</div>'
+        : esc(data.error || 'Failed to load logs');
+    } else if (section === 'deploys') {
+      var r2 = await fetch(API_PRODUCTIONS + '/' + encodeURIComponent(name) + '/deploys');
+      var d2 = await r2.json();
+      if (!d2.ok) { el.textContent = d2.error || 'Failed to load deploys'; return; }
+      var rows = (d2.deploys || []).slice().reverse().map(function(d) {
+        return '<tr><td class="prod-mono">' + esc((d.ts_end || d.ts_start || '').slice(0, 19)) + '</td>' +
+          '<td>' + esc(d.action || '') + '</td>' +
+          '<td class="prod-mono">' + esc((d.from_commit || '').slice(0, 10)) + ' → ' + esc((d.to_commit || '').slice(0, 10)) + '</td>' +
+          '<td><span class="badge ' + (d.status === 'success' ? 'badge-running' : 'badge-exited') + '">' + esc(d.status || '') + '</span></td>' +
+          '<td>' + esc(d.trigger || '') + '</td></tr>';
+      }).join('');
+      el.innerHTML = rows
+        ? '<table><thead><tr><th>When</th><th>Action</th><th>Commits</th><th>Status</th><th>Trigger</th></tr></thead><tbody>' + rows + '</tbody></table>'
+        : 'No deploys recorded yet.';
+    } else if (section === 'snapshots') {
+      var r3 = await fetch(API_PRODUCTIONS + '/' + encodeURIComponent(name) + '/snapshots');
+      var d3 = await r3.json();
+      if (!d3.ok) { el.textContent = d3.error || 'Failed to load snapshots'; return; }
+      var rows3 = (d3.snapshots || []).slice().reverse().map(function(s) {
+        return '<tr><td class="prod-mono">' + esc(s.id) + '</td>' +
+          '<td>' + esc((s.created_at || '').slice(0, 19)) + '</td>' +
+          '<td>' + fmtBytes(s.db && s.db.bytes) + '</td>' +
+          '<td class="prod-mono">' + esc((s.commit_sha || '').slice(0, 10)) + '</td>' +
+          '<td>' + esc(s.trigger || '') + '</td>' +
+          '<td><button class="btn btn-delete" onclick="prodRestore(\'' + escAttr(name) + '\',\'' + escAttr(s.id) + '\')">Restore</button></td></tr>';
+      }).join('');
+      el.innerHTML = (rows3
+        ? '<table><thead><tr><th>Snapshot</th><th>Created</th><th>DB size</th><th>Commit</th><th>Trigger</th><th></th></tr></thead><tbody>' + rows3 + '</tbody></table>'
+        : 'No snapshots yet.') +
+        '<div style="margin-top:8px"><button class="btn" onclick="prodRefreshSnapshots(\'' + escAttr(name) + '\')">Refresh from S3</button></div>';
+    }
+  } catch (e) {
+    el.textContent = 'Connection error: ' + e.message;
+  }
+}
+
+async function prodRefreshSnapshots(name) {
+  try {
+    await fetch(API_PRODUCTIONS + '/' + encodeURIComponent(name) + '/snapshots?refresh=true');
+    _loadProdSection(name, 'snapshots');
+  } catch (e) { showToast('Connection error: ' + e.message, true); }
+}
+
+async function _prodPost(url, body, okMsg) {
+  try {
+    var r = await fetch(url, body !== undefined
+      ? { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }
+      : { method: 'POST' });
+    var data = await r.json();
+    if (data.ok) { if (okMsg) showToast(okMsg); await loadProductions(); return data; }
+    showToast(data.error || 'Request failed', true);
+  } catch (e) {
+    showToast('Connection error: ' + e.message, true);
+  }
+  return null;
+}
+
+function prodAction(name, action) {
+  _prodPost(API_PRODUCTIONS + '/' + encodeURIComponent(name) + '/' + action, undefined,
+    'Production "' + name + '": ' + action);
+}
+
+async function prodUpdate(name) {
+  if (!(await confirmDialog({
+    title: 'Deploy production',
+    message: 'Pull the latest commits of "' + name + '" and deploy. If the deploy fails, the CODE is rolled back automatically (the database is not).',
+    confirmLabel: 'Deploy'
+  }))) return;
+  var data = await _prodPost(API_PRODUCTIONS + '/' + encodeURIComponent(name) + '/update', undefined,
+    'Deploy of "' + name + '" started (watch status and deploy history)');
+  if (data) setTimeout(loadProductions, 5000);
+}
+
+async function prodRollback(name) {
+  if (!(await confirmDialog({
+    title: 'Roll back code',
+    message: 'Roll the CODE of "' + name + '" back to the previous deploy commit and restart? The database is not touched.',
+    confirmLabel: 'Roll back',
+    danger: true
+  }))) return;
+  _prodPost(API_PRODUCTIONS + '/' + encodeURIComponent(name) + '/rollback', undefined,
+    'Rollback of "' + name + '" completed');
+}
+
+function prodSnapshot(name) {
+  _prodPost(API_PRODUCTIONS + '/' + encodeURIComponent(name) + '/snapshot', undefined,
+    'Snapshot of "' + name + '" completed');
+}
+
+function prodAutoUpdate(name, enabled) {
+  _prodPost(API_PRODUCTIONS + '/' + encodeURIComponent(name) + '/auto-update',
+    { enabled: enabled },
+    'Auto-deploy ' + (enabled ? 'enabled' : 'disabled') + ' for "' + name + '"');
+}
+
+async function prodDelete(name) {
+  var typed = await promptDialog({
+    title: 'Delete production',
+    message: 'This removes the container and the production record. The database and files are KEPT on disk. Type the production name to confirm:',
+    placeholder: name,
+    confirmLabel: 'Delete production',
+    danger: true
+  });
+  if (typed === null) return;
+  _prodPost(API_PRODUCTIONS + '/' + encodeURIComponent(name) + '/delete',
+    { confirm: typed, drop_database: false },
+    'Production "' + name + '" deleted');
+}
+
+async function prodRestore(name, snapshotId) {
+  var typed = await promptDialog({
+    title: 'Restore from snapshot',
+    message: 'Restore "' + name + '" from snapshot ' + snapshotId + '? This REPLACES the current database and filestore (swap-based: a failed restore leaves the current state). Type the production name to confirm:',
+    placeholder: name,
+    confirmLabel: 'Restore',
+    danger: true
+  });
+  if (typed === null) return;
+  _prodPost(API_PRODUCTIONS + '/' + encodeURIComponent(name) + '/restore',
+    { snapshot_id: snapshotId, confirm: typed },
+    'Restore of "' + name + '" completed');
+}
+
+// Minimal typed-confirmation prompt built on the confirm modal styles.
+function promptDialog(opts) {
+  return new Promise(function(resolve) {
+    var overlay = document.createElement('div');
+    overlay.className = 'modal-overlay active';
+    overlay.innerHTML =
+      '<div class="modal modal-sm" role="dialog" aria-modal="true">' +
+        '<div class="modal-header"><h3>' + esc(opts.title || 'Confirm') + '</h3></div>' +
+        '<div class="modal-body"><p>' + esc(opts.message || '') + '</p>' +
+          '<input type="text" class="text-input" id="prompt-dialog-input" placeholder="' + escAttr(opts.placeholder || '') + '">' +
+        '</div>' +
+        '<div class="modal-footer">' +
+          '<button class="btn" id="prompt-dialog-cancel">Cancel</button>' +
+          '<button class="btn ' + (opts.danger ? 'btn-delete' : 'btn-start') + '" id="prompt-dialog-ok">' + esc(opts.confirmLabel || 'Confirm') + '</button>' +
+        '</div>' +
+      '</div>';
+    document.body.appendChild(overlay);
+    var input = overlay.querySelector('#prompt-dialog-input');
+    input.focus();
+    function close(value) { overlay.remove(); resolve(value); }
+    overlay.querySelector('#prompt-dialog-cancel').onclick = function() { close(null); };
+    overlay.querySelector('#prompt-dialog-ok').onclick = function() { close(input.value.trim()); };
+    overlay.addEventListener('click', function(e) { if (e.target === overlay) close(null); });
+    input.addEventListener('keydown', function(e) {
+      if (e.key === 'Enter') close(input.value.trim());
+      if (e.key === 'Escape') close(null);
+    });
+  });
+}
+
+function openCreateProductionModal() {
+  var overlay = document.createElement('div');
+  overlay.className = 'modal-overlay active';
+  overlay.id = 'create-prod-modal';
+  overlay.innerHTML =
+    '<div class="modal" role="dialog" aria-modal="true">' +
+      '<div class="modal-header"><h3>Create Production</h3></div>' +
+      '<div class="modal-body">' +
+        '<div class="form-group"><label for="cp-name">Name</label><input type="text" id="cp-name" placeholder="erp"></div>' +
+        '<div class="form-group"><label for="cp-repo">Repository URL</label><input type="text" id="cp-repo" placeholder="https://github.com/org/repo.git"></div>' +
+        '<div class="form-group"><label for="cp-branch">Branch</label><input type="text" id="cp-branch" placeholder="production"></div>' +
+        '<div class="form-group"><label for="cp-domain">Domain</label><input type="text" id="cp-domain" placeholder="erp.customer.com"><div class="hint">DNS must point at this server; TLS via Let\'s Encrypt</div></div>' +
+        '<div class="form-group"><label for="cp-image">Odoo image</label><input type="text" id="cp-image" placeholder="odoo:18.0"></div>' +
+        '<div class="form-group"><label for="cp-template">Template (optional)</label><input type="text" id="cp-template" placeholder="empty = fresh database"></div>' +
+        '<div class="form-group"><label class="select-box"><input type="checkbox" id="cp-auto"> Deploy automatically on GitHub push</label></div>' +
+      '</div>' +
+      '<div class="modal-footer">' +
+        '<button class="btn" onclick="document.getElementById(\'create-prod-modal\').remove()">Cancel</button>' +
+        '<button class="btn btn-start" onclick="submitCreateProduction()">Create production</button>' +
+      '</div>' +
+    '</div>';
+  document.body.appendChild(overlay);
+  overlay.addEventListener('click', function(e) { if (e.target === overlay) overlay.remove(); });
+}
+
+async function submitCreateProduction() {
+  var v = function(id) { return document.getElementById(id).value.trim(); };
+  var body = {
+    name: v('cp-name'),
+    repo_url: v('cp-repo'),
+    branch: v('cp-branch'),
+    domain: v('cp-domain'),
+    odoo_image: v('cp-image'),
+    template_name: v('cp-template'),
+    auto_update: document.getElementById('cp-auto').checked
+  };
+  if (!body.name || !body.repo_url || !body.branch || !body.domain || !body.odoo_image) {
+    showToast('Name, repository, branch, domain and image are required', true);
+    return;
+  }
+  showToast('Creating production "' + body.name + '"… this can take a few minutes');
+  var data = await _prodPost(API_PRODUCTIONS + '/create', body,
+    'Production "' + body.name + '" created');
+  if (data) {
+    var modal = document.getElementById('create-prod-modal');
+    if (modal) modal.remove();
+  }
+}
+
+// --- Health chips (system bar) ---------------------------------------------
+
+async function loadHealth() {
+  try {
+    var r = await fetch('/healthz');
+    var data = await r.json();
+    var el = document.getElementById('health-chips');
+    if (!el || !data.checks) return;
+    var labels = {
+      dev_pg: 'PG DEV', prod_pg: 'PG PROD', traefik: 'TRAEFIK', s3: 'S3', disk: 'DISK'
+    };
+    el.innerHTML = Object.keys(labels).map(function(key) {
+      var check = data.checks[key];
+      if (!check || check.status === 'off') return '';
+      var value = check.status.toUpperCase();
+      if (key === 'disk' && check.percent != null) value = check.percent + '%';
+      return '<span class="health-chip" data-state="' + escAttr(check.status) + '"' +
+        (check.detail ? ' title="' + escAttr(check.detail) + '"' : '') + '>' +
+        labels[key] + ' <span class="health-state">' + esc(value) + '</span></span>';
+    }).join(' ');
+  } catch (e) { /* health chips are best-effort */ }
+}
+
 loadLicense();
 loadEnvironments();
 loadStats();
+loadHealth();
 loadServicePresets();
 refreshAgentInfo();
 resetTimers();

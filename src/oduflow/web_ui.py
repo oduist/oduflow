@@ -32,6 +32,7 @@ from collections.abc import Callable
 
 from oduflow.docker_ops import (
     env_ops,
+    production_ops,
     service_ops,
     service_presets,
     system_ops,
@@ -39,7 +40,9 @@ from oduflow.docker_ops import (
 )
 from oduflow import activity
 from oduflow import agent_config
+from oduflow import git_ops
 from oduflow import import_tokens
+from oduflow import production_registry
 from oduflow.docker_ops.odoo_ops import get_environment_logs
 from oduflow.docker_ops.stats import (
     get_container_stats,
@@ -81,6 +84,11 @@ _PUBLIC_PATHS = frozenset(
         "/api/templates/import/addon",
         "/api/templates/import/addon-remote",
         "/api/templates/import/finalize",
+        # Uptime-monitor endpoint: no auth, no secrets in the response.
+        "/healthz",
+        # GitHub can't carry a UI session; the handler verifies its own
+        # X-Hub-Signature-256 HMAC against per-team webhook secrets.
+        "/api/webhooks/github",
     }
 )
 _PUBLIC_PREFIXES = ("/static/",)
@@ -2929,6 +2937,375 @@ def _build_routes(
             except Exception:
                 pass
 
+    # ------------------------------------------------------------------
+    # Production hosting
+    # ------------------------------------------------------------------
+
+    def _prod_lock_key(team: TeamSettings, name: str) -> str:
+        from oduflow.server import prod_lock_key
+
+        return prod_lock_key(team.team_id, name)
+
+    def api_productions(request: Request) -> JSONResponse:
+        try:
+            settings = get_settings()
+            team = _get_ui_team(request)
+            prods = production_ops.list_productions(settings, team)
+            webhook_secret = production_registry.get_webhook_secret(team)
+            return JSONResponse(
+                {
+                    "ok": True,
+                    "productions": prods,
+                    "backup_configured": settings.backup is not None,
+                    "webhook": {
+                        "path": "/api/webhooks/github",
+                        "secret": webhook_secret,
+                    },
+                }
+            )
+        except FlowError as e:
+            return _error_response(e)
+        except Exception as e:
+            logger.exception("api_productions failed")
+            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+
+    async def api_production_create(request: Request) -> JSONResponse:
+        settings = get_settings()
+        team = _get_ui_team(request)
+        try:
+            data = await request.json()
+            name = str(data.get("name", "")).strip()
+            repo_url = str(data.get("repo_url", "")).strip()
+            git_ops.validate_repo_url(repo_url)
+        except FlowError as e:
+            return _error_response(e)
+        except Exception as e:
+            return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
+        try:
+            locks.acquire_env(_prod_lock_key(team, name))
+        except FlowError as e:
+            return _error_response(e)
+        try:
+            result = production_ops.create_production(
+                settings,
+                team,
+                name,
+                repo_url,
+                str(data.get("branch", "")).strip(),
+                str(data.get("domain", "")).strip(),
+                str(data.get("odoo_image", "")).strip(),
+                git_user=str(data.get("git_user", "")).strip(),
+                extra_addons=_normalize_extra_addons(data.get("extra_addons")),
+                auto_update=bool(data.get("auto_update")),
+                template_name=str(data.get("template_name", "")).strip() or None,
+            )
+            return JSONResponse({"ok": True, **result})
+        except FlowError as e:
+            return _error_response(e)
+        except ValueError as e:
+            return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
+        except Exception as e:
+            logger.exception("api_production_create failed")
+            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+        finally:
+            locks.release_env(_prod_lock_key(team, name))
+
+    def _production_action(
+        request: Request, action: Callable[..., dict]
+    ) -> JSONResponse:
+        """Shared lock/error wrapper for simple per-production POST actions."""
+        settings = get_settings()
+        team = _get_ui_team(request)
+        name = request.path_params["name"]
+        try:
+            locks.acquire_env(_prod_lock_key(team, name))
+        except FlowError as e:
+            return _error_response(e)
+        try:
+            result = action(settings, team, name)
+            return JSONResponse({"ok": True, **result})
+        except FlowError as e:
+            return _error_response(e)
+        except ValueError as e:
+            return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
+        except Exception as e:
+            logger.exception("production action failed for '%s'", name)
+            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+        finally:
+            locks.release_env(_prod_lock_key(team, name))
+
+    def api_production_start(request: Request) -> JSONResponse:
+        return _production_action(request, production_ops.start_production)
+
+    def api_production_stop(request: Request) -> JSONResponse:
+        return _production_action(request, production_ops.stop_production)
+
+    def api_production_restart(request: Request) -> JSONResponse:
+        return _production_action(request, production_ops.restart_production)
+
+    def api_production_info(request: Request) -> JSONResponse:
+        try:
+            settings = get_settings()
+            team = _get_ui_team(request)
+            name = request.path_params["name"]
+            info = production_ops.get_production_info(settings, team, name)
+            return JSONResponse({"ok": True, **info})
+        except FlowError as e:
+            return _error_response(e)
+        except Exception as e:
+            logger.exception("api_production_info failed")
+            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+
+    def api_production_update(request: Request) -> JSONResponse:
+        """Deploy in a background thread: deploys can run for minutes and
+        would time browsers out; the dashboard polls status instead."""
+        settings = get_settings()
+        team = _get_ui_team(request)
+        name = request.path_params["name"]
+        try:
+            production_registry.get_production(team, name)
+        except FlowError as e:
+            return _error_response(e)
+
+        def _run() -> None:
+            key = _prod_lock_key(team, name)
+            if not locks.acquire_env_blocking(key, 300):
+                logger.warning("UI deploy of '%s' timed out on lock", name)
+                return
+            try:
+                production_ops.update_production(settings, team, name, trigger="ui")
+            except Exception:
+                logger.exception("UI deploy of production '%s' failed", name)
+            finally:
+                locks.release_env(key)
+
+        threading.Thread(
+            target=_run, name=f"oduflow-ui-deploy-{name}", daemon=True
+        ).start()
+        return JSONResponse({"ok": True, "started": True}, status_code=202)
+
+    def api_production_rollback(request: Request) -> JSONResponse:
+        settings = get_settings()
+        team = _get_ui_team(request)
+        name = request.path_params["name"]
+        to_commit = request.query_params.get("to_commit", "")
+        try:
+            locks.acquire_env(_prod_lock_key(team, name))
+        except FlowError as e:
+            return _error_response(e)
+        try:
+            result = production_ops.rollback_production(
+                settings, team, name, to_commit, trigger="ui"
+            )
+            return JSONResponse({"ok": True, **result})
+        except FlowError as e:
+            return _error_response(e)
+        except Exception as e:
+            logger.exception("api_production_rollback failed")
+            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+        finally:
+            locks.release_env(_prod_lock_key(team, name))
+
+    async def api_production_auto_update(request: Request) -> JSONResponse:
+        try:
+            team = _get_ui_team(request)
+            name = request.path_params["name"]
+            data = await request.json()
+            production_registry.get_production(team, name)
+            production_registry.update_production(
+                team, name, {"auto_update": bool(data.get("enabled"))}
+            )
+            return JSONResponse({"ok": True})
+        except FlowError as e:
+            return _error_response(e)
+        except Exception as e:
+            logger.exception("api_production_auto_update failed")
+            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+
+    def api_production_logs(request: Request) -> JSONResponse:
+        try:
+            settings = get_settings()
+            team = _get_ui_team(request)
+            name = request.path_params["name"]
+            n_lines = int(request.query_params.get("lines", "200"))
+            logs = production_ops.production_logs(
+                settings, team, name, n_lines=min(n_lines, 2000)
+            )
+            return JSONResponse({"ok": True, "logs": logs})
+        except FlowError as e:
+            return _error_response(e)
+        except Exception as e:
+            logger.exception("api_production_logs failed")
+            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+
+    def api_production_deploys(request: Request) -> JSONResponse:
+        try:
+            team = _get_ui_team(request)
+            name = request.path_params["name"]
+            production_registry.get_production(team, name)
+            deploys = production_ops.read_deploys(team, name, limit=20)
+            return JSONResponse({"ok": True, "deploys": deploys})
+        except FlowError as e:
+            return _error_response(e)
+        except Exception as e:
+            logger.exception("api_production_deploys failed")
+            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+
+    async def api_production_delete(request: Request) -> JSONResponse:
+        settings = get_settings()
+        team = _get_ui_team(request)
+        name = request.path_params["name"]
+        try:
+            data = await request.json()
+        except Exception:
+            data = {}
+        if str(data.get("confirm", "")) != name:
+            return JSONResponse(
+                {
+                    "ok": False,
+                    "error": "Confirmation failed: type the production name.",
+                },
+                status_code=400,
+            )
+        try:
+            locks.acquire_env(_prod_lock_key(team, name))
+        except FlowError as e:
+            return _error_response(e)
+        try:
+            result = production_ops.delete_production(
+                settings, team, name, drop_database=bool(data.get("drop_database"))
+            )
+            return JSONResponse({"ok": True, **result})
+        except FlowError as e:
+            return _error_response(e)
+        except Exception as e:
+            logger.exception("api_production_delete failed")
+            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+        finally:
+            locks.release_env(_prod_lock_key(team, name))
+
+    def api_production_snapshots(request: Request) -> JSONResponse:
+        try:
+            from oduflow import backup_ops
+
+            settings = get_settings()
+            team = _get_ui_team(request)
+            name = request.path_params["name"]
+            refresh = request.query_params.get("refresh") == "true"
+            manifests = backup_ops.list_snapshots(settings, team, name, refresh=refresh)
+            return JSONResponse({"ok": True, "snapshots": manifests})
+        except FlowError as e:
+            return _error_response(e)
+        except Exception as e:
+            logger.exception("api_production_snapshots failed")
+            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+
+    def api_production_snapshot_now(request: Request) -> JSONResponse:
+        from oduflow import backup_ops
+
+        def _snapshot(settings: Settings, team: TeamSettings, name: str) -> dict:
+            return backup_ops.snapshot_production(settings, team, name, trigger="ui")
+
+        return _production_action(request, _snapshot)
+
+    async def api_production_restore(request: Request) -> JSONResponse:
+        from oduflow import backup_ops
+
+        settings = get_settings()
+        team = _get_ui_team(request)
+        name = request.path_params["name"]
+        try:
+            data = await request.json()
+        except Exception:
+            data = {}
+        snapshot_id = str(data.get("snapshot_id", "")).strip()
+        if str(data.get("confirm", "")) != name:
+            return JSONResponse(
+                {
+                    "ok": False,
+                    "error": "Confirmation failed: type the production name.",
+                },
+                status_code=400,
+            )
+        if not snapshot_id:
+            return JSONResponse(
+                {"ok": False, "error": "snapshot_id is required"}, status_code=400
+            )
+        try:
+            locks.acquire_env(_prod_lock_key(team, name))
+        except FlowError as e:
+            return _error_response(e)
+        try:
+            result = backup_ops.restore_production(settings, team, name, snapshot_id)
+            return JSONResponse({"ok": True, **result})
+        except FlowError as e:
+            return _error_response(e)
+        except Exception as e:
+            logger.exception("api_production_restore failed")
+            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+        finally:
+            locks.release_env(_prod_lock_key(team, name))
+
+    async def api_production_backup_schedule(request: Request) -> JSONResponse:
+        try:
+            team = _get_ui_team(request)
+            name = request.path_params["name"]
+            data = await request.json()
+            schedule = str(data.get("schedule", "")).strip().lower()
+            if schedule != "off" and not re.match(
+                r"^([01]\d|2[0-3]):[0-5]\d$", schedule
+            ):
+                return JSONResponse(
+                    {"ok": False, "error": 'schedule must be "HH:MM" or "off"'},
+                    status_code=400,
+                )
+            production_registry.get_production(team, name)
+            production_registry.set_nested(team, name, "backup", {"schedule": schedule})
+            return JSONResponse({"ok": True})
+        except FlowError as e:
+            return _error_response(e)
+        except Exception as e:
+            logger.exception("api_production_backup_schedule failed")
+            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+
+    def api_production_backup_status(request: Request) -> JSONResponse:
+        try:
+            from oduflow import backup_ops
+
+            settings = get_settings()
+            team = _get_ui_team(request)
+            return JSONResponse(
+                {"ok": True, **backup_ops.backup_status(settings, team)}
+            )
+        except FlowError as e:
+            return _error_response(e)
+        except Exception as e:
+            logger.exception("api_production_backup_status failed")
+            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+
+    # ------------------------------------------------------------------
+    # Health + GitHub webhook (both PUBLIC paths with their own auth)
+    # ------------------------------------------------------------------
+
+    def healthz(request: Request) -> JSONResponse:
+        from oduflow.health import collect_health
+
+        result = collect_health(get_settings())
+        return JSONResponse(result, status_code=200 if result["ok"] else 503)
+
+    async def webhook_github(request: Request) -> JSONResponse:
+        from oduflow import webhooks
+
+        body = await request.body()
+        status, payload = webhooks.handle_github_event(
+            get_settings(),
+            locks,
+            event=request.headers.get("x-github-event", ""),
+            body=body,
+            signature_header=request.headers.get("x-hub-signature-256", ""),
+        )
+        return JSONResponse(payload, status_code=status)
+
     return [
         Route("/", dashboard, methods=["GET"]),
         Route("/login", login, methods=["GET", "POST"]),
@@ -2958,6 +3335,65 @@ def _build_routes(
         Route("/api/templates/{name}/rename", api_template_rename, methods=["POST"]),
         Route("/api/environments", api_list, methods=["GET"]),
         Route("/api/environments/create", api_create, methods=["POST"]),
+        Route("/api/productions", api_productions, methods=["GET"]),
+        Route("/api/productions/create", api_production_create, methods=["POST"]),
+        Route(
+            "/api/productions/backup-status",
+            api_production_backup_status,
+            methods=["GET"],
+        ),
+        Route("/api/productions/{name}", api_production_info, methods=["GET"]),
+        Route("/api/productions/{name}/start", api_production_start, methods=["POST"]),
+        Route("/api/productions/{name}/stop", api_production_stop, methods=["POST"]),
+        Route(
+            "/api/productions/{name}/restart",
+            api_production_restart,
+            methods=["POST"],
+        ),
+        Route(
+            "/api/productions/{name}/update", api_production_update, methods=["POST"]
+        ),
+        Route(
+            "/api/productions/{name}/rollback",
+            api_production_rollback,
+            methods=["POST"],
+        ),
+        Route(
+            "/api/productions/{name}/auto-update",
+            api_production_auto_update,
+            methods=["POST"],
+        ),
+        Route("/api/productions/{name}/logs", api_production_logs, methods=["GET"]),
+        Route(
+            "/api/productions/{name}/deploys",
+            api_production_deploys,
+            methods=["GET"],
+        ),
+        Route(
+            "/api/productions/{name}/delete", api_production_delete, methods=["POST"]
+        ),
+        Route(
+            "/api/productions/{name}/snapshots",
+            api_production_snapshots,
+            methods=["GET"],
+        ),
+        Route(
+            "/api/productions/{name}/snapshot",
+            api_production_snapshot_now,
+            methods=["POST"],
+        ),
+        Route(
+            "/api/productions/{name}/restore",
+            api_production_restore,
+            methods=["POST"],
+        ),
+        Route(
+            "/api/productions/{name}/backup-schedule",
+            api_production_backup_schedule,
+            methods=["POST"],
+        ),
+        Route("/healthz", healthz, methods=["GET"]),
+        Route("/api/webhooks/github", webhook_github, methods=["POST"]),
         Route("/api/stats", api_stats, methods=["GET"]),
         Route("/api/usage", api_usage, methods=["GET"]),
         Route("/api/usage/refresh", api_usage_refresh, methods=["POST"]),

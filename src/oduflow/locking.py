@@ -37,6 +37,13 @@ class LockManager:
                 "Try again later."
             )
 
+    def acquire_env_blocking(self, env_name: str, timeout: float) -> bool:
+        """Blocking acquire with a timeout — webhook-triggered production
+        deploys queue behind a running one instead of dropping the push.
+        Returns False when the timeout expires (caller skips the run)."""
+        lock = self._get_env_lock(env_name)
+        return lock.acquire(blocking=True, timeout=timeout)
+
     def release_env(self, env_name: str) -> None:
         lock = self._get_env_lock(env_name)
         try:
