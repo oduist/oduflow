@@ -53,6 +53,7 @@ precursors).
 | [0032](0032-implicit-traefik-acme-mount-for-services.md) | 2026-07-13 | Auxiliary services receive the Traefik ACME store read-only |
 | [0033](0033-restricted-http-path-routing-for-services.md) | 2026-07-14 | Restricted HTTP path routing for auxiliary services |
 | [0034](0034-external-traefik-routes.md) | 2026-07-16 | External `[route.*]` domains → upstream URLs, plus operator drop-in Traefik dynamic files |
+| [0035](0035-production-hosting.md) | 2026-07-11 | Production hosting: dedicated PG cluster, WAL-G/S3 backups, snapshots, auto-rollback deploys |
 
 ## Design docs
 
