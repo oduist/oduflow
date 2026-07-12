@@ -55,12 +55,26 @@ def clone_extra_repo(
     cred_env = git_env_for_team(team.git_credentials_file())
 
     try:
+        # Shallow clone (--depth 1): drop history so large repos like Odoo
+        # Enterprise (years of commits) clone fast instead of timing out.
+        # --no-single-branch keeps the tip of *every* branch, so a single bare
+        # repo still serves worktrees for any branch/version (16.0, 17.0, 18.0,
+        # ...) exactly as the full clone did.
         subprocess.run(
-            ["git", "clone", "--bare", clone_url, target],
+            [
+                "git",
+                "clone",
+                "--bare",
+                "--depth",
+                "1",
+                "--no-single-branch",
+                clone_url,
+                target,
+            ],
             check=True,
             capture_output=True,
             text=True,
-            timeout=120,
+            timeout=300,
             env=cred_env,
         )
     except subprocess.CalledProcessError as e:
@@ -72,7 +86,7 @@ def clone_extra_repo(
             )
         raise ExternalCommandError("git clone --bare", e.returncode, stderr)
     except subprocess.TimeoutExpired:
-        raise ExternalCommandError("git clone --bare", -1, "Clone timed out (120s).")
+        raise ExternalCommandError("git clone --bare", -1, "Clone timed out (300s).")
 
     # git clone --bare does not set a fetch refspec, so subsequent
     # git fetch --all would only write to FETCH_HEAD without updating
