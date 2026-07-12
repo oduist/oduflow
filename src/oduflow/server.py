@@ -308,9 +308,11 @@ def add_extra_repo(name: str, repo_url: str, ctx: Context = None) -> str:
     """
     Clone an extra addons repository for use with environments.
 
-    The repository is cloned as a bare repo to the shared repos directory.
-    When creating an environment, reference it by name to mount it as
-    additional addons (e.g., Odoo Enterprise).
+    The repository is cloned as a shallow bare repo (only the latest commit of
+    each branch, no history) to the shared repos directory, so large repos like
+    Odoo Enterprise clone quickly. All branches are kept, so one repo serves any
+    Odoo version. When creating an environment, reference it by name to mount it
+    as additional addons (e.g., Odoo Enterprise).
 
     Args:
         name: Short name for the repo (e.g. "enterprise", "custom-themes").
