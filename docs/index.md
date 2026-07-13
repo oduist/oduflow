@@ -105,7 +105,7 @@ hide:
 └──────────────────────────────────────────────────────┘
 ```
 
-The agent writes code, installs the module, reads the traceback, fixes the error, retries — and when it installs cleanly, it can open the browser via [Playwright MCP](https://github.com/anthropics/mcp-playwright) to click through the UI, verify business flows, and validate acceptance criteria — **all without human intervention**.
+The agent writes code, installs the module, reads the traceback, fixes the error, retries — and when it installs cleanly, it can open the browser via [Playwright MCP](https://github.com/anthropics/mcp-playwright) to click through the UI, verify business flows, and validate acceptance criteria — **all without human intervention**. `connect_as_user` closes the last gap: it mints a passwordless Odoo session and hands back the cookie, so Playwright lands past `/web/login` as any role (admin, sales manager, portal) — no credentials to type, no login form.
 
 | | Vibe Coding | Spec-Driven Development |
 |---|---|---|

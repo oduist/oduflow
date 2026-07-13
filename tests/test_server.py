@@ -529,6 +529,96 @@ class TestResetAdminPasswordTool:
             _get_tool_fn("reset_admin_password")(env_name="xyz")
 
 
+class TestConnectAsUserTool:
+    _RESULT = {
+        "sid": "deadbeef" * 8,
+        "login": "jane@acme.com",
+        "uid": "7",
+        "base_url": "https://feature.example.com",
+        "cookie_domain": "feature.example.com",
+        "url": "https://feature.example.com/web",
+        "expires_at": "2026-07-16T00:00:00Z",
+    }
+
+    @patch("oduflow.docker_ops.env_ops.ensure_running", return_value=False)
+    @patch("oduflow.docker_ops.odoo_ops.connect_as_user")
+    def test_connect_returns_cookie(self, mock_connect, mock_ensure):
+        mock_connect.return_value = dict(self._RESULT)
+        result = _get_tool_fn("connect_as_user")(
+            env_name="feature", user="jane@acme.com"
+        )
+        assert "session_id" in result
+        assert "deadbeef" * 8 in result  # the raw sid is handed back verbatim
+        assert "feature.example.com" in result  # cookie domain
+        assert "https://feature.example.com/web" in result  # target URL
+        assert "jane@acme.com" in result
+        assert "context.add_cookies" in result  # Playwright hint
+        mock_connect.assert_called_once_with(
+            TEST_SETTINGS, TEST_TEAM, "feature", "jane@acme.com"
+        )
+
+    @patch("oduflow.docker_ops.env_ops.ensure_running", return_value=False)
+    @patch("oduflow.docker_ops.odoo_ops.connect_as_user")
+    def test_connect_by_numeric_id(self, mock_connect, mock_ensure):
+        mock_connect.return_value = dict(self._RESULT)
+        _get_tool_fn("connect_as_user")(env_name="feature", user="7")
+        mock_connect.assert_called_once_with(TEST_SETTINGS, TEST_TEAM, "feature", "7")
+
+    @patch("oduflow.docker_ops.env_ops.ensure_running", return_value=False)
+    @patch("oduflow.docker_ops.odoo_ops.connect_as_user")
+    def test_connect_user_not_found(self, mock_connect, mock_ensure):
+        from oduflow.errors import NotFoundError
+
+        mock_connect.side_effect = NotFoundError(
+            "User 'ghost' not found in environment 'feature'."
+        )
+        with pytest.raises(ToolError, match="not found"):
+            _get_tool_fn("connect_as_user")(env_name="feature", user="ghost")
+
+    def test_connect_in_scoped_allowlist(self):
+        from oduflow.scoped_access import SCOPED_ALLOWLIST
+
+        # Reachable by per-env scoped tokens, symmetric with run_odoo_shell.
+        assert "connect_as_user" in SCOPED_ALLOWLIST
+
+
+class TestConnectSentinelParsing:
+    """The mint script frames values in sentinels because `odoo shell` merges its
+    banner/logging with `print()` output; parsing must survive that noise."""
+
+    def test_extract_sentinel_from_noisy_output(self):
+        from oduflow.docker_ops.odoo_ops import _extract_sentinel
+
+        noisy = (
+            "2026-07-09 10:00:00,123 1 INFO feature odoo: Odoo version 19.0\n"
+            "2026-07-09 10:00:00,456 1 INFO feature odoo.modules.loading: "
+            "loading 42 modules...\n"
+            "__ODUFLOW_SID__abc123def456__END__\n"
+            "__ODUFLOW_LOGIN__jane@acme.com__END__\n"
+            "__ODUFLOW_UID__7__END__\n"
+            "2026-07-09 10:00:01,000 1 INFO feature odoo: Initiating shutdown\n"
+        )
+        assert _extract_sentinel(noisy, "SID") == "abc123def456"
+        assert _extract_sentinel(noisy, "LOGIN") == "jane@acme.com"
+        assert _extract_sentinel(noisy, "UID") == "7"
+        assert _extract_sentinel(noisy, "TTL") is None
+
+    def test_extract_sentinel_multiline_traceback(self):
+        from oduflow.docker_ops.odoo_ops import _extract_sentinel
+
+        out = (
+            "some log line\n"
+            "__ODUFLOW_ERR__Traceback (most recent call last):\n"
+            '  File "<stdin>", line 3\n'
+            "AttributeError: no session_store__END__\n"
+            "trailing log\n"
+        )
+        err = _extract_sentinel(out, "ERR")
+        assert err is not None
+        assert err.startswith("Traceback")
+        assert "AttributeError" in err
+
+
 class TestEnvLock:
     @patch("oduflow.docker_ops.env_ops.create_environment")
     def test_busy_raises_tool_error(self, mock_create):
