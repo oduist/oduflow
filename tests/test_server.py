@@ -893,3 +893,53 @@ class TestHttpFailClosed:
         ):
             server._start_http()
             mock_uvicorn.assert_called_once()
+
+    def test_port_mode_does_not_trust_forwarded_ips(self):
+        # In port mode the TCP peer is the real client; trusting X-Forwarded-For
+        # would let it spoof its IP, so uvicorn keeps the default trust list.
+        from oduflow import server
+
+        settings = Settings(
+            host="127.0.0.1",
+            teams={"1": TeamSettings(team_id="1")},
+            allow_insecure_http=True,
+            routing_mode="port",
+        )
+        with (
+            patch.object(server, "_get_settings", return_value=settings),
+            patch.object(server, "_build_auth", return_value=None),
+            patch("fastmcp.server.http.create_streamable_http_app"),
+            patch("oduflow.web_ui.mount_web_ui"),
+            patch("oduflow.reaper.start_reaper"),
+            patch("uvicorn.run") as mock_uvicorn,
+        ):
+            server._start_http()
+            _, kwargs = mock_uvicorn.call_args
+            assert kwargs["proxy_headers"] is True
+            assert kwargs["forwarded_allow_ips"] is None
+
+    def test_traefik_mode_trusts_forwarded_ips(self):
+        # Behind Traefik the peer is always the proxy, so uvicorn must read the
+        # real client IP from X-Forwarded-For for the access log and login
+        # rate-limiter.
+        from oduflow import server
+
+        settings = Settings(
+            host="0.0.0.0",
+            teams={"1": TeamSettings(team_id="1", hostname="t1.example.com")},
+            allow_insecure_http=True,
+            routing_mode="traefik",
+            routing_tls=False,
+        )
+        with (
+            patch.object(server, "_get_settings", return_value=settings),
+            patch.object(server, "_build_auth", return_value=None),
+            patch("fastmcp.server.http.create_streamable_http_app"),
+            patch("oduflow.web_ui.mount_web_ui"),
+            patch("oduflow.reaper.start_reaper"),
+            patch("uvicorn.run") as mock_uvicorn,
+        ):
+            server._start_http()
+            _, kwargs = mock_uvicorn.call_args
+            assert kwargs["proxy_headers"] is True
+            assert kwargs["forwarded_allow_ips"] == "*"

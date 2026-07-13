@@ -3946,6 +3946,13 @@ def _start_http() -> None:
 
         served = HostRelativeAuthChallenge(served, settings)
 
+    # Behind Traefik every request arrives from the proxy's container IP, so
+    # uvicorn's access log and the login rate-limiter would see one shared peer
+    # instead of the real client. Trust X-Forwarded-For only in traefik mode
+    # (uvicorn rewrites scope["client"] from it); in port mode the peer is the
+    # real client and trusting forwarded headers would let it spoof its IP.
+    forwarded_allow_ips = "*" if settings.routing_mode == "traefik" else None
+
     # Bound the graceful-shutdown window: MCP clients hold long-lived
     # StreamableHTTP streams (SSE GET/keep-alive) that never close on their own,
     # so without a cap uvicorn waits indefinitely on SIGTERM and systemd escalates
@@ -3957,6 +3964,8 @@ def _start_http() -> None:
         port=port,
         ws="websockets-sansio",
         timeout_graceful_shutdown=10,
+        proxy_headers=True,
+        forwarded_allow_ips=forwarded_allow_ips,
     )
 
 
