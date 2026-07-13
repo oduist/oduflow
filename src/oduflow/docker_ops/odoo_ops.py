@@ -764,6 +764,48 @@ except Exception:
     }
 
 
+def list_env_users(
+    settings: Settings, team: TeamSettings, env_name: str
+) -> list[dict[str, Any]]:
+    """Active login users of an environment (login, name, share).
+
+    Powers the dashboard's "Connect as" picker. Reads the environment database
+    directly via psql on the shared DB container (like ``reset_admin_password``),
+    so it works regardless of whether the Odoo HTTP server is up. ``share`` marks
+    portal users, letting the UI group internal vs. portal roles.
+    """
+    import json
+
+    client = get_client()
+    env_db = get_db_name(env_name, team.team_id)
+    try:
+        db_container = client.containers.get(settings.shared_db_container)
+    except docker.errors.NotFound:
+        raise NotFoundError(
+            f"Database container '{settings.shared_db_container}' is not running. "
+            "System not initialized. Restart oduflow."
+        )
+    # json_agg → a single JSON array so the value parses cleanly without CSV
+    # quoting concerns (partner names may contain commas).
+    sql = (
+        "SELECT COALESCE(json_agg(json_build_object("
+        "'login', u.login, 'name', p.name, 'share', u.share) "
+        "ORDER BY u.share, lower(p.name)), '[]') "
+        "FROM res_users u JOIN res_partner p ON p.id = u.partner_id "
+        "WHERE u.active AND u.login IS NOT NULL AND u.login <> '__system__'"
+    )
+    exit_code, output = db_container.exec_run(
+        ["psql", "-tAX", "-U", settings.db_user, "-d", env_db, "-c", sql]
+    )
+    out = (output.decode("utf-8") if isinstance(output, bytes) else str(output)).strip()
+    if exit_code != 0:
+        raise ExternalCommandError("psql", exit_code, out)
+    try:
+        return json.loads(out or "[]")
+    except json.JSONDecodeError:
+        return []
+
+
 def search_in_environment(
     settings: Settings,
     team: TeamSettings,
