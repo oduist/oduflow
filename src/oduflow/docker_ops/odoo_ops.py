@@ -597,6 +597,224 @@ def run_odoo_shell(
     }
 
 
+# Odoo's http.SESSION_LIFETIME default (7 days) — used only if the running Odoo
+# does not expose the constant to the mint script.
+_DEFAULT_SESSION_LIFETIME = 60 * 60 * 24 * 7
+
+_SENTINEL_RE_CACHE: dict[str, "re.Pattern[str]"] = {}
+
+
+def _extract_sentinel(output: str, key: str) -> str | None:
+    """Return the value framed by ``__ODUFLOW_<KEY>__…__END__`` in *output*.
+
+    ``odoo shell`` merges its banner and logging with script ``print()`` output on
+    a single stream (stdout+stderr, ``demux=False``), so a printed value cannot be
+    recovered by naive last-line parsing. The mint script frames each value with
+    sentinels and this helper regex-extracts it. Returns ``None`` if absent.
+    """
+    pat = _SENTINEL_RE_CACHE.get(key)
+    if pat is None:
+        pat = re.compile(r"__ODUFLOW_" + re.escape(key) + r"__(.*?)__END__", re.DOTALL)
+        _SENTINEL_RE_CACHE[key] = pat
+    match = pat.search(output)
+    return match.group(1) if match else None
+
+
+def _build_connect_as_user_script(user: str) -> str:
+    """Build the in-container script used by :func:`connect_as_user`."""
+    return f"""
+import traceback
+try:
+    _sel = {user!r}
+    Users = env['res.users'].sudo()
+    u = Users.search([('login', '=', _sel)], limit=1)
+    if not u and _sel.isdigit():
+        u = Users.search([('id', '=', int(_sel))], limit=1)
+    if not u:
+        print('__ODUFLOW_ERR__NOTFOUND:' + _sel + '__END__')
+    else:
+        user_env = env(user=u.id)
+        user = user_env['res.users'].browse(u.id)
+        user_context = dict(user_env['res.users'].context_get() or {{}})
+        user_context['uid'] = user.id
+        store = odoo.http.root.session_store
+        s = store.new()
+        s.update({{
+            'db': env.cr.dbname,
+            'login': user.login,
+            'uid': user.id,
+            'session_token': user._compute_session_token(s.sid),
+            'context': user_context,
+        }})
+        store.save(s)
+        print('__ODUFLOW_SID__' + s.sid + '__END__')
+        print('__ODUFLOW_LOGIN__' + user.login + '__END__')
+        print('__ODUFLOW_UID__' + str(user.id) + '__END__')
+        try:
+            print('__ODUFLOW_TTL__' + str(int(odoo.http.SESSION_LIFETIME)) + '__END__')
+        except Exception:
+            pass
+except Exception:
+    print('__ODUFLOW_ERR__' + traceback.format_exc() + '__END__')
+"""
+
+
+def connect_as_user(
+    settings: Settings, team: TeamSettings, env_name: str, user: str
+) -> dict[str, Any]:
+    """Mint an Odoo login session for *user* server-side (issue #78).
+
+    Runs a small script in ``odoo shell`` that creates a session and sets the
+    exact internal state a password login produces (``db``/``login``/``uid``/
+    ``session_token``/``context``), then persists it to the filesystem session
+    store the live HTTP server shares (same container, same data dir). The server
+    honours it on the next request carrying that ``session_id`` cookie — no
+    password is created, transmitted, or stored (Odoo.sh-style "Connect as user").
+
+    *user* is a login string or a numeric user id. The session id is returned
+    framed-and-parsed via :func:`_extract_sentinel` because ``odoo shell`` output
+    is noisy. The mint runs inside try/except and prints a sentinel-framed
+    traceback on failure so drift in the internal session API — rewritten in the
+    Odoo 17.0 HTTP stack, and this tool must work across the supported 15–19 —
+    surfaces as a debuggable error rather than a silent one.
+    """
+    import datetime
+    import io
+    import tarfile
+
+    client = get_client()
+    odoo_container_name = get_resource_name(
+        env_name, "odoo", settings.prefix, team.team_id
+    )
+    env_db = get_db_name(env_name, team.team_id)
+
+    try:
+        container = client.containers.get(odoo_container_name)
+    except docker.errors.NotFound:
+        raise NotFoundError(
+            f"Environment '{env_name}' does not exist. Use create_environment first."
+        )
+
+    creds = load_credentials(
+        env_name,
+        team.workspaces_dir,
+        settings.db_user,
+        settings.db_password,
+        allow_fallback=False,
+    )
+
+    # `env` and `odoo` are standard odoo-shell globals across 15–19. Session state
+    # is written to the filesystem store (no DB commit needed); values are printed
+    # sentinel-framed so they survive the merged banner/log stream.
+    mint_script = _build_connect_as_user_script(user)
+
+    script_path = "/tmp/_oduflow_connect_script.py"
+    data = mint_script.encode("utf-8")
+    tar_stream = io.BytesIO()
+    with tarfile.open(fileobj=tar_stream, mode="w") as tar:
+        info = tarfile.TarInfo(name="_oduflow_connect_script.py")
+        info.size = len(data)
+        tar.addfile(info, io.BytesIO(data))
+    tar_stream.seek(0)
+    container.put_archive("/tmp", tar_stream)
+
+    cmd = (
+        f"odoo shell --no-http --stop-after-init "
+        f"--db_host={settings.shared_db_container} "
+        f"-r {creds['pg_user']} -w {creds['pg_password']} "
+        f"--database={env_db} "
+        f"< {script_path}"
+    )
+    logger.info("Minting session", extra={"env_name": env_name})
+    exit_code, output = container.exec_run(["sh", "-c", cmd], user="odoo")
+    output_str = output.decode("utf-8") if isinstance(output, bytes) else str(output)
+    container.exec_run(["rm", "-f", script_path])
+
+    err = _extract_sentinel(output_str, "ERR")
+    if err is not None:
+        if err.startswith("NOTFOUND:"):
+            raise NotFoundError(
+                f"User '{err[len('NOTFOUND:') :]}' not found in environment "
+                f"'{env_name}'. Pass an existing login or numeric user id."
+            )
+        raise ExternalCommandError("odoo shell (connect_as_user)", exit_code, err)
+
+    sid = _extract_sentinel(output_str, "SID")
+    if not sid:
+        # No sid and no framed error → surface the raw shell output for debugging.
+        raise ExternalCommandError(
+            "odoo shell (connect_as_user)", exit_code, output_str
+        )
+
+    login = _extract_sentinel(output_str, "LOGIN") or user
+    uid = _extract_sentinel(output_str, "UID") or ""
+    ttl_raw = _extract_sentinel(output_str, "TTL")
+    try:
+        ttl = int(ttl_raw) if ttl_raw else _DEFAULT_SESSION_LIFETIME
+    except ValueError:
+        ttl = _DEFAULT_SESSION_LIFETIME
+
+    from oduflow.docker_ops.env_ops import get_env_base_url
+
+    base_url, cookie_domain = get_env_base_url(settings, team, env_name, container)
+    expires_at = (
+        datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(seconds=ttl)
+    ).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    logger.info("Connected as user", extra={"env_name": env_name, "login": login})
+    return {
+        "sid": sid,
+        "login": login,
+        "uid": uid,
+        "base_url": base_url,
+        "cookie_domain": cookie_domain,
+        "url": f"{base_url}/web",
+        "expires_at": expires_at,
+    }
+
+
+def list_env_users(
+    settings: Settings, team: TeamSettings, env_name: str
+) -> list[dict[str, Any]]:
+    """Active login users of an environment (login, name, share).
+
+    Powers the dashboard's "Connect as" picker. Reads the environment database
+    directly via psql on the shared DB container (like ``reset_admin_password``),
+    so it works regardless of whether the Odoo HTTP server is up. ``share`` marks
+    portal users, letting the UI group internal vs. portal roles.
+    """
+    import json
+
+    client = get_client()
+    env_db = get_db_name(env_name, team.team_id)
+    try:
+        db_container = client.containers.get(settings.shared_db_container)
+    except docker.errors.NotFound:
+        raise NotFoundError(
+            f"Database container '{settings.shared_db_container}' is not running. "
+            "System not initialized. Restart oduflow."
+        )
+    # json_agg → a single JSON array so the value parses cleanly without CSV
+    # quoting concerns (partner names may contain commas).
+    sql = (
+        "SELECT COALESCE(json_agg(json_build_object("
+        "'login', u.login, 'name', p.name, 'share', u.share) "
+        "ORDER BY u.share, lower(p.name)), '[]') "
+        "FROM res_users u JOIN res_partner p ON p.id = u.partner_id "
+        "WHERE u.active AND u.login IS NOT NULL AND u.login <> '__system__'"
+    )
+    exit_code, output = db_container.exec_run(
+        ["psql", "-tAX", "-U", settings.db_user, "-d", env_db, "-c", sql]
+    )
+    out = (output.decode("utf-8") if isinstance(output, bytes) else str(output)).strip()
+    if exit_code != 0:
+        raise ExternalCommandError("psql", exit_code, out)
+    try:
+        return json.loads(out or "[]")
+    except json.JSONDecodeError:
+        return []
+
+
 def search_in_environment(
     settings: Settings,
     team: TeamSettings,

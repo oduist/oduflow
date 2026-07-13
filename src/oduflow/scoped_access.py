@@ -62,6 +62,7 @@ SCOPED_ALLOWLIST = frozenset(
         "run_odoo_command",
         "run_db_query",
         "reset_admin_password",
+        "connect_as_user",
         "write_file_in_odoo",
         "read_file_in_odoo",
         "search_in_odoo",

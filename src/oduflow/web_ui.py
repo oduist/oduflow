@@ -32,6 +32,7 @@ from collections.abc import Callable
 
 from oduflow.docker_ops import (
     env_ops,
+    odoo_ops,
     service_ops,
     service_presets,
     system_ops,
@@ -2228,6 +2229,51 @@ def _build_routes(
             logger.exception("Unexpected error in api_mcp_access")
             return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
 
+    def api_env_users(request: Request) -> JSONResponse:
+        branch = request.path_params["branch"]
+        try:
+            settings = get_settings()
+            team = _get_ui_team(request)
+            users = odoo_ops.list_env_users(settings, team, branch)
+            return JSONResponse({"ok": True, "result": {"users": users}})
+        except FlowError as e:
+            return _error_response(e)
+        except Exception as e:
+            logger.exception("Unexpected error in api_env_users")
+            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+
+    async def api_connect_as(request: Request) -> JSONResponse:
+        branch = request.path_params["branch"]
+        try:
+            settings = get_settings()
+            team = _get_ui_team(request)
+            body = await request.json()
+            user = (body.get("user") or "admin").strip() or "admin"
+            activity.touch(team, branch)
+            result = odoo_ops.connect_as_user(settings, team, branch, user)
+            return JSONResponse(
+                {
+                    "ok": True,
+                    "result": {
+                        "url": result["url"],
+                        "login": result["login"],
+                        "uid": result["uid"],
+                        "expires_at": result["expires_at"],
+                        "cookie": {
+                            "name": "session_id",
+                            "value": result["sid"],
+                            "domain": result["cookie_domain"],
+                            "path": "/",
+                        },
+                    },
+                }
+            )
+        except FlowError as e:
+            return _error_response(e)
+        except Exception as e:
+            logger.exception("Unexpected error in api_connect_as")
+            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+
     async def ws_terminal(websocket: WebSocket) -> None:
         branch = websocket.path_params["branch"]
         await websocket.accept()
@@ -2998,6 +3044,16 @@ def _build_routes(
             "/api/environments/{branch:path}/mcp-access",
             api_mcp_access,
             methods=["GET"],
+        ),
+        Route(
+            "/api/environments/{branch:path}/users",
+            api_env_users,
+            methods=["GET"],
+        ),
+        Route(
+            "/api/environments/{branch:path}/connect-as",
+            api_connect_as,
+            methods=["POST"],
         ),
         Route("/api/environments/{branch:path}/update", api_update, methods=["POST"]),
         Route(

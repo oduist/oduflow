@@ -1924,6 +1924,53 @@ def reset_admin_password(
 @mcp.tool()
 @handle_errors
 @with_env_lock
+def connect_as_user(env_name: str, user: str, ctx: Context = None) -> str:
+    """
+    Mint a passwordless Odoo login session for a user and return its cookie.
+
+    Creates a server-side Odoo session for `user` (by login or numeric id) — the
+    same authenticated state a password login produces — without setting or
+    transmitting any password, and returns the `session_id` cookie plus a URL.
+    Hand the cookie to a browser automation tool (e.g. Playwright
+    `context.add_cookies([...])` then `page.goto(url)`) to land directly in an
+    authenticated session as that user, skipping the login form. Mint a fresh
+    session per user to exercise a feature across roles (admin, sales manager,
+    portal — portal users are supported; they land on `/web` and Odoo redirects
+    them to their portal) in a single test run.
+
+    Whoever can call this can already `run_odoo_shell`, so it grants no new
+    privilege. The returned session id is a live credential shown in this tool's
+    output (and this transcript) — treat it like a password.
+
+    Args:
+        env_name: The name of the environment.
+        user: The target user's login (e.g. "jane@acme.com") or numeric id.
+    """
+    settings = _get_settings()
+    team = _resolve_team(ctx)
+    woke = _wake_for_work(settings, team, env_name)
+    result = odoo_ops.connect_as_user(settings, team, env_name, user)
+    sid = result["sid"]
+    domain = result["cookie_domain"]
+    return (
+        f"{woke}Connected as {result['login']} (uid {result['uid']}) in "
+        f"'{env_name}'.\n"
+        f"Session cookie — add it to your browser / Playwright context:\n"
+        f"  name:    session_id\n"
+        f"  value:   {sid}\n"
+        f"  domain:  {domain}\n"
+        f"  path:    /\n"
+        f"URL:        {result['url']}\n"
+        f"Expires at: {result['expires_at']}\n"
+        f"Playwright: context.add_cookies([{{'name': 'session_id', "
+        f"'value': '{sid}', 'domain': '{domain}', 'path': '/'}}]) "
+        f"then page.goto('{result['url']}')"
+    )
+
+
+@mcp.tool()
+@handle_errors
+@with_env_lock
 def run_db_query(
     env_name: str,
     query: str,

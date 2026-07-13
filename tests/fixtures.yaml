@@ -109,6 +109,20 @@ scenarios:
       n_lines: 50
     expect_contains: []
 
+  # Mints a real Odoo session in the live container and checks the cookie
+  # payload comes back — the passwordless "Connect as user" (issue #78). Runs
+  # against odoo:19.0 (post-17 HTTP stack), the version drift this exercises.
+  connect_as_user_admin:
+    tool: connect_as_user
+    needs_env: true
+    args:
+      env_name: "19.0"
+      user: "admin"
+    expect_contains:
+      - "Connected as admin"
+      - "session_id"
+      - "/web"
+
   test_modules:
     tool: run_odoo_tests
     needs_env: true

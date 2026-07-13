@@ -2010,6 +2010,48 @@ def start_environment(
     return {"odoo_container": odoo_container_name, "started": started}
 
 
+def get_env_base_url(
+    settings: Settings,
+    team: TeamSettings,
+    env_name: str,
+    container: Any = None,
+) -> tuple[str, str]:
+    """Return ``(base_url, cookie_domain)`` for an environment's Odoo web UI.
+
+    ``base_url`` is scheme + host (+ published port) with no path; ``cookie_domain``
+    is the bare host an Odoo ``session_id`` cookie must be scoped to. Mirrors the
+    URL logic in :func:`get_environment_info` (traefik subdomain vs. published
+    host port) so a single source computes both the browsable URL and the cookie
+    domain — used by ``connect_as_user`` to hand back a cookie a browser will
+    actually send.
+    """
+    if settings.routing_mode == "traefik":
+        host = get_env_hostname(env_name, team.hostname)
+        return f"https://{host}", host
+
+    # Port routing: read the container's published 8069 port. Cookies are not
+    # port-scoped, so the domain is just the host.
+    if container is None:
+        client = get_client()
+        try:
+            container = client.containers.get(
+                get_resource_name(env_name, "odoo", settings.prefix, team.team_id)
+            )
+        except docker.errors.NotFound:
+            raise NotFoundError(
+                f"Environment '{env_name}' does not exist. Use create_environment first."
+            )
+    ports = container.attrs.get("NetworkSettings", {}).get("Ports", {}) or {}
+    mappings = ports.get("8069/tcp") or []
+    host_port = mappings[0].get("HostPort") if mappings else None
+    if not host_port:
+        raise NotFoundError(
+            f"Environment '{env_name}' has no published HTTP port; "
+            "is the environment running?"
+        )
+    return f"http://{team.hostname}:{host_port}", team.hostname
+
+
 def get_environment_info(
     settings: Settings, team: TeamSettings, env_name: str
 ) -> dict[str, Any]:

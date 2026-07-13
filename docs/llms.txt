@@ -164,6 +164,7 @@ For OAuth-based MCP clients like Claude.ai Remote MCP, Oduflow runs its own OAut
 - `list_installed_modules` — list Odoo modules and their states with name/state filtering
 - `run_db_query` — execute SQL queries against the environment's PostgreSQL database
 - `reset_admin_password` — reset the admin user password (default: "test")
+- `connect_as_user` — mint a passwordless Odoo login session for a user and return the `session_id` cookie + URL (Playwright-ready; skips the login form, supports any role incl. portal)
 - `read_output` — read from a cached tool output by ID (paginate, grep, errors, tail)
 - `list_environments` / `get_environment_info` — inspect environments
 - `create_service` / `delete_service` / `restart_service` / `update_service` / `list_services` / `get_service_info` / `get_service_logs` / `run_service_command` — manage auxiliary services

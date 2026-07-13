@@ -426,6 +426,7 @@
   .btn-update:hover, .btn-update:focus-visible { border-color: var(--yellow); color: var(--yellow); background: color-mix(in oklab, var(--yellow) 10%, transparent); }
   .btn-sync:hover, .btn-sync:focus-visible { border-color: var(--accent); color: var(--accent); background: color-mix(in oklab, var(--accent) 10%, transparent); }
   .btn-logs:hover, .btn-logs:focus-visible { border-color: var(--accent); color: var(--accent); background: color-mix(in oklab, var(--accent) 10%, transparent); }
+  .btn-connect:hover, .btn-connect:focus-visible { border-color: var(--cyan); color: var(--cyan); background: color-mix(in oklab, var(--cyan) 10%, transparent); }
   .btn-protect:hover, .btn-protect:focus-visible { border-color: var(--yellow); color: var(--yellow); background: color-mix(in oklab, var(--yellow) 10%, transparent); }
   .btn-create {
     background: var(--surface);
@@ -511,8 +512,6 @@
   /* Unified large modal size (chat / terminals) — almost fullscreen, with margins */
   .modal-terminal, .modal-chat { width: 92vw; max-width: 92vw; height: 90vh; max-height: 90vh; }
   /* --- ACP chat (chat.js) — Engineer's Console tokens only (DESIGN.md) --- */
-  .btn-chat { margin-right: 0.75rem; }
-  .btn-chat:hover, .btn-chat:focus-visible { border-color: var(--accent); color: var(--accent); background: color-mix(in oklab, var(--accent) 10%, transparent); }
   .chat-header-actions { display: flex; align-items: center; gap: 4px; }
   .modal-header-actions { display: flex; align-items: center; gap: 4px; }
   .chat-instance { display: flex; flex-direction: column; height: 100%; min-height: 0; background: var(--bg); }
@@ -1659,6 +1658,47 @@
     </div>
   </div>
 </div>
+<div class="modal-overlay" id="connect-modal" onclick="closeConnect(event)">
+  <div class="modal modal-sm">
+    <div class="modal-header">
+      <h2 id="connect-title">Connect As</h2>
+      <button class="modal-close" onclick="closeConnect()">&times;</button>
+    </div>
+    <div class="modal-body">
+      <p class="modal-note">Mint a passwordless login session for a user and get back the session_id cookie plus a URL. Add the cookie to your browser or Playwright context to land in an authenticated session as that user — no login form, no password. The session id is a live credential; treat it like a password.</p>
+      <div class="form-group">
+        <label for="connect-user">Log in as</label>
+        <select id="connect-user" aria-label="User to log in as"></select>
+      </div>
+      <div class="form-actions">
+        <button class="btn btn-connect" id="connect-submit" onclick="submitConnect()">Connect</button>
+      </div>
+      <div id="connect-result" style="display:none;">
+        <div class="form-group">
+          <label for="connect-url">URL</label>
+          <div class="copy-row">
+            <input id="connect-url" class="mono-input" type="text" readonly>
+            <button class="btn" type="button" onclick="copyConnectField('connect-url', 'URL copied')">Copy</button>
+            <button class="btn" type="button" id="connect-open">Open</button>
+          </div>
+        </div>
+        <div class="form-group">
+          <label for="connect-cookie">Session cookie (session_id)</label>
+          <div class="copy-row">
+            <input id="connect-cookie" class="mono-input" type="password" readonly>
+            <button class="btn" type="button" id="connect-reveal" onclick="toggleConnectSecret()" aria-pressed="false">Show</button>
+            <button class="btn" type="button" onclick="copyConnectField('connect-cookie', 'Cookie copied')">Copy</button>
+          </div>
+        </div>
+        <p class="modal-note" id="connect-meta"></p>
+        <p class="modal-note">The Open button logs you in directly only when the dashboard shares the environment's host (local / port mode). On a separate host, add the cookie above to your browser (or Playwright) first.</p>
+      </div>
+      <div class="form-actions">
+        <button class="btn" onclick="closeConnect()">Close</button>
+      </div>
+    </div>
+  </div>
+</div>
 <div class="modal-overlay" id="license-modal" onclick="closeLicenseModal(event)">
   <div class="modal modal-sm">
     <div class="modal-header">
@@ -2235,21 +2275,23 @@ function renderEnvironments(envs, force) {
           (busy ? '<span class="badge badge-busy"><span class="spinner" aria-hidden="true"></span>' + esc(busy.op) + '&hellip; <span data-busy-for="' + esc(env.branch) + '">' + _fmtElapsed(Date.now() - busy.started) + '</span></span>' : '') +
         '</div>' +
         '<div class="env-actions">' +
-          (showAgent
-            ? '<button class="btn btn-chat" title="Structured chat with the coding agent for this environment" onclick="openChat(\'' + escAttr(env.branch) + '\')">Agent Chat</button>'
-            : '') +
+          '<button class="btn btn-connect" title="Log in as a user without a password: mint a session and get the cookie + URL" onclick="openConnect(\'' + escAttr(env.branch) + '\')" ' + dis +
+            (allStopped ? 'disabled' : '') + '>Connect As</button>' +
+          '<button class="btn btn-sync" title="Pull code changes and apply: install, upgrade or restart as needed" onclick="doAction(\'' + escAttr(env.branch) + '\',\'sync\')" ' + dis +
+            (allStopped ? 'disabled' : '') + '>Sync</button>' +
+          '<button class="btn btn-logs" onclick="showLogs(\'' + escAttr(env.branch) + '\')">Logs</button>' +
+          '<button class="btn btn-restart" title="Restart the containers" onclick="doAction(\'' + escAttr(env.branch) + '\',\'restart\')" ' + dis +
+            (allStopped ? 'disabled' : '') + '>Restart</button>' +
           (allStopped
             ? '<button class="btn btn-start" onclick="doAction(\'' + escAttr(env.branch) + '\',\'start\')" ' + dis + '>Start</button>'
             : '<button class="btn btn-stop" onclick="doAction(\'' + escAttr(env.branch) + '\',\'stop\')" ' + dis +
                 (env.protected ? 'disabled title="Environment is protected"' : '') + '>Stop</button>') +
-          '<button class="btn btn-restart" title="Restart the containers" onclick="doAction(\'' + escAttr(env.branch) + '\',\'restart\')" ' + dis +
-            (allStopped ? 'disabled' : '') + '>Restart</button>' +
-          '<button class="btn btn-sync" title="Pull code changes and apply: install, upgrade or restart as needed" onclick="doAction(\'' + escAttr(env.branch) + '\',\'sync\')" ' + dis +
-            (allStopped ? 'disabled' : '') + '>Sync</button>' +
-          '<button class="btn btn-logs" onclick="showLogs(\'' + escAttr(env.branch) + '\')">Logs</button>' +
           '<div class="menu-wrap">' +
             '<button class="btn btn-more" onclick="toggleMenu(event)" aria-haspopup="menu" aria-expanded="false">More &#9662;</button>' +
             '<div class="menu" role="menu">' +
+              (showAgent
+                ? '<button role="menuitem" title="Structured chat with the coding agent for this environment" onclick="openChat(\'' + escAttr(env.branch) + '\')">Agent Chat</button>'
+                : '') +
               '<button role="menuitem" title="Shell inside the Odoo container" onclick="openConsole(\'' + escAttr(env.branch) + '\')" ' +
                 (allStopped ? 'disabled' : '') + '>Open console</button>' +
               '<button role="menuitem" title="psql session on the environment database" onclick="openSqlConsole(\'' + escAttr(env.branch) + '\')" ' +
@@ -2593,6 +2635,123 @@ function toggleMcpSecret() {
 }
 
 function copyMcpField(id, label) {
+  var val = document.getElementById(id).value;
+  if (val) copyToClipboard(val, label);
+}
+
+var _connectBranch = '';
+
+async function openConnect(branch) {
+  _connectBranch = branch;
+  document.getElementById('connect-title').textContent = 'Connect As — ' + branch;
+  var sel = document.getElementById('connect-user');
+  var submit = document.getElementById('connect-submit');
+  sel.innerHTML = '<option>Loading users…</option>';
+  sel.disabled = true;
+  submit.disabled = true;
+  document.getElementById('connect-result').style.display = 'none';
+  var ck = document.getElementById('connect-cookie');
+  ck.type = 'password';
+  ck.value = '';
+  var reveal = document.getElementById('connect-reveal');
+  reveal.textContent = 'Show';
+  reveal.setAttribute('aria-pressed', 'false');
+  showModal('connect-modal');
+  try {
+    var r = await fetch(API + '/' + encodeURIComponent(branch) + '/users');
+    var data = await r.json();
+    if (!data.ok) {
+      sel.innerHTML = '<option value="admin">admin</option>';
+      showToast(data.error || 'Failed to load users', true);
+    } else {
+      var users = (data.result && data.result.users) || [];
+      if (!users.length) {
+        sel.innerHTML = '<option value="admin">admin</option>';
+      } else {
+        var opt = function(u) {
+          var label = u.name ? (u.name + ' — ' + u.login) : u.login;
+          return '<option value="' + escAttr(u.login) + '"' +
+            (u.login === 'admin' ? ' selected' : '') + '>' + esc(label) + '</option>';
+        };
+        var internal = users.filter(function(u) { return !u.share; });
+        var portal = users.filter(function(u) { return u.share; });
+        var html = '';
+        if (internal.length) html += '<optgroup label="Internal">' + internal.map(opt).join('') + '</optgroup>';
+        if (portal.length) html += '<optgroup label="Portal">' + portal.map(opt).join('') + '</optgroup>';
+        sel.innerHTML = html;
+      }
+    }
+  } catch (e) {
+    sel.innerHTML = '<option value="admin">admin</option>';
+    showToast('Connection error: ' + e.message, true);
+  }
+  sel.disabled = false;
+  submit.disabled = false;
+}
+
+function closeConnect(event) {
+  if (event && event.target !== event.currentTarget) return;
+  hideModal('connect-modal');
+}
+
+async function submitConnect() {
+  var user = document.getElementById('connect-user').value || 'admin';
+  var btn = document.getElementById('connect-submit');
+  var prev = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = 'Connecting…';
+  try {
+    var r = await fetch(API + '/' + encodeURIComponent(_connectBranch) + '/connect-as', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ user: user })
+    });
+    var data = await r.json();
+    if (!data.ok) { showToast(data.error || 'Failed to connect', true); return; }
+    var res = data.result;
+    document.getElementById('connect-url').value = res.url || '';
+    var ck = document.getElementById('connect-cookie');
+    ck.type = 'password';
+    ck.value = (res.cookie && res.cookie.value) || '';
+    var reveal = document.getElementById('connect-reveal');
+    reveal.textContent = 'Show';
+    reveal.setAttribute('aria-pressed', 'false');
+    document.getElementById('connect-meta').textContent =
+      'Logged in as ' + res.login + ' (uid ' + res.uid + '). Session expires ' +
+      res.expires_at + '. Cookie domain: ' + res.cookie.domain + ', path /.';
+    var openBtn = document.getElementById('connect-open');
+    openBtn.onclick = function() { connectOpen(res.url, res.cookie); };
+    document.getElementById('connect-result').style.display = '';
+    showToast('Session minted for ' + res.login);
+  } catch (e) {
+    showToast('Connection error: ' + e.message, true);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = prev;
+  }
+}
+
+function connectOpen(url, cookie) {
+  // Same host (local/port mode): the dashboard and the env share a hostname —
+  // cookies are not port-scoped, so dropping session_id here reaches the env.
+  // A different host (traefik subdomain) can't be set from the dashboard
+  // origin, so we just open and the operator adds the cookie themselves.
+  if (cookie && cookie.domain === location.hostname) {
+    document.cookie = 'session_id=' + cookie.value + '; path=/';
+  }
+  window.open(url, '_blank', 'noopener');
+}
+
+function toggleConnectSecret() {
+  var el = document.getElementById('connect-cookie');
+  var btn = document.getElementById('connect-reveal');
+  var show = el.type === 'password';
+  el.type = show ? 'text' : 'password';
+  btn.textContent = show ? 'Hide' : 'Show';
+  btn.setAttribute('aria-pressed', show ? 'true' : 'false');
+}
+
+function copyConnectField(id, label) {
   var val = document.getElementById(id).value;
   if (val) copyToClipboard(val, label);
 }

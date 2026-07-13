@@ -30,6 +30,7 @@ All tools are accessible via MCP clients (Cursor, Cline, Amp, etc.) and the CLI 
 | `list_installed_modules` | | List Odoo modules and their states with name/state filtering |
 | `run_db_query` | ✓ | Execute a SQL query against the environment's PostgreSQL database |
 | `reset_admin_password` | ✓ | Reset the admin user password in the Odoo database (default: "test") |
+| `connect_as_user` | ✓ | Mint a passwordless Odoo login session for a user (by login or id) and return the `session_id` cookie + URL — hand to Playwright to skip the login form and test as any role (incl. portal) |
 | `read_output` | | Read from a cached tool output by ID (paginate, grep, errors, tail) |
 | **Template Management** | | |
 | `save_as_template` | ✓ | ⚠️ Save a branch DB + filestore as a new template |
