@@ -93,3 +93,35 @@ class TestCloneExtraRepoShallow:
 
         # views.xml only exists on the 18.0 branch.
         assert (wt / "sale_enterprise" / "views.xml").is_file()
+
+    def test_worktree_fetches_new_commits_on_branch(self, team, tmp_path):
+        """create_worktree's targeted single-branch fetch pulls updates.
+
+        A commit added to 18.0 *after* the clone must land in the worktree,
+        proving the per-branch fetch runs instead of relying on stale clone
+        data (and without a slow ``--all`` over every branch).
+        """
+        url = _make_git_source(tmp_path)
+        clone_extra_repo(team, "enterprise", url)
+
+        src = tmp_path / "source"
+
+        def _git(*args):
+            subprocess.run(
+                ["git", "-C", str(src), *args],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+        _git("checkout", "18.0")
+        (src / "sale_enterprise" / "new.xml").write_text("<odoo/>")
+        _git("add", "-A")
+        _git(*_GIT_ID, "commit", "-m", "18.0 update")
+        _git("checkout", "main")
+
+        wt = tmp_path / "wt"
+        create_worktree(team, "enterprise", "18.0", str(wt))
+
+        # new.xml was committed after the clone → only present if fetched.
+        assert (wt / "sale_enterprise" / "new.xml").is_file()

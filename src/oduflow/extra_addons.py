@@ -361,8 +361,15 @@ def _get_branch_refs(repo_path: str) -> dict[str, str]:
     return refs
 
 
-def fetch_extra_repo(team: TeamSettings, name: str) -> dict:
+def fetch_extra_repo(team: TeamSettings, name: str, branch: str | None = None) -> dict:
     """Fetch latest changes and return a summary of what changed.
+
+    When *branch* is given, only that one branch is fetched (a targeted
+    ``git fetch origin +refs/heads/<branch>:refs/heads/<branch>``) instead of
+    ``--all``. Creating/updating a worktree needs just its own branch, and
+    fetching every branch of a large repo like Odoo Enterprise otherwise times
+    out (issue: "Fetch timed out"). The explicit "update repo" path passes no
+    branch and still fetches everything to report changes across all branches.
 
     Returns a dict with keys: name, up_to_date, new_branches,
     deleted_branches, updated_branches.
@@ -416,9 +423,35 @@ def fetch_extra_repo(team: TeamSettings, name: str) -> dict:
     refs_before = _get_branch_refs(path)
     cred_env = git_env_for_team(team.git_credentials_file())
 
+    if branch:
+        # Targeted single-branch fetch: pull only the requested branch's tip so
+        # a large repo doesn't time out fetching every version branch. The '+'
+        # forces the local ref to match after a rebase/force-push upstream.
+        fetch_args = [
+            "git",
+            "-C",
+            path,
+            "fetch",
+            "origin",
+            f"+refs/heads/{branch}:refs/heads/{branch}",
+            "--recurse-submodules=no",
+        ]
+        fetch_label = f"git fetch origin {branch}"
+    else:
+        fetch_args = [
+            "git",
+            "-C",
+            path,
+            "fetch",
+            "--all",
+            "--prune",
+            "--recurse-submodules=no",
+        ]
+        fetch_label = "git fetch --all --prune"
+
     try:
         subprocess.run(
-            ["git", "-C", path, "fetch", "--all", "--prune", "--recurse-submodules=no"],
+            fetch_args,
             check=True,
             capture_output=True,
             text=True,
@@ -426,13 +459,9 @@ def fetch_extra_repo(team: TeamSettings, name: str) -> dict:
             env=cred_env,
         )
     except subprocess.CalledProcessError as e:
-        raise ExternalCommandError(
-            "git fetch --all --prune", e.returncode, e.stderr or ""
-        )
+        raise ExternalCommandError(fetch_label, e.returncode, e.stderr or "")
     except subprocess.TimeoutExpired:
-        raise ExternalCommandError(
-            "git fetch --all --prune", -1, "Fetch timed out (120s)."
-        )
+        raise ExternalCommandError(fetch_label, -1, "Fetch timed out (120s).")
 
     refs_after = _get_branch_refs(path)
 
@@ -484,7 +513,7 @@ def create_worktree(
     if not os.path.isdir(bare_path):
         raise NotFoundError(f"Extra repo '{repo_name}' not found. Add it first.")
 
-    fetch_extra_repo(team, repo_name)
+    fetch_extra_repo(team, repo_name, branch=branch)
 
     subprocess.run(
         ["git", "-C", bare_path, "worktree", "prune"],
@@ -560,7 +589,7 @@ def pull_extra_worktree(
     commit hash before the pull and *changed_files* are paths relative
     to the worktree root.  Returns ``("", [])`` if already up to date.
     """
-    fetch_extra_repo(team, repo_name)
+    fetch_extra_repo(team, repo_name, branch=branch)
 
     old_head = subprocess.run(
         ["git", "-C", worktree_path, "rev-parse", "HEAD"],

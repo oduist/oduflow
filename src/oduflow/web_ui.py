@@ -803,6 +803,12 @@ def _build_routes(
             )
             return JSONResponse({"ok": True, "result": result})
         except FlowError as e:
+            # FlowError is an "expected" business error, but for create it is the
+            # only record of WHY the environment failed to build (overlay mount,
+            # disk/quota, git auth, …): the response often never reaches the
+            # browser on multi-minute creates, so log it here to keep the reason
+            # in the server journal.
+            logger.warning("create_environment failed for %s: %s", env_name, e)
             return _error_response(e)
         except Exception as e:
             logger.exception("Unexpected error in api_create")
