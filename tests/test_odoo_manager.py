@@ -1290,6 +1290,23 @@ class TestRunEnvironmentTests:
         assert "--gevent-port" not in test_cmd
 
 
+class TestConnectAsUserScript:
+    def test_numeric_user_lookup_preserves_active_filter(self):
+        script = odoo_ops._build_connect_as_user_script("7")
+
+        assert "Users.search([('id', '=', int(_sel))], limit=1)" in script
+        assert "Users.browse(int(_sel)).exists()" not in script
+
+    def test_session_context_uses_target_user_env(self):
+        script = odoo_ops._build_connect_as_user_script("jane@acme.com")
+
+        assert "user_env = env(user=u.id)" in script
+        assert "user_context = dict(user_env['res.users'].context_get() or {})" in script
+        assert "user_context['uid'] = user.id" in script
+        assert "'context': user_context" in script
+        assert "'context': dict(u.context_get())" not in script
+
+
 class TestGetLogs:
     def test_logs(self, mock_docker_client):
         container = MagicMock()

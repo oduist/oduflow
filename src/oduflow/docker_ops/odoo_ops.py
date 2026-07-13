@@ -620,6 +620,45 @@ def _extract_sentinel(output: str, key: str) -> str | None:
     return match.group(1) if match else None
 
 
+def _build_connect_as_user_script(user: str) -> str:
+    """Build the in-container script used by :func:`connect_as_user`."""
+    return f"""
+import traceback
+try:
+    _sel = {user!r}
+    Users = env['res.users'].sudo()
+    u = Users.search([('login', '=', _sel)], limit=1)
+    if not u and _sel.isdigit():
+        u = Users.search([('id', '=', int(_sel))], limit=1)
+    if not u:
+        print('__ODUFLOW_ERR__NOTFOUND:' + _sel + '__END__')
+    else:
+        user_env = env(user=u.id)
+        user = user_env['res.users'].browse(u.id)
+        user_context = dict(user_env['res.users'].context_get() or {{}})
+        user_context['uid'] = user.id
+        store = odoo.http.root.session_store
+        s = store.new()
+        s.update({{
+            'db': env.cr.dbname,
+            'login': user.login,
+            'uid': user.id,
+            'session_token': user._compute_session_token(s.sid),
+            'context': user_context,
+        }})
+        store.save(s)
+        print('__ODUFLOW_SID__' + s.sid + '__END__')
+        print('__ODUFLOW_LOGIN__' + user.login + '__END__')
+        print('__ODUFLOW_UID__' + str(user.id) + '__END__')
+        try:
+            print('__ODUFLOW_TTL__' + str(int(odoo.http.SESSION_LIFETIME)) + '__END__')
+        except Exception:
+            pass
+except Exception:
+    print('__ODUFLOW_ERR__' + traceback.format_exc() + '__END__')
+"""
+
+
 def connect_as_user(
     settings: Settings, team: TeamSettings, env_name: str, user: str
 ) -> dict[str, Any]:
@@ -667,37 +706,7 @@ def connect_as_user(
     # `env` and `odoo` are standard odoo-shell globals across 15–19. Session state
     # is written to the filesystem store (no DB commit needed); values are printed
     # sentinel-framed so they survive the merged banner/log stream.
-    mint_script = f"""
-import traceback
-try:
-    _sel = {user!r}
-    Users = env['res.users'].sudo()
-    u = Users.search([('login', '=', _sel)], limit=1)
-    if not u and _sel.isdigit():
-        u = Users.browse(int(_sel)).exists()
-    if not u:
-        print('__ODUFLOW_ERR__NOTFOUND:' + _sel + '__END__')
-    else:
-        store = odoo.http.root.session_store
-        s = store.new()
-        s.update({{
-            'db': env.cr.dbname,
-            'login': u.login,
-            'uid': u.id,
-            'session_token': u._compute_session_token(s.sid),
-            'context': dict(u.context_get()),
-        }})
-        store.save(s)
-        print('__ODUFLOW_SID__' + s.sid + '__END__')
-        print('__ODUFLOW_LOGIN__' + u.login + '__END__')
-        print('__ODUFLOW_UID__' + str(u.id) + '__END__')
-        try:
-            print('__ODUFLOW_TTL__' + str(int(odoo.http.SESSION_LIFETIME)) + '__END__')
-        except Exception:
-            pass
-except Exception:
-    print('__ODUFLOW_ERR__' + traceback.format_exc() + '__END__')
-"""
+    mint_script = _build_connect_as_user_script(user)
 
     script_path = "/tmp/_oduflow_connect_script.py"
     data = mint_script.encode("utf-8")
