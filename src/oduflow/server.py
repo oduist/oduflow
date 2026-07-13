@@ -2592,7 +2592,10 @@ def delete_file_in_volume(
 
 def _ensure_initialized(settings: Settings) -> None:
     """Ensure shared infrastructure and per-team directories exist (idempotent)."""
+    from oduflow import prereqs
+
     _copy_bundled_configs()
+    prereqs.ensure_fuse_overlayfs()
     system_ops.init_system(settings)
 
     import pathlib

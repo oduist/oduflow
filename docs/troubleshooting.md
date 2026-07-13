@@ -140,6 +140,11 @@ umount /srv/oduflow/team_1/workspaces/<env-slug>/filestore \
 
 ### fuse-overlayfs prerequisites
 
+On Linux, Oduflow auto-installs `fuse-overlayfs` on first launch when it starts
+as root on a Debian/Ubuntu host. If it is still missing (non-root, non-Debian, or
+no network), install it by hand. On macOS the binary is never needed — overlays
+fall back to a plain copy automatically.
+
 ```bash
 which fuse-overlayfs          # install: sudo apt install fuse-overlayfs
 ls -l /dev/fuse               # must exist (present by default on Ubuntu)

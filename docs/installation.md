@@ -5,7 +5,7 @@
 - **Docker** (Docker Engine or Docker Desktop)
 - **Python 3.10+**
 - **Git**
-- **fuse-overlayfs** (for filestore overlay mounting)
+- **fuse-overlayfs** (Linux only, for filestore overlay mounting) — auto-installed on first launch; see below
 
 !!! note "macOS support"
     On macOS, Docker Desktop runs containers inside a Linux VM and projects
@@ -16,6 +16,12 @@
     inside a throwaway container. No extra configuration is required.
 
 ### Install fuse-overlayfs
+
+On Linux, Oduflow **auto-installs `fuse-overlayfs` on first launch** if it is
+missing — it runs `apt-get install -y fuse-overlayfs` when it starts as **root**
+on a Debian/Ubuntu host (the Docker image already bundles it). This is
+best-effort: if Oduflow is not running as root, `apt-get` is unavailable, or the
+install fails, it logs a warning and you can install the package yourself:
 
 ```bash
 sudo apt install fuse-overlayfs

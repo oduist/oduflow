@@ -8,6 +8,7 @@ import os
 import pathlib
 import shutil
 import subprocess
+import sys
 import time
 from collections.abc import Iterator
 from typing import Any
@@ -198,6 +199,15 @@ def _mount_filestore(
         # Fallback for old templates without the flag
         size_mb = _dir_size_mb(template_filestore)
         use_overlay = size_mb >= settings.overlay_threshold_mb
+
+    # fuse-overlayfs is a Linux/FUSE binary; it cannot run on macOS. Off Linux,
+    # always fall back to a plain filestore copy instead of failing.
+    if use_overlay and not sys.platform.startswith("linux"):
+        logger.info(
+            "Non-Linux platform (%s): using filestore copy instead of overlay",
+            sys.platform,
+        )
+        use_overlay = False
 
     if not use_overlay:
         logger.info("Template use_overlay=False, using copy")
