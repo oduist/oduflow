@@ -63,6 +63,58 @@ class TestCLIInitDestroy:
         mock_destroy.assert_called_once_with(TEST_SETTINGS)
 
 
+class TestImportTemplateFromOdoo:
+    def _result(self, includes_filestore: bool = False):
+        return {
+            "template_name": "prod",
+            "source_url": "https://odoo.example.com",
+            "source_db": "db",
+            "odoo_version": "19.0",
+            "odoo_image": "odoo:19.0",
+            "template_db": "oduflow_template_1_prod",
+            "zip_size_mb": 1.2,
+            "restore_seconds": 0.3,
+            "includes_filestore": includes_filestore,
+            "affected_envs": [],
+            "remount_failures": [],
+        }
+
+    @patch("oduflow.docker_ops.system_ops.import_from_odoo")
+    def test_cli_import_passes_without_filestore(self, mock_import, capsys):
+        from oduflow.server import _run_import_template
+
+        mock_import.return_value = self._result(includes_filestore=False)
+
+        _run_import_template(
+            TEST_SETTINGS,
+            TEST_TEAM,
+            odoo_url="https://odoo.example.com",
+            master_pwd="master",
+            db_name="db",
+            template_name="prod",
+            without_filestore=True,
+        )
+
+        assert mock_import.call_args.kwargs["without_filestore"] is True
+        assert "Filestore: not included" in capsys.readouterr().out
+
+    @patch("oduflow.docker_ops.system_ops.import_from_odoo")
+    def test_mcp_import_passes_without_filestore(self, mock_import):
+        mock_import.return_value = self._result(includes_filestore=False)
+
+        result = _call_tool(
+            "import_template_from_odoo",
+            odoo_url="https://odoo.example.com",
+            master_pwd="master",
+            db_name="db",
+            template_name="prod",
+            without_filestore=True,
+        )
+
+        assert mock_import.call_args.kwargs["without_filestore"] is True
+        assert "Filestore: not included" in result
+
+
 class TestCreateEnvironmentTool:
     @patch("oduflow.docker_ops.env_ops.create_environment")
     def test_create(self, mock_create):
