@@ -4,6 +4,7 @@
 
 ### Features
 
+- **Traefik certificates available to auxiliary services** — in Traefik TLS mode every created or recreated service receives the exact `oduflow-traefik-acme` volume at `/etc/traefik` read-only, with no per-service TLS flags or wildcard allowance for other system volumes. Existing services gain the mount on their next update.
 - **Per-team OAuth issuer with host-relative discovery** — in traefik mode, each team's OAuth Authorization Server derives its issuer from the incoming Host, so each team runs OAuth on its own already-certificated hostname with no need for a central `oauth_base_url`. `OduflowOAuthProvider` makes discovery metadata host-relative, `HostRelativeAuthChallenge` rewrites 401 challenge origins, and `[routing].hostname` is now validated per-mode (shared default deleted in traefik). (#112)
 - **Database-only Odoo template import** — `oduflow import-template` and `import_template_from_odoo` now accept `--without-filestore` / `without_filestore=True`, requesting a PostgreSQL custom-format dump without filestore files and deriving template metadata after restore.
 - **Attach separate template filestores** — new `oduflow attach-filestore` CLI and `attach_filestore` MCP tool attach or replace a template filestore after a database-only import. Sources can be local directories, zip/tar archives, `rsync://` URLs, or SSH rsync paths; wrapper directories such as the database name are auto-detected and live overlay env changes are preserved by default.
@@ -15,6 +16,7 @@
 
 ### Bug Fixes
 
+- **Invalid service volume updates are non-destructive** — `update_service` now resolves the complete candidate volume configuration before stopping the running container, so a missing or reserved volume no longer deletes the service before returning an error.
 - **Generated PostgreSQL passwords are safe for the Odoo entrypoint** — per-environment passwords that randomly began with `-` were parsed as another CLI option, leaving `--db_password` without a value and putting the Odoo container into a restart loop. Password generation now retries that rare token shape.
 - **Overlay filestore no longer duplicated into each environment** — `_ensure_user_site_packages` was recursively chowning `.local/share`, causing fuse-overlayfs to copy the entire template filestore (~10 GB) into each env's upper layer, defeating overlay space savings. Now chowns only the pip dirs non-recursively, keeping filestore overlay-bound. (#113)
 - **Overlay unmount now works on Ubuntu 24.04 with enforced fusermount AppArmor profile** — switched mount cleanup to try clean `umount` first (not mediated by the fusermount3 profile on Ubuntu 24.04+), falling back to `fusermount`/`fusermount3` helpers and lazy `umount -l` only as a last resort. (#113)
@@ -26,6 +28,7 @@
 
 ### Documentation & Testing
 
+- **Implicit service certificate-store decision record** — specs/0032 records the deliberate shared-read, read-only ACME mount and its trust-boundary consequences.
 - **Per-team OAuth decision record** — specs/0020 captures the evolution from a static `oauth_base_url` to host-relative issuer discovery. (#112)
 
 ## v1.64.0

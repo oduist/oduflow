@@ -2036,7 +2036,7 @@ def create_service(
         hostname: Custom hostname for traefik routing (optional, traefik mode only).
         env_vars: Comma-separated KEY=VALUE pairs (e.g. "MEILI_MASTER_KEY=abc,MEILI_ENV=production").
         host_mode: Run the container in host network mode instead of the shared Docker network. Use when the service needs direct host network access. Traefik routing still works.
-        volumes: Comma-separated volume mounts (e.g. "mydata:/data,config:/etc/app:ro"). Each entry is volume_name:/container/path[:ro|rw]. Volumes must be created first via create_volume.
+        volumes: Comma-separated volume mounts (e.g. "mydata:/data,config:/etc/app:ro"). Each entry is volume_name:/container/path[:ro|rw]. Volumes must be created first via create_volume. In Traefik TLS mode the system ACME volume is mounted automatically at /etc/traefik:ro; do not include it here.
         privileged: Run the container in privileged mode (full host access). Use with care — implies all Linux capabilities. Mutually exclusive with net_admin (privileged already grants NET_ADMIN).
         net_admin: Add the NET_ADMIN Linux capability. Required for VPN/WireGuard, tun/tap devices, and iptables manipulation inside the container.
     """
@@ -2107,7 +2107,7 @@ def update_service(
         port: New container port. Pass 0 to keep current port.
         hostname: New hostname for traefik routing. Leave empty to keep current hostname.
         host_mode: Run in host network mode. Leave unset (null) to keep current mode.
-        volumes: Comma-separated volume mounts that fully replace existing volumes (e.g. "mydata:/data,config:/etc/app:ro"). Leave empty to keep current volumes.
+        volumes: Comma-separated volume mounts that fully replace existing user volumes (e.g. "mydata:/data,config:/etc/app:ro"). Leave empty to keep current volumes. The implicit Traefik TLS mount at /etc/traefik:ro is preserved separately.
         privileged: Run the container in privileged mode (full host access). Leave unset (null) to keep current mode. Mutually exclusive with net_admin (privileged already grants NET_ADMIN).
         net_admin: Add (True) or remove (False) the NET_ADMIN Linux capability — required for VPN/WireGuard, tun/tap, and iptables. Leave unset (null) to keep current capabilities.
     """
@@ -2227,12 +2227,28 @@ def get_service_info(name: str, ctx: Context = None) -> str:
         lines.append("Privileged: true")
     if info.get("cap_add"):
         lines.append(f"Capabilities: {','.join(info['cap_add'])}")
-    if info.get("volumes"):
+    user_volumes = []
+    system_volumes = []
+    for volume in info.get("volumes") or []:
+        if (
+            volume.get("volume") == settings.traefik_acme_volume
+            and volume.get("mount_path") == "/etc/traefik"
+        ):
+            system_volumes.append(volume)
+        else:
+            user_volumes.append(volume)
+    if user_volumes:
         vol_str = ", ".join(
             f"{v['volume']}:{v['mount_path']}:{v.get('mode', 'rw')}"
-            for v in info["volumes"]
+            for v in user_volumes
         )
         lines.append(f"Volumes: {vol_str}")
+    if system_volumes:
+        system_str = ", ".join(
+            f"{v['volume']}:{v['mount_path']}:{v.get('mode', 'rw')}"
+            for v in system_volumes
+        )
+        lines.append(f"System mounts: {system_str} (implicit; do not pass as volumes)")
     if info.get("env_vars"):
         env_str = ", ".join(f"{k}={v}" for k, v in info["env_vars"].items())
         lines.append(f"Env: {env_str}")

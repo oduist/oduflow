@@ -1490,7 +1490,17 @@ Services are:
 - Attached to the shared `oduflow-net` network (accessible by all Odoo containers)
 - Given an `unless-stopped` restart policy
 - Automatically routed through Traefik with HTTPS when in traefik mode
+- In Traefik TLS mode, automatically given the exact system mount `oduflow-traefik-acme:/etc/traefik:ro`
 - Labeled for management (`oduflow.managed=true`, `oduflow.service=<name>`)
+
+### Traefik Certificate Store
+
+When Oduflow terminates TLS through Traefik, every auxiliary service can read
+Traefik's certificate store at `/etc/traefik/acme.json`. The mount is implicit:
+do not pass or override that system volume. It is always read-only and is not
+stored in service presets. This places all service images and operators inside
+the certificate-store trust boundary: read-only prevents modification, not
+disclosure of certificate private keys.
 
 ### Linux Capabilities
 
@@ -1533,13 +1543,14 @@ The `update_service` operation:
 
 1. Reads the saved preset (authoritative source) or inspects the running container as a legacy fallback
 2. Applies any overrides passed in (`env_vars`, `image`, `port`, `hostname`, `host_mode`, `volumes`, `privileged`, `net_admin`) — each override **fully replaces** the current value
-3. Pulls the target image (the override, or the current one)
-4. Decides whether to recreate:
+3. Resolves candidate volumes before touching the running container
+4. Pulls the target image (the override, or the current one)
+5. Decides whether to recreate:
     - If neither the image digest nor any setting changed → reports "already up-to-date"
-    - If the image digest changed or any setting was overridden → stops the old container, removes it, and creates a new one with the merged settings
-5. Updates the saved preset so subsequent `restore_service` calls use the new configuration
+    - If the image digest changed, any setting was overridden, or the implicit ACME mount is missing → stops the old container, removes it, and creates a new one with the merged settings
+6. Updates the saved preset so subsequent `restore_service` calls use the new configuration
 
-Overrides are optional: calling `update_service` with only `name` preserves the previous behaviour (pull and recreate only on digest change).
+Overrides are optional: calling `update_service` with only `name` pulls the current image and recreates only when its digest changed or the implicit ACME mount is missing.
 
 ## Service Presets
 
@@ -1830,10 +1841,10 @@ All tools are accessible via MCP clients (Cursor, Cline, Amp, etc.) and the CLI 
 | `refresh_template` | ✓ | ⚠️ Re-apply a template's filestore to live overlay environments (preserves env changes by default; `reset_env_changes=True` discards them — destructive) |
 | `attach_filestore` | ✓ | Attach or replace a template filestore from a local directory, archive, `rsync://` URL, or SSH rsync source; normalizes wrapper paths and preserves live env changes by default |
 | **Auxiliary Services** | | |
-| `create_service` | ✓ | Create a managed service container (e.g. Redis, Meilisearch). Supports `host_mode`, `volumes`, `privileged`, `net_admin` (adds `NET_ADMIN` capability for VPN/tun/iptables) |
+| `create_service` | ✓ | Create a managed service container; Traefik TLS mode implicitly mounts the exact ACME store at `/etc/traefik:ro` |
 | `delete_service` | ✓ | Stop and remove a service container |
 | `restart_service` | | Restart a service container |
-| `update_service` | ✓ | Pull latest image and/or change any service setting (env vars, image, port, hostname, host_mode, volumes, privileged, net_admin); recreates the container when anything changes and preserves the rest |
+| `update_service` | ✓ | Preflight volumes, pull/update settings, and recreate when needed, including to add a missing implicit ACME mount |
 | `list_services` | | List all managed service containers |
 | `get_service_info` | | Full live state of a single service (image+digest, port, hostname, host_mode, volumes, env, cap_add, privileged, restart count, has_preset). Call before recreating a service to preserve all options |
 | `get_service_logs` | | Retrieve service container logs |

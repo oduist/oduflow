@@ -50,6 +50,7 @@ precursors).
 | [0029](0029-agent-console-and-chat.md) | 2026-07-03 | Per-team coding agent: browser console and ACP chat |
 | [0030](0030-odoo-sh-addons-import.md) | 2026-07-04 | Odoo.sh import brings the addons-path (Enterprise/Themes/extra) + local extra-addons + template rename |
 | [0031](0031-connect-as-user-impersonation.md) | 2026-07-09 | Passwordless "Connect as user" session minting (`connect_as_user`) for agent browser testing |
+| [0032](0032-implicit-traefik-acme-mount-for-services.md) | 2026-07-13 | Auxiliary services receive the Traefik ACME store read-only |
 
 ## Design docs
 

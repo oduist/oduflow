@@ -25,8 +25,24 @@ Services are:
 - Attached to the shared `oduflow-net` network (accessible by all Odoo containers)
 - Given an `unless-stopped` restart policy
 - Automatically routed through Traefik with HTTPS when in traefik mode
+- In Traefik TLS mode, automatically given the exact system mount `oduflow-traefik-acme:/etc/traefik:ro`
 - Labeled for management (`oduflow.managed=true`, `oduflow.service=<name>`)
 - Always created from a freshly pulled image — `create_service` and `restore_service` explicitly pull before running, so mutable tags like `:latest` get the current published version instead of a stale local cache
+
+### Traefik Certificate Store
+
+When Oduflow terminates TLS through Traefik, every auxiliary service can read
+Traefik's certificate store at `/etc/traefik/acme.json`. The mount is implicit:
+do not add `oduflow-traefik-acme` to the `volumes` argument, and do not mount a
+different volume at `/etc/traefik`. Oduflow always mounts the exact system
+volume read-only; there is no wildcard allowance for other `oduflow-*` volumes.
+The implicit mount is runtime configuration and is not saved in the service
+preset.
+
+This deliberately makes the shared certificate and private-key material
+readable to every service container. Use only trusted service images and grant
+service-management access only to trusted operators. Read-only protects the
+store from modification, not from disclosure.
 
 ### Linux Capabilities
 
@@ -85,13 +101,14 @@ The `update_service` operation:
 
 1. Reads the saved preset (authoritative source) or inspects the running container as a legacy fallback
 2. Applies any overrides passed in (`env_vars`, `image`, `port`, `hostname`, `host_mode`, `volumes`, `privileged`, `net_admin`) — each override **fully replaces** the current value
-3. Pulls the target image (the override, or the current one)
-4. Decides whether to recreate:
+3. Resolves the complete candidate volume configuration before touching the running container; invalid or missing volumes fail without stopping it
+4. Pulls the target image (the override, or the current one)
+5. Decides whether to recreate:
     - If neither the image digest nor any setting changed → reports "already up-to-date"
-    - If the image digest changed or any setting was overridden → stops the old container, removes it, and creates a new one with the merged settings
-5. Updates the saved preset so subsequent `restore_service` calls use the new configuration
+    - If the image digest changed, any setting was overridden, or a legacy Traefik TLS service lacks the implicit ACME mount → stops the old container, removes it, and creates a new one with the merged settings
+6. Updates the saved preset so subsequent `restore_service` calls use the new configuration
 
-Overrides are optional: calling `update_service` with only `name` preserves the previous behaviour (pull and recreate only on digest change).
+Overrides are optional: calling `update_service` with only `name` pulls the current image and recreates only when its digest changed or the implicit ACME mount is missing.
 
 ## Service Presets
 
