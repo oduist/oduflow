@@ -1,5 +1,6 @@
 import json
 import os
+from unittest.mock import patch
 
 from oduflow.env_credentials import (
     create_credentials,
@@ -44,6 +45,17 @@ class TestGeneratePgPassword:
             pw = generate_pg_password()
             assert "'" not in pw
             assert '"' not in pw
+
+    @patch(
+        "oduflow.env_credentials.secrets.token_urlsafe",
+        side_effect=["-" + "a" * 23, "b" * 24],
+    )
+    def test_retries_when_password_starts_with_dash(self, mock_token_urlsafe):
+        pw = generate_pg_password()
+
+        assert pw == "b" * 24
+        assert mock_token_urlsafe.call_count == 2
+        mock_token_urlsafe.assert_called_with(18)
 
 
 class TestCreateLoadDeleteCredentials:
