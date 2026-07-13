@@ -3946,7 +3946,18 @@ def _start_http() -> None:
 
         served = HostRelativeAuthChallenge(served, settings)
 
-    uvicorn.run(served, host=host, port=port, ws="websockets-sansio")
+    # Bound the graceful-shutdown window: MCP clients hold long-lived
+    # StreamableHTTP streams (SSE GET/keep-alive) that never close on their own,
+    # so without a cap uvicorn waits indefinitely on SIGTERM and systemd escalates
+    # to SIGKILL after TimeoutStopSec (~90s). Force-close lingering connections
+    # after 10s so a stop/restart completes cleanly instead of being killed.
+    uvicorn.run(
+        served,
+        host=host,
+        port=port,
+        ws="websockets-sansio",
+        timeout_graceful_shutdown=10,
+    )
 
 
 def _build_auth(settings: Settings):  # type: ignore[no-untyped-def]
