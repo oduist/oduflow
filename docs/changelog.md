@@ -15,6 +15,7 @@
 
 ### Bug Fixes
 
+- **Generated PostgreSQL passwords are safe for the Odoo entrypoint** — per-environment passwords that randomly began with `-` were parsed as another CLI option, leaving `--db_password` without a value and putting the Odoo container into a restart loop. Password generation now retries that rare token shape.
 - **Overlay filestore no longer duplicated into each environment** — `_ensure_user_site_packages` was recursively chowning `.local/share`, causing fuse-overlayfs to copy the entire template filestore (~10 GB) into each env's upper layer, defeating overlay space savings. Now chowns only the pip dirs non-recursively, keeping filestore overlay-bound. (#113)
 - **Overlay unmount now works on Ubuntu 24.04 with enforced fusermount AppArmor profile** — switched mount cleanup to try clean `umount` first (not mediated by the fusermount3 profile on Ubuntu 24.04+), falling back to `fusermount`/`fusermount3` helpers and lazy `umount -l` only as a last resort. (#113)
 - **Multi-team UI password provisioning for newly-added passwordless teams** — `_ensure_web_ui_password` was using `any()` so a multi-team config with one team already set would skip provisioning for others, locking them out. Now uses `all()` to provision every team and enforce that all are set at startup. (#114)

@@ -18,7 +18,15 @@ def generate_pg_username(env_name: str, team_id: str) -> str:
 
 
 def generate_pg_password() -> str:
-    return secrets.token_urlsafe(18)
+    while True:
+        password = secrets.token_urlsafe(18)
+        # The official Odoo entrypoint passes this value as a separate
+        # ``--db_password`` argument. A leading dash is parsed as another CLI
+        # option, leaving --db_password without a value and crash-looping the
+        # container. Reject that rare token shape while keeping the same length
+        # and entropy for accepted passwords.
+        if not password.startswith("-"):
+            return password
 
 
 def create_credentials(
