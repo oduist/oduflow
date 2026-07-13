@@ -525,6 +525,39 @@ class TestListServicesTool:
         assert "No active services" in result
 
 
+class TestGetServiceInfoTool:
+    @patch("oduflow.docker_ops.service_ops.get_service_info")
+    def test_system_acme_mount_is_not_reported_as_replayable_volume(self, mock_info):
+        mock_info.return_value = {
+            "name": "fs",
+            "container_name": "oduflow-1-svc-fs",
+            "status": "running",
+            "image": "oduist/freeswitch:latest",
+            "image_digest": "sha256:abc123",
+            "port": 8080,
+            "url": "https://fs.example.com",
+            "host_mode": True,
+            "volumes": [
+                {"volume": "fs-sounds", "mount_path": "/sounds", "mode": "rw"},
+                {
+                    "volume": "oduflow-traefik-acme",
+                    "mount_path": "/etc/traefik",
+                    "mode": "ro",
+                },
+            ],
+            "has_preset": True,
+        }
+
+        result = _get_tool_fn("get_service_info")(name="fs")
+
+        assert "Volumes: fs-sounds:/sounds:rw" in result
+        assert "Volumes: fs-sounds:/sounds:rw, oduflow-traefik-acme" not in result
+        assert (
+            "System mounts: oduflow-traefik-acme:/etc/traefik:ro "
+            "(implicit; do not pass as volumes)"
+        ) in result
+
+
 class TestGetServiceLogsTool:
     @patch("oduflow.docker_ops.service_ops.get_service_logs")
     def test_logs(self, mock_logs):

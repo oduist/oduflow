@@ -102,6 +102,38 @@ MCP Clients (Cursor, Claude, etc.)
 - Mocking pattern: patch `oduflow.docker_ops.*` functions, not Docker SDK directly
 - `conftest.py` at root ignores `src/**` for collection (tests live in `tests/`)
 
+### Testing the FreeSWITCH auxiliary service
+
+When Oduflow runs in Traefik TLS mode, every newly created or recreated
+auxiliary service automatically receives
+`oduflow-traefik-acme:/etc/traefik:ro`. Do not include that system volume in
+the MCP/CLI `volumes` argument; `/etc/traefik` is reserved. The implicit mount
+is not stored in the service preset, but `get_service_info` reports it from the
+live container.
+
+The test FreeSWITCH service must keep its own sounds volume and run in host
+mode. Use placeholders for deployment secrets — never commit the live values:
+
+```bash
+oduflow call create_service '{
+  "name": "fs",
+  "image": "oduist/freeswitch:latest",
+  "port": 8080,
+  "hostname": "fs",
+  "host_mode": true,
+  "volumes": "fs-sounds:/usr/share/freeswitch/sounds:rw",
+  "env_vars": "ODOO_URL=https://<environment-host>,FS_DOMAIN=<team-host>,FS_LOG_LEVEL=debug,FS_ESL_PASSWORD=<secret>,FS_SOFIA_LOG_LEVEL=2,SOUND_RATES=8000:16000:32000:48000,SOUND_TYPES=music:en-us-callie,EPMD=false,DUMPCAP=false,FS_WEBHOOK_TOKEN=<environment-token>"
+}'
+```
+
+`FS_WEBHOOK_TOKEN` must be the target environment's token. Before changing an
+existing `fs`, call `get_service_info`; `volumes` and `env_vars` overrides are
+full replacements. After deploying an Oduflow change, `update_service fs`
+recreates a legacy service that is missing the implicit ACME mount. Verify the
+result with `get_service_info fs`, confirm that `/etc/traefik/acme.json` is
+readable from the service, inspect the generated `wss.pem` issuer/dates, and
+then check the Odoo XML-RPC status.
+
 ## Plan First, Then Act
 
 Before making any code changes, always:

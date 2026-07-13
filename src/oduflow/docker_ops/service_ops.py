@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import datetime
 import logging
+import posixpath
 import re
+from typing import Any
 
 import docker
 
@@ -14,6 +16,8 @@ from oduflow.naming import get_service_container_name
 from oduflow.settings import Settings, TeamSettings
 
 logger = logging.getLogger("oduflow")
+
+_TRAEFIK_ACME_MOUNT_PATH = "/etc/traefik"
 
 _SYSTEM_ENV_KEYS = {
     "PATH",
@@ -48,6 +52,69 @@ _SYSTEM_ENV_KEYS = {
     "SSH_AGENT_PID",
     "DBUS_SESSION_BUS_ADDRESS",
 }
+
+
+def _resolve_service_volume_binds(
+    settings: Settings,
+    team: TeamSettings,
+    volumes: list[dict[str, str]] | None,
+    *,
+    client: Any = None,
+) -> dict[str, dict[str, str]]:
+    """Resolve user mounts and add the implicit Traefik ACME mount.
+
+    The ACME store is platform-owned rather than part of the user-supplied
+    service configuration. Every service created while Oduflow terminates TLS
+    through Traefik sees the exact store at ``/etc/traefik`` read-only.
+    """
+    volume_binds: dict[str, dict[str, str]] = volume_ops.resolve_volume_binds(
+        team, volumes or []
+    )
+
+    if settings.routing_mode != "traefik" or not settings.routing_tls:
+        return volume_binds
+
+    for mount in volumes or []:
+        mount_path = posixpath.normpath(mount.get("mount_path", ""))
+        if mount_path == _TRAEFIK_ACME_MOUNT_PATH or mount_path.startswith(
+            f"{_TRAEFIK_ACME_MOUNT_PATH}/"
+        ):
+            raise ConflictError(
+                f"Mount path '{mount.get('mount_path')}' is inside reserved "
+                f"'{_TRAEFIK_ACME_MOUNT_PATH}', which Oduflow uses for "
+                "the read-only Traefik certificate store."
+            )
+
+    docker_client = client or get_client()
+    try:
+        docker_client.volumes.get(settings.traefik_acme_volume)
+    except docker.errors.NotFound:
+        raise NotFoundError(
+            f"Traefik ACME volume '{settings.traefik_acme_volume}' not found. "
+            "Run init_system before creating services in Traefik TLS mode."
+        )
+
+    volume_binds[settings.traefik_acme_volume] = {
+        "bind": _TRAEFIK_ACME_MOUNT_PATH,
+        "mode": "ro",
+    }
+    return volume_binds
+
+
+def _needs_traefik_acme_mount(settings: Settings, container: Any) -> bool:
+    """Whether a Traefik TLS service is missing the implicit ACME mount."""
+    if settings.routing_mode != "traefik" or not settings.routing_tls:
+        return False
+
+    for mount in container.attrs.get("Mounts", []):
+        if (
+            mount.get("Type") == "volume"
+            and mount.get("Name") == settings.traefik_acme_volume
+            and mount.get("Destination") == _TRAEFIK_ACME_MOUNT_PATH
+            and not mount.get("RW", True)
+        ):
+            return False
+    return True
 
 
 def create_service(
@@ -136,10 +203,9 @@ def create_service(
     if env_vars:
         run_kwargs["environment"] = env_vars
 
-    if volumes:
-        vol_binds = volume_ops.resolve_volume_binds(team, volumes)
-        if vol_binds:
-            run_kwargs["volumes"] = vol_binds
+    vol_binds = _resolve_service_volume_binds(settings, team, volumes, client=client)
+    if vol_binds:
+        run_kwargs["volumes"] = vol_binds
 
     if privileged:
         run_kwargs["privileged"] = True
@@ -533,7 +599,10 @@ def update_service(
         raise NotFoundError(f"Cannot determine port for service '{name}'.")
 
     # Apply overrides and track whether config changed
-    config_changed = False
+    # Services created before the implicit ACME mount was introduced are
+    # brought forward by an ordinary update, even when the image digest and
+    # user-controlled settings are otherwise unchanged.
+    config_changed = _needs_traefik_acme_mount(settings, container)
     if env_override is not None and env_override != (env_vars or {}):
         env_vars = env_override or None
         config_changed = True
@@ -560,6 +629,11 @@ def update_service(
     target_image = image_override if image_override else old_image
     if image_override and image_override != old_image:
         config_changed = True
+
+    # Validate the complete candidate volume configuration before any
+    # destructive action. In particular, a missing/reserved volume override
+    # must not stop and remove the currently running service.
+    _resolve_service_volume_binds(settings, team, old_volumes or None, client=client)
 
     # Capture old image digest
     old_digest = container.image.id  # e.g. sha256:abc...

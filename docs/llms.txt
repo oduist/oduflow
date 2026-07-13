@@ -168,6 +168,7 @@ For OAuth-based MCP clients like Claude.ai Remote MCP, Oduflow runs its own OAut
 - `read_output` — read from a cached tool output by ID (paginate, grep, errors, tail)
 - `list_environments` / `get_environment_info` — inspect environments
 - `create_service` / `delete_service` / `restart_service` / `update_service` / `list_services` / `get_service_info` / `get_service_logs` / `run_service_command` — manage auxiliary services
+  - In Traefik TLS mode every service implicitly receives the exact `oduflow-traefik-acme:/etc/traefik:ro` mount; do not pass or override that system volume
 - `create_volume` / `list_volumes` / `inspect_volume` / `delete_volume` — manage Docker volumes
 - `read_file_in_volume` / `write_file_in_volume` / `search_in_volume` / `delete_file_in_volume` — manage files inside Docker volumes
 - `list_service_presets` / `restore_service` / `delete_service_preset` — manage service presets

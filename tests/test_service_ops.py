@@ -56,10 +56,12 @@ def mock_docker_client():
     with (
         patch("oduflow.docker_ops.service_ops.get_client") as svc_mock,
         patch("oduflow.docker_ops.system_ops.get_client") as sys_mock,
+        patch("oduflow.docker_ops.volume_ops.get_client") as vol_mock,
     ):
         client_instance = MagicMock()
         svc_mock.return_value = client_instance
         sys_mock.return_value = client_instance
+        vol_mock.return_value = client_instance
         yield client_instance
 
 
@@ -129,6 +131,95 @@ class TestCreateService:
             labels["traefik.http.routers.oduflow-1-svc-meilisearch.tls.certresolver"]
             == "letsencrypt"
         )
+        assert run_kwargs[1]["volumes"] == {
+            "oduflow-traefik-acme": {"bind": "/etc/traefik", "mode": "ro"}
+        }
+
+    def test_create_traefik_mounts_acme_with_user_volumes(self, mock_docker_client):
+        mock_docker_client.containers.get.side_effect = docker.errors.NotFound("nf")
+
+        service_ops.create_service(
+            TRAEFIK_SETTINGS,
+            TRAEFIK_TEAM,
+            "meilisearch",
+            "getmeili/meilisearch:v1.6",
+            7700,
+            volumes=[{"volume": "data", "mount_path": "/data", "mode": "rw"}],
+        )
+
+        assert mock_docker_client.containers.run.call_args[1]["volumes"] == {
+            "oduflow-vol-1-data": {"bind": "/data", "mode": "rw"},
+            "oduflow-traefik-acme": {"bind": "/etc/traefik", "mode": "ro"},
+        }
+
+    def test_create_traefik_host_mode_mounts_acme(self, mock_docker_client):
+        mock_docker_client.containers.get.side_effect = docker.errors.NotFound("nf")
+
+        service_ops.create_service(
+            TRAEFIK_SETTINGS,
+            TRAEFIK_TEAM,
+            "fs",
+            "oduist/freeswitch:latest",
+            8080,
+            host_mode=True,
+            volumes=[
+                {
+                    "volume": "fs-sounds",
+                    "mount_path": "/usr/share/freeswitch/sounds",
+                    "mode": "rw",
+                }
+            ],
+        )
+
+        run_kwargs = mock_docker_client.containers.run.call_args[1]
+        assert run_kwargs["network_mode"] == "host"
+        assert run_kwargs["volumes"] == {
+            "oduflow-vol-1-fs-sounds": {
+                "bind": "/usr/share/freeswitch/sounds",
+                "mode": "rw",
+            },
+            "oduflow-traefik-acme": {"bind": "/etc/traefik", "mode": "ro"},
+        }
+
+    def test_create_traefik_rejects_user_mount_at_reserved_path(
+        self, mock_docker_client
+    ):
+        mock_docker_client.containers.get.side_effect = docker.errors.NotFound("nf")
+
+        with pytest.raises(ConflictError, match="inside reserved '/etc/traefik'"):
+            service_ops.create_service(
+                TRAEFIK_SETTINGS,
+                TRAEFIK_TEAM,
+                "meilisearch",
+                "getmeili/meilisearch:v1.6",
+                7700,
+                volumes=[
+                    {
+                        "volume": "config",
+                        "mount_path": "/etc/traefik",
+                        "mode": "rw",
+                    }
+                ],
+            )
+
+        mock_docker_client.images.pull.assert_not_called()
+        mock_docker_client.containers.run.assert_not_called()
+
+    def test_create_traefik_requires_acme_volume(self, mock_docker_client):
+        mock_docker_client.containers.get.side_effect = docker.errors.NotFound("nf")
+        mock_docker_client.volumes.get.side_effect = docker.errors.NotFound("nf")
+
+        with pytest.raises(NotFoundError, match="Traefik ACME volume.*not found"):
+            service_ops.create_service(
+                TRAEFIK_SETTINGS,
+                TRAEFIK_TEAM,
+                "meilisearch",
+                "getmeili/meilisearch:v1.6",
+                7700,
+            )
+
+        mock_docker_client.images.pull.assert_not_called()
+        mock_docker_client.containers.run.assert_not_called()
 
     def test_create_traefik_no_tls(self, mock_docker_client):
         # tls=false (e.g. behind a Cloudflare tunnel): router on the plain-HTTP
@@ -159,6 +250,7 @@ class TestCreateService:
             "traefik.http.routers.oduflow-1-svc-meilisearch.tls.certresolver"
             not in labels
         )
+        assert "volumes" not in mock_docker_client.containers.run.call_args[1]
 
     def test_create_traefik_custom_hostname(self, mock_docker_client):
         mock_docker_client.networks.get.return_value = MagicMock()
@@ -471,7 +563,8 @@ class TestUpdateService:
             ) as mock_resolve,
         ):
             service_ops.update_service(TEST_SETTINGS, TEST_TEAM, "redis")
-            mock_resolve.assert_called_once_with(TEST_TEAM, volumes)
+            assert mock_resolve.call_count == 2
+            mock_resolve.assert_any_call(TEST_TEAM, volumes)
 
     def test_update_port_mode_legacy_no_preset(self, mock_docker_client):
         """Legacy fallback: extract settings from container when no preset exists."""
@@ -630,7 +723,17 @@ class TestUpdateService:
         container = self._make_container(
             image_tags=["getmeili/meilisearch:v1.6"],
             labels={"oduflow.managed": "true", "oduflow.service": "meili"},
-            attrs={"Config": {"Env": []}},
+            attrs={
+                "Config": {"Env": []},
+                "Mounts": [
+                    {
+                        "Type": "volume",
+                        "Name": "oduflow-traefik-acme",
+                        "Destination": "/etc/traefik",
+                        "RW": False,
+                    }
+                ],
+            },
         )
         container.image.id = "sha256:same"
 
@@ -660,11 +763,88 @@ class TestUpdateService:
         container.remove.assert_not_called()
         mock_docker_client.containers.run.assert_not_called()
 
+    def test_update_adds_missing_implicit_traefik_acme_mount(self, mock_docker_client):
+        container = self._make_container(
+            image_tags=["getmeili/meilisearch:v1.6"],
+            labels={"oduflow.managed": "true", "oduflow.service": "meili"},
+            attrs={"Config": {"Env": []}, "Mounts": []},
+        )
+        container.image.id = "sha256:same"
+        mock_docker_client.containers.get.side_effect = [
+            container,
+            docker.errors.NotFound("nf"),
+        ]
+        pulled = MagicMock()
+        pulled.id = "sha256:same"
+        mock_docker_client.images.pull.return_value = pulled
+        preset = {
+            "name": "meili",
+            "image": "getmeili/meilisearch:v1.6",
+            "port": 7700,
+            "hostname": "meili",
+            "env_vars": {},
+        }
+
+        with patch(
+            "oduflow.docker_ops.service_ops.service_presets.get_preset",
+            return_value=preset,
+        ):
+            result = service_ops.update_service(TRAEFIK_SETTINGS, TRAEFIK_TEAM, "meili")
+
+        assert result["image_updated"] is False
+        assert result["config_updated"] is True
+        container.stop.assert_called_once()
+        container.remove.assert_called_once_with(v=True)
+        assert mock_docker_client.containers.run.call_args[1]["volumes"] == {
+            "oduflow-traefik-acme": {"bind": "/etc/traefik", "mode": "ro"}
+        }
+
     def test_update_not_found(self, mock_docker_client):
         mock_docker_client.containers.get.side_effect = docker.errors.NotFound("nf")
 
         with pytest.raises(NotFoundError, match="Service 'redis' not found"):
             service_ops.update_service(TEST_SETTINGS, TEST_TEAM, "redis")
+
+    def test_update_reserved_volume_preflight_does_not_remove_running_service(
+        self, mock_docker_client
+    ):
+        container = self._make_container(
+            image_tags=["redis:7"],
+            labels={"oduflow.managed": "true", "oduflow.service": "redis"},
+            attrs={"Config": {"Env": []}},
+        )
+        mock_docker_client.containers.get.return_value = container
+        preset = {
+            "name": "redis",
+            "image": "redis:7",
+            "port": 6379,
+            "hostname": "",
+            "env_vars": {},
+        }
+
+        mock_docker_client.volumes.get.side_effect = docker.errors.NotFound("nf")
+
+        with patch(
+            "oduflow.docker_ops.service_ops.service_presets.get_preset",
+            return_value=preset,
+        ):
+            with pytest.raises(NotFoundError, match="reserved"):
+                service_ops.update_service(
+                    TEST_SETTINGS,
+                    TEST_TEAM,
+                    "redis",
+                    volume_override=[
+                        {
+                            "volume": "oduflow-traefik-acme",
+                            "mount_path": "/data",
+                            "mode": "rw",
+                        }
+                    ],
+                )
+
+        container.stop.assert_not_called()
+        container.remove.assert_not_called()
+        mock_docker_client.images.pull.assert_not_called()
 
     def test_update_image_fallback_to_config(self, mock_docker_client):
         """When image.tags is empty, fall back to Config.Image."""
