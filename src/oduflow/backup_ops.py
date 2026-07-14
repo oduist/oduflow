@@ -417,6 +417,7 @@ def restore_production(
     restore_dir = ""
     old_dir = ""
     container_stopped = False
+    live_state_safe = True
     swapped = False
     try:
         os.makedirs(filestore_parent, exist_ok=True)
@@ -514,6 +515,11 @@ def restore_production(
             f"WHERE datname = '{db_name}';",
             container_name=pg_container,
         )
+        # From the first live rename until either the filestore commit or a
+        # complete rollback, an exception leaves the database name uncertain.
+        # Keep Odoo stopped unless one of those paths proves the live pair is
+        # coherent again.
+        live_state_safe = False
         _exec_sql(
             client,
             settings,
@@ -536,6 +542,7 @@ def restore_production(
                 f'ALTER DATABASE "{old_db}" RENAME TO "{db_name}";',
                 container_name=pg_container,
             )
+            live_state_safe = True
             raise
 
         # ------------------------ filestore ------------------------------
@@ -547,11 +554,14 @@ def restore_production(
             # The filesystem helper has already put the old filestore back.
             # Compensate the successful database rename so callers never get a
             # restored DB paired with stale/missing attachment files.
+            swapped = False
             _rollback_database_swap(
                 client, settings, db_name, restore_db, old_db, pg_container
             )
-            swapped = False
+            live_state_safe = True
             raise
+
+        live_state_safe = True
 
         if had_previous_filestore and os.path.isdir(old_dir):
             shutil.rmtree(old_dir, ignore_errors=True)
@@ -577,11 +587,19 @@ def restore_production(
                 )
             except Exception:
                 pass
-        if container is not None and container_stopped:
+        if container is not None and container_stopped and live_state_safe:
             try:
                 container.start()
             except Exception:
                 logger.exception("Could not restart production '%s'", name)
+        elif container is not None and container_stopped:
+            logger.error(
+                "Production '%s' remains stopped because database rollback "
+                "did not complete; inspect %s and %s before restarting",
+                name,
+                db_name,
+                old_db,
+            )
 
     healthy = production_ops.wait_production_healthy(
         client, settings, team, name, timeout=180

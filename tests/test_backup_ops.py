@@ -234,3 +234,34 @@ def test_filestore_swap_failure_rolls_database_back(tmp_path):
     assert f'ALTER DATABASE "{db_name}__restore" RENAME TO "{db_name}";' in statements
     assert f'ALTER DATABASE "{db_name}" RENAME TO "{db_name}__restore";' in statements
     assert f'ALTER DATABASE "{db_name}__old" RENAME TO "{db_name}";' in statements
+
+
+def test_failed_database_compensation_keeps_production_stopped(tmp_path):
+    settings, team = _restore_settings(tmp_path)
+    container = MagicMock(status="running")
+    manifest = _manifest()
+    _client, _pg, _s3, patches = _restore_patches(manifest, container=container)
+
+    with ExitStack() as stack:
+        for patcher in patches:
+            stack.enter_context(patcher)
+        stack.enter_context(patch.object(backup_ops.chunkstore, "restore"))
+        stack.enter_context(
+            patch.object(
+                backup_ops,
+                "_swap_restored_filestore",
+                side_effect=OSError("filestore swap failed"),
+            )
+        )
+        stack.enter_context(
+            patch.object(
+                backup_ops,
+                "_rollback_database_swap",
+                side_effect=OSError("database rollback failed"),
+            )
+        )
+        with pytest.raises(OSError, match="database rollback failed"):
+            backup_ops.restore_production(settings, team, "erp", "snap")
+
+    container.stop.assert_called_once_with()
+    container.start.assert_not_called()
