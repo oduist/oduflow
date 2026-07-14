@@ -2017,13 +2017,14 @@ def run_db_query(
 def create_service(
     name: str,
     image: str,
-    port: int,
+    port: int = 0,
     hostname: str = "",
     env_vars: str = "",
     host_mode: bool = False,
     volumes: str = "",
     privileged: bool = False,
     net_admin: bool = False,
+    routes: list[dict[str, object]] | None = None,
     ctx: Context = None,
 ) -> str:
     """
@@ -2032,13 +2033,14 @@ def create_service(
     Args:
         name: Short name for the service (e.g. "redis", "meilisearch").
         image: Docker image with tag (e.g. "redis:7", "getmeili/meilisearch:v1.6").
-        port: The container port the service listens on.
+        port: Catch-all exposure mode: forward every path to this one container port. Required outside Traefik. Mutually exclusive with routes.
         hostname: Custom hostname for traefik routing (optional, traefik mode only).
         env_vars: Comma-separated KEY=VALUE pairs (e.g. "MEILI_MASTER_KEY=abc,MEILI_ENV=production").
         host_mode: Run the container in host network mode instead of the shared Docker network. Use when the service needs direct host network access. Traefik routing still works.
         volumes: Comma-separated volume mounts (e.g. "mydata:/data,config:/etc/app:ro"). Each entry is volume_name:/container/path[:ro|rw]. Volumes must be created first via create_volume. In Traefik TLS mode the system ACME volume is mounted automatically at /etc/traefik:ro; do not include it here.
         privileged: Run the container in privileged mode (full host access). Use with care — implies all Linux capabilities. Mutually exclusive with net_admin (privileged already grants NET_ADMIN).
         net_admin: Add the NET_ADMIN Linux capability. Required for VPN/WireGuard, tun/tap devices, and iptables manipulation inside the container.
+        routes: Alternative Traefik exposure mode. Each object has path, backend port, and optional strip_prefix. Routes target this same service and unlisted paths return Traefik 404. Mutually exclusive with the top-level port.
     """
     settings = _get_settings()
     team = _resolve_team(ctx)
@@ -2054,18 +2056,26 @@ def create_service(
         team,
         name,
         image,
-        port,
+        port or None,
         hostname=hostname or None,
         env_vars=parsed_env,
         host_mode=host_mode,
         volumes=parsed_volumes,
         cap_add=cap_add,
         privileged=privileged,
+        routes=routes,
     )
     vol_info = ""
     if parsed_volumes:
         vol_info = "\nVolumes: " + ", ".join(
             f"{v['volume']}:{v['mount_path']}:{v['mode']}" for v in parsed_volumes
+        )
+    route_info = ""
+    if result.get("routes"):
+        route_info = "\nRoutes:\n" + "\n".join(
+            f"- {route['path']} -> {route['port']}"
+            f"{' (strip prefix)' if route.get('strip_prefix') else ''}"
+            for route in result["routes"]
         )
     return (
         f"Service created successfully!\n"
@@ -2074,6 +2084,7 @@ def create_service(
         f"Image: {result['image']}\n"
         f"URL: {result['url']}"
         f"{vol_info}"
+        f"{route_info}"
     )
 
 
@@ -2090,12 +2101,13 @@ def update_service(
     volumes: str = "",
     privileged: bool | None = None,
     net_admin: bool | None = None,
+    routes: list[dict[str, object]] | None = None,
     ctx: Context = None,
 ) -> str:
     """
     Update a managed auxiliary service container. Pulls the latest image and
     optionally changes any setting (env vars, image, port, hostname, host_mode,
-    volumes, privileged, net_admin). The container is recreated when the image or
+    volumes, privileged, net_admin, routes). The container is recreated when the image or
     any setting changes; settings that are not overridden are preserved. This is
     the preferred way to change a service — you do not need to delete and
     recreate it manually.
@@ -2110,6 +2122,7 @@ def update_service(
         volumes: Comma-separated volume mounts that fully replace existing user volumes (e.g. "mydata:/data,config:/etc/app:ro"). Leave empty to keep current volumes. The implicit Traefik TLS mount at /etc/traefik:ro is preserved separately.
         privileged: Run the container in privileged mode (full host access). Leave unset (null) to keep current mode. Mutually exclusive with net_admin (privileged already grants NET_ADMIN).
         net_admin: Add (True) or remove (False) the NET_ADMIN Linux capability — required for VPN/WireGuard, tun/tap, and iptables. Leave unset (null) to keep current capabilities.
+        routes: Full replacement HTTP route list. Leave unset to preserve it. Pass [] together with port to return to a single catch-all port.
     """
     settings = _get_settings()
     team = _resolve_team(ctx)
@@ -2141,6 +2154,7 @@ def update_service(
         volume_override=parsed_volumes,
         cap_add_override=cap_add_override,
         privileged_override=privileged,
+        routes_override=routes,
     )
 
     if result.get("image_updated"):
@@ -2222,6 +2236,13 @@ def get_service_info(name: str, ctx: Context = None) -> str:
         lines.append(f"Hostname: {info['hostname']}")
     if info.get("url"):
         lines.append(f"URL: {info['url']}")
+    if info.get("routes"):
+        lines.append("Routes:")
+        for route in info["routes"]:
+            suffix = " (strip prefix)" if route.get("strip_prefix") else ""
+            lines.append(
+                f"  {route['path']} -> {route['port']}{suffix} [{route.get('url', '')}]"
+            )
     lines.append(f"Host mode: {'true' if info.get('host_mode') else 'false'}")
     if info.get("privileged"):
         lines.append("Privileged: true")
@@ -2275,7 +2296,9 @@ def list_service_presets(ctx: Context = None) -> str:
             if p.get("env_vars")
             else ""
         )
-        output += f"- {p['name']}: image={p['image']}, port={p['port']}"
+        output += f"- {p['name']}: image={p['image']}"
+        if not p.get("routes"):
+            output += f", port={p['port']}"
         if p.get("hostname"):
             output += f", hostname={p['hostname']}"
         if env_str:
@@ -2292,6 +2315,11 @@ def list_service_presets(ctx: Context = None) -> str:
                 for v in p["volumes"]
             )
             output += f", volumes=[{vol_str}]"
+        if p.get("routes"):
+            route_str = ",".join(
+                f"{route['path']}->{route['port']}" for route in p["routes"]
+            )
+            output += f", routes=[{route_str}]"
         output += "\n"
     return output
 
@@ -2324,6 +2352,7 @@ def restore_service(name: str, ctx: Context = None) -> str:
         volumes=preset_volumes,
         cap_add=preset_cap_add,
         privileged=preset_privileged,
+        routes=preset.get("routes") or None,
     )
     extra = ""
     if preset_volumes:
@@ -2335,6 +2364,10 @@ def restore_service(name: str, ctx: Context = None) -> str:
         extra += "\nPrivileged: true"
     elif preset_cap_add:
         extra += f"\nCapabilities: {','.join(preset_cap_add)}"
+    if result.get("routes"):
+        extra += "\nRoutes: " + ", ".join(
+            f"{route['path']}->{route['port']}" for route in result["routes"]
+        )
     return (
         f"Service restored from preset!\n"
         f"Name: {result['name']}\n"
@@ -2377,6 +2410,9 @@ def list_services(ctx: Context = None) -> str:
             output += f"  Port: {svc['port']}\n"
         if svc.get("url"):
             output += f"  URL: {svc['url']}\n"
+        if svc.get("routes"):
+            for route in svc["routes"]:
+                output += f"  Route: {route['path']} -> {route['port']}\n"
         if svc.get("env_vars"):
             env_str = ", ".join(f"{k}={v}" for k, v in svc["env_vars"].items())
             output += f"  Env: {env_str}\n"

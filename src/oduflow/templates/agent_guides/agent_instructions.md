@@ -128,16 +128,16 @@ Extra addons repositories (Odoo Enterprise, OCA, your own shared addons) are clo
 
 | Tool | When to use |
 |---|---|
-| `create_service(name, image, port, hostname?, env_vars?, host_mode?, volumes?, privileged?, net_admin?)` | Spin up a sidecar (Redis, Meilisearch, etc.). Accessible from Odoo containers via `oduflow-svc-{name}:{port}`. Set `net_admin=true` for VPN/tun/iptables; `privileged=true` for full host access. The image is always pulled fresh, so mutable tags like `:latest` get the current version. In Traefik TLS mode Oduflow automatically mounts `oduflow-traefik-acme:/etc/traefik:ro`; do not pass that system volume yourself |
-| `get_service_info(name)` | **Use this before recreating a service.** Returns full live state: image + digest, port, hostname, URL, `host_mode`, `volumes`, env vars, `cap_add`, `privileged`, restart count, started_at, whether a preset exists |
-| `update_service(name, env_vars?, image?, port?, hostname?, host_mode?, volumes?, privileged?, net_admin?)` | Change **any** setting on a running service. Without overrides, pulls the latest image. With any override, fully replaces that setting and recreates the container, preserving everything else. `env_vars` and `volumes` are full replacements, not merges. This is the preferred way to change a service |
+| `create_service(name, image, *, port=<catch-all> \| routes=[...], ...)` | Spin up a sidecar using exactly one exposure mode. `port=8080` publishes every path to one port and is required outside Traefik. Alternatively, Traefik `routes=[{"path":"/api","port":8080,"strip_prefix":false}]` publishes only those paths. Never pass `port` and `routes` together |
+| `get_service_info(name)` | **Use this before recreating a service.** Returns full live state, including whichever exposure model is active: `port` or `routes` |
+| `update_service(name, ..., port? \| routes?)` | Change any setting. `routes` is a full replacement; pass `routes=[]` together with `port` to switch back to catch-all mode. Otherwise never pass `port` and `routes` together. Unset settings are preserved |
 | `list_services` / `get_service_logs(name)` / `restart_service(name)` / `delete_service(name)` | Manage auxiliary services |
 | `restore_service(name)` | Recreate a service from its saved preset after deletion (volumes, host_mode, cap_add, env are all preserved) |
 | `list_service_presets` | List saved service presets (configurations that can be restored after a service is deleted) |
 | `delete_service_preset(name)` | Remove a saved service preset |
 | `run_service_command(name, command, user?)` | Execute a shell command inside a service container. Default user is `root`. Output is cached if large — use `read_output` for drill-down |
 
-> **Changing a service:** use `update_service` for **any** change — image, env vars, port, hostname, host_mode, volumes, privileged, or net_admin. It recreates the container automatically and preserves every setting you don't override, so you almost never need to `delete_service` + `create_service` by hand. (If you do recreate manually — e.g. to rename a service — call `get_service_info(name)` first and replay its `image`, `port`, `hostname`, `env_vars`, `host_mode`, user `volumes`, `cap_add`, `privileged` in the new `create_service` call, otherwise you'll silently drop them. Omit any `System mounts` such as the implicit Traefik ACME mount; Oduflow adds those itself.)
+> **Changing a service:** use `update_service` for any change — image, env vars, port/routes, hostname, host mode, volumes or capabilities. If recreating manually, call `get_service_info` first and replay its complete user-controlled configuration. Omit implicit system mounts.
 
 > **Traefik TLS certificate store:** every service receives the exact system volume at `/etc/traefik` read-only. It is implicit and not part of the preset or the user-supplied `volumes` replacement. `/etc/traefik` is reserved, and all other raw `oduflow-*` volumes remain forbidden. `update_service` validates candidate volumes before stopping the current container.
 

@@ -421,6 +421,23 @@ class TestCreateServiceTool:
         call_kwargs = mock_create.call_args
         assert call_kwargs[1]["env_vars"] is None
 
+    @patch("oduflow.docker_ops.service_ops.create_service")
+    def test_create_with_routes(self, mock_create):
+        routes = [{"path": "/RPC2", "port": 8080, "strip_prefix": False}]
+        mock_create.return_value = {
+            "name": "fs",
+            "container_name": "oduflow-1-svc-fs",
+            "url": "https://fs.example.com",
+            "image": "fs:1",
+            "routes": routes,
+        }
+
+        result = _get_tool_fn("create_service")(name="fs", image="fs:1", routes=routes)
+
+        assert mock_create.call_args.args[4] is None
+        assert mock_create.call_args.kwargs["routes"] == routes
+        assert "- /RPC2 -> 8080" in result
+
 
 class TestUpdateServiceTool:
     @patch("oduflow.docker_ops.service_ops.update_service")
@@ -447,7 +464,20 @@ class TestUpdateServiceTool:
             volume_override=None,
             cap_add_override=None,
             privileged_override=None,
+            routes_override=None,
         )
+
+    @patch("oduflow.docker_ops.service_ops.update_service")
+    def test_update_routes_mapping(self, mock_update):
+        mock_update.return_value = {
+            "name": "fs",
+            "container_name": "oduflow-1-svc-fs",
+            "url": "https://fs.example.com",
+            "image": "fs:1",
+        }
+        routes = [{"path": "/RPC2", "port": 8080, "strip_prefix": False}]
+        _get_tool_fn("update_service")(name="fs", routes=routes)
+        assert mock_update.call_args.kwargs["routes_override"] == routes
 
     @patch("oduflow.docker_ops.service_ops.update_service")
     def test_update_net_admin_and_privileged_mapping(self, mock_update):
