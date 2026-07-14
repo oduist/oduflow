@@ -44,7 +44,8 @@ def _make_git_source(tmp_path):
             text=True,
         )
 
-    _git("init", "-b", "main")
+    _git("init")
+    _git("checkout", "-b", "main")
     (mod / "__manifest__.py").write_text("{'name': 'Sale Enterprise'}")
     _git("add", "-A")
     _git(*_GIT_ID, "commit", "-m", "main commit")
