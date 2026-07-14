@@ -6,3 +6,5 @@ fastapi
 packaging
 cryptography
 itsdangerous
+boto3
+zstandard

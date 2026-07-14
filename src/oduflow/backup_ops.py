@@ -297,6 +297,83 @@ def _load_manifest(
     return manifest
 
 
+def _filestore_revision_from_manifest(manifest: dict[str, Any]) -> int:
+    """Validated filestore revision, where zero means an empty filestore."""
+    filestore = manifest.get("filestore")
+    if not isinstance(filestore, dict) or "revision" not in filestore:
+        raise PrerequisiteNotMetError(
+            "Snapshot manifest has no filestore revision; refusing to combine "
+            "its database with the current production filestore."
+        )
+    raw_revision = filestore["revision"]
+    try:
+        revision = int(raw_revision)
+    except (TypeError, ValueError):
+        raise PrerequisiteNotMetError(
+            "Snapshot manifest has an invalid filestore revision."
+        )
+    if (
+        isinstance(raw_revision, bool)
+        or (isinstance(raw_revision, float) and not raw_revision.is_integer())
+        or revision < 0
+    ):
+        raise PrerequisiteNotMetError(
+            "Snapshot manifest has an invalid filestore revision."
+        )
+    return revision
+
+
+def _swap_restored_filestore(
+    restore_dir: str, filestore_dir: str, old_dir: str
+) -> bool:
+    """Install a staged filestore, restoring the live directory on failure.
+
+    Return whether a previous live filestore was moved to ``old_dir``. The
+    caller removes that backup only after the database and filestore pair is
+    fully committed.
+    """
+    had_previous = os.path.isdir(filestore_dir)
+    if had_previous:
+        os.replace(filestore_dir, old_dir)
+    try:
+        os.replace(restore_dir, filestore_dir)
+    except BaseException:
+        if had_previous and os.path.isdir(old_dir):
+            os.replace(old_dir, filestore_dir)
+        raise
+    return had_previous
+
+
+def _rollback_database_swap(
+    client: Any,
+    settings: Settings,
+    db_name: str,
+    restore_db: str,
+    old_db: str,
+    pg_container: str,
+) -> None:
+    """Put the old live DB back and move the restored DB to scratch."""
+    _exec_sql(
+        client,
+        settings,
+        "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
+        f"WHERE datname = '{db_name}';",
+        container_name=pg_container,
+    )
+    _exec_sql(
+        client,
+        settings,
+        f'ALTER DATABASE "{db_name}" RENAME TO "{restore_db}";',
+        container_name=pg_container,
+    )
+    _exec_sql(
+        client,
+        settings,
+        f'ALTER DATABASE "{old_db}" RENAME TO "{db_name}";',
+        container_name=pg_container,
+    )
+
+
 def restore_production(
     settings: Settings,
     team: TeamSettings,
@@ -313,6 +390,7 @@ def restore_production(
     backup = _require_backup(settings)
     record = production_registry.get_production(team, name)
     manifest = _load_manifest(settings, team, name, snapshot_id)
+    fs_revision = _filestore_revision_from_manifest(manifest)
     client = get_client()
     env_name = prod_env_name(name)
     db_name = production_ops.prod_db_name(team, name)
@@ -332,13 +410,34 @@ def restore_production(
 
     container = production_ops._get_container(client, settings, team, name)
     was_running = container is not None and container.status == "running"
-    if container is not None and was_running:
-        container.stop()
 
     restore_db = f"{db_name}__restore"
     old_db = f"{db_name}__old"
+    filestore_parent = os.path.dirname(filestore_dir)
+    restore_dir = ""
+    old_dir = ""
+    container_stopped = False
     swapped = False
     try:
+        os.makedirs(filestore_parent, exist_ok=True)
+        restore_dir = tempfile.mkdtemp(
+            dir=filestore_parent, prefix=f".restore-{snapshot_id}-"
+        )
+        old_dir = tempfile.mkdtemp(dir=filestore_parent, prefix=f".old-{snapshot_id}-")
+        os.rmdir(old_dir)  # reserve a unique sibling path that does not yet exist
+
+        # Build the complete target filestore before the database is swapped.
+        # Revision zero is an exact empty-filestore snapshot, not an instruction
+        # to retain whatever happens to be live now.
+        if fs_revision > 0:
+            chunkstore.restore(
+                filestore_storage(settings, team), name, fs_revision, restore_dir
+            )
+        odoo_image = record.get("odoo_image", "")
+        if odoo_image:
+            uid_str, gid_str = get_odoo_uid_gid(client, odoo_image).split(":")
+            chown_recursive(restore_dir, int(uid_str), int(gid_str), client, odoo_image)
+
         # ------------------------ database ------------------------------
         with tempfile.TemporaryDirectory(dir=tmp_root) as tmpdir:
             dump_path = os.path.join(tmpdir, f"{snapshot_id}.pgdump")
@@ -397,6 +496,11 @@ def restore_production(
         )
 
         # Swap: terminate live connections, rename out, rename in.
+        # Everything above is prepared while Odoo remains available; downtime
+        # starts only for the paired database + filestore commit below.
+        if container is not None and was_running:
+            container.stop()
+            container_stopped = True
         _exec_sql(
             client,
             settings,
@@ -435,26 +539,22 @@ def restore_production(
             raise
 
         # ------------------------ filestore ------------------------------
-        fs_revision = int(manifest.get("filestore", {}).get("revision", 0) or 0)
-        if fs_revision > 0:
-            restore_dir = f"{filestore_dir}.restore-{snapshot_id}"
-            if os.path.isdir(restore_dir):
-                shutil.rmtree(restore_dir)
-            chunkstore.restore(
-                filestore_storage(settings, team), name, fs_revision, restore_dir
+        try:
+            had_previous_filestore = _swap_restored_filestore(
+                restore_dir, filestore_dir, old_dir
             )
-            odoo_image = record.get("odoo_image", "")
-            if odoo_image:
-                uid_str, gid_str = get_odoo_uid_gid(client, odoo_image).split(":")
-                chown_recursive(
-                    restore_dir, int(uid_str), int(gid_str), client, odoo_image
-                )
-            old_dir = f"{filestore_dir}.old-{snapshot_id}"
-            if os.path.isdir(filestore_dir):
-                os.replace(filestore_dir, old_dir)
-            os.replace(restore_dir, filestore_dir)
-            if os.path.isdir(old_dir):
-                shutil.rmtree(old_dir, ignore_errors=True)
+        except BaseException:
+            # The filesystem helper has already put the old filestore back.
+            # Compensate the successful database rename so callers never get a
+            # restored DB paired with stale/missing attachment files.
+            _rollback_database_swap(
+                client, settings, db_name, restore_db, old_db, pg_container
+            )
+            swapped = False
+            raise
+
+        if had_previous_filestore and os.path.isdir(old_dir):
+            shutil.rmtree(old_dir, ignore_errors=True)
 
         # Old database dropped only after everything else succeeded.
         _exec_sql(
@@ -464,6 +564,8 @@ def restore_production(
             container_name=pg_container,
         )
     finally:
+        if restore_dir and os.path.isdir(restore_dir):
+            shutil.rmtree(restore_dir, ignore_errors=True)
         if not swapped:
             # Failed before the swap: clean the half-restored database.
             try:
@@ -475,7 +577,7 @@ def restore_production(
                 )
             except Exception:
                 pass
-        if container is not None and was_running:
+        if container is not None and container_stopped:
             try:
                 container.start()
             except Exception:
@@ -532,7 +634,7 @@ def restore_production(
         "healthy": healthy,
         "warning": warning,
         "db_bytes": manifest["db"]["bytes"],
-        "filestore_revision": manifest.get("filestore", {}).get("revision", 0),
+        "filestore_revision": fs_revision,
     }
 
 
