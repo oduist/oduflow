@@ -3829,6 +3829,37 @@ def _start_stdio() -> None:
         logger.info("Shutting down.")
 
 
+def _traefik_forwarded_allow_ips(settings: Settings) -> list[str]:
+    """TCP peers allowed to supply proxy headers to Uvicorn.
+
+    Remote clients can reach the host-bound backend port directly, so trusting
+    every peer (``*``) lets them spoof the client address used by login
+    throttling. Trust only loopback (needed by Docker Desktop's forwarding) and
+    the live Traefik container's exact addresses.
+    """
+    trusted = {"127.0.0.1", "::1"}
+    try:
+        from oduflow.docker_ops.client import get_client
+
+        container = get_client().containers.get(settings.traefik_container)
+        container.reload()
+        network_settings = container.attrs.get("NetworkSettings", {})
+        candidates = [network_settings]
+        candidates.extend((network_settings.get("Networks") or {}).values())
+        for network in candidates:
+            for key in ("IPAddress", "GlobalIPv6Address"):
+                address = str(network.get(key) or "").strip()
+                if address:
+                    trusted.add(address)
+    except Exception as exc:  # noqa: BLE001 - fail closed to loopback-only trust
+        logger.warning(
+            "Could not resolve Traefik proxy addresses; forwarded headers will "
+            "be trusted from loopback only: %s",
+            exc,
+        )
+    return sorted(trusted)
+
+
 def _start_http() -> None:
     """Start the MCP server (HTTP transport)."""
     from fastmcp.server.http import create_streamable_http_app
@@ -3870,8 +3901,8 @@ def _start_http() -> None:
     # ``all`` (not ``any``): a single passwordless team can never log in (auth is
     # global; empty passwords are skipped), so refuse rather than silently lock it
     # out.
-    if not settings.allow_insecure_http and not all(
-        t.ui_password for t in settings.teams.values()
+    if not settings.allow_insecure_http and (
+        not settings.teams or not all(t.ui_password for t in settings.teams.values())
     ):
         raise PrerequisiteNotMetError(
             "Refusing to start the HTTP transport with an unauthenticated web "
@@ -3948,10 +3979,14 @@ def _start_http() -> None:
 
     # Behind Traefik every request arrives from the proxy's container IP, so
     # uvicorn's access log and the login rate-limiter would see one shared peer
-    # instead of the real client. Trust X-Forwarded-For only in traefik mode
-    # (uvicorn rewrites scope["client"] from it); in port mode the peer is the
-    # real client and trusting forwarded headers would let it spoof its IP.
-    forwarded_allow_ips = "*" if settings.routing_mode == "traefik" else None
+    # instead of the real client. Trust X-Forwarded-For only from the exact
+    # Traefik peer addresses; wildcard trust lets a direct backend client spoof
+    # its IP and bypass throttling. Port mode keeps Uvicorn's default trust.
+    forwarded_allow_ips = (
+        _traefik_forwarded_allow_ips(settings)
+        if settings.routing_mode == "traefik"
+        else None
+    )
 
     # Bound the graceful-shutdown window: MCP clients hold long-lived
     # StreamableHTTP streams (SSE GET/keep-alive) that never close on their own,

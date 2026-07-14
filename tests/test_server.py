@@ -894,6 +894,23 @@ class TestHttpFailClosed:
             server._start_http()
             mock_uvicorn.assert_called_once()
 
+    def test_start_http_refuses_empty_team_map(self):
+        from oduflow import server
+        from oduflow.errors import PrerequisiteNotMetError
+
+        settings = Settings(
+            host="127.0.0.1",
+            teams={},
+            allow_insecure_http=False,
+        )
+        with (
+            patch.object(server, "_get_settings", return_value=settings),
+            patch.object(server, "_ensure_web_ui_password", return_value=settings),
+            patch.object(server, "_build_auth", return_value=object()),
+        ):
+            with pytest.raises(PrerequisiteNotMetError, match="web dashboard"):
+                server._start_http()
+
     def test_port_mode_does_not_trust_forwarded_ips(self):
         # In port mode the TCP peer is the real client; trusting X-Forwarded-For
         # would let it spoof its IP, so uvicorn keeps the default trust list.
@@ -937,9 +954,51 @@ class TestHttpFailClosed:
             patch("fastmcp.server.http.create_streamable_http_app"),
             patch("oduflow.web_ui.mount_web_ui"),
             patch("oduflow.reaper.start_reaper"),
+            patch.object(
+                server,
+                "_traefik_forwarded_allow_ips",
+                return_value=["127.0.0.1", "172.18.0.2"],
+            ),
             patch("uvicorn.run") as mock_uvicorn,
         ):
             server._start_http()
             _, kwargs = mock_uvicorn.call_args
             assert kwargs["proxy_headers"] is True
-            assert kwargs["forwarded_allow_ips"] == "*"
+            assert kwargs["forwarded_allow_ips"] == ["127.0.0.1", "172.18.0.2"]
+
+    def test_traefik_proxy_trust_uses_exact_container_addresses(self):
+        from oduflow import server
+
+        settings = Settings(traefik_container="oduflow-traefik")
+        container = type(
+            "Container",
+            (),
+            {
+                "attrs": {
+                    "NetworkSettings": {
+                        "Networks": {
+                            "oduflow-net": {
+                                "IPAddress": "172.18.0.2",
+                                "GlobalIPv6Address": "fd00::2",
+                            }
+                        }
+                    }
+                },
+                "reload": lambda self: None,
+            },
+        )()
+        client = type(
+            "Client",
+            (),
+            {
+                "containers": type(
+                    "Containers", (), {"get": lambda self, name: container}
+                )()
+            },
+        )()
+
+        with patch("oduflow.docker_ops.client.get_client", return_value=client):
+            trusted = server._traefik_forwarded_allow_ips(settings)
+
+        assert trusted == ["127.0.0.1", "172.18.0.2", "::1", "fd00::2"]
+        assert "*" not in trusted
