@@ -164,3 +164,36 @@ def test_attach_filestore_remote_source_builds_rsync_command(monkeypatch, tmp_pa
     )
 
     assert calls[0][-2] == "odoo@example.com:/srv/filestore/odoo19-mirage/"
+
+
+def test_attach_filestore_restores_previous_on_replace_failure(monkeypatch, tmp_path):
+    team, settings = _team_and_settings(tmp_path)
+    _write_metadata(team)
+    _patch_attach_dependencies(monkeypatch)
+    target = team.get_template_filestore_path("prod")
+    os.makedirs(os.path.join(target, "60"))
+    old_file = os.path.join(target, "60", HASH_60)
+    with open(old_file, "wb") as f:
+        f.write(b"old")
+    archive = tmp_path / "filestore.zip"
+    _zip(archive, {f"61/{HASH_61}": b"new"})
+
+    real_replace = os.replace
+    prepared_replace_seen = False
+
+    def fail_prepared_replace(src, dst):
+        nonlocal prepared_replace_seen
+        if os.path.basename(src) == "prepared":
+            prepared_replace_seen = True
+            raise OSError("replace failed")
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(system_ops.os, "replace", fail_prepared_replace)
+
+    with pytest.raises(OSError, match="replace failed"):
+        system_ops.attach_filestore(settings, team, "prod", str(archive))
+
+    assert prepared_replace_seen
+    assert os.path.isfile(old_file)
+    assert open(old_file, "rb").read() == b"old"
+    assert not os.path.exists(os.path.join(target, "61", HASH_61))

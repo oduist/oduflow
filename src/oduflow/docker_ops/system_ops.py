@@ -1858,6 +1858,7 @@ def attach_filestore(
                 metadata = {}
 
         target_filestore = team.get_template_filestore_path(template_name)
+        previous_filestore = os.path.join(staging_root, "previous")
         with env_ops.remount_template_overlays(
             client,
             settings,
@@ -1865,10 +1866,21 @@ def attach_filestore(
             template_name,
             reset_upper=reset_env_changes,
         ) as remount:
-            if os.path.exists(target_filestore):
-                shutil.rmtree(target_filestore)
+            had_previous = os.path.exists(target_filestore)
             os.makedirs(os.path.dirname(target_filestore), exist_ok=True)
-            os.rename(prepared_dir, target_filestore)
+            if had_previous:
+                # Keep the old lower layer until the prepared replacement is
+                # installed. Removing it first turns an otherwise recoverable
+                # rename error into a template with no filestore at all.
+                os.replace(target_filestore, previous_filestore)
+            if os.path.exists(target_filestore):
+                shutil.rmtree(target_filestore, ignore_errors=True)
+            try:
+                os.replace(prepared_dir, target_filestore)
+            except BaseException:
+                if had_previous and os.path.exists(previous_filestore):
+                    os.replace(previous_filestore, target_filestore)
+                raise
 
             odoo_image = str(metadata.get("odoo_image") or "")
             if odoo_image:
@@ -1885,6 +1897,9 @@ def attach_filestore(
                     logger.info("Template filestore chowned to %s", uid_gid)
                 except Exception as exc:  # noqa: BLE001 - chown is best-effort
                     logger.warning("Could not chown template filestore: %s", exc)
+
+            if os.path.exists(previous_filestore):
+                shutil.rmtree(previous_filestore, ignore_errors=True)
 
         metadata["includes_filestore"] = True
         metadata["use_overlay"] = None
