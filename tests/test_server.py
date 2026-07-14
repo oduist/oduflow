@@ -957,31 +957,29 @@ class TestHttpFailClosed:
             patch.object(
                 server,
                 "_traefik_forwarded_allow_ips",
-                return_value=["127.0.0.1", "172.18.0.2"],
+                return_value=["127.0.0.1", "172.18.0.0/16"],
             ),
             patch("uvicorn.run") as mock_uvicorn,
         ):
             server._start_http()
             _, kwargs = mock_uvicorn.call_args
             assert kwargs["proxy_headers"] is True
-            assert kwargs["forwarded_allow_ips"] == ["127.0.0.1", "172.18.0.2"]
+            assert kwargs["forwarded_allow_ips"] == ["127.0.0.1", "172.18.0.0/16"]
 
-    def test_traefik_proxy_trust_uses_exact_container_addresses(self):
+    def test_traefik_proxy_trust_uses_stable_network_cidrs(self):
         from oduflow import server
 
-        settings = Settings(traefik_container="oduflow-traefik")
-        container = type(
-            "Container",
+        settings = Settings(shared_network="oduflow-net")
+        network = type(
+            "Network",
             (),
             {
                 "attrs": {
-                    "NetworkSettings": {
-                        "Networks": {
-                            "oduflow-net": {
-                                "IPAddress": "172.18.0.2",
-                                "GlobalIPv6Address": "fd00::2",
-                            }
-                        }
+                    "IPAM": {
+                        "Config": [
+                            {"Subnet": "172.18.0.0/16"},
+                            {"Subnet": "fd00::/64"},
+                        ]
                     }
                 },
                 "reload": lambda self: None,
@@ -990,15 +988,32 @@ class TestHttpFailClosed:
         client = type(
             "Client",
             (),
-            {
-                "containers": type(
-                    "Containers", (), {"get": lambda self, name: container}
-                )()
-            },
+            {"networks": type("Networks", (), {"get": lambda self, name: network})()},
         )()
 
         with patch("oduflow.docker_ops.client.get_client", return_value=client):
             trusted = server._traefik_forwarded_allow_ips(settings)
 
-        assert trusted == ["127.0.0.1", "172.18.0.2", "::1", "fd00::2"]
+        assert trusted == ["127.0.0.1", "172.18.0.0/16", "::1", "fd00::/64"]
         assert "*" not in trusted
+
+    def test_traefik_proxy_trust_fails_closed_without_network(self):
+        from oduflow import server
+        from oduflow.errors import PrerequisiteNotMetError
+
+        client = type(
+            "Client",
+            (),
+            {
+                "networks": type(
+                    "Networks",
+                    (),
+                    {"get": lambda self, name: (_ for _ in ()).throw(OSError("down"))},
+                )()
+            },
+        )()
+        with (
+            patch("oduflow.docker_ops.client.get_client", return_value=client),
+            pytest.raises(PrerequisiteNotMetError, match="trusted proxy network"),
+        ):
+            server._traefik_forwarded_allow_ips(Settings(shared_network="oduflow-net"))

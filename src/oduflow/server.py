@@ -3835,27 +3835,27 @@ def _traefik_forwarded_allow_ips(settings: Settings) -> list[str]:
     Remote clients can reach the host-bound backend port directly, so trusting
     every peer (``*``) lets them spoof the client address used by login
     throttling. Trust only loopback (needed by Docker Desktop's forwarding) and
-    the live Traefik container's exact addresses.
+    the stable CIDRs of the Docker network that carries Traefik. A network CIDR
+    remains valid if Docker recreates Traefik with a different container IP.
     """
     trusted = {"127.0.0.1", "::1"}
-    try:
-        from oduflow.docker_ops.client import get_client
+    from oduflow.docker_ops.client import get_client
 
-        container = get_client().containers.get(settings.traefik_container)
-        container.reload()
-        network_settings = container.attrs.get("NetworkSettings", {})
-        candidates = [network_settings]
-        candidates.extend((network_settings.get("Networks") or {}).values())
-        for network in candidates:
-            for key in ("IPAddress", "GlobalIPv6Address"):
-                address = str(network.get(key) or "").strip()
-                if address:
-                    trusted.add(address)
-    except Exception as exc:  # noqa: BLE001 - fail closed to loopback-only trust
-        logger.warning(
-            "Could not resolve Traefik proxy addresses; forwarded headers will "
-            "be trusted from loopback only: %s",
-            exc,
+    try:
+        network = get_client().networks.get(settings.shared_network)
+        network.reload()
+        for config in network.attrs.get("IPAM", {}).get("Config", []):
+            subnet = str(config.get("Subnet") or "").strip()
+            if subnet:
+                trusted.add(subnet)
+    except Exception as exc:
+        raise PrerequisiteNotMetError(
+            f"Cannot resolve trusted proxy network '{settings.shared_network}': {exc}"
+        )
+    if len(trusted) == 2:
+        raise PrerequisiteNotMetError(
+            f"Docker network '{settings.shared_network}' has no IPAM subnet; "
+            "refusing wildcard or loopback-only proxy-header trust."
         )
     return sorted(trusted)
 
@@ -3979,8 +3979,8 @@ def _start_http() -> None:
 
     # Behind Traefik every request arrives from the proxy's container IP, so
     # uvicorn's access log and the login rate-limiter would see one shared peer
-    # instead of the real client. Trust X-Forwarded-For only from the exact
-    # Traefik peer addresses; wildcard trust lets a direct backend client spoof
+    # instead of the real client. Trust X-Forwarded-For only from Traefik's
+    # stable Docker network; wildcard trust lets a direct backend client spoof
     # its IP and bypass throttling. Port mode keeps Uvicorn's default trust.
     forwarded_allow_ips = (
         _traefik_forwarded_allow_ips(settings)
