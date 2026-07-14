@@ -204,6 +204,20 @@ class TestSetupRepoAuthSSRF:
         assert not os.path.exists(cred_file)
 
 
+class TestGitErrorRedaction:
+    def test_embedded_repo_credentials_are_removed_from_command_output(self):
+        from oduflow.docker_ops.env_ops import _redact_repo_urls
+
+        repo_url = "https://user:super-secret@example.com/acme/repo.git"
+        output = f"fatal: unable to access '{repo_url}': connection refused"
+
+        redacted = _redact_repo_urls(output, repo_url)
+
+        assert "super-secret" not in redacted
+        assert "user@" not in redacted
+        assert "https://example.com/acme/repo.git" in redacted
+
+
 class TestUiPasswordInjection:
     def test_injects_into_bootstrap_config(self):
         from oduflow.server import _inject_ui_password

@@ -84,6 +84,15 @@ def _normalize_extra_addons(raw_addons) -> dict[str, str]:
     return {}
 
 
+def _redact_repo_urls(text: str, *urls: str) -> str:
+    """Remove embedded credentials from known repository URLs in output."""
+    redacted = text
+    for url in urls:
+        if url:
+            redacted = redacted.replace(url, sanitize_repo_url(url))
+    return redacted
+
+
 def _get_used_ports(
     client: DockerClient,
     settings: Settings,
@@ -907,7 +916,11 @@ def create_environment(
                     f"Git authentication failed for {sanitize_repo_url(repo_url)}. "
                     f"Call 'setup_repo_auth' first to cache credentials."
                 )
-            raise ExternalCommandError("git clone", e.returncode, error_msg)
+            raise ExternalCommandError(
+                "git clone",
+                e.returncode,
+                _redact_repo_urls(error_msg, clone_url, repo_url),
+            )
         except subprocess.TimeoutExpired:
             raise ExternalCommandError(
                 "git clone",
