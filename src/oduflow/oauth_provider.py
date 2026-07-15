@@ -150,12 +150,14 @@ class HostRelativeAuthChallenge:
 class _FlexibleClient(OAuthClientInformationFull):
     """Client info that accepts the varied callback URLs MCP clients use.
 
-    Preregistered clients have ``client_id == client_secret == auth_token``;
-    the secret-bearing /token exchange already proves identity, so we let MCP
-    clients (claude.ai over https, IDEs over loopback or a custom scheme) bring
-    their own callback — but we still reject callbacks that are never legitimate:
-    dangerous schemes (javascript:, data:, …) and cleartext http:// to a
-    non-loopback host (which would leak the authorization code in the clear).
+    Preregistered team clients have ``client_id = team_<id>`` (non-secret) and
+    ``client_secret = auth_token``; per-env clients keep ``client_id ==
+    client_secret == env_token``. The secret-bearing /token exchange proves
+    identity, so we let MCP clients (claude.ai over https, IDEs over loopback or
+    a custom scheme) bring their own callback — but we still reject callbacks that
+    are never legitimate: dangerous schemes (javascript:, data:, …) and cleartext
+    http:// to a non-loopback host (which would leak the authorization code in the
+    clear).
     """
 
     def validate_redirect_uri(self, redirect_uri: AnyUrl | None) -> AnyUrl:
