@@ -59,7 +59,8 @@ auto_delete_hours = 0             # delete stopped environments after N hours (D
 # is derived per-request), so you do NOT need oauth_base_url. Endpoints:
 #   /.well-known/oauth-authorization-server   /authorize   /token
 # For each team, claude.ai (and any OAuth-based MCP client) is configured with:
-#   client_id = client_secret = team.<id>.auth_token
+#   client_id = team_<id>  (for [team.1], use team_1)
+#   client_secret = team.<id>.auth_token
 # After the OAuth flow the issued access_token is also auth_token, so plain
 # Bearer-token clients keep working.
 #

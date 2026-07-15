@@ -397,7 +397,7 @@ mode = "port"               # "port" (direct host port) | "traefik" (reverse pro
 # automatically and runs on each team's own hostname (issuer derived per-request),
 # so oauth_base_url is NOT needed. Set it only to pin a fixed issuer, or in port
 # mode: the public URL of this instance (for Claude.ai and other OAuth MCP
-# clients). Each team's auth_token doubles as client_id, client_secret, and token.
+# clients). OAuth client_id = team_<id> (non-secret); auth_token = client_secret = token.
 [oauth]
 # oauth_base_url = "https://oduflow.example.com"
 
@@ -464,7 +464,7 @@ port_range = [50000, 50100]          # port range for Odoo containers [start, en
 
 | Key | Default | Description |
 |---|---|---|
-| `[oauth].oauth_base_url` | *(empty)* | Public URL of this Oduflow instance used as the OAuth issuer. Oduflow runs a self-hosted OAuth 2.1 Authorization Server (exposes `/.well-known/oauth-authorization-server`, `/authorize`, `/token`) so OAuth-based MCP clients like Claude.ai can connect; each team's `auth_token` doubles as `client_id`, `client_secret`, and the issued access token. **In traefik mode this is enabled automatically and the issuer is derived per-request from each team's own hostname — leave empty.** Set it to pin a fixed issuer, or in port mode. Empty + port mode = plain Bearer-token auth only |
+| `[oauth].oauth_base_url` | *(empty)* | Public URL of this Oduflow instance used as the OAuth issuer. Oduflow runs a self-hosted OAuth 2.1 Authorization Server (exposes `/.well-known/oauth-authorization-server`, `/authorize`, `/token`) so OAuth-based MCP clients like Claude.ai can connect; the OAuth `client_id` is the non-secret `team_<id>` (e.g. `team_1`) and each team's `auth_token` is the `client_secret` and the issued access token. **In traefik mode this is enabled automatically and the issuer is derived per-request from each team's own hostname — leave empty.** Set it to pin a fixed issuer, or in port mode. Empty + port mode = plain Bearer-token auth only |
 
 ### Database settings
 
@@ -2224,16 +2224,16 @@ Dynamic Client Registration (`/register`) is **disabled** — clients must use t
 
 1. Go to Claude.ai Settings → Connectors → Add custom MCP
 2. Enter your Oduflow URL: `https://your-server.com/mcp` (in traefik mode, the team's own hostname, e.g. `https://team-a.example.com/mcp`)
-3. In the OAuth fields enter the team's `auth_token` as **both** `Client ID` **and** `Client Secret`:
+3. In the OAuth fields, use the team's id as `Client ID` and its `auth_token` as `Client Secret` (the `Client ID` is `team_<N>` for `[team.N]` — e.g. `team_1` for `[team.1]`):
 
    ```
-   Client ID     = secret-token-team-1
+   Client ID     = team_1
    Client Secret = secret-token-team-1
    ```
 
 4. Claude.ai performs the OAuth flow against your Oduflow instance, receives an access token, and connects.
 
-The team is identified by the `auth_token`, so each team's claude.ai connector ends up scoped to its own workspaces, templates, and credentials.
+The issued access token is the team's `auth_token`, so each team's claude.ai connector ends up scoped to its own workspaces, templates, and credentials.
 
 ### Bearer-only mode (CLI / automation)
 

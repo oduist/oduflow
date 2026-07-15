@@ -90,7 +90,7 @@ Some MCP clients (e.g. Claude.ai Remote MCP) require an OAuth flow instead of a 
 oauth_base_url = "https://oduflow.example.com"
 ```
 
-Each team's `auth_token` then doubles as `client_id`, `client_secret`, and the issued access token. See [Authentication & Security](security.md#self-hosted-oauth-for-claudeai-and-other-mcp-clients) for the full setup and how to connect from Claude.ai.
+The OAuth `client_id` is the non-secret `team_<id>` (e.g. `team_1`); each team's `auth_token` is the `client_secret` and the issued access token. See [Authentication & Security](security.md#self-hosted-oauth-for-claudeai-and-other-mcp-clients) for the full setup and how to connect from Claude.ai.
 
 ### MCP client configuration
 

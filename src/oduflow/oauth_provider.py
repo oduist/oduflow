@@ -1,10 +1,13 @@
 """Self-hosted OAuth 2.1 Authorization Server for Oduflow.
 
-Each team's ``auth_token`` is preregistered as an OAuth client where
-``client_id == client_secret == auth_token``. After a successful
-Authorization Code + PKCE flow the issued ``access_token`` is the same
-``auth_token``, so the existing Bearer-token path in ``_resolve_team()``
-keeps working unchanged.
+Each team is preregistered as an OAuth client whose ``client_id`` is a public,
+non-secret identifier (``team_<id>``, e.g. ``team_1``) and whose
+``client_secret`` is the team's ``auth_token``. Keeping the secret out of the
+``client_id`` matters because ``client_id`` travels in the ``/authorize`` query
+string (logs, browser history, Referer); the secret is sent only in the POST
+``/token`` body. After a successful Authorization Code + PKCE flow the issued
+``access_token`` is the team ``auth_token``, so the existing Bearer-token path in
+``_resolve_team()`` keeps working unchanged.
 """
 
 from __future__ import annotations
@@ -47,6 +50,12 @@ _DANGEROUS_REDIRECT_SCHEMES = {"javascript", "data", "vbscript", "file"}
 _LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "::1", "[::1]"}
 
 _RESOURCE_METADATA_RE = re.compile(r'resource_metadata="([^"]+)"')
+
+
+def public_client_id(team_id: str) -> str:
+    """The non-secret OAuth ``client_id`` for a team, safe to appear in the
+    ``/authorize`` URL. The team's ``auth_token`` is the ``client_secret``."""
+    return f"team_{team_id}"
 
 
 def _forwarded_scheme_host(
@@ -141,12 +150,13 @@ class HostRelativeAuthChallenge:
 class _FlexibleClient(OAuthClientInformationFull):
     """Client info that accepts the varied callback URLs MCP clients use.
 
-    Preregistered clients have ``client_id == client_secret == auth_token``;
-    the secret-bearing /token exchange already proves identity, so we let MCP
-    clients (claude.ai over https, IDEs over loopback or a custom scheme) bring
-    their own callback — but we still reject callbacks that are never legitimate:
-    dangerous schemes (javascript:, data:, …) and cleartext http:// to a
-    non-loopback host (which would leak the authorization code in the clear).
+    Preregistered team clients have ``client_id = team_<id>`` (non-secret) and
+    ``client_secret = auth_token``. The secret-bearing /token exchange proves
+    identity, so we let MCP clients (claude.ai over https, IDEs over loopback or
+    a custom scheme) bring their own callback — but we still reject callbacks that
+    are never legitimate: dangerous schemes (javascript:, data:, …) and cleartext
+    http:// to a non-loopback host (which would leak the authorization code in the
+    clear).
     """
 
     def validate_redirect_uri(self, redirect_uri: AnyUrl | None) -> AnyUrl:
@@ -200,8 +210,13 @@ class OduflowOAuthProvider(InMemoryOAuthProvider):
             token = team.auth_token
             if not token:
                 continue
+            # Public, non-secret client_id (e.g. "team_1"): it travels in the
+            # /authorize query string, so it must NOT be the secret. The secret
+            # lives only in client_secret (POST /token body) and is what the
+            # issued access_token equals.
+            client_id = public_client_id(team.team_id)
             client = _FlexibleClient(
-                client_id=token,
+                client_id=client_id,
                 client_secret=token,
                 redirect_uris=[placeholder_redirect],
                 grant_types=["authorization_code", "refresh_token"],
@@ -209,10 +224,12 @@ class OduflowOAuthProvider(InMemoryOAuthProvider):
                 token_endpoint_auth_method="client_secret_post",
                 scope=None,
             )
-            self.clients[token] = client
-            self._token_to_team[token] = team.team_id
-            # Preseed the access token so direct Bearer-token calls also work
-            # (curl/CLI clients that skip the OAuth dance entirely).
+            self.clients[client_id] = client
+            self._token_to_team[client_id] = team.team_id
+            # Preseed the access token — keyed by the SECRET auth_token, not the
+            # public client_id — so direct Bearer-token calls also work (curl/CLI
+            # clients that skip the OAuth dance). The public client_id is not a
+            # valid Bearer token on its own.
             self.access_tokens[token] = AccessToken(
                 token=token,
                 client_id=team.team_id,
@@ -336,21 +353,7 @@ class OduflowOAuthProvider(InMemoryOAuthProvider):
         return (team_id, env_name)
 
     async def get_client(self, client_id: str) -> OAuthClientInformationFull | None:
-        client = await super().get_client(client_id)
-        if client is not None:
-            return client
-        # A per-environment token acts as its own OAuth client.
-        if await self._env_identity(client_id) is not None:
-            return _FlexibleClient(
-                client_id=client_id,
-                client_secret=client_id,
-                redirect_uris=[AnyUrl("https://claude.ai/")],
-                grant_types=["authorization_code", "refresh_token"],
-                response_types=["code"],
-                token_endpoint_auth_method="client_secret_post",
-                scope=None,
-            )
-        return None
+        return await super().get_client(client_id)
 
     async def load_access_token(  # type: ignore[override]
         self, token: str
@@ -371,8 +374,9 @@ class OduflowOAuthProvider(InMemoryOAuthProvider):
 
     async def register_client(self, client_info: OAuthClientInformationFull) -> None:
         raise ValueError(
-            "Dynamic client registration is disabled. "
-            "Set client_id = client_secret = team.<id>.auth_token from oduflow.toml."
+            "Dynamic client registration is disabled. Use the preregistered "
+            "client: client_id = team_<id> (e.g. team_1), client_secret = that "
+            "team's auth_token from oduflow.toml."
         )
 
     async def exchange_authorization_code(
@@ -384,14 +388,15 @@ class OduflowOAuthProvider(InMemoryOAuthProvider):
         self.auth_codes.pop(authorization_code.code, None)
 
         cid = client.client_id
-        if cid is None or (
-            cid not in self._token_to_team and await self._env_identity(cid) is None
-        ):
+        if cid is None or cid not in self._token_to_team:
             from mcp.server.auth.provider import TokenError
 
             raise TokenError("invalid_client", "Unknown client.")
 
-        token = cid
+        # The issued access token is the client SECRET (the team auth_token, or
+        # never the public client_id, which would not authenticate as a Bearer
+        # token downstream.
+        token = client.client_secret or cid
         scope = (
             " ".join(authorization_code.scopes) if authorization_code.scopes else None
         )
@@ -409,12 +414,12 @@ class OduflowOAuthProvider(InMemoryOAuthProvider):
         refresh_token: str,
     ) -> RefreshToken | None:
         cid = client.client_id
+        # The refresh token we issue equals the client secret (team auth_token),
+        # not the public client_id.
         if (
             cid is not None
-            and refresh_token == cid
-            and (
-                cid in self._token_to_team or await self._env_identity(cid) is not None
-            )
+            and refresh_token == client.client_secret
+            and cid in self._token_to_team
         ):
             return RefreshToken(
                 token=refresh_token,

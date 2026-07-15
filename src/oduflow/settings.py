@@ -182,8 +182,8 @@ class Settings:
     # OAuth (self-hosted Authorization Server). Public base URL of this server,
     # used as the OAuth issuer and to advertise authorize/token endpoints.
     # When set, Oduflow exposes /.well-known/oauth-authorization-server,
-    # /authorize, and /token, and each team's auth_token doubles as
-    # client_id, client_secret, and the issued access token.
+    # /authorize, and /token. Each team's client_id is public (team_<id>), while
+    # auth_token is the client_secret and issued access token.
     # In traefik mode this is optional: the issuer is derived per-request from
     # the team's own hostname (already TLS-terminated), so OAuth works without a
     # central host. Set it only to pin a fixed issuer or in port mode.
@@ -305,7 +305,7 @@ class Settings:
             raise ValueError("Duplicate ui_password values across teams.")
 
         # Validate OAuth: when oauth_base_url is set, at least one team must
-        # have a non-empty auth_token (it doubles as OAuth client credentials).
+        # have a non-empty auth_token (used as OAuth client_secret/access token).
         if self.oauth_base_url and not any(t.auth_token for t in self.teams.values()):
             raise ValueError(
                 "oauth_base_url is set but no team has an auth_token. "

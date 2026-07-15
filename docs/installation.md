@@ -132,7 +132,7 @@ mode = "port"               # "port" (direct host port) | "traefik" (reverse pro
 # automatically and runs on each team's own hostname (issuer derived per-request),
 # so oauth_base_url is NOT needed. Set it only to pin a fixed issuer, or in port
 # mode: the public URL of this instance (for Claude.ai and other OAuth MCP
-# clients). Each team's auth_token doubles as client_id, client_secret, and token.
+# clients). OAuth client_id = team_<id> (non-secret); auth_token = client_secret = token.
 [oauth]
 # oauth_base_url = "https://oduflow.example.com"
 
@@ -201,7 +201,7 @@ port_range = [50000, 50100]          # port range for Odoo containers [start, en
 
 | Key | Default | Description |
 |---|---|---|
-| `[oauth].oauth_base_url` | *(empty)* | Public URL of this Oduflow instance used as the OAuth issuer. Oduflow runs a self-hosted OAuth 2.1 Authorization Server (exposes `/.well-known/oauth-authorization-server`, `/authorize`, `/token`) so OAuth-based MCP clients like Claude.ai can connect; each team's `auth_token` doubles as `client_id`, `client_secret`, and the issued access token. **In traefik mode this is enabled automatically and the issuer is derived per-request from each team's own hostname — leave empty.** Set it to pin a fixed issuer, or in port mode. Empty + port mode = plain Bearer-token auth only. See [Authentication & Security](security.md) |
+| `[oauth].oauth_base_url` | *(empty)* | Public URL of this Oduflow instance used as the OAuth issuer. Oduflow runs a self-hosted OAuth 2.1 Authorization Server (exposes `/.well-known/oauth-authorization-server`, `/authorize`, `/token`) so OAuth-based MCP clients like Claude.ai can connect; the OAuth `client_id` is the non-secret `team_<id>` (e.g. `team_1`) and each team's `auth_token` is the `client_secret` and the issued access token. **In traefik mode this is enabled automatically and the issuer is derived per-request from each team's own hostname — leave empty.** Set it to pin a fixed issuer, or in port mode. Empty + port mode = plain Bearer-token auth only. See [Authentication & Security](security.md) |
 
 ### Database settings
 

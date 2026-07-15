@@ -3,7 +3,7 @@
 **Status:** Adopted
 **Type:** Architecture / MCP capability
 **First introduced:** scoped single-environment MCP access (this change)
-**Key code today:** `scoped_access.py` (`ScopedEnvASGI`, `ScopedAccessMiddleware`, `OduflowTokenVerifier`, allowlist), `env_tokens.py` (per-env token generation + resolution), `oauth_provider.py` (env tokens as OAuth clients), `server.py` (`_build_auth`, `_start_http` wiring), `docker_ops/env_ops.py` (`oduflow.mcp_token` label, `get_env_token`), `web_ui.py` + `templates/dashboard.html` (MCP Access modal)
+**Key code today:** `scoped_access.py` (`ScopedEnvASGI`, `ScopedAccessMiddleware`, `OduflowTokenVerifier`, allowlist), `env_tokens.py` (per-env token generation + resolution), `oauth_provider.py` (team OAuth clients plus env-token Bearer verification), `server.py` (`_build_auth`, `_start_http` wiring), `docker_ops/env_ops.py` (`oduflow.mcp_token` label, `get_env_token`), `web_ui.py` + `templates/dashboard.html` (MCP Access modal)
 
 ## Context
 
@@ -31,10 +31,9 @@ preserving the "no identity/target in tool signatures" invariant of
 [[0002-remote-multi-user-mcp-access]].
 
 - **Per-environment token.** `create_environment` mints a random token and stores
-  it in the container label `oduflow.mcp_token`. The token doubles as a Bearer
-  token and as an OAuth client credential, so the same Secret Key works for
-  curl/CLI clients and for OAuth clients (claude.ai) alike — mirroring how a team
-  `auth_token` already plays three roles in [[0020-authentication-oauth]].
+  it in the container label `oduflow.mcp_token`. The token is a Bearer credential
+  for the scoped endpoint. It is not accepted as an OAuth client_id because OAuth
+  authorization URLs expose client_id values in logs and browser history.
 - **Default-deny toolset.** The scoped endpoint exposes a curated allowlist (full
   dev loop + `restart`, plus read-only/diagnostic tools). Everything else —
   lifecycle, templates, services, volumes, repos, listing other environments — is
@@ -68,7 +67,7 @@ not merely pointed at a narrower endpoint.
   resolved `env_name` — so a tool can never target another environment, and a
   leaked listing can never enable a forbidden call.
 - **Operator UX.** Each environment card surfaces an **MCP Access** action showing
-  its `/mcp/<env>` URL and Secret Key (Bearer or OAuth).
+  its `/mcp/<env>` URL and Bearer Secret Key.
 
 ## Consequences
 
@@ -85,11 +84,12 @@ not merely pointed at a narrower endpoint.
   added to a live container: environments created before this feature carry no
   token until recreated — acceptable given environments are ephemeral and
   per-branch. Operators rotate a token by recreating the environment.
-- OAuth on the scoped URL reuses the env token as its client credential; the
-  reliable, always-available path is the Bearer Secret Key.
+- The scoped URL is Bearer-only. OAuth remains available for the team-wide
+  `/mcp` endpoint via the public `team_<id>` client_id and team `auth_token`
+  client_secret.
 
 ## History
 
 - (this change) — scoped single-environment MCP access: `/mcp/<env>` endpoint,
-  per-environment `oduflow.mcp_token` (Bearer + OAuth), default-deny allowlist
+  per-environment `oduflow.mcp_token` Bearer credential, default-deny allowlist
   middleware, and the dashboard MCP Access modal.
