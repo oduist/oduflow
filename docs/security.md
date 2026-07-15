@@ -24,7 +24,7 @@ The token is used to both authenticate and identify the team. This is implemente
 
 Oduflow can act as its own OAuth 2.1 Authorization Server, so MCP clients that require an OAuth flow (e.g. Claude.ai Remote MCP, MCP Inspector) can connect without any external identity provider.
 
-When the OAuth flow completes, the issued `access_token` is exactly the team's `auth_token` from `oduflow.toml` — so the same value works as a plain Bearer token for CLI clients.
+The team's OAuth **`client_id`** is a non-secret identifier, `team_<id>` (e.g. `team_1` for `[team.1]`); the **`client_secret`** is the team's `auth_token`. Only the `client_id` appears in the authorization URL — the secret is sent solely in the token request body, so it never leaks into logs or browser history. When the OAuth flow completes, the issued `access_token` is exactly the team's `auth_token` from `oduflow.toml` — so the same value works as a plain Bearer token for CLI clients.
 
 ### Setup
 
@@ -62,16 +62,16 @@ Dynamic Client Registration (`/register`) is **disabled** — clients must use t
 
 1. Go to Claude.ai Settings → Connectors → Add custom MCP
 2. Enter your Oduflow URL: `https://your-server.com/mcp` (in traefik mode, the team's own hostname, e.g. `https://team-a.example.com/mcp`)
-3. In the OAuth fields enter the team's `auth_token` as **both** `Client ID` **and** `Client Secret`:
+3. In the OAuth fields, use the team's id as `Client ID` and its `auth_token` as `Client Secret` (the `Client ID` is `team_<N>` for `[team.N]` — e.g. `team_1` for `[team.1]`):
 
    ```
-   Client ID     = secret-token-team-1
+   Client ID     = team_1
    Client Secret = secret-token-team-1
    ```
 
 4. Claude.ai performs the OAuth flow against your Oduflow instance, receives an access token, and connects.
 
-The team is identified by the `auth_token`, so each team's claude.ai connector ends up scoped to its own workspaces, templates, and credentials.
+The issued access token is the team's `auth_token`, so each team's claude.ai connector ends up scoped to its own workspaces, templates, and credentials.
 
 ### Bearer-only mode (CLI / automation)
 

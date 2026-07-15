@@ -192,14 +192,42 @@ class ScopedEnvASGI:
 
     _WELL_KNOWN_PREFIX = "/.well-known/oauth-protected-resource"
 
+    # OAuth/discovery endpoints that a *path-relative* MCP client (e.g. the
+    # claude.ai custom connector) requests under the ``/mcp`` mount instead of at
+    # the origin root — it appends ``/authorize`` etc. to the connector URL
+    # ``https://<host>/mcp`` rather than following the (correct, root) endpoints
+    # advertised by discovery. Without this table ``_scoped_env`` would treat
+    # ``authorize`` as an environment name and rewrite ``/mcp/authorize`` to the
+    # auth-protected ``/mcp`` route → ``401 invalid_token``. We alias them back to
+    # the real root routes the OAuth provider registers. Exact-match only, so an
+    # environment literally named e.g. ``token`` is a (negligible) blind spot;
+    # OAuth endpoints win.
+    _OAUTH_SUBPATHS = {
+        "/mcp/authorize": "/authorize",
+        "/mcp/token": "/token",
+        "/mcp/register": "/register",
+        "/mcp/.well-known/oauth-authorization-server": (
+            "/.well-known/oauth-authorization-server"
+        ),
+        "/mcp/.well-known/oauth-protected-resource": (
+            "/.well-known/oauth-protected-resource/mcp"
+        ),
+    }
+
     def __init__(self, app: Any) -> None:
         self.app = app
 
     async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
         if scope.get("type") == "http":
             path = scope.get("path", "")
-            env = self._scoped_env(path)
-            if env is not None:
+            oauth_path = self._OAUTH_SUBPATHS.get(path)
+            if oauth_path is not None:
+                # OAuth/discovery endpoint requested under /mcp/ — route it to the
+                # real root route (query string in scope["query_string"] is kept).
+                scope = dict(scope)
+                scope["path"] = oauth_path
+                scope["raw_path"] = oauth_path.encode()
+            elif (env := self._scoped_env(path)) is not None:
                 # ASGI ``path`` is already percent-decoded, so ``env`` is the
                 # plain environment name (slashes in branch names included).
                 scope = dict(scope)

@@ -59,11 +59,14 @@ request context and threaded into per-team scoping.
   `oauth_base_url` is set, Oduflow serves the self-hosted Authorization Server;
   otherwise it falls back to validating static Bearer tokens directly from the
   `Authorization` header. Both reduce to the same per-team `auth_token`.
-- **One secret, three roles.** Because a team's `auth_token` is preregistered as
-  an OAuth client where `client_id == client_secret == auth_token` and the access
-  token equals it too, an OAuth client and a raw-curl client end up presenting
-  the *same* credential. After the OAuth dance the team resolves exactly as it
-  does for direct Bearer calls — no second identity system.
+- **One secret, one public id.** A team is preregistered as an OAuth client whose
+  `client_id` is the **non-secret** `team_<id>` (e.g. `team_1`) and whose
+  `client_secret` is the team's `auth_token`; the issued access token also equals
+  the `auth_token`. So an OAuth client and a raw-curl client present the *same*
+  secret, and after the OAuth dance the team resolves exactly as it does for
+  direct Bearer calls — no second identity system. Keeping the secret out of the
+  `client_id` matters because `client_id` travels in the `/authorize` query string
+  (see Evolution); the secret is sent only in the POST `/token` body.
 - **Scoping unchanged.** Once a request is authenticated to a team, the existing
   per-team resource scoping and locking apply; OAuth only changes *how the team
   is proven*, not what it can see.
@@ -112,6 +115,27 @@ request context and threaded into per-team scoping.
   port mode (in traefik every team must set its own hostname, so a shared default
   is dead and would collide two teams on one host).
 
+- **Non-secret `client_id` + OAuth sub-path routing (claude.ai custom
+  connector).** The self-hosted AS originally set `client_id == client_secret ==
+  auth_token`. But a claude.ai custom connector (manual client_id/secret) puts the
+  `client_id` in the `/authorize` **query string** and derives the OAuth endpoints
+  **path-relative to the connector URL** — it requests `https://<host>/mcp/authorize`
+  and `/mcp/token`, ignoring the (correct, root) endpoints from discovery. Two
+  problems followed: the secret leaked into URLs/logs, and the outer
+  `ScopedEnvASGI` shim (scoped `/mcp/<env>` access, [[0028-scoped-environment-mcp-access]])
+  treated `authorize`/`token` as an *environment name*, rewriting `/mcp/authorize`
+  onto the auth-protected `/mcp` route → `401 invalid_token`, so the flow never
+  started. Fixed by (a) **splitting the credential**: `client_id` becomes the
+  public `team_<id>`, `client_secret` stays the `auth_token`, and the issued access
+  token stays the `auth_token` (Bearer path unchanged; `team_<id>` alone is not a
+  valid token); and (b) teaching `ScopedEnvASGI` to **alias the reserved OAuth
+  sub-paths** under `/mcp/` (`authorize`, `token`, `register`, and the two
+  `.well-known/*` discovery docs) back to the real root routes instead of scoping
+  them as an env — mirroring the existing scoped-PRM alias. Scoped `/mcp/<env>`
+  connectors remain Bearer-only (ephemeral environments; no per-env OAuth).
+  Breaking: any already-configured claude.ai connector must be re-entered as
+  `client_id = team_<id>`, `client_secret = auth_token`.
+
 ## History
 
 - `97c3fc8` (2026-03-13) — GitHub OAuth 2.1 for MCP HTTP transport alongside
@@ -127,3 +151,10 @@ request context and threaded into per-team scoping.
   in traefik mode (host-relative discovery metadata); enable the Authorization
   Server automatically in traefik and make `oauth_base_url` optional there;
   restrict `[routing].hostname` to port mode.
+- `2026-07-15` — split the OAuth credential so the secret no longer travels in the
+  `/authorize` URL: `client_id = team_<id>` (public), `client_secret = auth_token`,
+  issued access token still `= auth_token`; route the reserved OAuth sub-paths a
+  path-relative client (claude.ai custom connector) requests under `/mcp/`
+  (`/mcp/authorize`, `/mcp/token`, `/mcp/register`, `/mcp/.well-known/*`) to the
+  real root routes so the flow reaches the AS instead of 401-ing on the scoped
+  `/mcp/<env>` shim (breaking: reconfigure existing connectors).

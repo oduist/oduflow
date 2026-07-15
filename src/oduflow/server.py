@@ -3717,7 +3717,7 @@ def _run_cli() -> None:
         )
         logger.info(
             "Generated MCP auth_token for team 1: %s "
-            "(use as Bearer token / OAuth client_id+secret)",
+            "(Bearer token / OAuth client_secret; OAuth client_id is 'team_1')",
             generated_token,
         )
         logger.info(

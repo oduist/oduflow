@@ -81,15 +81,21 @@ class TestOduflowOAuthProvider:
 
     def test_preregistered_clients(self):
         provider = OduflowOAuthProvider(_settings())
-        client_a = _run(provider.get_client("tok-a"))
+        # client_id is the public, non-secret team identifier; the secret is the
+        # team's auth_token.
+        client_a = _run(provider.get_client("team_1"))
         assert client_a is not None
-        assert client_a.client_id == "tok-a"
+        assert client_a.client_id == "team_1"
         assert client_a.client_secret == "tok-a"
 
-        client_b = _run(provider.get_client("tok-b"))
+        client_b = _run(provider.get_client("team_2"))
         assert client_b is not None
+        assert client_b.client_id == "team_2"
         assert client_b.client_secret == "tok-b"
 
+        # The secret must NOT double as a client_id — otherwise it would leak
+        # into the /authorize URL.
+        assert _run(provider.get_client("tok-a")) is None
         assert _run(provider.get_client("unknown")) is None
 
     def test_register_client_disabled(self):
@@ -124,11 +130,11 @@ class TestOduflowOAuthProvider:
         from pydantic import AnyUrl
 
         provider = OduflowOAuthProvider(_settings())
-        client = _run(provider.get_client("tok-a"))
+        client = _run(provider.get_client("team_1"))
         assert client is not None
         code = AuthorizationCode(
             code="dummy",
-            client_id="tok-a",
+            client_id="team_1",
             redirect_uri=AnyUrl("https://claude.ai/cb"),
             redirect_uri_provided_explicitly=True,
             scopes=["mcp"],
@@ -136,15 +142,35 @@ class TestOduflowOAuthProvider:
             code_challenge="abc",
         )
         token = _run(provider.exchange_authorization_code(client, code))
+        # The issued access/refresh token is the SECRET auth_token, not the
+        # public client_id.
         assert token.access_token == "tok-a"
         assert token.refresh_token == "tok-a"
         assert token.token_type == "Bearer"
+
+    def test_bearer_invariant_and_refresh(self):
+        provider = OduflowOAuthProvider(_settings())
+        # The auth_token (the issued access token) still resolves to the team id
+        # via the preseeded, secret-keyed access token — the Bearer path is
+        # unchanged by the client_id/secret split.
+        access = _run(provider.load_access_token("tok-a"))
+        assert access is not None
+        assert access.client_id == "1"
+        # The public client_id is NOT a valid Bearer/access token on its own.
+        assert _run(provider.load_access_token("team_1")) is None
+        # Refresh token equals the secret (auth_token), not the client_id.
+        client = _run(provider.get_client("team_1"))
+        assert client is not None
+        rt = _run(provider.load_refresh_token(client, "tok-a"))
+        assert rt is not None
+        assert rt.client_id == "team_1"
+        assert _run(provider.load_refresh_token(client, "team_1")) is None
 
     def test_flexible_redirect_uri(self):
         from pydantic import AnyUrl
 
         provider = OduflowOAuthProvider(_settings())
-        client = _run(provider.get_client("tok-a"))
+        client = _run(provider.get_client("team_1"))
         assert client is not None
         # Legitimate MCP callbacks are accepted: https (claude.ai) and loopback
         # http (IDEs).
@@ -159,7 +185,7 @@ class TestOduflowOAuthProvider:
         from mcp.shared.auth import InvalidRedirectUriError
 
         provider = OduflowOAuthProvider(_settings())
-        client = _run(provider.get_client("tok-a"))
+        client = _run(provider.get_client("team_1"))
         # Cleartext http to a non-loopback host would leak the auth code.
         with pytest.raises(InvalidRedirectUriError):
             client.validate_redirect_uri(AnyUrl("http://evil.example/cb"))

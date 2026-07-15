@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Bug Fixes
+
+- **claude.ai OAuth connector reaches the authorization endpoint** — a claude.ai custom connector derives its OAuth endpoints path-relative to the MCP URL (requesting `https://<host>/mcp/authorize` and `/mcp/token`) instead of following the root endpoints advertised by discovery. The outer scoped-access shim treated `authorize`/`token` as an environment name and rewrote the request onto the auth-protected `/mcp` endpoint, so the flow failed with `401 invalid_token` before it could start. Oduflow now routes the reserved OAuth/discovery sub-paths requested under `/mcp/` (`/mcp/authorize`, `/mcp/token`, `/mcp/register`, `/mcp/.well-known/*`) to the real root routes. Scoped `/mcp/<env>` connectors remain Bearer-only.
+
+### Security
+
+- **OAuth `client_id` is no longer the secret** — a team's OAuth `client_id` is now the non-secret identifier `team_<id>` (e.g. `team_1`); the team's `auth_token` is the `client_secret` and remains the issued access token. Previously `client_id == client_secret == auth_token`, so the secret appeared in the `/authorize` query string (and thus in server logs, browser history, and the `Referer`). The secret now travels only in the POST `/token` body. **Breaking:** re-enter any existing claude.ai connector as `Client ID = team_<id>`, `Client Secret = auth_token`.
+
 ## v1.67.0
 
 ### Features

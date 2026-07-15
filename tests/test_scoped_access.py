@@ -154,6 +154,42 @@ def test_asgi_rewrites_scoped_well_known():
     assert rec.scope["path"] == "/.well-known/oauth-protected-resource/mcp"
 
 
+@pytest.mark.parametrize(
+    "req_path,expected",
+    [
+        ("/mcp/authorize", "/authorize"),
+        ("/mcp/token", "/token"),
+        ("/mcp/register", "/register"),
+        (
+            "/mcp/.well-known/oauth-authorization-server",
+            "/.well-known/oauth-authorization-server",
+        ),
+        (
+            "/mcp/.well-known/oauth-protected-resource",
+            "/.well-known/oauth-protected-resource/mcp",
+        ),
+    ],
+)
+def test_asgi_routes_oauth_subpaths_to_root(req_path, expected):
+    # A path-relative MCP client (e.g. claude.ai) hits OAuth endpoints under the
+    # /mcp mount; they must reach the real root routes, NOT be treated as an
+    # environment named "authorize"/"token"/… (which would 401 on the protected
+    # /mcp endpoint).
+    rec = _Recorder()
+    _run(ScopedEnvASGI(rec)({"type": "http", "path": req_path}, None, None))
+    assert rec.scope["path"] == expected
+    assert rec.scope["raw_path"] == expected.encode()
+    assert scoped_access.SCOPE_KEY not in rec.scope
+
+
+def test_asgi_scoped_env_not_shadowed_by_oauth_names():
+    # Only exact reserved paths are aliased; a real /mcp/<env> still scopes.
+    rec = _Recorder()
+    _run(ScopedEnvASGI(rec)({"type": "http", "path": "/mcp/feature/x"}, None, None))
+    assert rec.scope["path"] == "/mcp"
+    assert rec.scope[scoped_access.SCOPE_KEY] == "feature/x"
+
+
 def test_asgi_non_http_untouched():
     rec = _Recorder()
     scope = {"type": "lifespan"}
