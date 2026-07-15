@@ -1361,6 +1361,11 @@ def pull_and_apply(
       manifest data/depends changed → upgrade="module" (-u): these live in the
       database and a restart won't load them.
     - A brand-new module was added → install="module" (-i).
+    - Dependency files (`requirements.txt`, `.oduflow/requirements.txt`,
+      `.oduflow/apt_packages.txt`) changed → Oduflow reinstalls dependencies into
+      the running container and restarts automatically; no action needed. (Packages
+      removed from the file are not uninstalled until the container is rebuilt via
+      update_environment.)
 
     Errors and tracebacks are returned directly in this response — do NOT call
     get_environment_logs to check for them.

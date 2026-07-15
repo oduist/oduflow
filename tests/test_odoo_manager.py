@@ -668,6 +668,35 @@ class TestPullEnvironmentLocal:
         assert env_ops._detect_local_changes(str(repo), "env", team)[1] == []
 
     @patch("oduflow.docker_ops.env_ops._apply_actions")
+    def test_local_requirements_change_passes_deps_changed(
+        self, mock_apply, mock_docker_client, tmp_path
+    ):
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        team = TeamSettings(team_id="1", data_dir=str(tmp_path / "team"))
+        req = repo / "requirements.txt"
+        req.write_text("phonenumbers\n")
+        env_ops._write_local_snapshot(str(repo), "env", team)
+
+        old_stat = req.stat()
+        req.write_text("phonenumbers\nqrcode\n")
+        os.utime(req, ns=(old_stat.st_atime_ns, old_stat.st_mtime_ns + 1_000_000))
+
+        container = MagicMock()
+        container.labels = {"oduflow.local_path": str(repo)}
+        mock_docker_client.containers.get.return_value = container
+        mock_apply.return_value = {
+            "action": "restart",
+            "changed_files": ["requirements.txt"],
+            "message": "Reinstalled dependencies. Container restarted.",
+        }
+
+        env_ops.pull_environment(TEST_SETTINGS, team, "env")
+
+        assert mock_apply.call_args.kwargs["deps_changed"] is True
+        assert mock_apply.call_args.kwargs["repo_path"] == str(repo)
+
+    @patch("oduflow.docker_ops.env_ops._apply_actions")
     def test_local_failed_apply_does_not_advance_snapshot(
         self, mock_apply, mock_docker_client, tmp_path
     ):
@@ -1401,6 +1430,142 @@ class TestApplyActionsConf:
         container.restart.assert_called_once()
         assert result["action"] == "upgrade"
         assert "Reapplied odoo.conf." in result["message"]
+
+
+class TestApplyActionsDeps:
+    """A changed dependency descriptor must reinstall apt/pip deps into the
+    running container and restart it — not fall through to an XML/JS refresh."""
+
+    @staticmethod
+    def _client_with_container():
+        client = MagicMock()
+        container = MagicMock()
+        client.containers.get.return_value = container
+        return client, container
+
+    @patch(
+        "oduflow.docker_ops.env_ops._install_pip_requirements",
+        return_value=(True, "[PIP] Requirements installed successfully:\nok"),
+    )
+    @patch(
+        "oduflow.docker_ops.env_ops._install_apt_packages",
+        return_value="",
+    )
+    def test_deps_only_reinstalls_and_restarts(self, mock_apt, mock_pip):
+        client, container = self._client_with_container()
+        result = env_ops._apply_actions(
+            client,
+            TEST_SETTINGS,
+            TEST_TEAM,
+            "feature/x",
+            "oduflow-1-feature-x-odoo",
+            to_install=[],
+            to_upgrade=[],
+            do_restart=False,
+            changed_files=["requirements.txt"],
+            deps_changed=True,
+            repo_path="/repo",
+        )
+        # pip must run without restarting itself; the single restart is below.
+        mock_pip.assert_called_once()
+        assert mock_pip.call_args.kwargs["restart"] is False
+        container.restart.assert_called_once()
+        assert result["action"] == "restart"
+        assert "[PIP]" in result["output"]
+        assert "Reinstalled dependencies." in result["message"]
+        assert result["exit_code"] == 0
+
+    @patch(
+        "oduflow.docker_ops.odoo_ops.install_odoo_modules",
+        return_value={"exit_code": 0, "output": "installed"},
+    )
+    @patch(
+        "oduflow.docker_ops.env_ops._install_pip_requirements",
+        return_value=(True, "[PIP] Requirements installed successfully:\nok"),
+    )
+    @patch(
+        "oduflow.docker_ops.env_ops._install_apt_packages",
+        return_value="",
+    )
+    def test_deps_installed_before_module_install(
+        self, mock_apt, mock_pip, mock_install
+    ):
+        client, container = self._client_with_container()
+        # Route both patched calls through one parent so ordering is observable.
+        parent = MagicMock()
+        parent.attach_mock(mock_pip, "pip")
+        parent.attach_mock(mock_install, "install")
+
+        result = env_ops._apply_actions(
+            client,
+            TEST_SETTINGS,
+            TEST_TEAM,
+            "feature/x",
+            "oduflow-1-feature-x-odoo",
+            to_install=["sale"],
+            to_upgrade=[],
+            do_restart=False,
+            changed_files=["requirements.txt", "sale/__manifest__.py"],
+            deps_changed=True,
+            repo_path="/repo",
+        )
+        order = [name for name, _, _ in parent.mock_calls]
+        assert order.index("pip") < order.index("install")
+        container.restart.assert_called_once()
+        assert result["action"] == "install"
+        assert "[PIP]" in result["output"]
+        assert "installed" in result["output"]
+        assert result["message"].startswith("Reinstalled dependencies.")
+
+    @patch(
+        "oduflow.docker_ops.env_ops._install_pip_requirements",
+        return_value=(False, "[PIP] install FAILED (exit 1):\nboom"),
+    )
+    @patch(
+        "oduflow.docker_ops.env_ops._install_apt_packages",
+        return_value="",
+    )
+    def test_deps_pip_failure_surfaces_without_crashing(self, mock_apt, mock_pip):
+        client, container = self._client_with_container()
+        result = env_ops._apply_actions(
+            client,
+            TEST_SETTINGS,
+            TEST_TEAM,
+            "feature/x",
+            "oduflow-1-feature-x-odoo",
+            to_install=[],
+            to_upgrade=[],
+            do_restart=False,
+            changed_files=["requirements.txt"],
+            deps_changed=True,
+            repo_path="/repo",
+        )
+        assert result["action"] == "restart"
+        assert "FAILED" in result["output"]
+        assert result["exit_code"] == 1
+        container.restart.assert_called_once()
+
+    @patch("oduflow.docker_ops.env_ops._install_pip_requirements")
+    @patch("oduflow.docker_ops.env_ops._install_apt_packages")
+    def test_deps_not_changed_skips_reinstall(self, mock_apt, mock_pip):
+        client, container = self._client_with_container()
+        result = env_ops._apply_actions(
+            client,
+            TEST_SETTINGS,
+            TEST_TEAM,
+            "feature/x",
+            "oduflow-1-feature-x-odoo",
+            to_install=[],
+            to_upgrade=[],
+            do_restart=False,
+            changed_files=["sale/views/sale_order.xml"],
+            deps_changed=False,
+            repo_path="/repo",
+        )
+        mock_apt.assert_not_called()
+        mock_pip.assert_not_called()
+        container.restart.assert_not_called()
+        assert result["action"] == "refresh"
 
 
 class TestReapplyOdooConf:
