@@ -135,6 +135,100 @@ class TestCreateService:
             "oduflow-traefik-acme": {"bind": "/etc/traefik", "mode": "ro"}
         }
 
+    def test_create_traefik_bridge_with_restricted_routes(self, mock_docker_client):
+        mock_docker_client.containers.get.side_effect = docker.errors.NotFound("nf")
+
+        result = service_ops.create_service(
+            TRAEFIK_SETTINGS,
+            TRAEFIK_TEAM,
+            "gateway",
+            "example/gateway:1",
+            None,
+            routes=[
+                {"path": "/RPC2", "port": 8080},
+                {"path": "/admin/", "port": 8081, "strip_prefix": True},
+            ],
+        )
+
+        run_kwargs = mock_docker_client.containers.run.call_args[1]
+        labels = run_kwargs["labels"]
+        assert run_kwargs["network"] == "oduflow-1-net"
+        assert "traefik.http.routers.oduflow-1-svc-gateway.rule" not in labels
+        assert labels["traefik.http.routers.oduflow-1-svc-gateway-route-1.rule"] == (
+            "Host(`gateway.example.com`) && (Path(`/RPC2`) || PathPrefix(`/RPC2/`))"
+        )
+        assert (
+            labels[
+                "traefik.http.services.oduflow-1-svc-gateway-route-1.loadbalancer.server.port"
+            ]
+            == "8080"
+        )
+        assert labels[
+            "traefik.http.routers.oduflow-1-svc-gateway-route-2.middlewares"
+        ] == ("oduflow-1-svc-gateway-route-2-strip")
+        assert (
+            labels[
+                "traefik.http.middlewares.oduflow-1-svc-gateway-route-2-strip.stripprefix.prefixes"
+            ]
+            == "/admin"
+        )
+        assert result["routes"][0]["url"] == "https://gateway.example.com/RPC2"
+
+    def test_create_traefik_host_mode_routes_use_host_gateway(self, mock_docker_client):
+        mock_docker_client.containers.get.side_effect = docker.errors.NotFound("nf")
+
+        service_ops.create_service(
+            TRAEFIK_SETTINGS,
+            TRAEFIK_TEAM,
+            "fs",
+            "oduist/freeswitch:latest",
+            None,
+            host_mode=True,
+            routes=[{"path": "/RPC2", "port": 8080}],
+        )
+
+        run_kwargs = mock_docker_client.containers.run.call_args[1]
+        assert run_kwargs["network_mode"] == "host"
+        assert (
+            run_kwargs["labels"][
+                "traefik.http.services.oduflow-1-svc-fs-route-1.loadbalancer.server.url"
+            ]
+            == "http://host.docker.internal:8080"
+        )
+
+    @pytest.mark.parametrize(
+        ("settings", "port", "routes", "message"),
+        [
+            (TEST_SETTINGS, None, [{"path": "/api", "port": 8080}], "traefik"),
+            (
+                TRAEFIK_SETTINGS,
+                8080,
+                [{"path": "/api", "port": 8080}],
+                "either port or routes",
+            ),
+            (
+                TRAEFIK_SETTINGS,
+                None,
+                [{"path": "/api", "port": 8080}, {"path": "/api/", "port": 8081}],
+                "Duplicate route",
+            ),
+            (
+                TRAEFIK_SETTINGS,
+                None,
+                [{"path": "/api", "port": 8080, "url": "http://other:80"}],
+                "unsupported fields: url",
+            ),
+        ],
+    )
+    def test_create_rejects_invalid_route_exposure(
+        self, mock_docker_client, settings, port, routes, message
+    ):
+        with pytest.raises(ValueError, match=message):
+            service_ops.create_service(
+                settings, TRAEFIK_TEAM, "svc", "example/svc:1", port, routes=routes
+            )
+        mock_docker_client.images.pull.assert_not_called()
+
     def test_create_traefik_mounts_acme_with_user_volumes(self, mock_docker_client):
         mock_docker_client.containers.get.side_effect = docker.errors.NotFound("nf")
 
@@ -648,6 +742,85 @@ class TestUpdateService:
             labels["traefik.http.routers.oduflow-1-svc-meili.rule"]
             == "Host(`meili.example.com`)"
         )
+
+    def test_update_replaces_legacy_port_with_routes(self, mock_docker_client):
+        container = self._make_container(
+            image_tags=["example/app:1"],
+            labels={
+                "oduflow.managed": "true",
+                "oduflow.service": "app",
+                "traefik.http.routers.oduflow-1-svc-app.rule": "Host(`app.example.com`)",
+                "traefik.http.services.oduflow-1-svc-app.loadbalancer.server.port": "8080",
+            },
+            attrs={"Config": {"Env": []}, "Mounts": []},
+        )
+        container.image.id = "sha256:old"
+        pulled = MagicMock(id="sha256:old")
+        mock_docker_client.images.pull.return_value = pulled
+        mock_docker_client.containers.get.side_effect = [
+            container,
+            docker.errors.NotFound("nf"),
+        ]
+        preset = {
+            "name": "app",
+            "image": "example/app:1",
+            "port": 8080,
+            "hostname": "app",
+            "env_vars": {},
+        }
+
+        with patch(
+            "oduflow.docker_ops.service_ops.service_presets.get_preset",
+            return_value=preset,
+        ):
+            result = service_ops.update_service(
+                TRAEFIK_SETTINGS,
+                TRAEFIK_TEAM,
+                "app",
+                routes_override=[{"path": "/api", "port": 8081}],
+            )
+
+        assert result["config_updated"] is True
+        labels = mock_docker_client.containers.run.call_args[1]["labels"]
+        assert "traefik.http.routers.oduflow-1-svc-app.rule" not in labels
+        assert (
+            labels[
+                "traefik.http.services.oduflow-1-svc-app-route-1.loadbalancer.server.port"
+            ]
+            == "8081"
+        )
+
+    def test_update_clear_routes_requires_replacement_port(self, mock_docker_client):
+        container = self._make_container(
+            image_tags=["example/app:1"],
+            labels={
+                "oduflow.managed": "true",
+                "oduflow.service": "app",
+                "oduflow.http_routes": '[{"path":"/api","port":8080,"strip_prefix":false}]',
+            },
+            attrs={"Config": {"Env": []}, "Mounts": []},
+        )
+        preset = {
+            "name": "app",
+            "image": "example/app:1",
+            "port": 0,
+            "hostname": "app",
+            "env_vars": {},
+            "routes": [{"path": "/api", "port": 8080, "strip_prefix": False}],
+        }
+        mock_docker_client.containers.get.return_value = container
+
+        with (
+            patch(
+                "oduflow.docker_ops.service_ops.service_presets.get_preset",
+                return_value=preset,
+            ),
+            pytest.raises(ValueError, match="replacement port"),
+        ):
+            service_ops.update_service(
+                TRAEFIK_SETTINGS, TRAEFIK_TEAM, "app", routes_override=[]
+            )
+        container.stop.assert_not_called()
 
     def test_update_no_env_vars(self, mock_docker_client):
         """When the preset has no custom env vars, env_vars=None is passed to create."""
@@ -1319,6 +1492,43 @@ class TestGetServiceInfo:
         assert info["url"] == "https://meili.example.com"
         assert info["port"] == 7700
         assert info["has_preset"] is False
+
+    def test_get_service_info_reports_http_routes(self, mock_docker_client):
+        container = self._make_container(
+            image_tags=["example/app:1"],
+            image_id="sha256:app",
+            labels={
+                "__name": "oduflow-1-svc-app",
+                "oduflow.managed": "true",
+                "oduflow.service": "app",
+                "oduflow.http_routes": '[{"path":"/api","port":8080,"strip_prefix":false}]',
+                "traefik.http.routers.oduflow-1-svc-app-route-1.rule": (
+                    "Host(`app.example.com`) && (Path(`/api`) || PathPrefix(`/api/`))"
+                ),
+            },
+            attrs={
+                "Config": {"Env": []},
+                "Mounts": [],
+                "HostConfig": {},
+                "State": {},
+            },
+        )
+        mock_docker_client.containers.get.return_value = container
+        with patch(
+            "oduflow.docker_ops.service_ops.service_presets.get_preset",
+            side_effect=NotFoundError("no preset"),
+        ):
+            info = service_ops.get_service_info(TRAEFIK_SETTINGS, TRAEFIK_TEAM, "app")
+
+        assert info["port"] is None
+        assert info["routes"] == [
+            {
+                "path": "/api",
+                "port": 8080,
+                "strip_prefix": False,
+                "url": "https://app.example.com/api",
+            }
+        ]
 
     def test_get_service_info_not_found(self, mock_docker_client):
         mock_docker_client.containers.get.side_effect = docker.errors.NotFound("nf")

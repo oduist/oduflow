@@ -48,8 +48,8 @@ All endpoints return JSON with an `ok` field. Authentication via HTTP Basic auth
 | Method | Endpoint | Description |
 |---|---|---|
 | `GET` | `/api/services` | List all managed services |
-| `POST` | `/api/services/create` | Create a service (JSON body: `name`, `image`, `port`, `hostname`, `env_vars`, `host_mode`, `volumes`, `privileged`, `net_admin`) |
-| `POST` | `/api/services/{name}/update` | Update a service — pull latest image and/or change settings (JSON body, all optional: `env_vars`, `image`, `port`, `hostname`, `host_mode`, `volumes`, `privileged`, `net_admin`); recreates on any change |
+| `POST` | `/api/services/create` | Create a service. Pass either `port` or Traefik `routes: [{path, port, strip_prefix}]`, plus optional `hostname`, `env_vars`, `host_mode`, volumes and capabilities |
+| `POST` | `/api/services/{name}/update` | Pull latest image and/or change settings. `routes` fully replaces the route list; `routes: []` plus `port` returns to catch-all mode |
 | `POST` | `/api/services/{name}/restart` | Restart a service |
 | `POST` | `/api/services/{name}/delete` | Delete a service |
 | `GET` | `/api/services/{name}/logs?n=200` | Get service logs |
@@ -59,7 +59,7 @@ All endpoints return JSON with an `ok` field. Authentication via HTTP Basic auth
 | Method | Endpoint | Description |
 |---|---|---|
 | `GET` | `/api/service-presets` | List saved service presets |
-| `POST` | `/api/service-presets/restore` | Restore a service from a saved preset (JSON body: `name`, `image`, `port`, `hostname`, `env_vars`, `host_mode`, `volumes`, `privileged`, `net_admin`) |
+| `POST` | `/api/service-presets/restore` | Restore a service configuration, including its single port or restricted HTTP routes |
 | `POST` | `/api/service-presets/{name}/delete` | Delete a saved service preset |
 
 ### System

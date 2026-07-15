@@ -18,6 +18,18 @@ oduflow call create_service elasticsearch docker.elastic.co/elasticsearch/elasti
 
 # WireGuard VPN — needs NET_ADMIN to manage tun/iptables
 oduflow call create_service '{"name":"vpn","image":"linuxserver/wireguard","port":51820,"net_admin":true}'
+
+# Publish only selected HTTP prefixes, each on its own backend port
+oduflow call create_service '{
+  "name":"fs",
+  "image":"oduist/freeswitch:latest",
+  "hostname":"fs",
+  "host_mode":true,
+  "routes":[
+    {"path":"/RPC2","port":8080,"strip_prefix":false},
+    {"path":"/portal","port":8080,"strip_prefix":false}
+  ]
+}'
 ```
 
 Services are:
@@ -28,6 +40,27 @@ Services are:
 - In Traefik TLS mode, automatically given the exact system mount `oduflow-traefik-acme:/etc/traefik:ro`
 - Labeled for management (`oduflow.managed=true`, `oduflow.service=<name>`)
 - Always created from a freshly pulled image — `create_service` and `restore_service` explicitly pull before running, so mutable tags like `:latest` get the current published version instead of a stale local cache
+
+### Restricted HTTP Path Routes
+
+In Traefik mode, `routes` can replace the single catch-all `port`. Each route
+publishes a URL prefix on the service's hostname and forwards it to another
+HTTP port of the **same service**. This works in both networking modes:
+
+- Bridge services are reached on their private IP in the team's Docker network.
+- `host_mode` services are reached through `host.docker.internal`.
+
+Routes are prefix matches on path-segment boundaries: `/api` accepts `/api` and
+`/api/...`, but not `/apix`. When routes are present Oduflow does not create the
+hostname-only catch-all router, so every unlisted path receives Traefik's 404
+without reaching the service. Set `strip_prefix=true` when the backend serves
+from `/`; Traefik then sends `/portal/assets/app.js` as `/assets/app.js` and
+adds `X-Forwarded-Prefix: /portal`.
+
+`routes` is intentionally not an arbitrary reverse-proxy configuration: a route
+contains only `path`, `port`, and optional `strip_prefix`, and always targets the
+same managed service. It is available only with `[routing].mode = "traefik"`.
+Raw TCP/UDP protocols cannot be routed by URL path.
 
 ### Traefik Certificate Store
 
@@ -59,8 +92,8 @@ Both can be enabled at the same time; on the Docker side, `privileged` implies a
 # List all services with status, ports, URLs, and env vars
 oduflow call list_services
 
-# Full state of a single service — image + digest, port, hostname, host_mode,
-# volumes, env vars, capabilities, restart count, started_at, has_preset
+# Full state of a single service — image + digest, port/routes, hostname,
+# host_mode, volumes, env vars, capabilities, restart count, started_at, preset
 oduflow call get_service_info redis
 
 # View service logs
@@ -91,16 +124,16 @@ oduflow call run_service_command redis "redis-cli ping"
 
 ### Changing a Service
 
-`update_service` is the preferred way to change **any** setting of a running service — image, env vars, port, hostname, `host_mode`, `volumes`, `privileged`, or `net_admin`. It recreates the container automatically and preserves every setting you do not override, so you rarely need to delete and recreate a service by hand.
+`update_service` is the preferred way to change **any** setting of a running service — image, env vars, port/routes, hostname, `host_mode`, `volumes`, `privileged`, or `net_admin`. It recreates the container automatically and preserves every setting you do not override, so you rarely need to delete and recreate a service by hand. Passing `routes` fully replaces the route list. To return to a single catch-all port, pass `routes=[]` and the replacement `port` in the same call.
 
-If you do recreate a service manually (e.g. to rename it), call `get_service_info` first and reuse its fields in the new `create_service` call. The returned dict carries the full configuration (`image`, `port`, `hostname`, `env_vars`, `host_mode`, `volumes`, `cap_add`, `privileged`) so you do not lose anything that `list_services` truncates or that lived only inside the preset.
+If you do recreate a service manually (e.g. to rename it), call `get_service_info` first and reuse its fields in the new `create_service` call. The returned dict carries the full configuration (`image`, `port` or `routes`, `hostname`, `env_vars`, `host_mode`, `volumes`, `cap_add`, `privileged`) so you do not lose anything that `list_services` truncates or that lived only inside the preset.
 
 ## Service Update Flow
 
 The `update_service` operation:
 
 1. Reads the saved preset (authoritative source) or inspects the running container as a legacy fallback
-2. Applies any overrides passed in (`env_vars`, `image`, `port`, `hostname`, `host_mode`, `volumes`, `privileged`, `net_admin`) — each override **fully replaces** the current value
+2. Applies any overrides passed in (`env_vars`, `image`, `port`/`routes`, `hostname`, `host_mode`, `volumes`, `privileged`, `net_admin`) — each override **fully replaces** the current value
 3. Resolves the complete candidate volume configuration before touching the running container; invalid or missing volumes fail without stopping it
 4. Pulls the target image (the override, or the current one)
 5. Decides whether to recreate:
@@ -112,7 +145,7 @@ Overrides are optional: calling `update_service` with only `name` pulls the curr
 
 ## Service Presets
 
-Every time a service is created, its configuration (image, port, hostname, environment variables, volumes, `host_mode`, `cap_add`, `privileged`) is automatically saved as a **preset** in `{team_data_dir}/service_presets.json`. This allows you to restore a service after deletion without re-entering its configuration.
+Every time a service is created, its configuration (image, port or routes, hostname, environment variables, volumes, `host_mode`, `cap_add`, `privileged`) is automatically saved as a **preset** in `{team_data_dir}/service_presets.json`. This allows you to restore a service after deletion without re-entering its configuration.
 
 ```bash
 # List saved presets

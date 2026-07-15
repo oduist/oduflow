@@ -1536,12 +1536,16 @@ def _build_routes(
             name = (body.get("name") or "").strip()
             image = (body.get("image") or "").strip()
             port = body.get("port")
+            routes = body.get("routes")
             hostname = (body.get("hostname") or "").strip() or None
             env_vars_raw = (body.get("env_vars") or "").strip()
             host_mode = bool(body.get("host_mode", False))
-            if not name or not image or not port:
+            if not name or not image or (not port and not routes):
                 return JSONResponse(
-                    {"ok": False, "error": "name, image and port are required."},
+                    {
+                        "ok": False,
+                        "error": "name, image and either port or routes are required.",
+                    },
                     status_code=400,
                 )
             env_vars = None
@@ -1565,15 +1569,18 @@ def _build_routes(
                 team,
                 name,
                 image,
-                int(port),
+                int(port) if port else None,
                 hostname=hostname,
                 env_vars=env_vars,
                 host_mode=host_mode,
                 volumes=parsed_volumes,
                 cap_add=cap_add,
                 privileged=privileged,
+                routes=routes,
             )
             return JSONResponse({"ok": True, "result": result})
+        except ValueError as e:
+            return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
         except FlowError as e:
             return _error_response(e)
         except Exception as e:
@@ -1618,6 +1625,7 @@ def _build_routes(
             )
             port_raw = body.get("port") if body else None
             port_override = int(port_raw) if port_raw else None
+            routes_override = body.get("routes") if body and "routes" in body else None
             host_mode_override = (
                 bool(body["host_mode"])
                 if body and "host_mode" in body and body["host_mode"] is not None
@@ -1644,8 +1652,11 @@ def _build_routes(
                 volume_override=volume_override,
                 cap_add_override=cap_add_override,
                 privileged_override=privileged_override,
+                routes_override=routes_override,
             )
             return JSONResponse({"ok": True, "result": result})
+        except ValueError as e:
+            return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
         except FlowError as e:
             return _error_response(e)
         except Exception as e:
@@ -1725,12 +1736,16 @@ def _build_routes(
             name = (body.get("name") or "").strip()
             image = (body.get("image") or "").strip()
             port = body.get("port")
+            routes = body.get("routes")
             hostname = (body.get("hostname") or "").strip() or None
             env_vars_raw = (body.get("env_vars") or "").strip()
             host_mode = bool(body.get("host_mode", False))
-            if not name or not image or not port:
+            if not name or not image or (not port and not routes):
                 return JSONResponse(
-                    {"ok": False, "error": "name, image and port are required."},
+                    {
+                        "ok": False,
+                        "error": "name, image and either port or routes are required.",
+                    },
                     status_code=400,
                 )
             env_vars = None
@@ -1754,15 +1769,18 @@ def _build_routes(
                 team,
                 name,
                 image,
-                int(port),
+                int(port) if port else None,
                 hostname=hostname,
                 env_vars=env_vars,
                 host_mode=host_mode,
                 volumes=parsed_volumes,
                 cap_add=cap_add,
                 privileged=privileged,
+                routes=routes,
             )
             return JSONResponse({"ok": True, "result": result})
+        except ValueError as e:
+            return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
         except FlowError as e:
             return _error_response(e)
         except Exception as e:

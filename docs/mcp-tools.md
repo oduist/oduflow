@@ -41,12 +41,12 @@ All tools are accessible via MCP clients (Cursor, Cline, Amp, etc.) and the CLI 
 | `refresh_template` | ✓ | ⚠️ Re-apply a template's filestore to live overlay environments (preserves env changes by default; `reset_env_changes=True` discards them — destructive) |
 | `attach_filestore` | ✓ | Attach or replace a template filestore from a local directory, archive, `rsync://` URL, or SSH rsync source; normalizes wrapper paths and preserves live env changes by default |
 | **Auxiliary Services** | | |
-| `create_service` | ✓ | Create a managed service container (e.g. Redis, Meilisearch). Supports `host_mode`, `volumes`, `privileged`, `net_admin`; Traefik TLS mode implicitly mounts the exact ACME store at `/etc/traefik:ro` |
+| `create_service` | ✓ | Create a managed service with exactly one exposure model: catch-all `port`, or restricted Traefik `routes` (`path`, backend `port`, optional `strip_prefix`). The two parameters are mutually exclusive; `port` remains required outside Traefik |
 | `delete_service` | ✓ | Stop and remove a service container |
 | `restart_service` | | Restart a service container |
-| `update_service` | ✓ | Preflight volumes, pull the latest image and/or change any service setting; recreates when needed, including to add a missing implicit Traefik ACME mount |
+| `update_service` | ✓ | Preflight configuration, pull the latest image and/or change settings. `routes` replaces the complete allowlist; use `routes=[]` with `port` only when switching back to catch-all mode |
 | `list_services` | | List all managed service containers |
-| `get_service_info` | | Full live state of a single service (image+digest, port, hostname, host_mode, volumes, env, cap_add, privileged, restart count, has_preset). Call before recreating a service to preserve all options |
+| `get_service_info` | | Full live state of a single service (image+digest, port/routes, hostname, host_mode, volumes, env, capabilities, restart count, preset). Call before recreating it |
 | `get_service_logs` | | Retrieve service container logs |
 | `run_service_command` | | Execute a shell command inside a service container |
 | **Volumes** | | |

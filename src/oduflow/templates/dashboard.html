@@ -492,6 +492,15 @@
     border-top: 1px solid var(--border);
   }
   .form-error { color: var(--red); font-size: var(--text-xs); margin-bottom: 10px; display: none; }
+  .route-list { display: flex; flex-direction: column; gap: 8px; margin: 8px 0; }
+  .route-row { display: grid; grid-template-columns: minmax(0, 1fr) 92px auto auto; gap: 8px; align-items: center; }
+  .route-row input[type="text"], .route-row input[type="number"] {
+    width: 100%; padding: 7px 9px; font-family: var(--font-mono); font-size: var(--text-xs);
+    background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: var(--radius-sm);
+  }
+  .route-strip { display: inline-flex; align-items: center; gap: 5px; color: var(--text-dim); font-size: var(--text-xs); white-space: nowrap; }
+  .route-remove { padding: 5px 8px; }
+  .route-hint { color: var(--text-dim); font-size: var(--text-xs); line-height: 1.45; }
   .modal-overlay {
     position: fixed; top: 0; left: 0; right: 0; bottom: 0;
     background: var(--backdrop);
@@ -509,6 +518,7 @@
   }
   .modal-sm { max-width: 460px; }
   .modal-md { max-width: 520px; }
+  .modal-routes { max-width: 680px; max-height: 90vh; }
   /* Unified large modal size (chat / terminals) — almost fullscreen, with margins */
   .modal-terminal, .modal-chat { width: 92vw; max-width: 92vw; height: 90vh; max-height: 90vh; }
   /* --- ACP chat (chat.js) — Engineer's Console tokens only (DESIGN.md) --- */
@@ -1376,7 +1386,7 @@
 <div id="chat-dock" aria-label="Minimized chats"></div>
 <div id="chat-parking" hidden></div>
 <div class="modal-overlay" id="create-svc-modal" onclick="closeCreateServiceModal(event)">
-  <div class="modal modal-md">
+  <div class="modal modal-routes">
     <div class="modal-header">
       <h2>Create Service</h2>
       <button class="modal-close" onclick="closeCreateServiceModal()">&times;</button>
@@ -1392,8 +1402,21 @@
         <input type="text" id="svc-image" placeholder="e.g. redis:7, getmeili/meilisearch:v1.6">
       </div>
       <div class="form-group">
+        <label for="svc-exposure">Public exposure</label>
+        <select id="svc-exposure" onchange="toggleServiceExposure('svc')">
+          <option value="port">Single port (all paths)</option>
+          <option value="routes">Restricted path routes (Traefik)</option>
+        </select>
+      </div>
+      <div class="form-group" id="svc-port-group">
         <label for="svc-port">Container port</label>
-        <input type="number" id="svc-port" placeholder="e.g. 6379">
+        <input type="number" id="svc-port" placeholder="e.g. 6379" min="1" max="65535">
+      </div>
+      <div class="form-group" id="svc-routes-group" style="display:none;">
+        <label>Allowed path routes</label>
+        <div class="route-hint">Each prefix reaches a port on this service. Unknown paths return 404. “Strip” removes the prefix before proxying.</div>
+        <button class="btn btn-sm" type="button" onclick="addServiceRoute('svc')">Add route</button>
+        <div class="route-list" id="svc-routes"></div>
       </div>
       <div class="form-group">
         <label for="svc-hostname">Hostname (optional, traefik mode)</label>
@@ -1430,7 +1453,7 @@
   </div>
 </div>
 <div class="modal-overlay" id="restore-svc-modal" onclick="closeRestoreServiceModal(event)">
-  <div class="modal modal-md">
+  <div class="modal modal-routes">
     <div class="modal-header">
       <h2>Restore Service</h2>
       <button class="modal-close" onclick="closeRestoreServiceModal()">&times;</button>
@@ -1452,8 +1475,21 @@
         <input type="text" id="restore-svc-image" placeholder="e.g. redis:7">
       </div>
       <div class="form-group">
+        <label for="restore-svc-exposure">Public exposure</label>
+        <select id="restore-svc-exposure" onchange="toggleServiceExposure('restore-svc')">
+          <option value="port">Single port (all paths)</option>
+          <option value="routes">Restricted path routes (Traefik)</option>
+        </select>
+      </div>
+      <div class="form-group" id="restore-svc-port-group">
         <label for="restore-svc-port">Container port</label>
-        <input type="number" id="restore-svc-port" placeholder="e.g. 6379">
+        <input type="number" id="restore-svc-port" placeholder="e.g. 6379" min="1" max="65535">
+      </div>
+      <div class="form-group" id="restore-svc-routes-group" style="display:none;">
+        <label>Allowed path routes</label>
+        <div class="route-hint">Each prefix reaches a port on this service. Unknown paths return 404. “Strip” removes the prefix before proxying.</div>
+        <button class="btn btn-sm" type="button" onclick="addServiceRoute('restore-svc')">Add route</button>
+        <div class="route-list" id="restore-svc-routes"></div>
       </div>
       <div class="form-group">
         <label for="restore-svc-hostname">Hostname (optional, traefik mode)</label>
@@ -3526,6 +3562,53 @@ function maskValue(key, val) {
   return String(val).replace(/./g, '#');
 }
 
+function addServiceRoute(prefix, route) {
+  var list = document.getElementById(prefix + '-routes');
+  var row = document.createElement('div');
+  row.className = 'route-row';
+  row.innerHTML =
+    '<input type="text" class="route-path" placeholder="/RPC2" aria-label="Route path prefix">' +
+    '<input type="number" class="route-port" placeholder="8080" min="1" max="65535" aria-label="Route port">' +
+    '<label class="route-strip"><input type="checkbox" class="route-strip-input"> Strip</label>' +
+    '<button class="btn btn-sm btn-delete route-remove" type="button" aria-label="Remove route">Remove</button>';
+  row.querySelector('.route-path').value = route && route.path ? route.path : '';
+  row.querySelector('.route-port').value = route && route.port ? route.port : '';
+  row.querySelector('.route-strip-input').checked = !!(route && route.strip_prefix);
+  row.querySelector('.route-remove').onclick = function() { row.remove(); };
+  list.appendChild(row);
+}
+
+function toggleServiceExposure(prefix) {
+  var routeMode = document.getElementById(prefix + '-exposure').value === 'routes';
+  document.getElementById(prefix + '-port-group').style.display = routeMode ? 'none' : '';
+  document.getElementById(prefix + '-routes-group').style.display = routeMode ? '' : 'none';
+  if (routeMode && !document.querySelector('#' + prefix + '-routes .route-row')) {
+    addServiceRoute(prefix);
+  }
+}
+
+function setServiceRoutes(prefix, routes) {
+  var list = document.getElementById(prefix + '-routes');
+  list.innerHTML = '';
+  (routes || []).forEach(function(route) { addServiceRoute(prefix, route); });
+}
+
+function collectServiceRoutes(prefix) {
+  var routes = [];
+  document.querySelectorAll('#' + prefix + '-routes .route-row').forEach(function(row) {
+    var path = row.querySelector('.route-path').value.trim();
+    var port = parseInt(row.querySelector('.route-port').value, 10);
+    if (!path || !port) throw new Error('Every route requires a path and port.');
+    routes.push({
+      path: path,
+      port: port,
+      strip_prefix: row.querySelector('.route-strip-input').checked
+    });
+  });
+  if (!routes.length) throw new Error('Add at least one route.');
+  return routes;
+}
+
 function renderServices(services) {
   cachedServices = services || [];
   var el = document.getElementById('svc-list');
@@ -3534,9 +3617,20 @@ function renderServices(services) {
     return;
   }
   el.innerHTML = services.map(function(svc) {
-    var urlHtml = svc.url
+    var urlHtml = svc.url && !(svc.routes && svc.routes.length)
       ? '<div class="svc-meta"><span>URL: <a href="' + esc(svc.url) + '" target="_blank">' + esc(svc.url) + '</a></span></div>'
       : '';
+    var routesHtml = '';
+    if (svc.routes && svc.routes.length) {
+      routesHtml = svc.routes.map(function(route) {
+        var strip = route.strip_prefix ? ' · strip prefix' : '';
+        var pathHtml = route.url
+          ? '<a href="' + esc(route.url) + '" target="_blank">' + esc(route.path) + '</a>'
+          : esc(route.path);
+        return '<div class="svc-meta"><span>Route: ' + pathHtml +
+          ' <strong>→ ' + route.port + strip + '</strong></span></div>';
+      }).join('');
+    }
     var volHtml = '';
     if (svc.volumes && svc.volumes.length > 0) {
       var volStr = svc.volumes.map(function(v) { return esc(v.volume) + ':' + esc(v.mount_path) + (v.mode === 'ro' ? ':ro' : ''); }).join(', ');
@@ -3570,6 +3664,7 @@ function renderServices(services) {
         (svc.created_at ? '<span>Created: <strong>' + formatDate(svc.created_at) + '</strong></span>' : '') +
       '</div>' +
       urlHtml +
+      routesHtml +
       volHtml +
     '</div>';
   }).join('');
@@ -3685,6 +3780,9 @@ function openCreateServiceModal() {
    document.getElementById('svc-name').value = '';
    document.getElementById('svc-image').value = '';
    document.getElementById('svc-port').value = '';
+   document.getElementById('svc-exposure').value = 'port';
+   setServiceRoutes('svc', []);
+   toggleServiceExposure('svc');
    document.getElementById('svc-hostname').value = '';
    document.getElementById('svc-envvars').value = '';
    document.getElementById('svc-host-mode').checked = false;
@@ -3708,12 +3806,13 @@ async function submitCreateService() {
   var name = document.getElementById('svc-name').value.trim();
   var image = document.getElementById('svc-image').value.trim();
   var port = document.getElementById('svc-port').value.trim();
+  var routeMode = document.getElementById('svc-exposure').value === 'routes';
   var hostname = document.getElementById('svc-hostname').value.trim();
   var envvars = document.getElementById('svc-envvars').value.trim();
   var errEl = document.getElementById('create-svc-error');
 
-  if (!name || !image || !port) {
-    errEl.textContent = 'Service name, Docker image and port are required.';
+  if (!name || !image || (!routeMode && !port)) {
+    errEl.textContent = 'Service name, Docker image and exposure are required.';
     errEl.style.display = 'block';
     return;
   }
@@ -3728,7 +3827,9 @@ async function submitCreateService() {
     var svcVolumes = document.getElementById('svc-volumes').value.trim();
     var privileged = document.getElementById('svc-privileged').checked;
     var netAdmin = document.getElementById('svc-net-admin').checked;
-    var payload = { name: name, image: image, port: parseInt(port, 10), host_mode: hostMode, privileged: privileged, net_admin: netAdmin };
+    var payload = { name: name, image: image, host_mode: hostMode, privileged: privileged, net_admin: netAdmin };
+    if (routeMode) payload.routes = collectServiceRoutes('svc');
+    else payload.port = parseInt(port, 10);
     if (hostname) payload.hostname = hostname;
     if (envvars) payload.env_vars = envvars;
     if (svcVolumes) payload.volumes = svcVolumes;
@@ -3747,7 +3848,7 @@ async function submitCreateService() {
       errEl.style.display = 'block';
     }
   } catch (e) {
-    errEl.textContent = 'Connection error: ' + e.message;
+    errEl.textContent = e.message.indexOf('route') !== -1 ? e.message : 'Connection error: ' + e.message;
     errEl.style.display = 'block';
   } finally {
     btn.disabled = false;
@@ -3796,7 +3897,9 @@ function renderPresetsList(presets) {
       '</div>' +
       '<div class="preset-meta">' +
         '<span>Image: <strong>' + esc(p.image) + '</strong></span>' +
-        '<span>Port: <strong>' + p.port + '</strong></span>' +
+        (p.routes && p.routes.length
+          ? '<span>Routes: <strong>' + p.routes.map(function(route) { return esc(route.path) + '→' + route.port; }).join(', ') + '</strong></span>'
+          : '<span>Port: <strong>' + p.port + '</strong></span>') +
         (p.hostname ? '<span>Host: <strong>' + esc(p.hostname) + '</strong></span>' : '') +
         envStr +
         (p.volumes && p.volumes.length ? '<span>Volumes: <strong>' + p.volumes.map(function(v) { return esc(v.volume) + ':' + esc(v.mount_path); }).join(', ') + '</strong></span>' : '') +
@@ -3833,7 +3936,10 @@ async function doDeletePreset(name) {
 function _fillRestoreFields(p) {
    document.getElementById('restore-svc-name').value = p.name || '';
    document.getElementById('restore-svc-image').value = p.image || '';
-   document.getElementById('restore-svc-port').value = p.port || '';
+   document.getElementById('restore-svc-port').value = p.routes && p.routes.length ? '' : (p.port || '');
+   document.getElementById('restore-svc-exposure').value = p.routes && p.routes.length ? 'routes' : 'port';
+   setServiceRoutes('restore-svc', p.routes || []);
+   toggleServiceExposure('restore-svc');
    document.getElementById('restore-svc-hostname').value = p.hostname || '';
    var envStr = '';
    if (p.env_vars && Object.keys(p.env_vars).length) {
@@ -3858,6 +3964,9 @@ function openRestoreServiceModal(preselect) {
    document.getElementById('restore-svc-name').value = '';
    document.getElementById('restore-svc-image').value = '';
    document.getElementById('restore-svc-port').value = '';
+   document.getElementById('restore-svc-exposure').value = 'port';
+   setServiceRoutes('restore-svc', []);
+   toggleServiceExposure('restore-svc');
    document.getElementById('restore-svc-hostname').value = '';
    document.getElementById('restore-svc-envvars').value = '';
    document.getElementById('restore-svc-host-mode').checked = false;
@@ -3902,12 +4011,13 @@ async function submitRestoreService() {
   var name = document.getElementById('restore-svc-name').value.trim();
   var image = document.getElementById('restore-svc-image').value.trim();
   var port = document.getElementById('restore-svc-port').value.trim();
+  var routeMode = document.getElementById('restore-svc-exposure').value === 'routes';
   var hostname = document.getElementById('restore-svc-hostname').value.trim();
   var envvars = document.getElementById('restore-svc-envvars').value.trim();
   var errEl = document.getElementById('restore-svc-error');
 
-  if (!name || !image || !port) {
-    errEl.textContent = 'Service name, Docker image and port are required.';
+  if (!name || !image || (!routeMode && !port)) {
+    errEl.textContent = 'Service name, Docker image and exposure are required.';
     errEl.style.display = 'block';
     return;
   }
@@ -3921,7 +4031,9 @@ async function submitRestoreService() {
     var restoreVolumes = document.getElementById('restore-svc-volumes').value.trim();
     var privileged = document.getElementById('restore-svc-privileged').checked;
     var netAdmin = document.getElementById('restore-svc-net-admin').checked;
-    var payload = { name: name, image: image, port: parseInt(port, 10), host_mode: hostMode, privileged: privileged, net_admin: netAdmin };
+    var payload = { name: name, image: image, host_mode: hostMode, privileged: privileged, net_admin: netAdmin };
+    if (routeMode) payload.routes = collectServiceRoutes('restore-svc');
+    else payload.port = parseInt(port, 10);
     if (hostname) payload.hostname = hostname;
     if (envvars) payload.env_vars = envvars;
     if (restoreVolumes) payload.volumes = restoreVolumes;
@@ -3941,7 +4053,7 @@ async function submitRestoreService() {
       errEl.style.display = 'block';
     }
   } catch (e) {
-    errEl.textContent = 'Connection error: ' + e.message;
+    errEl.textContent = e.message.indexOf('route') !== -1 ? e.message : 'Connection error: ' + e.message;
     errEl.style.display = 'block';
   } finally {
     btn.disabled = false;

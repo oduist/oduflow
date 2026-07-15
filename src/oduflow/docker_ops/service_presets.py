@@ -56,7 +56,7 @@ def save_preset(
     team: TeamSettings,
     name: str,
     image: str,
-    port: int,
+    port: int | None,
     hostname: str | None = None,
     env_vars: dict[str, str] | None = None,
     base_hostname: str = "",
@@ -64,6 +64,7 @@ def save_preset(
     volumes: list[dict[str, str]] | None = None,
     cap_add: list[str] | None = None,
     privileged: bool = False,
+    routes: list[dict[str, object]] | None = None,
 ) -> dict:
     """Save (or overwrite) a single service preset and return it."""
     short_hostname = hostname or ""
@@ -73,7 +74,7 @@ def save_preset(
             short_hostname = short_hostname[: -len(suffix)]
     preset: dict = {
         "image": image,
-        "port": port,
+        "port": port or 0,
         "hostname": short_hostname,
         "env_vars": env_vars if env_vars is not None else {},
     }
@@ -85,6 +86,8 @@ def save_preset(
         preset["cap_add"] = list(cap_add)
     if privileged:
         preset["privileged"] = True
+    if routes:
+        preset["routes"] = routes
     data = _load_presets(team)
     data[name] = preset
     _save_presets(team, data)

@@ -46,6 +46,15 @@ class TestSavePreset:
         preset = service_presets.get_preset(tmp_team, "redis")
         assert preset["hostname"] == "redis.local"
 
+    def test_save_preset_with_http_routes(self, tmp_team):
+        routes = [{"path": "/RPC2", "port": 8080, "strip_prefix": False}]
+        service_presets.save_preset(
+            tmp_team, "fs", "oduist/freeswitch:latest", None, routes=routes
+        )
+        preset = service_presets.get_preset(tmp_team, "fs")
+        assert preset["port"] == 0
+        assert preset["routes"] == routes
+
     def test_save_preset_overwrites(self, tmp_team):
         service_presets.save_preset(tmp_team, "redis", "redis:6", 6379)
         service_presets.save_preset(tmp_team, "redis", "redis:7", 6380)

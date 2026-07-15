@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime
+import json
 import logging
 import posixpath
 import re
@@ -18,6 +19,7 @@ from oduflow.settings import Settings, TeamSettings
 logger = logging.getLogger("oduflow")
 
 _TRAEFIK_ACME_MOUNT_PATH = "/etc/traefik"
+_HTTP_ROUTES_LABEL = "oduflow.http_routes"
 
 _SYSTEM_ENV_KEYS = {
     "PATH",
@@ -52,6 +54,121 @@ _SYSTEM_ENV_KEYS = {
     "SSH_AGENT_PID",
     "DBUS_SESSION_BUS_ADDRESS",
 }
+
+
+def normalize_http_routes(
+    routes: list[dict[str, object]] | None,
+) -> list[dict[str, object]] | None:
+    """Validate and canonicalize restricted HTTP path routes.
+
+    Routes are deliberately self-targeting: they expose another HTTP port of
+    the same auxiliary service, never an arbitrary hostname or URL.  This keeps
+    the tenant boundary intact even though Traefik is attached to every team
+    network.
+    """
+    if routes is None:
+        return None
+    if not isinstance(routes, list):
+        raise ValueError("routes must be a JSON array of route objects.")
+
+    normalized: list[dict[str, object]] = []
+    seen: set[str] = set()
+    for index, route in enumerate(routes, start=1):
+        if not isinstance(route, dict):
+            raise ValueError(f"Route #{index} must be a JSON object.")
+        unknown_fields = set(route) - {"path", "port", "strip_prefix"}
+        if unknown_fields:
+            fields = ", ".join(sorted(unknown_fields))
+            raise ValueError(f"Route #{index} contains unsupported fields: {fields}.")
+
+        raw_path = route.get("path")
+        if not isinstance(raw_path, str) or not raw_path:
+            raise ValueError(f"Route #{index} path must be a non-empty string.")
+        if raw_path != raw_path.strip():
+            raise ValueError(
+                f"Route path '{raw_path}' must not contain outer whitespace."
+            )
+        if not raw_path.startswith("/"):
+            raise ValueError(f"Route path '{raw_path}' must start with '/'.")
+        if any(ch in raw_path for ch in ("?", "#", "`")) or any(
+            ord(ch) < 32 or ch.isspace() for ch in raw_path
+        ):
+            raise ValueError(
+                f"Route path '{raw_path}' contains unsupported URL characters."
+            )
+        if "//" in raw_path or any(part in (".", "..") for part in raw_path.split("/")):
+            raise ValueError(
+                f"Route path '{raw_path}' must not contain empty or dot segments."
+            )
+
+        path = raw_path.rstrip("/") or "/"
+        if path in seen:
+            raise ValueError(f"Duplicate route path '{path}'.")
+        seen.add(path)
+
+        raw_port = route.get("port")
+        if isinstance(raw_port, bool) or not isinstance(raw_port, int):
+            raise ValueError(f"Route '{path}' port must be an integer from 1 to 65535.")
+        port = raw_port
+        if not 1 <= port <= 65535:
+            raise ValueError(f"Route '{path}' port must be between 1 and 65535.")
+
+        raw_strip = route.get("strip_prefix", False)
+        if not isinstance(raw_strip, bool):
+            raise ValueError(f"Route '{path}' strip_prefix must be true or false.")
+        normalized.append({"path": path, "port": port, "strip_prefix": raw_strip})
+    return normalized
+
+
+def _validate_service_exposure(
+    settings: Settings,
+    port: int | None,
+    routes: list[dict[str, object]] | None,
+) -> None:
+    """Require exactly one supported public exposure model."""
+    if routes:
+        if settings.routing_mode != "traefik":
+            raise ValueError("HTTP path routes require routing.mode = 'traefik'.")
+        if port not in (None, 0):
+            raise ValueError("Pass either port or routes, not both.")
+        return
+    if port is None or isinstance(port, bool) or not 1 <= int(port) <= 65535:
+        raise ValueError("port must be between 1 and 65535 when routes are not set.")
+
+
+def _route_rule(hostname: str, path: str) -> str:
+    """Return a segment-safe prefix rule (/api and /api/*, never /apix)."""
+    if path == "/":
+        path_rule = "PathPrefix(`/`)"
+    else:
+        path_rule = f"(Path(`{path}`) || PathPrefix(`{path}/`))"
+    return f"Host(`{hostname}`) && {path_rule}"
+
+
+def _routes_from_labels(labels: dict[str, str]) -> list[dict[str, object]] | None:
+    raw = labels.get(_HTTP_ROUTES_LABEL)
+    if not raw:
+        return None
+    try:
+        parsed = json.loads(raw)
+        return normalize_http_routes(parsed)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        logger.warning("Ignoring invalid HTTP routes label", exc_info=True)
+        return None
+
+
+def _routes_with_urls(
+    routes: list[dict[str, object]] | None, hostname: str | None
+) -> list[dict[str, object]]:
+    if not routes:
+        return []
+    result: list[dict[str, object]] = []
+    for route in routes:
+        item = dict(route)
+        if hostname:
+            item["url"] = f"https://{hostname}{route['path']}"
+        result.append(item)
+    return result
 
 
 def _resolve_service_volume_binds(
@@ -122,16 +239,19 @@ def create_service(
     team: TeamSettings,
     name: str,
     image: str,
-    port: int,
+    port: int | None,
     hostname: str | None = None,
     env_vars: dict[str, str] | None = None,
     host_mode: bool = False,
     volumes: list[dict[str, str]] | None = None,
     cap_add: list[str] | None = None,
     privileged: bool = False,
-) -> dict[str, str]:
-    client = get_client()
+    routes: list[dict[str, object]] | None = None,
+) -> dict[str, Any]:
     container_name = get_service_container_name(name, settings.prefix, team.team_id)
+    routes = normalize_http_routes(routes)
+    _validate_service_exposure(settings, port, routes)
+    client = get_client()
 
     # Services join the team's isolated network (not needed for host mode).
     team_network = ""
@@ -175,25 +295,63 @@ def create_service(
         elif "." not in hostname:
             hostname = f"{hostname}.{team.hostname}"
         labels["traefik.enable"] = "true"
-        labels[f"traefik.http.routers.{container_name}.rule"] = f"Host(`{hostname}`)"
-        if settings.routing_tls:
-            labels[f"traefik.http.routers.{container_name}.entrypoints"] = "websecure"
-            labels[f"traefik.http.routers.{container_name}.tls.certresolver"] = (
-                "letsencrypt"
+        if routes:
+            labels[_HTTP_ROUTES_LABEL] = json.dumps(
+                routes, separators=(",", ":"), sort_keys=True
             )
+            for index, route in enumerate(routes, start=1):
+                route_name = f"{container_name}-route-{index}"
+                router_prefix = f"traefik.http.routers.{route_name}"
+                service_prefix = f"traefik.http.services.{route_name}"
+                labels[f"{router_prefix}.rule"] = _route_rule(
+                    hostname, str(route["path"])
+                )
+                labels[f"{router_prefix}.service"] = route_name
+                if settings.routing_tls:
+                    labels[f"{router_prefix}.entrypoints"] = "websecure"
+                    labels[f"{router_prefix}.tls.certresolver"] = "letsencrypt"
+                else:
+                    labels[f"{router_prefix}.entrypoints"] = "web"
+                if host_mode:
+                    labels[f"{service_prefix}.loadbalancer.server.url"] = (
+                        f"http://host.docker.internal:{route['port']}"
+                    )
+                else:
+                    labels[f"{service_prefix}.loadbalancer.server.port"] = str(
+                        route["port"]
+                    )
+                if route["strip_prefix"]:
+                    middleware_name = f"{route_name}-strip"
+                    labels[f"{router_prefix}.middlewares"] = middleware_name
+                    labels[
+                        f"traefik.http.middlewares.{middleware_name}.stripprefix.prefixes"
+                    ] = str(route["path"])
+            if not host_mode:
+                labels["traefik.docker.network"] = team_network
         else:
-            # Upstream terminates TLS (e.g. Cloudflare tunnel): plain HTTP on the
-            # web entrypoint. Public URL stays https:// below.
-            labels[f"traefik.http.routers.{container_name}.entrypoints"] = "web"
-        if host_mode:
-            labels[
-                f"traefik.http.services.{container_name}.loadbalancer.server.url"
-            ] = f"http://host.docker.internal:{port}"
-        else:
-            labels[
-                f"traefik.http.services.{container_name}.loadbalancer.server.port"
-            ] = str(port)
-            labels["traefik.docker.network"] = team_network
+            labels[f"traefik.http.routers.{container_name}.rule"] = (
+                f"Host(`{hostname}`)"
+            )
+            if settings.routing_tls:
+                labels[f"traefik.http.routers.{container_name}.entrypoints"] = (
+                    "websecure"
+                )
+                labels[f"traefik.http.routers.{container_name}.tls.certresolver"] = (
+                    "letsencrypt"
+                )
+            else:
+                # Upstream terminates TLS (e.g. Cloudflare tunnel): plain HTTP on
+                # the web entrypoint. Public URL stays https:// below.
+                labels[f"traefik.http.routers.{container_name}.entrypoints"] = "web"
+            if host_mode:
+                labels[
+                    f"traefik.http.services.{container_name}.loadbalancer.server.url"
+                ] = f"http://host.docker.internal:{port}"
+            else:
+                labels[
+                    f"traefik.http.services.{container_name}.loadbalancer.server.port"
+                ] = str(port)
+                labels["traefik.docker.network"] = team_network
         url = f"https://{hostname}"
     else:
         if not host_mode:
@@ -232,6 +390,7 @@ def create_service(
             volumes=volumes,
             cap_add=cap_add,
             privileged=privileged,
+            routes=routes,
         )
     except Exception:
         logger.warning("Failed to save service preset for %s", name, exc_info=True)
@@ -241,6 +400,7 @@ def create_service(
         "container_name": container_name,
         "image": image,
         "url": url,
+        "routes": _routes_with_urls(routes, hostname),
     }
 
 
@@ -321,6 +481,7 @@ def _describe_service_container(
     url: str | None = None
     hostname: str | None = None
     is_host_mode = container.labels.get("oduflow.host_mode") == "true"
+    routes = _routes_from_labels(container.labels)
 
     if settings.routing_mode == "traefik":
         rule_value = _traefik_label_by_suffix(container.labels, ".rule")
@@ -329,7 +490,9 @@ def _describe_service_container(
             hostname = match.group(1)
             url = f"https://{hostname}"
 
-        if is_host_mode:
+        if routes:
+            port_num = None
+        elif is_host_mode:
             url_value = _traefik_label_by_suffix(
                 container.labels, ".loadbalancer.server.url"
             )
@@ -399,6 +562,7 @@ def _describe_service_container(
         "port": port_num,
         "hostname": hostname,
         "url": url,
+        "routes": _routes_with_urls(routes, hostname),
         "env_vars": env_vars,
         "host_mode": is_host_mode,
         "volumes": svc_volumes,
@@ -482,7 +646,8 @@ def update_service(
     volume_override: list[dict[str, str]] | None = None,
     cap_add_override: list[str] | None = None,
     privileged_override: bool | None = None,
-) -> dict[str, str]:
+    routes_override: list[dict[str, object]] | None = None,
+) -> dict[str, Any]:
     """Pull the latest image for a service and re-create it with the same settings.
 
     Optional overrides replace the corresponding setting from the saved preset.
@@ -517,13 +682,14 @@ def update_service(
         pass
 
     if preset:
-        port = preset.get("port")
+        port = preset.get("port") or None
         hostname = preset.get("hostname") or None
         env_vars = preset.get("env_vars") or None
         is_host_mode = preset.get("host_mode", False)
         old_volumes = preset.get("volumes") or None
         cap_add = preset.get("cap_add") or None
         privileged = preset.get("privileged", False)
+        routes = normalize_http_routes(preset.get("routes"))
     else:
         # Legacy fallback: extract from running container
         raw_env = container.attrs.get("Config", {}).get("Env", [])
@@ -535,6 +701,7 @@ def update_service(
                     env_vars[key] = value
 
         is_host_mode = container.labels.get("oduflow.host_mode") == "true"
+        routes = _routes_from_labels(container.labels)
 
         host_config = container.attrs.get("HostConfig", {}) or {}
         cap_add = list(host_config.get("CapAdd") or []) or None
@@ -549,7 +716,9 @@ def update_service(
             if match:
                 hostname = match.group(1)
 
-            if is_host_mode:
+            if routes:
+                port = None
+            elif is_host_mode:
                 url_value = _traefik_label_by_suffix(
                     container.labels, ".loadbalancer.server.url"
                 )
@@ -595,7 +764,12 @@ def update_service(
 
         env_vars = env_vars or None
 
-    if port is None and port_override is None:
+    if (
+        port is None
+        and not routes
+        and port_override is None
+        and routes_override is None
+    ):
         raise NotFoundError(f"Cannot determine port for service '{name}'.")
 
     # Apply overrides and track whether config changed
@@ -624,6 +798,30 @@ def update_service(
     if privileged_override is not None and privileged_override != privileged:
         privileged = privileged_override
         config_changed = True
+    if routes_override is not None:
+        normalized_override = normalize_http_routes(routes_override)
+        if normalized_override:
+            if port_override is not None:
+                raise ValueError("Pass either port or routes, not both.")
+            port = None
+            new_routes = normalized_override
+        else:
+            new_routes = None
+            if port_override is None:
+                raise ValueError(
+                    "Removing routes requires a replacement port in the same update."
+                )
+        if new_routes != routes:
+            routes = new_routes
+            config_changed = True
+
+    if routes and port_override is not None and routes_override is None:
+        raise ValueError(
+            "A route-based service has no catch-all port; replace routes or clear "
+            "them with routes=[] and a replacement port."
+        )
+
+    _validate_service_exposure(settings, port, routes)
 
     # Determine the image to pull (override or current)
     target_image = image_override if image_override else old_image
@@ -665,6 +863,9 @@ def update_service(
             "config_updated": False,
             "old_digest": old_digest,
             "new_digest": new_digest,
+            "routes": _routes_with_urls(
+                routes, h if settings.routing_mode == "traefik" else None
+            ),
         }
 
     logger.info(
@@ -692,6 +893,7 @@ def update_service(
         volumes=old_volumes or None,
         cap_add=cap_add,
         privileged=privileged,
+        routes=routes,
     )
 
     result["image_updated"] = image_updated
