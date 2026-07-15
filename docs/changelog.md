@@ -1,10 +1,25 @@
 # Changelog
 
-## Unreleased
+## v1.67.0
+
+### Features
+
+- **Restricted HTTP path routing for services** — auxiliary services can now expose a curated set of `routes` alongside (and mutually exclusive with) the existing catch-all `port` model. Restricted routes use segment-safe Traefik rules, work for both bridge and host networking, can optionally strip prefixes, and leave every undeclared path at Traefik's 404 so a service no longer has to publish its whole HTTP surface. The route configuration is preserved through presets, live inspection, updates, MCP, REST, and the dashboard. (#126)
 
 ### Bug Fixes
 
-- **Dependency changes are applied on Sync** — a changed `requirements.txt`, `.oduflow/requirements.txt`, or `.oduflow/apt_packages.txt` during `pull_and_apply`/Sync now reinstalls the apt/pip dependencies into the running container and restarts it, instead of being misreported as an XML/JS-only browser refresh. The classifier previously ignored these files, so a dependency-only change silently did nothing. Reinstall runs before any module install/upgrade so new libraries are importable; packages *removed* from the file are not uninstalled until the container is rebuilt via `update_environment`.
+- **Dependency changes are applied on Sync** — a changed `requirements.txt`, `.oduflow/requirements.txt`, or `.oduflow/apt_packages.txt` during `pull_and_apply`/Sync now reinstalls the apt/pip dependencies into the running container and restarts it, instead of being misreported as an XML/JS-only browser refresh. The classifier previously ignored these files, so a dependency-only change silently did nothing. Reinstall runs before any module install/upgrade so new libraries are importable; packages *removed* from the file are not uninstalled until the container is rebuilt via `update_environment`. (#127)
+- **Real client IPs behind Traefik** — access logs and the login rate-limiter recorded the Traefik container IP for every request instead of the real client, because uvicorn only trusts `X-Forwarded-For` from `127.0.0.1` by default. Oduflow now passes `proxy_headers=True` with a `forwarded_allow_ips` trust list — the stable Traefik Docker-network CIDRs in `traefik` mode, and nothing in `port` mode so a direct client cannot spoof its IP. The login rate-limiter now throttles per real client. (#123, #124)
+- **Bounded MCP HTTP graceful shutdown** — HTTP transport now applies a 10s Uvicorn graceful-shutdown timeout so long-lived MCP StreamableHTTP streams no longer keep server restarts waiting indefinitely. (#122)
+
+### Security
+
+- **Hardened proxy-header trust and credential redaction** — forwarded headers are trusted only from loopback plus the stable Traefik Docker-network CIDRs, failing closed for empty team maps and when Docker-network trust cannot be established; embedded repository credentials are now redacted from non-auth git clone failures; and a staged template filestore replacement that fails to install preserves the previous filestore. (#124)
+
+### Documentation & Testing
+
+- **Restricted service-routing decision record** — specs/0033 documents the restricted HTTP path-routing model for services, its security boundary, and the trade-offs versus catch-all port exposure. (#126)
+- **Superseded PR test runs are cancelled** — `tests.yml` now uses a per-ref `concurrency` group with `cancel-in-progress`, so pushing a new commit to an open PR cancels the still-running test workflow for that ref while keeping `main` protected by pre-merge CI. (#128)
 
 ## v1.66.0
 
