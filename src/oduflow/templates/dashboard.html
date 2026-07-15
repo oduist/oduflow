@@ -1671,7 +1671,7 @@
       <button class="modal-close" onclick="closeMcpAccess()">&times;</button>
     </div>
     <div class="modal-body">
-      <p class="modal-note">Scoped MCP endpoint for this environment only. Use the Secret Key as a Bearer token or as an OAuth client credential. It exposes the in-environment tools (sync, install/upgrade, tests, shell, SQL, logs); it cannot create, delete or stop environments.</p>
+      <p class="modal-note">Scoped MCP endpoint for this environment only. Use the Secret Key as a Bearer token — this endpoint is Bearer-only and does not use the OAuth flow. It exposes the in-environment tools (sync, install/upgrade, tests, shell, SQL, logs); it cannot create, delete or stop environments.</p>
       <div class="form-group">
         <label for="mcp-access-url">Endpoint URL</label>
         <div class="copy-row">

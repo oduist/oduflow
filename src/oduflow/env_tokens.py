@@ -2,8 +2,9 @@
 
 Each environment gets a personal token stored in the Docker label
 ``oduflow.mcp_token`` at creation time (see ``env_ops.create_environment``).
-The token doubles as a Bearer token and an OAuth client credential, and
-authorizes the scoped MCP endpoint ``/mcp/<env>`` (single-environment access).
+The token is a Bearer token authorizing the scoped MCP endpoint ``/mcp/<env>``
+(single-environment access). That endpoint is Bearer-only — the OAuth flow
+(client_id/secret) is wired only for the team-wide ``/mcp`` endpoint.
 
 ``resolve_token`` maps an incoming token to a ``(team_id, env_name)`` pair:
 
