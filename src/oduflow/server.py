@@ -222,10 +222,11 @@ def with_env_lock(fn):
         env_name = kwargs.get("env_name") or (args[0] if args else None)
         if not env_name:
             raise ToolError("env_name is required")
-        _locks.acquire_env(env_name)
+        team = _resolve_team(kwargs.get("ctx"))
+        _locks.acquire_env(env_name, team.team_id)
         try:
             try:
-                activity.touch(_resolve_team(kwargs.get("ctx")), env_name)
+                activity.touch(team, env_name)
             except Exception:
                 pass  # activity tracking is best-effort
             return fn(*args, **kwargs)
@@ -452,10 +453,10 @@ def create_environment(
     from oduflow.naming import validate_env_name
 
     resolved_env_name = validate_env_name(env_name or branch)
-    _locks.acquire_env(resolved_env_name)
+    settings = _get_settings()
+    team = _resolve_team(ctx)
+    _locks.acquire_env(resolved_env_name, team.team_id)
     try:
-        settings = _get_settings()
-        team = _resolve_team(ctx)
         resolved_template: str | None
         if not template_name or template_name.lower() == "none":
             resolved_template = None
@@ -1142,6 +1143,7 @@ def get_environment_logs(
 
 @mcp.tool()
 @handle_errors
+@with_env_lock
 def restart_environment(env_name: str, wait: bool = True, ctx: Context = None) -> str:
     """
     Restart the Odoo container for a specific environment.
@@ -1284,6 +1286,7 @@ def get_environment_info(env_name: str, ctx: Context = None) -> str:
 
 @mcp.tool()
 @handle_errors
+@with_env_lock
 def stop_environment(env_name: str, ctx: Context = None) -> str:
     """
     Stop the Odoo container for a specific environment.
@@ -1303,6 +1306,7 @@ def stop_environment(env_name: str, ctx: Context = None) -> str:
 
 @mcp.tool()
 @handle_errors
+@with_env_lock
 def start_environment(env_name: str, wait: bool = True, ctx: Context = None) -> str:
     """
     Start all containers for a specific environment.
