@@ -3,9 +3,12 @@ import textwrap
 
 from oduflow.git_analysis import (
     classify_changes,
+    shallow_classify,
+    merge_recommendations,
     _get_module_name,
     _is_security_path,
     _is_data_path,
+    _is_dep_file,
     _extract_field_lines,
     _extract_view_tag_attrs,
 )
@@ -44,6 +47,28 @@ class TestIsDataPath:
         assert _is_data_path("addons_ee/connect_elevenlabs/data/tools.xml") is True
 
 
+class TestIsDepFile:
+    def test_root_requirements(self):
+        assert _is_dep_file("requirements.txt") is True
+
+    def test_oduflow_requirements(self):
+        assert _is_dep_file(".oduflow/requirements.txt") is True
+
+    def test_oduflow_apt_packages(self):
+        assert _is_dep_file(".oduflow/apt_packages.txt") is True
+
+    def test_nested_requirements_is_not_a_dep_file(self):
+        # Only the repo-root / .oduflow requirements are installed.
+        assert _is_dep_file("sale/requirements.txt") is False
+
+    def test_requirements_dev_is_not_a_dep_file(self):
+        assert _is_dep_file("requirements-dev.txt") is False
+
+    def test_root_apt_packages_is_not_a_dep_file(self):
+        # apt_packages.txt is only read from .oduflow/, never the repo root.
+        assert _is_dep_file("apt_packages.txt") is False
+
+
 class TestClassifyChanges:
     def test_empty(self):
         result = classify_changes([], "/tmp")
@@ -74,6 +99,66 @@ class TestClassifyChanges:
         result = classify_changes(files, "/tmp")
         assert result["action"] == "restart"
         assert result["details"]["restart_required"] == [".oduflow/odoo.conf"]
+
+    def test_lone_requirements_txt_restart(self):
+        result = classify_changes(["requirements.txt"], "/tmp")
+        assert result["action"] == "restart"
+        assert result["details"]["deps_changed"] == ["requirements.txt"]
+        assert result["modules_to_upgrade"] == []
+
+    def test_oduflow_requirements_restart(self):
+        result = classify_changes([".oduflow/requirements.txt"], "/tmp")
+        assert result["action"] == "restart"
+        assert result["details"]["deps_changed"] == [".oduflow/requirements.txt"]
+
+    def test_apt_packages_restart(self):
+        result = classify_changes([".oduflow/apt_packages.txt"], "/tmp")
+        assert result["action"] == "restart"
+        assert result["details"]["deps_changed"] == [".oduflow/apt_packages.txt"]
+
+    def test_requirements_plus_hot_xml_restart(self):
+        # A dependency change beats a browser-only refresh.
+        files = ["requirements.txt", "sale/views/sale_order.xml"]
+        result = classify_changes(files, "/tmp")
+        assert result["action"] == "restart"
+        assert result["details"]["deps_changed"] == ["requirements.txt"]
+        assert result["details"]["xml_hot"] == ["sale/views/sale_order.xml"]
+
+    def test_requirements_plus_field_change_stays_upgrade(self, tmp_path):
+        # A field change still wins the action, but the dependency file is still
+        # recorded so the reinstall trigger survives the mixed case.
+        module_dir = tmp_path / "sale" / "models"
+        module_dir.mkdir(parents=True)
+        (tmp_path / "sale" / "__manifest__.py").write_text(
+            "{'name': 'Sale', 'version': '17.0.1.0.0'}"
+        )
+        (module_dir / "sale.py").write_text(
+            textwrap.dedent("""\
+            from odoo import fields, models
+
+            class SaleOrder(models.Model):
+                name = fields.Char(string='Name')
+                customer_code = fields.Char(string='Customer Code')
+        """)
+        )
+        (tmp_path / "requirements.txt").write_text("phonenumbers\n")
+
+        from unittest.mock import patch
+
+        old_source = textwrap.dedent("""\
+            from odoo import fields, models
+
+            class SaleOrder(models.Model):
+                name = fields.Char(string='Name')
+        """)
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = type("Result", (), {"stdout": old_source})()
+
+            files = ["requirements.txt", "sale/models/sale.py"]
+            result = classify_changes(files, str(tmp_path))
+            assert result["action"] == "upgrade"
+            assert "sale" in result["modules_to_upgrade"]
+            assert result["details"]["deps_changed"] == ["requirements.txt"]
 
     def test_security_xml(self):
         files = ["sale/security/ir.model.access.csv"]
@@ -540,6 +625,22 @@ class TestExtractFieldLines:
         assert _extract_field_lines(source) == set()
 
 
+class TestShallowClassify:
+    def test_lone_requirements_txt_restart(self):
+        result = shallow_classify(["requirements.txt"], "/tmp")
+        assert result["action"] == "restart"
+        assert result["details"]["deps_changed"] == ["requirements.txt"]
+
+    def test_apt_packages_restart(self):
+        result = shallow_classify([".oduflow/apt_packages.txt"], "/tmp")
+        assert result["action"] == "restart"
+        assert result["details"]["deps_changed"] == [".oduflow/apt_packages.txt"]
+
+    def test_only_xml_still_refresh(self):
+        result = shallow_classify(["sale/views/sale_order.xml"], "/tmp")
+        assert result["action"] == "refresh"
+
+
 class TestMergeRecommendations:
     def test_empty(self):
         from oduflow.git_analysis import merge_recommendations
@@ -585,3 +686,11 @@ class TestMergeRecommendations:
         merged = merge_recommendations([main, extra])
         assert merged["action"] == "upgrade"
         assert merged["modules_to_upgrade"] == ["sale_enterprise"]
+
+    def test_main_repo_dep_change_elevates_merged_action_to_restart(self):
+        # A main-repo requirements.txt change elevates its own unit to restart;
+        # merge takes the most-disruptive action across units.
+        main = classify_changes(["requirements.txt"], "/tmp")
+        extra = {"action": "none", "modules_to_install": [], "modules_to_upgrade": []}
+        merged = merge_recommendations([main, extra])
+        assert merged["action"] == "restart"

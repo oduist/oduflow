@@ -2310,6 +2310,8 @@ def _apply_actions(
     do_restart: bool,
     changed_files: list[str],
     config_changed: bool = False,
+    deps_changed: bool = False,
+    repo_path: str = "",
 ) -> dict[str, Any]:
     """Run install/upgrade/restart and build the result dict (shared by the
     explicit and auto paths of :func:`pull_environment`)."""
@@ -2317,6 +2319,26 @@ def _apply_actions(
         install_odoo_modules,
         upgrade_odoo_modules,
     )
+
+    # Reinstall apt/pip deps up front so a subsequent module install/upgrade can
+    # import newly-added libs (same apt-then-pip order as create/update). Never
+    # restart here — a single restart happens in the branches below.
+    dep_logs: list[str] = []
+    dep_exit = 0
+    if deps_changed and repo_path:
+        dep_container = client.containers.get(odoo_container_name)
+        apt_log = _install_apt_packages(dep_container, repo_path)
+        if apt_log:
+            dep_logs.append(apt_log)
+            if "FAILED" in apt_log:
+                dep_exit = 1
+        pip_installed, pip_log = _install_pip_requirements(
+            dep_container, repo_path, restart=False
+        )
+        if pip_log:
+            dep_logs.append(pip_log)
+        if (not pip_installed) and pip_log:  # log present but not installed => FAILED
+            dep_exit = 1
 
     if to_install or to_upgrade:
         messages: list[str] = []
@@ -2334,6 +2356,8 @@ def _apply_actions(
             messages.append(f"Upgraded modules: {','.join(to_upgrade)}")
             if res.get("output"):
                 odoo_output_parts.append(res["output"])
+        if dep_logs:
+            messages.insert(0, "Reinstalled dependencies.")
         container = client.containers.get(odoo_container_name)
         if config_changed and _reapply_odoo_conf(settings, team, env_name, container):
             messages.append("Reapplied odoo.conf.")
@@ -2346,27 +2370,36 @@ def _apply_actions(
             "action": "install" if to_install else "upgrade",
             "modules_installed": to_install,
             "modules_upgraded": to_upgrade,
-            "exit_code": last_exit_code,
+            "exit_code": last_exit_code or dep_exit,
             "changed_files": changed_files,
             "message": " ".join(messages),
-            "output": "\n".join(odoo_output_parts),
+            "output": "\n".join(dep_logs + odoo_output_parts),
         }
 
-    if do_restart:
+    if do_restart or deps_changed:
         container = client.containers.get(odoo_container_name)
         reapplied = config_changed and _reapply_odoo_conf(
             settings, team, env_name, container
         )
         container.restart()
         logger.info("Container restarted", extra={"env_name": env_name})
+        parts: list[str] = []
+        if reapplied:
+            parts.append("Reapplied odoo.conf.")
+        if dep_logs:
+            parts.append("Reinstalled dependencies.")
+        elif deps_changed:
+            # A dependency file changed but nothing was installed (e.g. it was
+            # deleted, or only removed lines). Removed packages are not
+            # uninstalled until the container is rebuilt (update_environment).
+            parts.append("Dependencies changed.")
+        parts.append("Container restarted.")
         return {
             "action": "restart",
             "changed_files": changed_files,
-            "message": (
-                "Reapplied odoo.conf and restarted container."
-                if reapplied
-                else "Container restarted."
-            ),
+            "message": " ".join(parts),
+            "output": "\n".join(dep_logs),
+            "exit_code": dep_exit,
         }
 
     if changed_files:
@@ -2411,6 +2444,7 @@ def pull_environment(
       path-only ``shallow_classify`` in live-mount mode.
     """
     from oduflow.git_analysis import (
+        _is_dep_file,
         guardrail_warnings,
         merge_recommendations,
         recommend,
@@ -2447,6 +2481,7 @@ def pull_environment(
         _trace("pull_environment(%s): live-mount, detecting local changes", env_name)
         base_ref, all_changed = _detect_local_changes(repo_path, env_name, team)
         classify_units.append((repo_path, base_ref, all_changed))
+        main_changed_files = all_changed
     else:
         _trace("pull_environment(%s): git pull started", env_name)
         git_branch = container_obj.labels.get("oduflow.git_branch", env_name)
@@ -2481,6 +2516,9 @@ def pull_environment(
                     # Classify this worktree against its own path + old HEAD.
                     classify_units.append((wt_path, extra_old, extra_files))
         all_changed = changed_files + extra_changed_files
+        # Dependency reinstall keys off the MAIN repo only: the pip/apt install
+        # helpers read only the main repo_path, never the extra-addon worktrees.
+        main_changed_files = changed_files
 
     _trace(
         "pull_environment(%s): %d changed files: %s",
@@ -2502,6 +2540,11 @@ def pull_environment(
     # container before any restart (a plain restart reuses the stale copy).
     details = recommended.get("details")
     config_changed = isinstance(details, dict) and bool(details.get("restart_required"))
+    # A changed dependency descriptor (requirements.txt / apt_packages.txt) in the
+    # MAIN repo must reinstall apt/pip deps into the running container and restart.
+    # Scoped to the main repo because the install helpers only read its repo_path;
+    # applies to both explicit and auto modes (a prerequisite, not an agent action).
+    deps_changed = any(_is_dep_file(f) for f in main_changed_files)
 
     warnings: list[str] = []
     if explicit:
@@ -2547,6 +2590,8 @@ def pull_environment(
         do_restart=do_restart,
         changed_files=all_changed,
         config_changed=config_changed,
+        deps_changed=deps_changed,
+        repo_path=repo_path,
     )
     if warnings:
         result["warnings"] = warnings

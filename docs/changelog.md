@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Bug Fixes
+
+- **Dependency changes are applied on Sync** — a changed `requirements.txt`, `.oduflow/requirements.txt`, or `.oduflow/apt_packages.txt` during `pull_and_apply`/Sync now reinstalls the apt/pip dependencies into the running container and restarts it, instead of being misreported as an XML/JS-only browser refresh. The classifier previously ignored these files, so a dependency-only change silently did nothing. Reinstall runs before any module install/upgrade so new libraries are importable; packages *removed* from the file are not uninstalled until the container is rebuilt via `update_environment`.
+
 ## v1.66.0
 
 ### Features

@@ -20,6 +20,18 @@ def _trace(msg: str, *args: object) -> None:
 MANIFEST_KEYS_WITH_FILES = ("data", "demo", "assets", "qweb")
 RESTART_REQUIRED_PATHS = {".oduflow/odoo.conf"}
 
+# Dependency descriptors Oduflow actually reads into the container. A change to
+# any of these means Python/apt deps changed → reinstall + restart. Only these
+# exact repo-root-relative paths are installed (see
+# env_ops._install_pip_requirements / _install_apt_packages); a nested
+# ``foo/requirements.txt`` or a repo-root ``apt_packages.txt`` is intentionally
+# NOT a dependency descriptor.
+DEP_FILE_PATHS = {
+    "requirements.txt",
+    ".oduflow/requirements.txt",
+    ".oduflow/apt_packages.txt",
+}
+
 _FIELD_RE = re.compile(r"^\s*\w+\s*=\s*fields\..*", re.MULTILINE)
 _VIEW_TAG_RE = re.compile(r"<(tree|list|form)\b([^>]*)/?>")
 
@@ -149,6 +161,10 @@ def _requires_restart_path(file_path: str) -> bool:
     return file_path.replace(os.sep, "/") in RESTART_REQUIRED_PATHS
 
 
+def _is_dep_file(file_path: str) -> bool:
+    return file_path.replace(os.sep, "/") in DEP_FILE_PATHS
+
+
 def classify_changes(
     changed_files: list[str], repo_path: str, base_ref: str = "HEAD~1"
 ) -> dict:
@@ -167,6 +183,7 @@ def classify_changes(
                 "manifest_upgrade": [...], # modules needing upgrade due to manifest
                 "js_changed": [...],
                 "restart_required": [...],
+                "deps_changed": [...],   # dependency descriptors (requirements/apt)
             }
         }
     """
@@ -186,6 +203,7 @@ def classify_changes(
     xml_security = []
     js_changed = []
     restart_required = []
+    deps_changed: list[str] = []
     modules_to_upgrade: set[str] = set()
     modules_to_install: set[str] = set()
 
@@ -200,6 +218,14 @@ def classify_changes(
                 f,
                 ext,
                 module,
+            )
+            continue
+
+        if _is_dep_file(f):
+            deps_changed.append(f)
+            _trace(
+                "  file=%s -> dependency descriptor, reinstall + restart",
+                f,
             )
             continue
 
@@ -273,6 +299,7 @@ def classify_changes(
         "manifest_install": sorted(modules_to_install),
         "js_changed": js_changed,
         "restart_required": restart_required,
+        "deps_changed": deps_changed,
     }
 
     if modules_to_install or modules_to_upgrade:
@@ -290,10 +317,10 @@ def classify_changes(
             "details": details,
         }
 
-    if py_changed or restart_required:
+    if py_changed or restart_required or deps_changed:
         _trace(
             "classify_changes RESULT: action=restart "
-            "(Python or restart-required config changed)"
+            "(Python, restart-required config, or dependencies changed)"
         )
         return {
             "action": "restart",
@@ -389,6 +416,7 @@ def shallow_classify(changed_files: list[str], repo_path: str = "") -> dict:
     xml_security: list[str] = []
     js_changed: list[str] = []
     restart_required: list[str] = []
+    deps_changed: list[str] = []
     modules_to_upgrade: set[str] = set()
 
     for f in changed_files:
@@ -397,6 +425,9 @@ def shallow_classify(changed_files: list[str], repo_path: str = "") -> dict:
 
         if _requires_restart_path(f):
             restart_required.append(f)
+            continue
+        if _is_dep_file(f):
+            deps_changed.append(f)
             continue
         if os.path.basename(f) == "__manifest__.py" and module:
             modules_to_upgrade.add(module)
@@ -422,6 +453,7 @@ def shallow_classify(changed_files: list[str], repo_path: str = "") -> dict:
         "manifest_install": [],
         "js_changed": js_changed,
         "restart_required": restart_required,
+        "deps_changed": deps_changed,
     }
 
     if modules_to_upgrade:
@@ -431,7 +463,7 @@ def shallow_classify(changed_files: list[str], repo_path: str = "") -> dict:
             "modules_to_upgrade": sorted(modules_to_upgrade),
             "details": details,
         }
-    if py_changed or restart_required:
+    if py_changed or restart_required or deps_changed:
         return {
             "action": "restart",
             "modules_to_upgrade": [],
