@@ -1622,6 +1622,26 @@
     </div>
   </div>
 </div>
+<div class="modal-overlay" id="new-tpl-modal" onclick="closeNewTemplateModal(event)">
+  <div class="modal">
+    <div class="modal-header">
+      <h2>New template</h2>
+      <button class="modal-close" onclick="closeNewTemplateModal()">&times;</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-error" id="new-tpl-error"></div>
+      <div class="form-group">
+        <label for="new-tpl-name">Template name</label>
+        <input type="text" id="new-tpl-name" placeholder="new template name">
+        <div class="hint">Saves this environment's database and filestore as a new template. Refused if a template with this name already exists.</div>
+      </div>
+      <div class="form-actions">
+        <button class="btn" onclick="closeNewTemplateModal()">Cancel</button>
+        <button class="btn-create" id="new-tpl-submit" onclick="submitNewTemplate()">Create</button>
+      </div>
+    </div>
+  </div>
+</div>
 <div class="system-bar" id="system-bar">
   <span><span class="sys-label">System</span></span>
   <span>CPU: <span class="sys-val" id="sys-cpu">—</span></span>
@@ -2344,6 +2364,8 @@ function renderEnvironments(envs, force) {
                 (env.protected ? 'disabled title="Environment is protected"' : 'title="Recreate the container, keep the database and filestore"') + '>Update</button>' +
               '<button role="menuitem" onclick="doRecreate(\'' + escAttr(env.branch) + '\')" ' + dis +
                 (env.protected ? 'disabled title="Environment is protected"' : 'title="Delete and rebuild from template: replaces the current database"') + '>Recreate</button>' +
+              '<button role="menuitem" onclick="doNewTemplate(\'' + escAttr(env.branch) + '\')" ' + dis +
+                'title="Save this environment (DB + filestore) as a new template">New Template</button>' +
               '<button role="menuitem" class="danger" onclick="doDelete(\'' + escAttr(env.branch) + '\')" ' + dis +
                 (env.protected ? 'disabled title="Environment is protected"' : '') + '>Delete</button>' +
             '</div>' +
@@ -3259,6 +3281,63 @@ async function submitRenameTemplate() {
   } finally {
     btn.disabled = false;
     btn.textContent = 'Rename';
+  }
+}
+
+var _newTplBranch = '';
+
+function doNewTemplate(branch) {
+  _newTplBranch = branch;
+  var errEl = document.getElementById('new-tpl-error');
+  errEl.style.display = 'none';
+  errEl.textContent = '';
+  var input = document.getElementById('new-tpl-name');
+  input.value = '';
+  document.getElementById('new-tpl-submit').disabled = false;
+  document.getElementById('new-tpl-submit').textContent = 'Create';
+  showModal('new-tpl-modal');
+  input.focus();
+}
+
+function closeNewTemplateModal(event) {
+  if (event && event.target !== event.currentTarget) return;
+  hideModal('new-tpl-modal');
+}
+
+async function submitNewTemplate() {
+  var name = document.getElementById('new-tpl-name').value.trim();
+  var errEl = document.getElementById('new-tpl-error');
+  if (!name) {
+    errEl.textContent = 'Template name is required.';
+    errEl.style.display = 'block';
+    return;
+  }
+  errEl.style.display = 'none';
+  var btn = document.getElementById('new-tpl-submit');
+  btn.disabled = true;
+  btn.textContent = 'Creating...';
+  try {
+    var r = await fetch(API + '/' + encodeURIComponent(_newTplBranch) + '/save-as-template', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ template_name: name })
+    });
+    var data = await r.json();
+    if (data.ok) {
+      showToast('Saved "' + _newTplBranch + '" as template "' + name + '"');
+      hideModal('new-tpl-modal');
+      await loadTemplates();
+      await loadEnvironments(true);
+    } else {
+      errEl.textContent = data.error || 'Save as template failed';
+      errEl.style.display = 'block';
+    }
+  } catch (e) {
+    errEl.textContent = 'Connection error: ' + e.message;
+    errEl.style.display = 'block';
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Create';
   }
 }
 

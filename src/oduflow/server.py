@@ -629,29 +629,34 @@ def save_as_template(
     env_name: str,
     template_name: str,
     reset_env_changes: bool = False,
+    overwrite: bool = False,
     ctx: Context = None,
 ) -> str:
     """
-    Save an environment as the new template (DB + filestore).
+    Save an environment as a template (DB + filestore).
 
-    Replaces the template database and filestore with the data from the specified
-    environment. Other environments that use this template with overlay-mounted
-    filestores are remounted against the new baseline: by default their filestore
-    changes (the overlay upper layer) are PRESERVED — non-destructive. Set
-    reset_env_changes=True to discard those changes and reset every affected
-    environment to the new baseline. The source environment itself is always
-    reset (its data just became the new template).
+    By default this creates a NEW template and REFUSES to overwrite an existing
+    one (raises an error) — pick a fresh template_name. Set overwrite=True to
+    deliberately re-baseline an existing template: its database and filestore are
+    replaced with the data from the specified environment, and other environments
+    that use this template with overlay-mounted filestores are remounted against
+    the new baseline. On re-baseline their filestore changes (the overlay upper
+    layer) are PRESERVED by default — non-destructive; set reset_env_changes=True
+    to discard those changes and reset every affected environment to the new
+    baseline. The source environment itself is always reset (its data just became
+    the new template).
 
     Requires EXPLICIT user permission and confirmation before execution.
     If the user has not clearly and unambiguously asked you to save
-    a specific environment as template, DO NOT call this tool. Setting
-    reset_env_changes=True is destructive for other environments — only do so
-    when the user explicitly asks to reset them.
+    a specific environment as template, DO NOT call this tool. Both
+    overwrite=True (re-baselines an existing template) and reset_env_changes=True
+    (destructive for other environments) require an explicit user request.
 
     Args:
         env_name: The name of the environment whose DB and filestore will become the new template.
         template_name: Name of the template profile to publish into.
         reset_env_changes: If True, discard other environments' filestore deltas (destructive). Default False (preserve).
+        overwrite: If True, allow re-baselining an existing template. Default False (refuse if the template already exists).
     """
     settings = _get_settings()
     team = _resolve_team(ctx)
@@ -661,6 +666,7 @@ def save_as_template(
         env_name,
         template_name=template_name,
         reset_env_changes=reset_env_changes,
+        overwrite=overwrite,
     )
     affected = cast("list[str]", result.get("affected_envs", []))
     failures = cast("list[tuple[str, str]]", result.get("remount_failures", []))

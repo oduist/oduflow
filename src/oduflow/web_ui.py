@@ -671,6 +671,45 @@ def _build_routes(
         finally:
             locks.release_env(branch)
 
+    async def api_save_as_template(request: Request) -> JSONResponse:
+        branch = request.path_params["branch"]
+        team = _get_ui_team(request)
+        try:
+            body = await request.json()
+        except ValueError:
+            return JSONResponse(
+                {"ok": False, "error": "Invalid JSON body"}, status_code=400
+            )
+        template_name = str((body or {}).get("template_name") or "").strip()
+        if not template_name:
+            return JSONResponse(
+                {"ok": False, "error": "template_name is required"}, status_code=400
+            )
+        # Team lock (not just the env): publishing can remount other envs' overlay
+        # filestores, so it must serialize against the whole team like the MCP tool.
+        try:
+            locks.acquire_team(team.team_id)
+        except BusyError as e:
+            return _error_response(e)
+        try:
+            activity.touch(team, branch)
+            # No overwrite from the UI: publishing over an existing template is a
+            # deliberate re-baseline reserved for the MCP tool, so a duplicate name
+            # here raises ConflictError (surfaced to the client by _error_response).
+            result = system_ops.publish_env_as_template(
+                get_settings(), team, branch, template_name=template_name
+            )
+            return JSONResponse({"ok": True, "result": result})
+        except ValueError as e:  # invalid template name
+            return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
+        except FlowError as e:
+            return _error_response(e)
+        except Exception as e:
+            logger.exception("Unexpected error in api_save_as_template")
+            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+        finally:
+            locks.release_team(team.team_id)
+
     async def api_create(request: Request) -> JSONResponse:
         import json as _json
 
@@ -3076,6 +3115,11 @@ def _build_routes(
         Route("/api/environments/{branch:path}/update", api_update, methods=["POST"]),
         Route(
             "/api/environments/{branch:path}/recreate", api_recreate, methods=["POST"]
+        ),
+        Route(
+            "/api/environments/{branch:path}/save-as-template",
+            api_save_as_template,
+            methods=["POST"],
         ),
         Route("/api/environments/{branch:path}/delete", api_delete, methods=["POST"]),
         Route("/api/services", api_services, methods=["GET"]),
