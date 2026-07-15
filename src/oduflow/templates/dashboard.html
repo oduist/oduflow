@@ -3624,7 +3624,10 @@ function renderServices(services) {
     if (svc.routes && svc.routes.length) {
       routesHtml = svc.routes.map(function(route) {
         var strip = route.strip_prefix ? ' · strip prefix' : '';
-        return '<div class="svc-meta"><span>Route: <a href="' + esc(route.url) + '" target="_blank">' + esc(route.path) + '</a>' +
+        var pathHtml = route.url
+          ? '<a href="' + esc(route.url) + '" target="_blank">' + esc(route.path) + '</a>'
+          : esc(route.path);
+        return '<div class="svc-meta"><span>Route: ' + pathHtml +
           ' <strong>→ ' + route.port + strip + '</strong></span></div>';
       }).join('');
     }
