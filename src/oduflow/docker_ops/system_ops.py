@@ -1588,6 +1588,7 @@ def publish_env_as_template(
     template_name: str,
     *,
     reset_env_changes: bool = False,
+    overwrite: bool = False,
 ) -> dict[str, object]:
     from oduflow.docker_ops import env_ops
     from oduflow.naming import get_db_name, get_filestore_paths, get_resource_name
@@ -1599,6 +1600,17 @@ def publish_env_as_template(
     if not _db_exists(client, settings, env_db):
         raise NotFoundError(
             f"Database '{env_db}' for environment '{env_name}' not found."
+        )
+
+    # Never silently clobber an existing template: publishing over one is a
+    # deliberate re-baseline, so it must be requested explicitly (overwrite=True).
+    if not overwrite and (
+        os.path.exists(team.get_template_dir(template_name))
+        or _db_exists(client, settings, tpl_db)
+    ):
+        raise ConflictError(
+            f"Template '{template_name}' already exists. Choose a new name "
+            f"(or pass overwrite=True to re-baseline it)."
         )
 
     # Republishing an existing template replaces it (no net growth); only a

@@ -18,6 +18,9 @@ class LockManager:
     def __init__(self) -> None:
         self._env_locks: dict[str, threading.Lock] = {}
         self._team_locks: dict[str, threading.Lock] = {}
+        self._active_team_locks: set[str] = set()
+        self._env_lock_teams: dict[str, str] = {}
+        self._active_env_counts_by_team: dict[str, int] = {}
         self._system_lock = threading.Lock()
         self._map_lock = threading.Lock()  # protects dict access
 
@@ -29,20 +32,43 @@ class LockManager:
                 self._env_locks[env_name] = threading.Lock()
             return self._env_locks[env_name]
 
-    def acquire_env(self, env_name: str) -> None:
-        lock = self._get_env_lock(env_name)
-        if not lock.acquire(blocking=False):
-            raise BusyError(
-                f"Another operation on environment '{env_name}' is in progress. "
-                "Try again later."
-            )
+    def acquire_env(self, env_name: str, team_id: str | None = None) -> None:
+        with self._map_lock:
+            if team_id is not None and team_id in self._active_team_locks:
+                raise BusyError(
+                    f"Another team-level operation (team '{team_id}') is in progress. "
+                    "Try again later."
+                )
+            if env_name not in self._env_locks:
+                self._env_locks[env_name] = threading.Lock()
+            lock = self._env_locks[env_name]
+            if not lock.acquire(blocking=False):
+                raise BusyError(
+                    f"Another operation on environment '{env_name}' is in progress. "
+                    "Try again later."
+                )
+            if team_id is not None:
+                self._env_lock_teams[env_name] = team_id
+                self._active_env_counts_by_team[team_id] = (
+                    self._active_env_counts_by_team.get(team_id, 0) + 1
+                )
 
     def release_env(self, env_name: str) -> None:
-        lock = self._get_env_lock(env_name)
-        try:
-            lock.release()
-        except RuntimeError:
-            pass
+        with self._map_lock:
+            lock = self._env_locks.get(env_name)
+            if lock is None:
+                return
+            try:
+                lock.release()
+            except RuntimeError:
+                return
+            team_id = self._env_lock_teams.pop(env_name, None)
+            if team_id is not None:
+                count = self._active_env_counts_by_team.get(team_id, 0) - 1
+                if count > 0:
+                    self._active_env_counts_by_team[team_id] = count
+                else:
+                    self._active_env_counts_by_team.pop(team_id, None)
 
     # -- team locks --
 
@@ -53,19 +79,31 @@ class LockManager:
             return self._team_locks[team_id]
 
     def acquire_team(self, team_id: str) -> None:
-        lock = self._get_team_lock(team_id)
-        if not lock.acquire(blocking=False):
-            raise BusyError(
-                f"Another team-level operation (team '{team_id}') is in progress. "
-                "Try again later."
-            )
+        with self._map_lock:
+            if team_id not in self._team_locks:
+                self._team_locks[team_id] = threading.Lock()
+            lock = self._team_locks[team_id]
+            if (
+                team_id in self._active_team_locks
+                or self._active_env_counts_by_team.get(team_id, 0) > 0
+                or not lock.acquire(blocking=False)
+            ):
+                raise BusyError(
+                    f"Another team-level operation (team '{team_id}') is in progress. "
+                    "Try again later."
+                )
+            self._active_team_locks.add(team_id)
 
     def release_team(self, team_id: str) -> None:
-        lock = self._get_team_lock(team_id)
-        try:
-            lock.release()
-        except RuntimeError:
-            pass
+        with self._map_lock:
+            lock = self._team_locks.get(team_id)
+            if lock is None:
+                return
+            self._active_team_locks.discard(team_id)
+            try:
+                lock.release()
+            except RuntimeError:
+                pass
 
     # -- system lock --
 

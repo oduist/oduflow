@@ -51,6 +51,7 @@ from oduflow.docker_ops.stats import (
 )
 from oduflow.errors import BusyError, FlowError, NotFoundError
 from oduflow.locking import LockManager
+from oduflow.naming import validate_template_name
 from oduflow.settings import Settings, TeamSettings
 from oduflow.licensing import get_license_info, install_license_from_text
 
@@ -495,8 +496,12 @@ def _build_routes(
 
     def api_start(request: Request) -> JSONResponse:
         branch = request.path_params["branch"]
+        team = _get_ui_team(request)
         try:
-            team = _get_ui_team(request)
+            locks.acquire_env(branch, team.team_id)
+        except BusyError as e:
+            return _error_response(e)
+        try:
             result = env_ops.start_environment(get_settings(), branch, team)
             activity.mark_started(team, branch)
             return JSONResponse({"ok": True, "result": result})
@@ -505,12 +510,18 @@ def _build_routes(
         except Exception as e:
             logger.exception("Unexpected error in api_start")
             return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+        finally:
+            locks.release_env(branch)
 
     def api_stop(request: Request) -> JSONResponse:
         branch = request.path_params["branch"]
+        team = _get_ui_team(request)
+        try:
+            locks.acquire_env(branch, team.team_id)
+        except BusyError as e:
+            return _error_response(e)
         try:
             settings = get_settings()
-            team = _get_ui_team(request)
             result = env_ops.stop_environment(settings, team, branch)
             return JSONResponse({"ok": True, "result": result})
         except FlowError as e:
@@ -518,11 +529,17 @@ def _build_routes(
         except Exception as e:
             logger.exception("Unexpected error in api_stop")
             return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+        finally:
+            locks.release_env(branch)
 
     def api_restart(request: Request) -> JSONResponse:
         branch = request.path_params["branch"]
+        team = _get_ui_team(request)
         try:
-            team = _get_ui_team(request)
+            locks.acquire_env(branch, team.team_id)
+        except BusyError as e:
+            return _error_response(e)
+        try:
             result = env_ops.restart_environment(get_settings(), branch, team)
             activity.mark_started(team, branch)
             return JSONResponse({"ok": True, "result": result})
@@ -531,16 +548,18 @@ def _build_routes(
         except Exception as e:
             logger.exception("Unexpected error in api_restart")
             return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+        finally:
+            locks.release_env(branch)
 
     def api_sync(request: Request) -> JSONResponse:
         branch = request.path_params["branch"]
+        team = _get_ui_team(request)
         try:
-            locks.acquire_env(branch)
+            locks.acquire_env(branch, team.team_id)
         except BusyError as e:
             return _error_response(e)
         try:
             settings = get_settings()
-            team = _get_ui_team(request)
             activity.touch(team, branch)
             result = env_ops.pull_environment(settings, team, branch)
             return JSONResponse({"ok": True, "result": result})
@@ -554,13 +573,13 @@ def _build_routes(
 
     def api_delete(request: Request) -> JSONResponse:
         branch = request.path_params["branch"]
+        team = _get_ui_team(request)
         try:
-            locks.acquire_env(branch)
+            locks.acquire_env(branch, team.team_id)
         except BusyError as e:
             return _error_response(e)
         try:
             settings = get_settings()
-            team = _get_ui_team(request)
             env_ops.delete_environment(settings, team, branch)
             return JSONResponse({"ok": True, "result": {"deleted": branch}})
         except FlowError as e:
@@ -573,6 +592,7 @@ def _build_routes(
 
     async def api_update(request: Request) -> JSONResponse:
         branch = request.path_params["branch"]
+        team = _get_ui_team(request)
         try:
             body = await request.json()
         except Exception:
@@ -589,12 +609,11 @@ def _build_routes(
                 if "=" in item
             )
         try:
-            locks.acquire_env(branch)
+            locks.acquire_env(branch, team.team_id)
         except BusyError as e:
             return _error_response(e)
         try:
             settings = get_settings()
-            team = _get_ui_team(request)
             activity.touch(team, branch)
             result = env_ops.update_environment(
                 settings,
@@ -614,8 +633,9 @@ def _build_routes(
 
     def api_recreate(request: Request) -> JSONResponse:
         branch = request.path_params["branch"]
+        team = _get_ui_team(request)
         try:
-            locks.acquire_env(branch)
+            locks.acquire_env(branch, team.team_id)
         except BusyError as e:
             return _error_response(e)
         try:
@@ -623,7 +643,6 @@ def _build_routes(
             from oduflow.docker_ops.client import get_client as _get_client
 
             settings = get_settings()
-            team = _get_ui_team(request)
             activity.touch(team, branch)
             client = _get_client()
             odoo_container_name = env_ops.get_resource_name(
@@ -671,6 +690,60 @@ def _build_routes(
         finally:
             locks.release_env(branch)
 
+    async def api_save_as_template(request: Request) -> JSONResponse:
+        branch = request.path_params["branch"]
+        team = _get_ui_team(request)
+        try:
+            body = await request.json()
+        except ValueError:
+            return JSONResponse(
+                {"ok": False, "error": "Invalid JSON body"}, status_code=400
+            )
+        template_name = str((body or {}).get("template_name") or "").strip()
+        if not template_name:
+            return JSONResponse(
+                {"ok": False, "error": "template_name is required"}, status_code=400
+            )
+        try:
+            validate_template_name(template_name)
+        except ValueError as e:
+            return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
+        # Team lock (not just the env): publishing can remount other envs' overlay
+        # filestores, so it must serialize against the whole team like the MCP tool.
+        try:
+            locks.acquire_team(team.team_id)
+        except BusyError as e:
+            return _error_response(e)
+        try:
+            activity.touch(team, branch)
+            # No overwrite from the UI: publishing over an existing template is a
+            # deliberate re-baseline reserved for the MCP tool, so a duplicate name
+            # here raises ConflictError (surfaced to the client by _error_response).
+            result = system_ops.publish_env_as_template(
+                get_settings(), team, branch, template_name=template_name
+            )
+            return JSONResponse(
+                {
+                    "ok": True,
+                    "result": {
+                        "status": result.get("status"),
+                        "env_name": result.get("env_name"),
+                        "template_db": result.get("template_db"),
+                        "affected_envs": result.get("affected_envs", []),
+                        "remount_failures": result.get("remount_failures", []),
+                    },
+                }
+            )
+        except ValueError as e:  # invalid template name
+            return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
+        except FlowError as e:
+            return _error_response(e)
+        except Exception as e:
+            logger.exception("Unexpected error in api_save_as_template")
+            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+        finally:
+            locks.release_team(team.team_id)
+
     async def api_create(request: Request) -> JSONResponse:
         import json as _json
 
@@ -710,11 +783,12 @@ def _build_routes(
         except ValueError as e:
             return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
 
+        team = _get_ui_team(request)
         # Acquire the env lock in its own try so a BusyError returns WITHOUT
         # entering the try/finally below — otherwise the finally would release a
         # lock that another in-flight request holds (issue #42).
         try:
-            locks.acquire_env(env_name)
+            locks.acquire_env(env_name, team.team_id)
         except BusyError as e:
             return _error_response(e)
         try:
@@ -726,7 +800,6 @@ def _build_routes(
 
             # Load metadata from template
             settings = get_settings()
-            team = _get_ui_team(request)
             extra_dict = None
             if isinstance(extra_addons_raw, dict):
                 extra_dict = extra_addons_raw or None
@@ -3076,6 +3149,11 @@ def _build_routes(
         Route("/api/environments/{branch:path}/update", api_update, methods=["POST"]),
         Route(
             "/api/environments/{branch:path}/recreate", api_recreate, methods=["POST"]
+        ),
+        Route(
+            "/api/environments/{branch:path}/save-as-template",
+            api_save_as_template,
+            methods=["POST"],
         ),
         Route("/api/environments/{branch:path}/delete", api_delete, methods=["POST"]),
         Route("/api/services", api_services, methods=["GET"]),
