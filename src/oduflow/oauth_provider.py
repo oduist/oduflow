@@ -151,8 +151,7 @@ class _FlexibleClient(OAuthClientInformationFull):
     """Client info that accepts the varied callback URLs MCP clients use.
 
     Preregistered team clients have ``client_id = team_<id>`` (non-secret) and
-    ``client_secret = auth_token``; per-env clients keep ``client_id ==
-    client_secret == env_token``. The secret-bearing /token exchange proves
+    ``client_secret = auth_token``. The secret-bearing /token exchange proves
     identity, so we let MCP clients (claude.ai over https, IDEs over loopback or
     a custom scheme) bring their own callback — but we still reject callbacks that
     are never legitimate: dangerous schemes (javascript:, data:, …) and cleartext
@@ -354,21 +353,7 @@ class OduflowOAuthProvider(InMemoryOAuthProvider):
         return (team_id, env_name)
 
     async def get_client(self, client_id: str) -> OAuthClientInformationFull | None:
-        client = await super().get_client(client_id)
-        if client is not None:
-            return client
-        # A per-environment token acts as its own OAuth client.
-        if await self._env_identity(client_id) is not None:
-            return _FlexibleClient(
-                client_id=client_id,
-                client_secret=client_id,
-                redirect_uris=[AnyUrl("https://claude.ai/")],
-                grant_types=["authorization_code", "refresh_token"],
-                response_types=["code"],
-                token_endpoint_auth_method="client_secret_post",
-                scope=None,
-            )
-        return None
+        return await super().get_client(client_id)
 
     async def load_access_token(  # type: ignore[override]
         self, token: str
@@ -403,16 +388,14 @@ class OduflowOAuthProvider(InMemoryOAuthProvider):
         self.auth_codes.pop(authorization_code.code, None)
 
         cid = client.client_id
-        if cid is None or (
-            cid not in self._token_to_team and await self._env_identity(cid) is None
-        ):
+        if cid is None or cid not in self._token_to_team:
             from mcp.server.auth.provider import TokenError
 
             raise TokenError("invalid_client", "Unknown client.")
 
         # The issued access token is the client SECRET (the team auth_token, or
-        # the env token for a per-env client) — never the public client_id, which
-        # would not authenticate as a Bearer token downstream.
+        # never the public client_id, which would not authenticate as a Bearer
+        # token downstream.
         token = client.client_secret or cid
         scope = (
             " ".join(authorization_code.scopes) if authorization_code.scopes else None
@@ -431,14 +414,12 @@ class OduflowOAuthProvider(InMemoryOAuthProvider):
         refresh_token: str,
     ) -> RefreshToken | None:
         cid = client.client_id
-        # The refresh token we issue equals the client secret (team auth_token /
-        # env token), not the public client_id.
+        # The refresh token we issue equals the client secret (team auth_token),
+        # not the public client_id.
         if (
             cid is not None
             and refresh_token == client.client_secret
-            and (
-                cid in self._token_to_team or await self._env_identity(cid) is not None
-            )
+            and cid in self._token_to_team
         ):
             return RefreshToken(
                 token=refresh_token,

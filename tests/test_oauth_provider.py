@@ -190,7 +190,7 @@ class TestOduflowOAuthProvider:
         with pytest.raises(InvalidRedirectUriError):
             client.validate_redirect_uri(AnyUrl("http://evil.example/cb"))
 
-    def test_env_token_acts_as_client(self, monkeypatch):
+    def test_env_token_is_bearer_only(self, monkeypatch):
         from oduflow import oauth_provider as op
 
         mapping = {"env-secret": ("2", "feature/x"), "tok-a": ("1", None)}
@@ -201,11 +201,10 @@ class TestOduflowOAuthProvider:
         )
         provider = OduflowOAuthProvider(_settings())
 
-        # A per-env token resolves as its own OAuth client.
-        client = _run(provider.get_client("env-secret"))
-        assert client is not None
-        assert client.client_id == "env-secret"
-        assert client.client_secret == "env-secret"
+        # A per-env token must not be accepted as an OAuth client_id because it
+        # would put the secret in the /authorize URL. Scoped endpoints are
+        # Bearer-only.
+        assert _run(provider.get_client("env-secret")) is None
 
         # Its access token carries the team_id and an env-binding scope.
         access = _run(provider.verify_token("env-secret"))

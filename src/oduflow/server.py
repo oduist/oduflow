@@ -4054,8 +4054,9 @@ def _build_auth(settings: Settings):  # type: ignore[no-untyped-def]
       /.well-known/oauth-authorization-server. In traefik mode the issuer is
       derived per-request from the team's own (TLS-terminated) hostname, so no
       central oauth_base_url is needed; each team's OAuth flow runs on its own
-      host. Each team's auth_token doubles as client_id, client_secret, and the
-      issued access token, so Bearer-token callers keep working unchanged.
+      host. Each team's client_id is public (team_<id>), while auth_token is the
+      client_secret and issued access token, so Bearer-token callers keep working
+      unchanged.
       Suitable for claude.ai and other MCP clients that require an OAuth flow.
     - Static Bearer tokens — port mode with no oauth_base_url: auth_token is
       consumed directly from the Authorization header. Suitable for curl, CLI
@@ -4064,8 +4065,8 @@ def _build_auth(settings: Settings):  # type: ignore[no-untyped-def]
     has_team_token = any(t.auth_token for t in settings.teams.values())
 
     if settings.oauth_enabled:
-        # oauth_enabled already implies a team auth_token (see Settings), which
-        # doubles as the OAuth client credential.
+        # oauth_enabled already implies a team auth_token (see Settings), used as
+        # the OAuth client_secret and issued access token.
         from oduflow.oauth_provider import OduflowOAuthProvider
 
         return OduflowOAuthProvider(settings)
