@@ -6,6 +6,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+from typing import Any
 
 from oduflow.docker_ops.client import get_client
 from oduflow.errors import (
@@ -36,7 +37,7 @@ _AUTH_ERROR_KEYWORDS = (
 
 def clone_extra_repo(
     team: TeamSettings, name: str, repo_url: str, git_user: str = ""
-) -> dict:
+) -> dict[str, Any]:
     if not _NAME_RE.match(name):
         raise ValueError(
             f"Invalid repo name '{name}': only [a-zA-Z0-9_-] allowed, "
@@ -113,7 +114,7 @@ def clone_extra_repo(
 
 def create_local_repo(
     team: TeamSettings, name: str, source_dir: str, branch: str
-) -> dict:
+) -> dict[str, Any]:
     """Create an extra-addons repo from local files, with no remote origin.
 
     Used by the Odoo.sh import for addons that cannot be cloned (Enterprise,
@@ -217,7 +218,7 @@ def is_local_repo(team: TeamSettings, name: str) -> bool:
     return os.path.exists(os.path.join(team.shared_repos_dir, name, ".local"))
 
 
-def list_extra_repos(team: TeamSettings) -> list[dict]:
+def list_extra_repos(team: TeamSettings) -> list[dict[str, Any]]:
     repos_dir = team.shared_repos_dir
     if not os.path.isdir(repos_dir):
         return []
@@ -271,7 +272,7 @@ def is_extra_repo_protected(team: TeamSettings, name: str) -> bool:
     return os.path.exists(os.path.join(path, ".protected"))
 
 
-def protect_extra_repo(team: TeamSettings, name: str) -> dict:
+def protect_extra_repo(team: TeamSettings, name: str) -> dict[str, Any]:
     path = os.path.join(team.shared_repos_dir, name)
     if not os.path.isdir(path):
         raise NotFoundError(f"Extra repo '{name}' not found.")
@@ -281,7 +282,7 @@ def protect_extra_repo(team: TeamSettings, name: str) -> dict:
     return {"name": name, "protected": True}
 
 
-def unprotect_extra_repo(team: TeamSettings, name: str) -> dict:
+def unprotect_extra_repo(team: TeamSettings, name: str) -> dict[str, Any]:
     path = os.path.join(team.shared_repos_dir, name)
     if not os.path.isdir(path):
         raise NotFoundError(f"Extra repo '{name}' not found.")
@@ -292,7 +293,9 @@ def unprotect_extra_repo(team: TeamSettings, name: str) -> dict:
     return {"name": name, "protected": False}
 
 
-def delete_extra_repo(settings: Settings, team: TeamSettings, name: str) -> dict:
+def delete_extra_repo(
+    settings: Settings, team: TeamSettings, name: str
+) -> dict[str, Any]:
     path = os.path.join(team.shared_repos_dir, name)
     if not os.path.exists(path):
         raise NotFoundError(f"Extra repo '{name}' not found.")
@@ -361,7 +364,9 @@ def _get_branch_refs(repo_path: str) -> dict[str, str]:
     return refs
 
 
-def fetch_extra_repo(team: TeamSettings, name: str, branch: str | None = None) -> dict:
+def fetch_extra_repo(
+    team: TeamSettings, name: str, branch: str | None = None
+) -> dict[str, Any]:
     """Fetch latest changes and return a summary of what changed.
 
     When *branch* is given, only that one branch is fetched (a targeted
@@ -467,7 +472,7 @@ def fetch_extra_repo(team: TeamSettings, name: str, branch: str | None = None) -
 
     new_branches = sorted(set(refs_after) - set(refs_before))
     deleted_branches = sorted(set(refs_before) - set(refs_after))
-    updated_branches: list[dict] = []
+    updated_branches: list[dict[str, Any]] = []
     for branch_name in sorted(set(refs_before) & set(refs_after)):
         old_sha = refs_before[branch_name]
         new_sha = refs_after[branch_name]
@@ -657,7 +662,10 @@ def generate_odoo_conf(
     main_addons_path: str = "/mnt/extra-addons",
 ) -> str:
     parser = configparser.RawConfigParser()
-    parser.optionxform = str
+    # Preserve option case (Odoo config keys are case-sensitive); the default
+    # optionxform lowercases them. Assigning to this method is the documented
+    # configparser idiom but trips mypy's method-assignment check.
+    parser.optionxform = str  # type: ignore[method-assign,assignment]
     parser.read(base_conf_path)
 
     existing = parser.get("options", "addons_path", fallback="/mnt/extra-addons")

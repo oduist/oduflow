@@ -275,7 +275,7 @@ def create_service(
         "oduflow.created_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
     }
 
-    run_kwargs: dict = {
+    run_kwargs: dict[str, Any] = {
         "image": image,
         "name": container_name,
         "detach": True,
@@ -458,8 +458,8 @@ def _traefik_label_by_suffix(labels: dict[str, str], suffix: str) -> str:
 
 
 def _describe_service_container(
-    settings: Settings, team: TeamSettings, container
-) -> dict:
+    settings: Settings, team: TeamSettings, container: Any
+) -> dict[str, Any]:
     """Extract a normalized state dict for a managed service container.
 
     Used by both ``list_services`` and ``get_service_info``.
@@ -573,7 +573,7 @@ def _describe_service_container(
     }
 
 
-def list_services(settings: Settings, team: TeamSettings) -> list[dict]:
+def list_services(settings: Settings, team: TeamSettings) -> list[dict[str, Any]]:
     client = get_client()
     containers = client.containers.list(
         all=True,
@@ -594,7 +594,9 @@ def list_services(settings: Settings, team: TeamSettings) -> list[dict]:
     return result
 
 
-def get_service_info(settings: Settings, team: TeamSettings, name: str) -> dict:
+def get_service_info(
+    settings: Settings, team: TeamSettings, name: str
+) -> dict[str, Any]:
     """Return full state and configuration of a single managed service.
 
     Combines live container state (image, digest, ports, volumes, env, caps,
@@ -681,6 +683,10 @@ def update_service(
     except Exception:
         pass
 
+    # Declared once so the preset and legacy-fallback branches agree on a type.
+    port: int | None
+    hostname: str | None
+    env_vars: dict[str, str] | None
     if preset:
         port = preset.get("port") or None
         hostname = preset.get("hostname") or None
@@ -693,7 +699,7 @@ def update_service(
     else:
         # Legacy fallback: extract from running container
         raw_env = container.attrs.get("Config", {}).get("Env", [])
-        env_vars: dict[str, str] = {}
+        env_vars = {}
         for entry in raw_env:
             if "=" in entry:
                 key, value = entry.split("=", 1)
@@ -707,8 +713,8 @@ def update_service(
         cap_add = list(host_config.get("CapAdd") or []) or None
         privileged = bool(host_config.get("Privileged", False))
 
-        port: int | None = None
-        hostname: str | None = None
+        port = None
+        hostname = None
 
         if settings.routing_mode == "traefik":
             rule_value = _traefik_label_by_suffix(container.labels, ".rule")
@@ -917,7 +923,8 @@ def get_service_logs(
         raise NotFoundError(f"Service '{name}' not found")
 
     output = container.logs(tail=lines, timestamps=True)
-    return output.decode("utf-8")
+    text: str = output.decode("utf-8")
+    return text
 
 
 def run_command_in_service(

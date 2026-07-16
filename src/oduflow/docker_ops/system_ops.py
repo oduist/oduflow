@@ -1,4 +1,5 @@
 from __future__ import annotations
+from typing import Any
 
 import contextlib
 import gzip
@@ -92,8 +93,8 @@ def _update_template_sizes(
     team: TeamSettings,
     settings: Settings,
     template_name: str,
-    metadata: dict | None = None,
-) -> dict:
+    metadata: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Compute filestore/dump sizes and persist them into template metadata."""
     from oduflow.docker_ops.env_ops import _dir_size_mb
 
@@ -118,7 +119,7 @@ def _update_template_sizes(
     return metadata
 
 
-def _normalize_extra_addons(raw_addons) -> dict[str, str]:
+def _normalize_extra_addons(raw_addons: object) -> dict[str, str]:
     """Convert old list format or new dict format to {name: branch} dict."""
     if isinstance(raw_addons, dict):
         return raw_addons
@@ -246,7 +247,7 @@ def _is_archive_source(source: str) -> bool:
     return source.lower().endswith(_ARCHIVE_SUFFIXES)
 
 
-def _zip_member_is_symlink(info) -> bool:
+def _zip_member_is_symlink(info: Any) -> bool:
     return stat.S_IFMT(info.external_attr >> 16) == stat.S_IFLNK
 
 
@@ -442,7 +443,7 @@ def _resolve_instance_conf(name: str, data_dir: str) -> pathlib.Path:
 
 def _write_traefik_dynamic_config(settings: Settings, config_path: str) -> None:
     """Generate traefik dynamic config that routes each team's hostname to oduflow."""
-    routers: dict = {}
+    routers: dict[str, Any] = {}
     for team_id, team in settings.teams.items():
         if not team.hostname:
             continue
@@ -1141,7 +1142,7 @@ def reload_template(
     team: TeamSettings,
     template_name: str,
     dump_path: str | None = None,
-) -> dict[str, str]:
+) -> dict[str, Any]:
     client = get_client()
     tpl_db = get_template_db_name(template_name, team.team_id)
     resolved_dump = dump_path or team.get_template_sql_path(template_name)
@@ -1533,7 +1534,7 @@ def init_template(
     logger.info("Template generation complete, loading into template DB")
     result = reload_template(settings, team, template_name=template_name)
 
-    metadata = {"odoo_image": odoo_image}
+    metadata: dict[str, Any] = {"odoo_image": odoo_image}
     from oduflow.docker_ops.env_ops import _dir_size_mb
 
     fs_size = _dir_size_mb(template_filestore_path)
@@ -1553,7 +1554,7 @@ def init_template(
     return result
 
 
-def _source_env_metadata(settings: Settings, labels: dict) -> dict:
+def _source_env_metadata(settings: Settings, labels: dict[str, Any]) -> dict[str, Any]:
     """Template metadata describing the source environment's code origin.
 
     A live-mounted environment (``oduflow.local_path`` label) has no repo URL;
@@ -2389,7 +2390,7 @@ def extract_addon_dir(tar_path: str, addons_dir: str, name: str) -> int:
     tmp_root = os.path.join(addons_dir, f".incoming_{name}")
     if os.path.exists(tmp_root):
         shutil.rmtree(tmp_root)
-    cleanup = tmp_root
+    cleanup: str | None = tmp_root
     try:
         written = extract_filestore_tar(tar_path, tmp_root)
         entries = [e for e in os.listdir(tmp_root) if not e.startswith(".")]
@@ -2599,7 +2600,7 @@ def finalize_imported_template(
 
 def cleanup_orphans(
     settings: Settings, team: TeamSettings, dry_run: bool = True
-) -> dict:
+) -> dict[str, Any]:
     """Find and remove orphaned databases, workspaces, and port registry entries.
 
     An orphan is a resource whose branch has no corresponding Docker container.
@@ -2922,7 +2923,7 @@ def rename_template(
     }
 
 
-def list_templates(settings: Settings, team: TeamSettings) -> list[dict]:
+def list_templates(settings: Settings, team: TeamSettings) -> list[dict[str, Any]]:
     client = get_client()
     templates = team.list_templates()
     result = []

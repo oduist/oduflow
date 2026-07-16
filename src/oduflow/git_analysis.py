@@ -1,4 +1,5 @@
 from __future__ import annotations
+from typing import Any
 
 import ast
 import logging
@@ -36,9 +37,10 @@ _FIELD_RE = re.compile(r"^\s*\w+\s*=\s*fields\..*", re.MULTILINE)
 _VIEW_TAG_RE = re.compile(r"<(tree|list|form)\b([^>]*)/?>")
 
 
-def _parse_manifest(path: str) -> dict:
+def _parse_manifest(path: str) -> dict[str, Any]:
     with open(path, "r") as f:
-        return ast.literal_eval(f.read())
+        manifest: dict[str, Any] = ast.literal_eval(f.read())
+        return manifest
 
 
 def _get_module_name(file_path: str, repo_path: str = "") -> str | None:
@@ -167,7 +169,7 @@ def _is_dep_file(file_path: str) -> bool:
 
 def classify_changes(
     changed_files: list[str], repo_path: str, base_ref: str = "HEAD~1"
-) -> dict:
+) -> dict[str, Any]:
     """
     Classify changed files and determine required Odoo actions.
 
@@ -394,7 +396,7 @@ def _check_manifest_changes(
     return None
 
 
-def shallow_classify(changed_files: list[str], repo_path: str = "") -> dict:
+def shallow_classify(changed_files: list[str], repo_path: str = "") -> dict[str, Any]:
     """Path-only classification used when no git *base_ref* is available
     (a non-git live-mount).
 
@@ -478,7 +480,9 @@ def shallow_classify(changed_files: list[str], repo_path: str = "") -> dict:
     }
 
 
-def recommend(changed_files: list[str], repo_path: str, base_ref: str | None) -> dict:
+def recommend(
+    changed_files: list[str], repo_path: str, base_ref: str | None
+) -> dict[str, Any]:
     """Recommended Odoo action for *changed_files*.
 
     Full :func:`classify_changes` (git-based deep checks) when a *base_ref* is
@@ -502,7 +506,7 @@ _DETAIL_LIST_KEYS = (
 )
 
 
-def merge_recommendations(recs: Iterable[dict]) -> dict:
+def merge_recommendations(recs: Iterable[dict[str, Any]]) -> dict[str, Any]:
     """Combine several :func:`recommend` results (one per repo/worktree).
 
     The main repo and each extra-addon worktree are classified against their own
@@ -521,7 +525,7 @@ def merge_recommendations(recs: Iterable[dict]) -> dict:
     install = sorted({m for r in recs for m in r.get("modules_to_install", []) or []})
     upgrade = sorted({m for r in recs for m in r.get("modules_to_upgrade", []) or []})
 
-    details: dict = {}
+    details: dict[str, Any] = {}
     for key in _DETAIL_LIST_KEYS:
         merged: list[str] = []
         for r in recs:
@@ -544,7 +548,7 @@ def merge_recommendations(recs: Iterable[dict]) -> dict:
 
 
 def guardrail_warnings(
-    recommended: dict,
+    recommended: dict[str, Any],
     to_install: list[str],
     to_upgrade: list[str],
     do_restart: bool,

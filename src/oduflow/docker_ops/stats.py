@@ -18,7 +18,7 @@ from oduflow.settings import Settings, TeamSettings
 logger = logging.getLogger("oduflow")
 
 
-def _calc_cpu_percent(stats: dict) -> float:
+def _calc_cpu_percent(stats: dict[str, Any]) -> float:
     """Calculate CPU usage % from a single stats snapshot."""
     cpu = stats.get("cpu_stats", {})
     precpu = stats.get("precpu_stats", {})
@@ -34,10 +34,11 @@ def _calc_cpu_percent(stats: dict) -> float:
     num_cpus = cpu.get("online_cpus") or len(
         cpu.get("cpu_usage", {}).get("percpu_usage", []) or [1]
     )
-    return round((cpu_delta / system_delta) * num_cpus * 100.0, 1)
+    percent: float = round((cpu_delta / system_delta) * num_cpus * 100.0, 1)
+    return percent
 
 
-def _get_one_container_stats(container) -> dict[str, Any] | None:
+def _get_one_container_stats(container: Any) -> dict[str, Any] | None:
     """Get stats for a single container. Returns None on error."""
     try:
         if container.status != "running":

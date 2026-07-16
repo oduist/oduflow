@@ -4,10 +4,12 @@ import argparse
 import functools
 import logging
 import os
+import pathlib
 import re
 import sys
 import warnings
-from typing import Any, cast
+from collections.abc import Awaitable, Callable
+from typing import Any, ParamSpec, TypeVar, cast
 
 # Suppress a third-party deprecation warning emitted at import time by fastmcp's
 # JWT auth provider (it imports the deprecated authlib.jose module). This keeps
@@ -182,13 +184,16 @@ def _maybe_cache(output: str, header: str, source_tool: str, source_args: str) -
 
 # -- Decorators --
 
+P = ParamSpec("P")
+R = TypeVar("R")
 
-def handle_errors(fn):
+
+def handle_errors(fn: Callable[P, R]) -> Callable[P, Awaitable[R]]:
     @functools.wraps(fn)
-    async def wrapper(*args, **kwargs):
+    async def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
         import anyio
 
-        def _run():
+        def _run() -> R:
             try:
                 result = fn(*args, **kwargs)
                 preview = (
@@ -214,15 +219,19 @@ def handle_errors(fn):
     return wrapper
 
 
-def with_env_lock(fn):
+def with_env_lock(fn: Callable[P, R]) -> Callable[P, R]:
     """Acquire a per-environment lock before executing the tool function."""
 
     @functools.wraps(fn)
-    def wrapper(*args, **kwargs):
-        env_name = kwargs.get("env_name") or (args[0] if args else None)
-        if not env_name:
+    def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
+        # Under ParamSpec, values pulled from *args/**kwargs are typed `object`;
+        # narrow them back to the concrete types these helpers expect.
+        raw_env_name = kwargs.get("env_name") or (args[0] if args else None)
+        if not raw_env_name:
             raise ToolError("env_name is required")
-        team = _resolve_team(kwargs.get("ctx"))
+        env_name = cast(str, raw_env_name)
+        ctx = cast("Context | None", kwargs.get("ctx"))
+        team = _resolve_team(ctx)
         _locks.acquire_env(env_name, team.team_id)
         try:
             try:
@@ -251,12 +260,12 @@ def _wake_for_work(
     return ""
 
 
-def with_team_lock(fn):
+def with_team_lock(fn: Callable[P, R]) -> Callable[P, R]:
     """Acquire a per-team lock before executing the tool function."""
 
     @functools.wraps(fn)
-    def wrapper(*args, **kwargs):
-        ctx = kwargs.get("ctx")
+    def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
+        ctx = cast("Context | None", kwargs.get("ctx"))
         team = _resolve_team(ctx)
         _locks.acquire_team(team.team_id)
         try:
@@ -275,7 +284,7 @@ def with_team_lock(fn):
 @mcp.tool()
 @handle_errors
 @with_team_lock
-def setup_repo_auth(repo_url: str, ctx: Context = None) -> str:
+def setup_repo_auth(repo_url: str, ctx: Context | None = None) -> str:
     """
     Cache git credentials for a private repository.
 
@@ -305,7 +314,7 @@ def setup_repo_auth(repo_url: str, ctx: Context = None) -> str:
 @mcp.tool()
 @handle_errors
 @with_team_lock
-def add_extra_repo(name: str, repo_url: str, ctx: Context = None) -> str:
+def add_extra_repo(name: str, repo_url: str, ctx: Context | None = None) -> str:
     """
     Clone an extra addons repository for use with environments.
 
@@ -329,7 +338,7 @@ def add_extra_repo(name: str, repo_url: str, ctx: Context = None) -> str:
 
 @mcp.tool()
 @handle_errors
-def list_extra_repos(ctx: Context = None) -> str:
+def list_extra_repos(ctx: Context | None = None) -> str:
     """List all cloned extra addons repositories."""
     from oduflow.extra_addons import list_extra_repos as _list
 
@@ -347,7 +356,7 @@ def list_extra_repos(ctx: Context = None) -> str:
 @mcp.tool()
 @handle_errors
 @with_team_lock
-def delete_extra_repo(name: str, ctx: Context = None) -> str:
+def delete_extra_repo(name: str, ctx: Context | None = None) -> str:
     """
     Delete a cloned extra addons repository.
 
@@ -365,7 +374,7 @@ def delete_extra_repo(name: str, ctx: Context = None) -> str:
 @mcp.tool()
 @handle_errors
 @with_team_lock
-def update_extra_repo(name: str, ctx: Context = None) -> str:
+def update_extra_repo(name: str, ctx: Context | None = None) -> str:
     """
     Pull latest changes from the remote for an extra addons repository.
 
@@ -381,7 +390,7 @@ def update_extra_repo(name: str, ctx: Context = None) -> str:
     return _format_fetch_summary(summary)
 
 
-def _format_fetch_summary(summary: dict) -> str:
+def _format_fetch_summary(summary: dict[str, Any]) -> str:
     name = summary["name"]
     if summary.get("local"):
         return f"Extra repo '{name}' is local (no remote) — nothing to pull."
@@ -431,7 +440,7 @@ def create_environment(
     auto_install_modules: str = "",
     env_vars: str = "",
     local_path: str = "",
-    ctx: Context = None,
+    ctx: Context | None = None,
 ) -> str:
     """
     Provision a new ephemeral Odoo environment.
@@ -606,7 +615,7 @@ def create_environment(
             lines.append(
                 "Env vars: " + ", ".join(f"{k}={v}" for k, v in parsed_env.items())
             )
-        setup_logs = result.get("setup_logs", [])
+        setup_logs: list[str] = result.get("setup_logs", [])
         if setup_logs:
             lines.append("\n--- Setup Log ---")
             lines.extend(setup_logs)
@@ -631,7 +640,7 @@ def save_as_template(
     template_name: str,
     reset_env_changes: bool = False,
     overwrite: bool = False,
-    ctx: Context = None,
+    ctx: Context | None = None,
 ) -> str:
     """
     Save an environment as a template (DB + filestore).
@@ -692,7 +701,7 @@ def save_as_template(
 
 @mcp.tool()
 @handle_errors
-def list_templates(ctx: Context = None) -> str:
+def list_templates(ctx: Context | None = None) -> str:
     """List available template profiles (database + filestore snapshots)."""
     settings = _get_settings()
     team = _resolve_team(ctx)
@@ -725,7 +734,7 @@ def import_template_from_odoo(
     db_name: str = "",
     template_name: str = "default",
     without_filestore: bool = False,
-    ctx: Context = None,
+    ctx: Context | None = None,
 ) -> str:
     """
     Import a template from a running Odoo instance via its database manager API.
@@ -783,7 +792,7 @@ def import_template_from_odoo(
 def refresh_template(
     template_name: str,
     reset_env_changes: bool = False,
-    ctx: Context = None,
+    ctx: Context | None = None,
 ) -> str:
     """
     Re-apply a template's current filestore to live overlay environments.
@@ -834,7 +843,7 @@ def attach_filestore(
     source: str,
     reset_env_changes: bool = False,
     strip_prefix: str = "auto",
-    ctx: Context = None,
+    ctx: Context | None = None,
 ) -> str:
     """
     Attach or replace a template filestore from a directory, rsync/ssh source, or archive.
@@ -883,7 +892,7 @@ def attach_filestore(
 
 @mcp.tool()
 @handle_errors
-def get_agent_instructions(ctx: Context = None) -> str:
+def get_agent_instructions(ctx: Context | None = None) -> str:
     """Get instructions for AI coding agents on how to use Oduflow MCP tools."""
     import pathlib
 
@@ -938,7 +947,7 @@ def get_agent_instructions(ctx: Context = None) -> str:
 
 @mcp.tool()
 @handle_errors
-def get_odoo_development_guide(version: str, ctx: Context = None) -> str:
+def get_odoo_development_guide(version: str, ctx: Context | None = None) -> str:
     """
     Get Odoo development standards and constraints guide for a specific Odoo version.
 
@@ -983,7 +992,7 @@ def get_odoo_development_guide(version: str, ctx: Context = None) -> str:
 @mcp.tool()
 @handle_errors
 @with_team_lock
-def delete_template(template_name: str, ctx: Context = None) -> str:
+def delete_template(template_name: str, ctx: Context | None = None) -> str:
     """
     DANGEROUS: Delete a template profile — permanently removes its template database and files from disk.
 
@@ -1006,7 +1015,9 @@ def delete_template(template_name: str, ctx: Context = None) -> str:
 @mcp.tool()
 @handle_errors
 @with_team_lock
-def rename_template(template_name: str, new_name: str, ctx: Context = None) -> str:
+def rename_template(
+    template_name: str, new_name: str, ctx: Context | None = None
+) -> str:
     """
     Rename a template profile — renames its directory and PostgreSQL template DB.
 
@@ -1035,7 +1046,7 @@ def rename_template(template_name: str, new_name: str, ctx: Context = None) -> s
 @mcp.tool()
 @handle_errors
 @with_env_lock
-def delete_environment(env_name: str, ctx: Context = None) -> str:
+def delete_environment(env_name: str, ctx: Context | None = None) -> str:
     """
     Stop and remove all resources associated with an Odoo environment.
 
@@ -1053,7 +1064,7 @@ def delete_environment(env_name: str, ctx: Context = None) -> str:
 
 @mcp.tool()
 @handle_errors
-def list_environments(ctx: Context = None) -> str:
+def list_environments(ctx: Context | None = None) -> str:
     """
     List all managed Odoo environments.
     """
@@ -1090,7 +1101,7 @@ def list_environments(ctx: Context = None) -> str:
 @mcp.tool()
 @handle_errors
 @with_env_lock
-def run_odoo_tests(env_name: str, modules: str, ctx: Context = None) -> str:
+def run_odoo_tests(env_name: str, modules: str, ctx: Context | None = None) -> str:
     """
     Run Odoo tests for specific modules in an environment.
 
@@ -1119,7 +1130,7 @@ def get_environment_logs(
     n_lines: int = 100,
     grep: str = "",
     level: str = "",
-    ctx: Context = None,
+    ctx: Context | None = None,
 ) -> str:
     """
     Get the last N lines of logs from the Odoo container for a specific environment.
@@ -1144,7 +1155,9 @@ def get_environment_logs(
 @mcp.tool()
 @handle_errors
 @with_env_lock
-def restart_environment(env_name: str, wait: bool = True, ctx: Context = None) -> str:
+def restart_environment(
+    env_name: str, wait: bool = True, ctx: Context | None = None
+) -> str:
     """
     Restart the Odoo container for a specific environment.
 
@@ -1179,7 +1192,7 @@ def update_environment(
     env_name: str,
     env_vars: str = "",
     odoo_image: str = "",
-    ctx: Context = None,
+    ctx: Context | None = None,
 ) -> str:
     """
     Re-create the Odoo container for an environment without losing the database
@@ -1235,7 +1248,7 @@ def update_environment(
 
 @mcp.tool()
 @handle_errors
-def get_environment_info(env_name: str, ctx: Context = None) -> str:
+def get_environment_info(env_name: str, ctx: Context | None = None) -> str:
     """
     Get comprehensive information about an environment.
 
@@ -1287,7 +1300,7 @@ def get_environment_info(env_name: str, ctx: Context = None) -> str:
 @mcp.tool()
 @handle_errors
 @with_env_lock
-def stop_environment(env_name: str, ctx: Context = None) -> str:
+def stop_environment(env_name: str, ctx: Context | None = None) -> str:
     """
     Stop the Odoo container for a specific environment.
 
@@ -1307,7 +1320,9 @@ def stop_environment(env_name: str, ctx: Context = None) -> str:
 @mcp.tool()
 @handle_errors
 @with_env_lock
-def start_environment(env_name: str, wait: bool = True, ctx: Context = None) -> str:
+def start_environment(
+    env_name: str, wait: bool = True, ctx: Context | None = None
+) -> str:
     """
     Start all containers for a specific environment.
 
@@ -1343,7 +1358,7 @@ def pull_and_apply(
     upgrade: str = "",
     restart: bool = False,
     strict: bool = False,
-    ctx: Context = None,
+    ctx: Context | None = None,
 ) -> str:
     """
     Sync the latest code into an environment and apply the right Odoo action.
@@ -1413,7 +1428,7 @@ def pull_and_apply(
         return "\n".join(lines)
 
     if action == "none":
-        return woke_note + result["message"]
+        return cast(str, woke_note + result["message"])
 
     header_lines = [woke_note + result["message"]]
     if result.get("modules_installed"):
@@ -1449,7 +1464,7 @@ def read_output(
     start: int = 1,
     end: int = 0,
     grep: str = "",
-    ctx: Context = None,
+    ctx: Context | None = None,
 ) -> str:
     """
     Read from a cached tool output by its ID.
@@ -1549,7 +1564,9 @@ def read_output(
 @mcp.tool()
 @handle_errors
 @with_env_lock
-def install_odoo_modules(env_name: str, modules: str, ctx: Context = None) -> str:
+def install_odoo_modules(
+    env_name: str, modules: str, ctx: Context | None = None
+) -> str:
     """
     Install Odoo modules in an environment.
 
@@ -1584,7 +1601,9 @@ def install_odoo_modules(env_name: str, modules: str, ctx: Context = None) -> st
 @mcp.tool()
 @handle_errors
 @with_env_lock
-def upgrade_odoo_modules(env_name: str, modules: str, ctx: Context = None) -> str:
+def upgrade_odoo_modules(
+    env_name: str, modules: str, ctx: Context | None = None
+) -> str:
     """
     Upgrade Odoo modules in an environment.
 
@@ -1616,7 +1635,7 @@ def upgrade_odoo_modules(env_name: str, modules: str, ctx: Context = None) -> st
 @mcp.tool()
 @handle_errors
 def read_file_in_odoo(
-    env_name: str, path: str, read_range: str = "", ctx: Context = None
+    env_name: str, path: str, read_range: str = "", ctx: Context | None = None
 ) -> str:
     """
     Read a text file or list a directory inside the Odoo container for a specific environment.
@@ -1648,7 +1667,7 @@ def read_file_in_odoo(
     )
     if "error" in result:
         return f"{woke}Error: {result['error']}"
-    return woke + result["output"]
+    return cast(str, woke + result["output"])
 
 
 @mcp.tool()
@@ -1659,7 +1678,7 @@ def write_file_in_odoo(
     path: str,
     content: str,
     user: str = "odoo",
-    ctx: Context = None,
+    ctx: Context | None = None,
 ) -> str:
     """
     Write a text file inside the Odoo container.
@@ -1698,7 +1717,7 @@ def write_file_in_odoo(
 def run_odoo_shell(
     env_name: str,
     python_code: str,
-    ctx: Context = None,
+    ctx: Context | None = None,
 ) -> str:
     """
     Execute Python code in the Odoo shell context with full ORM access.
@@ -1742,7 +1761,7 @@ def http_request_to_odoo(
     body: str = "",
     headers: str = "",
     session_id: str = "",
-    ctx: Context = None,
+    ctx: Context | None = None,
 ) -> str:
     """
     Make an HTTP request to the running Odoo instance for a specific environment.
@@ -1800,7 +1819,7 @@ def search_in_odoo(
     path: str = "/mnt/extra-addons",
     glob: str = "*.py",
     max_results: int = 50,
-    ctx: Context = None,
+    ctx: Context | None = None,
 ) -> str:
     """
     Search for a pattern in files inside the Odoo container.
@@ -1843,7 +1862,7 @@ def list_installed_modules(
     env_name: str,
     name_filter: str = "",
     state_filter: str = "installed",
-    ctx: Context = None,
+    ctx: Context | None = None,
 ) -> str:
     """
     List Odoo modules and their states in an environment.
@@ -1878,14 +1897,14 @@ def list_installed_modules(
     settings = _get_settings()
     team = _resolve_team(ctx)
     result = odoo_ops.run_db_query(settings, team, env_name, query, "csv")
-    return result["output"]
+    return cast(str, result["output"])
 
 
 @mcp.tool()
 @handle_errors
 @with_env_lock
 def run_odoo_command(
-    env_name: str, command: str, user: str = "odoo", ctx: Context = None
+    env_name: str, command: str, user: str = "odoo", ctx: Context | None = None
 ) -> str:
     """
     Execute an arbitrary shell command inside the Odoo container for a specific environment.
@@ -1917,7 +1936,7 @@ def run_odoo_command(
 @handle_errors
 @with_env_lock
 def reset_admin_password(
-    env_name: str, new_password: str = "test", ctx: Context = None
+    env_name: str, new_password: str = "test", ctx: Context | None = None
 ) -> str:
     """
     Reset the admin user password in the environment's Odoo database.
@@ -1939,7 +1958,7 @@ def reset_admin_password(
 @mcp.tool()
 @handle_errors
 @with_env_lock
-def connect_as_user(env_name: str, user: str, ctx: Context = None) -> str:
+def connect_as_user(env_name: str, user: str, ctx: Context | None = None) -> str:
     """
     Mint a passwordless Odoo login session for a user and return its cookie.
 
@@ -1991,7 +2010,7 @@ def run_db_query(
     query: str,
     output_format: str = "csv",
     max_rows: int = 100,
-    ctx: Context = None,
+    ctx: Context | None = None,
 ) -> str:
     """
     Execute a SQL query against the environment's PostgreSQL database.
@@ -2040,7 +2059,7 @@ def create_service(
     privileged: bool = False,
     net_admin: bool = False,
     routes: list[dict[str, object]] | None = None,
-    ctx: Context = None,
+    ctx: Context | None = None,
 ) -> str:
     """
     Create a managed auxiliary service container (e.g. Redis, Meilisearch).
@@ -2117,7 +2136,7 @@ def update_service(
     privileged: bool | None = None,
     net_admin: bool | None = None,
     routes: list[dict[str, object]] | None = None,
-    ctx: Context = None,
+    ctx: Context | None = None,
 ) -> str:
     """
     Update a managed auxiliary service container. Pulls the latest image and
@@ -2194,7 +2213,7 @@ def update_service(
 @mcp.tool()
 @handle_errors
 @with_team_lock
-def delete_service(name: str, ctx: Context = None) -> str:
+def delete_service(name: str, ctx: Context | None = None) -> str:
     """
     Stop and remove a managed auxiliary service container.
 
@@ -2207,7 +2226,7 @@ def delete_service(name: str, ctx: Context = None) -> str:
 
 @mcp.tool()
 @handle_errors
-def restart_service(name: str, ctx: Context = None) -> str:
+def restart_service(name: str, ctx: Context | None = None) -> str:
     """
     Restart a managed auxiliary service container.
 
@@ -2220,7 +2239,7 @@ def restart_service(name: str, ctx: Context = None) -> str:
 
 @mcp.tool()
 @handle_errors
-def get_service_info(name: str, ctx: Context = None) -> str:
+def get_service_info(name: str, ctx: Context | None = None) -> str:
     """
     Get full state and configuration of a managed auxiliary service.
 
@@ -2298,7 +2317,7 @@ def get_service_info(name: str, ctx: Context = None) -> str:
 
 @mcp.tool()
 @handle_errors
-def list_service_presets(ctx: Context = None) -> str:
+def list_service_presets(ctx: Context | None = None) -> str:
     """List saved service presets (configurations that can be restored)."""
     team = _resolve_team(ctx)
     presets = service_presets.list_presets(team)
@@ -2342,7 +2361,7 @@ def list_service_presets(ctx: Context = None) -> str:
 @mcp.tool()
 @handle_errors
 @with_team_lock
-def restore_service(name: str, ctx: Context = None) -> str:
+def restore_service(name: str, ctx: Context | None = None) -> str:
     """
     Restore a service from a saved preset. Recreates the service container with the same configuration.
 
@@ -2396,7 +2415,7 @@ def restore_service(name: str, ctx: Context = None) -> str:
 @mcp.tool()
 @handle_errors
 @with_team_lock
-def delete_service_preset(name: str, ctx: Context = None) -> str:
+def delete_service_preset(name: str, ctx: Context | None = None) -> str:
     """
     Remove a saved service preset.
 
@@ -2410,7 +2429,7 @@ def delete_service_preset(name: str, ctx: Context = None) -> str:
 
 @mcp.tool()
 @handle_errors
-def list_services(ctx: Context = None) -> str:
+def list_services(ctx: Context | None = None) -> str:
     """List all managed auxiliary service containers."""
     settings = _get_settings()
     team = _resolve_team(ctx)
@@ -2436,7 +2455,7 @@ def list_services(ctx: Context = None) -> str:
 
 @mcp.tool()
 @handle_errors
-def get_service_logs(name: str, n_lines: int = 100, ctx: Context = None) -> str:
+def get_service_logs(name: str, n_lines: int = 100, ctx: Context | None = None) -> str:
     """
     Get logs from a managed auxiliary service container.
 
@@ -2453,7 +2472,7 @@ def get_service_logs(name: str, n_lines: int = 100, ctx: Context = None) -> str:
 @mcp.tool()
 @handle_errors
 def run_service_command(
-    name: str, command: str, user: str = "root", ctx: Context = None
+    name: str, command: str, user: str = "root", ctx: Context | None = None
 ) -> str:
     """
     Execute an arbitrary shell command inside a managed auxiliary service container.
@@ -2467,7 +2486,7 @@ def run_service_command(
         _get_settings(), _resolve_team(ctx), name, command, user
     )
     exit_code = result["exit_code"]
-    output = result.get("output", "")
+    output = cast(str, result.get("output", ""))
     status = "Success" if exit_code == 0 else "Error"
     header = f"{status}. Exit code: {exit_code}."
     return _maybe_cache(
@@ -2489,7 +2508,7 @@ def run_service_command(
 def create_volume(
     name: str,
     description: str = "",
-    ctx: Context = None,
+    ctx: Context | None = None,
 ) -> str:
     """
     Create a named Docker volume for use with services.
@@ -2514,7 +2533,7 @@ def create_volume(
 
 @mcp.tool()
 @handle_errors
-def list_volumes(ctx: Context = None) -> str:
+def list_volumes(ctx: Context | None = None) -> str:
     """List all managed Docker volumes and their usage by services."""
     settings = _get_settings()
     team = _resolve_team(ctx)
@@ -2533,7 +2552,7 @@ def list_volumes(ctx: Context = None) -> str:
 
 @mcp.tool()
 @handle_errors
-def inspect_volume(name: str, ctx: Context = None) -> str:
+def inspect_volume(name: str, ctx: Context | None = None) -> str:
     """
     Get detailed information about a specific volume, including which services use it.
 
@@ -2559,7 +2578,7 @@ def inspect_volume(name: str, ctx: Context = None) -> str:
 @mcp.tool()
 @handle_errors
 @with_team_lock
-def delete_volume(name: str, ctx: Context = None) -> str:
+def delete_volume(name: str, ctx: Context | None = None) -> str:
     """
     Delete a managed Docker volume. Fails if the volume is in use by any service.
 
@@ -2583,7 +2602,7 @@ def read_file_in_volume(
     name: str,
     path: str,
     read_range: str = "",
-    ctx: Context = None,
+    ctx: Context | None = None,
 ) -> str:
     """
     Read a text file or list a directory inside a Docker volume.
@@ -2605,7 +2624,7 @@ def read_file_in_volume(
     result = volume_file_ops.read_file_in_volume(settings, team, name, path, read_range)
     if "error" in result:
         return f"Error: {result['error']}"
-    return result["output"]
+    return cast(str, result["output"])
 
 
 @mcp.tool()
@@ -2615,7 +2634,7 @@ def write_file_in_volume(
     name: str,
     path: str,
     content: str,
-    ctx: Context = None,
+    ctx: Context | None = None,
 ) -> str:
     """
     Write a text file inside a Docker volume.
@@ -2643,7 +2662,7 @@ def search_in_volume(
     path: str = "",
     glob: str = "*",
     max_results: int = 50,
-    ctx: Context = None,
+    ctx: Context | None = None,
 ) -> str:
     """
     Search for a pattern in files inside a Docker volume.
@@ -2678,7 +2697,7 @@ def search_in_volume(
 def delete_file_in_volume(
     name: str,
     path: str,
-    ctx: Context = None,
+    ctx: Context | None = None,
 ) -> str:
     """
     Delete a file or directory inside a Docker volume.
@@ -2909,7 +2928,7 @@ def _copy_bundled_configs() -> None:
             _copy_bundled_pg_conf(dest)
 
 
-def _write_tuned_pg_conf(dest) -> bool:
+def _write_tuned_pg_conf(dest: pathlib.Path) -> bool:
     """Generate a resource-tuned postgresql.conf at ``dest``. True on success."""
     try:
         from oduflow import pg_tune
@@ -2941,9 +2960,8 @@ def _write_tuned_pg_conf(dest) -> bool:
         return False
 
 
-def _copy_bundled_pg_conf(dest) -> None:
+def _copy_bundled_pg_conf(dest: pathlib.Path) -> None:
     """Fallback: copy the static bundled postgresql.conf to ``dest``."""
-    import pathlib
     import shutil
 
     bundled = pathlib.Path(__file__).resolve().parent / "templates" / "postgresql.conf"
@@ -3361,7 +3379,7 @@ def _print_tools(verbose: bool = False) -> None:
 
     print("Registered tools:")
     for name in sorted(mcp._tool_manager._tools.keys()):
-        tool_fn = mcp._tool_manager._tools[name].fn
+        tool_fn = cast(Any, mcp._tool_manager._tools[name]).fn
         sig = inspect.signature(tool_fn)
         params = []
         for p in sig.parameters.values():
@@ -3395,7 +3413,7 @@ def _run_call(argv: list[str]) -> None:
         print(f"Available: {', '.join(sorted(mcp._tool_manager._tools.keys()))}")
         sys.exit(1)
 
-    tool_fn = mcp._tool_manager._tools[tool_name].fn
+    tool_fn = cast(Any, mcp._tool_manager._tools[tool_name]).fn
     sig = inspect.signature(tool_fn)
 
     if tool_argv and tool_argv[0].startswith("{"):
@@ -3450,7 +3468,7 @@ def _run_call(argv: list[str]) -> None:
 
         result = tool_fn(**kwargs)
         if inspect.isawaitable(result):
-            result = asyncio.run(result)
+            result = asyncio.run(cast(Any, result))
         print(result)
     except Exception as e:
         print(f"ERROR: {e}", file=sys.stderr)

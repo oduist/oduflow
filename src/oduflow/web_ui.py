@@ -1,4 +1,5 @@
 from __future__ import annotations
+from typing import Any
 
 import asyncio
 import base64
@@ -24,7 +25,8 @@ from starlette.responses import (
     RedirectResponse,
     Response,
 )
-from starlette.routing import Route, WebSocketRoute
+from starlette.applications import Starlette
+from starlette.routing import BaseRoute, Route, WebSocketRoute
 from starlette.types import ASGIApp, Receive, Scope, Send
 from starlette.websockets import WebSocket
 
@@ -290,7 +292,7 @@ def _error_response(e: FlowError) -> JSONResponse:
     return JSONResponse({"ok": False, "error": str(e)}, status_code=status)
 
 
-def _normalize_extra_addons(raw_addons) -> dict[str, str]:
+def _normalize_extra_addons(raw_addons: object) -> dict[str, str]:
     if isinstance(raw_addons, dict):
         return raw_addons
     if isinstance(raw_addons, list):
@@ -384,7 +386,7 @@ class _LoginRateLimiter:
 def _build_routes(
     get_settings: Callable[[], Settings],
     locks: LockManager,
-) -> list[Route]:
+) -> list[BaseRoute]:
     # Per-app so test apps and real deployments don't share failure counters.
     login_limiter = _LoginRateLimiter()
 
@@ -473,10 +475,15 @@ def _build_routes(
             headers={"Cache-Control": "public, max-age=86400"},
         )
 
-    def _get_ui_team(request: Request) -> TeamSettings:
-        """Get the team from request state (set by auth middleware) or fallback."""
+    def _get_ui_team(request: HTTPConnection) -> TeamSettings:
+        """Get the team from request state (set by auth middleware) or fallback.
+
+        Accepts any Starlette connection (HTTP ``Request`` or ``WebSocket``);
+        both carry the ``state`` populated by the auth middleware.
+        """
         if hasattr(request.state, "team"):
-            return request.state.team
+            team: TeamSettings = request.state.team
+            return team
         settings = get_settings()
         if len(settings.teams) == 1:
             return next(iter(settings.teams.values()))
@@ -641,11 +648,12 @@ def _build_routes(
         try:
             import docker as _docker
             from oduflow.docker_ops.client import get_client as _get_client
+            from oduflow.naming import get_resource_name
 
             settings = get_settings()
             activity.touch(team, branch)
             client = _get_client()
-            odoo_container_name = env_ops.get_resource_name(
+            odoo_container_name = get_resource_name(
                 branch, "odoo", settings.prefix, team.team_id
             )
             try:
@@ -1387,7 +1395,7 @@ def _build_routes(
         staging = team.get_import_staging_dir(template_name)  # validates name
         os.makedirs(staging, exist_ok=True)
         path = os.path.join(staging, "addons.json")
-        entries: list = []
+        entries: list[Any] = []
         if os.path.isfile(path):
             try:
                 with open(path) as f:
@@ -3199,7 +3207,7 @@ def _build_routes(
 
 
 def mount_web_ui(
-    app,
+    app: Starlette,
     get_settings: Callable[[], Settings],
     locks: LockManager,
 ) -> None:

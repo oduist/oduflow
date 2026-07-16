@@ -4,6 +4,7 @@ import logging
 import os
 import shutil
 from dataclasses import dataclass
+from typing import Any
 
 logger = logging.getLogger("oduflow")
 
@@ -57,7 +58,7 @@ class LicenseInfo:
         suffix = TYPE_SUFFIXES.get(self.type, "")
         return f"{base}: {self.name}{suffix}"
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "type": self.type,
             "name": self.name,
@@ -78,7 +79,7 @@ def get_license_path(etc_dir: str | None = None) -> str:
 
 
 def _verify_license_text(raw: str) -> LicenseInfo:
-    from cryptography.hazmat.primitives.asymmetric import padding
+    from cryptography.hazmat.primitives.asymmetric import padding, rsa
     from cryptography.hazmat.primitives import hashes
     from cryptography.hazmat.primitives.serialization import load_pem_public_key
 
@@ -91,6 +92,8 @@ def _verify_license_text(raw: str) -> LicenseInfo:
     payload_bytes = base64.b64decode(payload_b64)
 
     pub_key = load_pem_public_key(_PUBLIC_KEY_PEM.encode())
+    if not isinstance(pub_key, rsa.RSAPublicKey):
+        raise ValueError("License public key must be an RSA key")
     pub_key.verify(
         signature,
         payload_bytes,
