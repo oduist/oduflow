@@ -810,7 +810,8 @@ def list_env_users(
     if exit_code != 0:
         raise ExternalCommandError("psql", exit_code, out)
     try:
-        return json.loads(out or "[]")
+        rows: list[dict[str, Any]] = json.loads(out or "[]")
+        return rows
     except json.JSONDecodeError:
         return []
 

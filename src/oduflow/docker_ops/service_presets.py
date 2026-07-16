@@ -4,6 +4,7 @@ Presets are persisted as a single JSON file at ``{team.data_dir}/service_presets
 """
 
 from __future__ import annotations
+from typing import Any
 
 import json
 import logging
@@ -20,7 +21,7 @@ def _presets_path(team: TeamSettings) -> str:
     return os.path.join(team.data_dir, "service_presets.json")
 
 
-def _load_presets(team: TeamSettings) -> dict:
+def _load_presets(team: TeamSettings) -> dict[str, Any]:
     """Read and return all presets from disk.
 
     Returns an empty dict when the file does not exist or contains invalid JSON.
@@ -30,13 +31,14 @@ def _load_presets(team: TeamSettings) -> dict:
         return {}
     try:
         with open(path, "r", encoding="utf-8") as fh:
-            return json.load(fh)
+            data: dict[str, Any] = json.load(fh)
+            return data
     except json.JSONDecodeError:
         logger.warning("Corrupt presets file at %s – returning empty dict", path)
         return {}
 
 
-def _save_presets(team: TeamSettings, data: dict) -> None:
+def _save_presets(team: TeamSettings, data: dict[str, Any]) -> None:
     """Persist *data* to the presets JSON file, creating parent dirs if needed.
 
     Writes atomically (temp file + os.replace) so a crash mid-write cannot leave
@@ -65,14 +67,14 @@ def save_preset(
     cap_add: list[str] | None = None,
     privileged: bool = False,
     routes: list[dict[str, object]] | None = None,
-) -> dict:
+) -> dict[str, Any]:
     """Save (or overwrite) a single service preset and return it."""
     short_hostname = hostname or ""
     if short_hostname and base_hostname:
         suffix = f".{base_hostname}"
         if short_hostname.endswith(suffix):
             short_hostname = short_hostname[: -len(suffix)]
-    preset: dict = {
+    preset: dict[str, Any] = {
         "image": image,
         "port": port or 0,
         "hostname": short_hostname,
@@ -94,7 +96,7 @@ def save_preset(
     return preset
 
 
-def list_presets(team: TeamSettings) -> list[dict]:
+def list_presets(team: TeamSettings) -> list[dict[str, Any]]:
     """Return all presets as a sorted list of dicts (each includes a ``name`` key)."""
     data = _load_presets(team)
     return sorted(
@@ -103,7 +105,7 @@ def list_presets(team: TeamSettings) -> list[dict]:
     )
 
 
-def get_preset(team: TeamSettings, name: str) -> dict:
+def get_preset(team: TeamSettings, name: str) -> dict[str, Any]:
     """Return a single preset dict (with ``name`` key) or raise :class:`NotFoundError`."""
     data = _load_presets(team)
     if name not in data:
@@ -111,7 +113,7 @@ def get_preset(team: TeamSettings, name: str) -> dict:
     return {"name": name, **data[name]}
 
 
-def delete_preset(team: TeamSettings, name: str) -> dict:
+def delete_preset(team: TeamSettings, name: str) -> dict[str, Any]:
     """Remove a preset from disk and return ``{"name": name}``.
 
     Raises :class:`NotFoundError` if the preset does not exist.

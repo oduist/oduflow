@@ -84,7 +84,8 @@ def load_credentials(
     creds_path = os.path.join(workspace_path, _CREDENTIALS_FILE)
     if os.path.isfile(creds_path):
         with open(creds_path) as f:
-            return json.load(f)
+            creds: dict[str, str] = json.load(f)
+            return creds
     if not allow_fallback:
         raise MissingCredentialsError(
             f"Environment '{env_name}' has no scoped database credentials. "

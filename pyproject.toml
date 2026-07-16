@@ -44,6 +44,13 @@ target-version = "py310"
 python_version = "3.10"
 strict = true
 ignore_missing_imports = true
+# The repo root has a non-Python `docker/` directory (docker/agent/ — Dockerfile
+# and shell scripts). With PEP 420 namespace packages enabled (mypy's default),
+# `import docker` resolves to that local dir instead of the docker SDK, producing
+# ~100 phantom "Module has no attribute" errors. All oduflow packages are regular
+# (they ship __init__.py), so turning namespace packages off is safe and makes
+# `import docker` resolve to site-packages.
+namespace_packages = false
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

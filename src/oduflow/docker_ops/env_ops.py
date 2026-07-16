@@ -71,7 +71,7 @@ def _trace(msg: str, *args: object) -> None:
 _PACKAGE_ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 
-def _normalize_extra_addons(raw_addons) -> dict[str, str]:
+def _normalize_extra_addons(raw_addons: object) -> dict[str, str]:
     """Convert old list format or new dict format to {name: branch} dict."""
     if isinstance(raw_addons, dict):
         return raw_addons
@@ -180,7 +180,7 @@ def _mount_filestore(
     env_name: str,
     env_db: str,
     odoo_image: str,
-    odoo_volumes: dict,
+    odoo_volumes: dict[str, Any],
     *,
     template_name: str,
 ) -> None:
@@ -474,7 +474,7 @@ def remount_template_overlays(
                 result.failures.append((env_name, f"remount: {exc}"))
 
 
-def _install_apt_packages(container, repo_path: str) -> str:
+def _install_apt_packages(container: Any, repo_path: str) -> str:
     """Install apt packages. Returns a human-readable log of what happened."""
     apt_file = os.path.join(repo_path, ".oduflow", "apt_packages.txt")
     if not os.path.isfile(apt_file):
@@ -506,7 +506,7 @@ def _install_apt_packages(container, repo_path: str) -> str:
         return f"[APT] Installed: {' '.join(packages)}"
 
 
-def _ensure_user_site_packages(container) -> None:
+def _ensure_user_site_packages(container: Any) -> None:
     """Create the user site-packages directory for the odoo user and fix ownership.
 
     This allows ``pip install --user`` to work inside containers where
@@ -539,7 +539,7 @@ def _ensure_user_site_packages(container) -> None:
 
 
 def _install_pip_requirements(
-    container, repo_path: str, *, restart: bool = True
+    container: Any, repo_path: str, *, restart: bool = True
 ) -> tuple[bool, str]:
     """Install pip requirements from repo.
 
@@ -639,8 +639,8 @@ def _init_empty_database(
     team: TeamSettings,
     odoo_image: str,
     env_db: str,
-    odoo_env: dict,
-    odoo_volumes: dict,
+    odoo_env: dict[str, Any],
+    odoo_volumes: dict[str, Any],
     env_name: str,
 ) -> str:
     """Initialize a fresh empty database with ``-i base`` in an isolated,
@@ -710,7 +710,7 @@ def create_environment(
     auto_install_modules: list[str] | None = None,
     env_vars: dict[str, str] | None = None,
     local_path: str = "",
-) -> dict[str, str]:
+) -> dict[str, Any]:
     env_name = env_name or branch
     start_time = time.time()
     try:
@@ -742,8 +742,8 @@ def create_environment(
                 url = f"https://{get_env_hostname(env_name, team.hostname)}"
             else:
                 ports = existing.ports.get("8069/tcp")
-                host_port = ports[0]["HostPort"] if ports else "?"
-                url = f"http://{team.hostname}:{host_port}"
+                existing_port = ports[0]["HostPort"] if ports else "?"
+                url = f"http://{team.hostname}:{existing_port}"
             raise ConflictError(
                 f"Environment '{env_name}' already exists and is running at {url}."
             )
@@ -1120,7 +1120,7 @@ def create_environment(
         "mode": "rw",
     }
 
-    run_kwargs: dict = dict(
+    run_kwargs: dict[str, Any] = dict(
         image=odoo_image,
         name=odoo_container_name,
         detach=True,
@@ -1276,7 +1276,7 @@ def create_environment(
         git_user,
     )
 
-    result = {
+    result: dict[str, Any] = {
         "url": url,
         "odoo_container": odoo_container_name,
         "database": env_db,
@@ -1966,7 +1966,7 @@ def restart_environment(
 
 def stop_environment(
     settings: Settings, team: TeamSettings, env_name: str
-) -> dict[str, str]:
+) -> dict[str, Any]:
     if is_protected(settings, team, env_name):
         raise ProtectedError(
             f"Environment '{env_name}' is protected. Unprotect it before stopping."
@@ -1992,7 +1992,7 @@ def stop_environment(
 
 def start_environment(
     settings: Settings, env_name: str, team: TeamSettings
-) -> dict[str, str]:
+) -> dict[str, Any]:
     client = get_client()
     odoo_container_name = get_resource_name(
         env_name, "odoo", settings.prefix, team.team_id
@@ -2731,7 +2731,7 @@ def update_environment(
         template_name = labels.get("oduflow.template", "none")
         if template_name and template_name != "none":
             try:
-                _tmp_vols: dict = {}
+                _tmp_vols: dict[str, Any] = {}
                 _mount_filestore(
                     client,
                     settings,
@@ -2788,7 +2788,7 @@ def update_environment(
     # ------------------------------------------------------------------
     # 4. Re-create the container with the same settings
     # ------------------------------------------------------------------
-    run_kwargs: dict = dict(
+    run_kwargs: dict[str, Any] = dict(
         image=odoo_image,
         name=odoo_container_name,
         detach=True,

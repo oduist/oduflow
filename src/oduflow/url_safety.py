@@ -24,7 +24,9 @@ class BlockedURLError(FlowError):
     """The URL resolves to a network location that is not allowed."""
 
 
-def _is_blocked(ip: ipaddress._BaseAddress, *, allow_private: bool) -> bool:
+def _is_blocked(
+    ip: ipaddress.IPv4Address | ipaddress.IPv6Address, *, allow_private: bool
+) -> bool:
     # Never-legitimate remote targets, blocked even for internal git hosts.
     if (
         ip.is_loopback

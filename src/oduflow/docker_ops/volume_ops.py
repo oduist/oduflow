@@ -5,6 +5,7 @@ They persist independently of services and can be mounted to any service.
 """
 
 from __future__ import annotations
+from typing import Any
 
 import logging
 import re
@@ -20,7 +21,7 @@ logger = logging.getLogger("oduflow")
 _VOLUME_NAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_.-]*$")
 
 
-def _vol_labels(vol) -> dict[str, str]:
+def _vol_labels(vol: Any) -> dict[str, str]:
     """Return labels dict from a Docker Volume object.
 
     The Docker SDK Volume object stores labels in ``attrs['Labels']``
@@ -74,7 +75,7 @@ def create_volume(
     }
 
 
-def list_volumes(settings: Settings, team: TeamSettings) -> list[dict]:
+def list_volumes(settings: Settings, team: TeamSettings) -> list[dict[str, Any]]:
     """List all managed volumes for a team, including usage info."""
     client = get_client()
     volumes = client.volumes.list(
@@ -111,7 +112,7 @@ def list_volumes(settings: Settings, team: TeamSettings) -> list[dict]:
     return result
 
 
-def inspect_volume(settings: Settings, team: TeamSettings, name: str) -> dict:
+def inspect_volume(settings: Settings, team: TeamSettings, name: str) -> dict[str, Any]:
     """Return details for a single volume including usage."""
     client = get_client()
     docker_name = docker_volume_name(team, name)

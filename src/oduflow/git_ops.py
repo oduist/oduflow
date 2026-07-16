@@ -3,6 +3,7 @@ import os
 import re
 import subprocess
 from urllib.parse import urlparse
+from typing import Any
 
 from oduflow.errors import ExternalCommandError, FlowError
 
@@ -148,7 +149,7 @@ def inject_credential_user(repo_url: str, git_user: str) -> str:
     return parsed._replace(netloc=netloc).geturl()
 
 
-def list_credentials(cred_file: str) -> list[dict]:
+def list_credentials(cred_file: str) -> list[dict[str, Any]]:
     if not os.path.exists(cred_file):
         return []
 
@@ -338,9 +339,10 @@ def pull_repo(
     return old_head, [f for f in result.stdout.strip().splitlines() if f]
 
 
-def parse_manifest(manifest_path: str) -> dict:
+def parse_manifest(manifest_path: str) -> dict[str, Any]:
     """Parse an Odoo __manifest__.py file and return its dict."""
     import ast
 
     with open(manifest_path, "r") as f:
-        return ast.literal_eval(f.read())
+        manifest: dict[str, Any] = ast.literal_eval(f.read())
+        return manifest
