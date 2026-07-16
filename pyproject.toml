@@ -19,6 +19,11 @@ dependencies = [
     "tomli>=2.0; python_version < '3.11'",
 ]
 
+[project.optional-dependencies]
+# Type checker pinned so a local `mypy src/oduflow` matches the CI gate exactly
+# (see .github/workflows/tests.yml). Install with: pip install -e ".[dev]"
+dev = ["mypy==2.3.0"]
+
 [project.urls]
 Homepage = "https://oduflow.dev"
 Documentation = "https://oduflow.dev"

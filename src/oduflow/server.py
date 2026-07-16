@@ -2962,7 +2962,6 @@ def _write_tuned_pg_conf(dest: pathlib.Path) -> bool:
 
 def _copy_bundled_pg_conf(dest: pathlib.Path) -> None:
     """Fallback: copy the static bundled postgresql.conf to ``dest``."""
-    import pathlib
     import shutil
 
     bundled = pathlib.Path(__file__).resolve().parent / "templates" / "postgresql.conf"
