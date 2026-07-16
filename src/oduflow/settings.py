@@ -110,6 +110,18 @@ class TeamSettings:
 
 
 @dataclass(frozen=True)
+class ExtraRoute:
+    """A static Traefik route: an external hostname forwarded to an arbitrary
+    upstream URL for a service Oduflow does not manage (from a ``[route.*]``
+    TOML section). Traefik mode only. See specs/0034-external-traefik-routes.md.
+    """
+
+    name: str  # from the [route.<name>] key; used as the router/service id
+    host: str  # the incoming Host header to match (e.g. "api.example.com")
+    url: str  # upstream URL (e.g. "http://127.0.0.1:3000")
+
+
+@dataclass(frozen=True)
 class Settings:
     """Global settings + per-team isolation."""
 
@@ -134,6 +146,12 @@ class Settings:
     # already serves HTTPS. Public URLs stay https:// (the upstream provides the
     # certificate). Ignored in port mode.
     routing_tls: bool = True
+    # Static extra routes (traefik mode): each forwards an external hostname to
+    # an arbitrary upstream URL for a service Oduflow does not manage. Parsed
+    # from ``[route.*]`` TOML sections. For anything more complex than
+    # host→URL, drop your own dynamic-config file into the Traefik dynamic
+    # directory instead (see docs/traefik.md).
+    extra_routes: tuple[ExtraRoute, ...] = ()
 
     # Database
     db_user: str = "odoo"
@@ -274,6 +292,30 @@ class Settings:
                     f"Team '{team.team_id}': quotas must be >= 0 (0 disables)"
                 )
 
+        # Validate static extra routes ([route.*]). They only make sense in
+        # traefik mode (port mode has no shared reverse proxy) and must forward
+        # a real hostname to an http(s) upstream. Hostnames must be unique
+        # across routes and team hostnames so a Host rule never routes two ways.
+        if self.extra_routes and self.routing_mode != "traefik":
+            raise ValueError("[route.*] sections require routing.mode = 'traefik'.")
+        seen_hosts = {t.hostname for t in self.teams.values() if t.hostname}
+        for route in self.extra_routes:
+            if not route.host:
+                raise ValueError(f"Route '{route.name}': host must be set.")
+            if not route.url:
+                raise ValueError(f"Route '{route.name}': url must be set.")
+            if not route.url.startswith(("http://", "https://")):
+                raise ValueError(
+                    f"Route '{route.name}': url must start with http:// or https:// "
+                    f"(got {route.url!r})."
+                )
+            if route.host in seen_hosts:
+                raise ValueError(
+                    f"Route '{route.name}': host '{route.host}' collides with "
+                    "another route or team hostname."
+                )
+            seen_hosts.add(route.host)
+
         # Validate that team port ranges do not overlap. The default range is
         # identical for every team, so two teams that never set an explicit
         # port_range would draw host ports from the same pool and collide.
@@ -397,6 +439,29 @@ class Settings:
                 agent_env={str(k): str(v) for k, v in agent_env_raw.items()},
             )
 
+        # Parse static extra routes ([route.<name>] → host + upstream url).
+        routes_raw = raw.get("route", {})
+        if not isinstance(routes_raw, dict):
+            raise ValueError(
+                "[route.*] sections must be tables (e.g. [route.legacy-api])."
+            )
+        extra_routes: list[ExtraRoute] = []
+        for route_name_raw, route_cfg in routes_raw.items():
+            route_name = str(route_name_raw)
+            if not isinstance(route_cfg, dict):
+                raise ValueError(
+                    f"Route '{route_name}': must be a table ([route.{route_name}])"
+                )
+            raw_host = str(route_cfg.get("host", "")).strip()
+            host = re.sub(r"^https?://", "", raw_host).strip().rstrip("/")
+            extra_routes.append(
+                ExtraRoute(
+                    name=route_name,
+                    host=host,
+                    url=str(route_cfg.get("url", "")).strip(),
+                )
+            )
+
         trace = bool(server.get("trace", False))
 
         global TRACE  # noqa: PLW0603
@@ -412,6 +477,7 @@ class Settings:
             routing_mode=routing_mode,
             acme_email=str(routing.get("acme_email", "")).strip(),
             routing_tls=bool(routing.get("tls", True)),
+            extra_routes=tuple(extra_routes),
             db_user=str(database.get("user", "odoo")),
             db_password=str(database.get("password", "odoo")),
             postgres_image=str(database.get("image", "postgres:15")),
