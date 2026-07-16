@@ -3,7 +3,7 @@
 **Status:** Adopted (still in force)
 **Type:** Architecture / Routing
 **First introduced:** `litnimax/traefik-yml-overwrite` branch (2026-07-16)
-**Key code today:** `settings.py` (`ExtraRoute`, `[route.*]` parsing/validation), `docker_ops/system_ops.py` (`_write_traefik_dynamic_config`, `_ensure_traefik`), `migrations.py` (`0006-traefik-dynamic-directory`)
+**Key code today:** `settings.py` (`ExtraRoute`, `[route.*]` parsing/validation), `docker_ops/system_ops.py` (`_write_traefik_dynamic_config`, `_resolve_upstream_url`, `_ensure_traefik` drift control)
 
 ## Context
 
@@ -35,10 +35,12 @@ setup that already serves teams:
   and never touched by Oduflow, giving unbounded expressiveness for cases the
   declarative form can't model.
 
-A loopback upstream (`127.0.0.1` / `localhost`) is rewritten to
+An `http://` loopback upstream (`127.0.0.1` / `localhost`) is rewritten to
 `host.docker.internal` so a declared route to a service on the host is reachable
-from inside the Traefik container. Declarative routes are traefik-mode only,
-must use an `http(s)` upstream, and must not collide with another route or a
+from inside the Traefik container. `https://` loopbacks are left untouched — a
+rewrite would make Traefik verify the backend cert against the wrong hostname.
+Declarative routes are traefik-mode only, must use an `http(s)` upstream with a
+plain-hostname `host` (no path), and must not collide with another route or a
 team hostname.
 
 ## How it works (macro)
@@ -48,12 +50,15 @@ validates it alongside team settings. `_write_traefik_dynamic_config` emits the
 team routers plus one router/service per extra route into `oduflow.yml`.
 
 `_ensure_traefik` bind-mounts `<config-dir>/traefik-dynamic/` to
-`/etc/traefik/dynamic` and switches the file provider from
-`--providers.file.filename` to `--providers.file.directory` (still watched).
-Because `_ensure_traefik` never rewrites an existing container's args, migration
-`0006-traefik-dynamic-directory` removes a Traefik container still using the
-single-file provider so init recreates it in directory mode; the ACME volume
-persists, so certificates survive.
+`/etc/traefik/dynamic` and uses the file provider in directory mode
+(`--providers.file.directory`, watched) instead of the older single-file
+`--providers.file.filename`. Because `_ensure_traefik` never rewrites an existing
+container's args, it self-heals via drift control: on each init it recreates the
+Traefik container when the running one is not on the directory provider (or when
+the TLS-redirect arg no longer matches `routing_tls`). This is preferred over a
+one-shot startup migration, which could stamp itself applied while the server
+ran in port mode and then never run when traefik mode returned. The ACME volume
+persists across recreation, so certificates survive.
 
 ## Consequences
 
@@ -70,5 +75,6 @@ persists, so certificates survive.
 ## History
 
 - `litnimax/traefik-yml-overwrite` (2026-07-16) — `[route.*]` declarative routes,
-  directory-watched dynamic config with operator drop-in files, and migration
-  `0006` to recreate Traefik in directory mode.
+  directory-watched dynamic config with operator drop-in files, and file-provider
+  drift control in `_ensure_traefik` to recreate legacy single-file Traefik
+  containers onto the directory provider.

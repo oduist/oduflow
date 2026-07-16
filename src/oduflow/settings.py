@@ -302,6 +302,14 @@ class Settings:
         for route in self.extra_routes:
             if not route.host:
                 raise ValueError(f"Route '{route.name}': host must be set.")
+            if "/" in route.host:
+                # A path component would land in Traefik's Host() rule, which
+                # matches on hostname only — the route would silently never
+                # match. Fail loudly instead.
+                raise ValueError(
+                    f"Route '{route.name}': host must be a plain hostname, not a "
+                    f"URL with a path (got {route.host!r})."
+                )
             if not route.url:
                 raise ValueError(f"Route '{route.name}': url must be set.")
             if not route.url.startswith(("http://", "https://")):

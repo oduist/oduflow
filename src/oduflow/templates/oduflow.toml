@@ -25,7 +25,7 @@ mode = "port"                   # "port" | "traefik"
 # Forward an external hostname to an arbitrary upstream URL for a service that
 # Oduflow does not manage (its own Docker container, a host process, etc.).
 # Each [route.<name>] gets a Traefik router + Let's Encrypt cert (when tls=true).
-# 127.0.0.1 / localhost in url means "on the Docker host" (auto-resolved).
+# http://127.0.0.1 / http://localhost in url means "on the Docker host" (auto-resolved).
 # For anything more advanced than host→URL, drop your own *.yml into the Traefik
 # dynamic directory instead — see docs/traefik.md.
 # [route.legacy-api]

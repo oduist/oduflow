@@ -78,12 +78,15 @@ HTTP on port 80.
 Notes:
 
 - **`127.0.0.1` / `localhost` mean "on the Docker host".** Traefik runs in a
-  container, so Oduflow rewrites a loopback upstream to `host.docker.internal`
-  (mapped to the host gateway). So `http://127.0.0.1:3000` reaches a service
-  listening on port 3000 of the host. Use the real IP/hostname for anything off
-  the host.
-- `url` must be `http://…` or `https://…`; `host` must be unique across all
-  routes and team hostnames.
+  container, so Oduflow rewrites an `http://` loopback upstream to
+  `host.docker.internal` (mapped to the host gateway). So `http://127.0.0.1:3000`
+  reaches a service listening on port 3000 of the host. Use the real IP/hostname
+  for anything off the host. An `https://localhost` upstream is **not** rewritten
+  (that would break backend TLS certificate verification) — for a TLS backend on
+  the host, use its real hostname or a drop-in dynamic file with a
+  `serversTransport`.
+- `url` must be `http://…` or `https://…`; `host` must be a plain hostname (no
+  path) and unique across all routes and team hostnames.
 - These routes are declared once in config; the generated router set is
   rewritten on every restart, so hand-editing the generated file is pointless
   (use option 2 for custom Traefik config).

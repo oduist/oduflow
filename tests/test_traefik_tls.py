@@ -83,6 +83,16 @@ class TestWriteDynamicConfig:
             system_ops._resolve_upstream_url("http://localhost.example.com:5000")
             == "http://localhost.example.com:5000"
         )
+        # https:// loopbacks are NOT rewritten: swapping the host would break
+        # backend TLS cert verification (cert is for localhost/127.0.0.1).
+        assert (
+            system_ops._resolve_upstream_url("https://localhost:5000")
+            == "https://localhost:5000"
+        )
+        assert (
+            system_ops._resolve_upstream_url("https://127.0.0.1:5000")
+            == "https://127.0.0.1:5000"
+        )
 
 
 class TestEnsureTraefik:
@@ -141,7 +151,10 @@ class TestEnsureTraefik:
         existing = MagicMock()
         existing.attrs = {
             "Config": {
-                "Cmd": ["--entrypoints.web.http.redirections.entryPoint.to=websecure"]
+                "Cmd": [
+                    "--providers.file.directory=/etc/traefik/dynamic",
+                    "--entrypoints.web.http.redirections.entryPoint.to=websecure",
+                ]
             }
         }
         client = MagicMock()
@@ -152,10 +165,39 @@ class TestEnsureTraefik:
         client.containers.run.assert_called_once()
         assert client.containers.run.call_args[1]["ports"] == {"80/tcp": 80}
 
-    def test_no_drift_when_mode_matches(self, tmp_path):
-        # Existing container already in the desired (no-TLS) mode: reuse it.
+    def test_drift_recreates_on_old_single_file_provider(self, tmp_path):
+        # Existing container watches a single file (older layout); TLS matches
+        # but it must be recreated onto the directory provider so operator
+        # drop-in *.yml files are honoured.
         existing = MagicMock()
-        existing.attrs = {"Config": {"Cmd": ["--entrypoints.web.address=:80"]}}
+        existing.attrs = {
+            "Config": {
+                "Cmd": [
+                    "--entrypoints.web.address=:80",
+                    "--providers.file.filename=/etc/traefik/dynamic/oduflow.yml",
+                ]
+            }
+        }
+        existing.status = "running"
+        client = MagicMock()
+        client.containers.get.return_value = existing
+        system_ops._ensure_traefik(client, _traefik_settings(tmp_path, False))
+        existing.stop.assert_called_once()
+        existing.remove.assert_called_once()
+        client.containers.run.assert_called_once()
+
+    def test_no_drift_when_mode_matches(self, tmp_path):
+        # Existing container already in the desired (no-TLS, directory) mode:
+        # reuse it.
+        existing = MagicMock()
+        existing.attrs = {
+            "Config": {
+                "Cmd": [
+                    "--entrypoints.web.address=:80",
+                    "--providers.file.directory=/etc/traefik/dynamic",
+                ]
+            }
+        }
         existing.status = "running"
         client = MagicMock()
         client.containers.get.return_value = existing

@@ -349,6 +349,16 @@ class TestExtraRoutes:
         s = Settings.from_toml(str(toml))
         assert s.extra_routes[0].host == "api.example.com"
 
+    def test_route_host_with_path_rejected(self, tmp_path):
+        # A path component would land in Traefik's Host() rule and silently
+        # never match; it must be a loud config error.
+        toml = self._traefik_toml(
+            tmp_path,
+            '[route.r]\nhost = "api.example.com/v1"\nurl = "http://127.0.0.1:3000"\n',
+        )
+        with pytest.raises(ValueError, match="plain hostname"):
+            Settings.from_toml(str(toml)).validate()
+
     def test_route_requires_traefik_mode(self, tmp_path):
         toml = tmp_path / "oduflow.toml"
         toml.write_text(

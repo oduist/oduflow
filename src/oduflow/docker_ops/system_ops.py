@@ -441,7 +441,7 @@ def _resolve_instance_conf(name: str, data_dir: str) -> pathlib.Path:
     return _PACKAGE_ROOT / "templates" / name
 
 
-def _route_entrypoint(settings: Settings) -> dict:
+def _route_entrypoint(settings: Settings) -> dict[str, Any]:
     """Entrypoint/TLS fragment shared by team and extra-route routers.
 
     TLS mode routes on ``websecure`` with a Let's Encrypt cert; otherwise (behind
@@ -459,10 +459,16 @@ def _resolve_upstream_url(url: str) -> str:
     service listening on the host", but inside the Traefik container 127.0.0.1 is
     the container's own loopback. Rewrite it to ``host.docker.internal`` (mapped
     to host-gateway on the container) so the documented simple case just works.
-    Non-loopback upstreams are returned unchanged.
+
+    Only ``http://`` loopbacks are rewritten. Rewriting an ``https://localhost``
+    upstream would make Traefik verify the backend certificate against
+    ``host.docker.internal`` while the host's cert is issued for ``localhost`` /
+    ``127.0.0.1`` — a guaranteed TLS mismatch (502). A TLS loopback backend is an
+    advanced case: point it at the host's real name, or use a drop-in dynamic
+    file with a ``serversTransport``. Non-loopback upstreams pass through.
     """
     return re.sub(
-        r"^(https?://)(127\.0\.0\.1|localhost)(?=[:/]|$)",
+        r"^(http://)(127\.0\.0\.1|localhost)(?=[:/]|$)",
         r"\1host.docker.internal",
         url,
     )
@@ -549,18 +555,29 @@ def _ensure_traefik(client: DockerClient, settings: Settings) -> None:
     try:
         t = client.containers.get(settings.traefik_container)
         # Self-correcting drift control: _ensure_traefik never rewrites an
-        # existing container's args, so a flipped routing tls setting would
-        # otherwise be ignored until a manual recreate. The HTTP->HTTPS redirect
-        # arg is present only in TLS mode, so its presence must match
-        # routing_tls; recreate on mismatch (in either direction).
+        # existing container's args, so config that changed since the container
+        # was created would otherwise be ignored until a manual recreate.
+        # Recreate on either drift:
+        #   - routing tls: the HTTP->HTTPS redirect arg is present only in TLS
+        #     mode, so its presence must match routing_tls.
+        #   - file provider: older containers watch a single file
+        #     (--providers.file.filename); we now watch the dynamic directory
+        #     (--providers.file.directory), which is what lets operator drop-in
+        #     *.yml load. Recreate anything not already on the directory
+        #     provider. This supersedes a startup migration: it self-heals even
+        #     when the container was left over from a prior traefik-mode setup
+        #     while the server ran in port mode.
         cmd = t.attrs.get("Config", {}).get("Cmd") or []
         has_redirect = any("redirections" in str(arg) for arg in cmd)
-        if has_redirect != settings.routing_tls:
+        on_dir_provider = any(
+            str(arg).startswith("--providers.file.directory=") for arg in cmd
+        )
+        if has_redirect != settings.routing_tls or not on_dir_provider:
             logger.info(
-                "Recreating %s: routing tls changed (was tls=%s, now tls=%s)",
+                "Recreating %s: config drift (tls now=%s, on_dir_provider=%s)",
                 settings.traefik_container,
-                has_redirect,
                 settings.routing_tls,
+                on_dir_provider,
             )
             t.stop()
             t.remove()

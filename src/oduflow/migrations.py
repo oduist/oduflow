@@ -338,44 +338,6 @@ def _migrate_traefik_yml_config(settings: Settings) -> None:
         pass
 
 
-def _migrate_traefik_dynamic_directory(settings: Settings) -> None:
-    """Recreate Traefik if it still mounts the dynamic config as a single file.
-
-    The file provider now watches a directory (``/etc/traefik/dynamic``) so
-    operators can drop their own ``*.yml`` alongside Oduflow's generated
-    ``oduflow.yml``. ``_ensure_traefik`` early-returns on an existing container
-    and never rewrites its args or mounts, so a container created with the old
-    ``--providers.file.filename`` is removed here (the ACME volume persists →
-    certificates survive) and system init recreates it with
-    ``--providers.file.directory`` right after migrations. Idempotent: once
-    recreated the arg is ``.directory``, so a rerun finds nothing.
-    """
-    import docker
-
-    from oduflow.docker_ops.client import get_client
-
-    if settings.routing_mode != "traefik":
-        return
-
-    client = get_client()
-    try:
-        traefik = client.containers.get(settings.traefik_container)
-        cmd = traefik.attrs.get("Config", {}).get("Cmd") or []
-        uses_single_file = any(
-            str(arg).startswith("--providers.file.filename=") for arg in cmd
-        )
-        if uses_single_file:
-            logger.info(
-                "Removing %s (single-file dynamic config); system init "
-                "recreates it watching the /etc/traefik/dynamic directory",
-                settings.traefik_container,
-            )
-            traefik.stop()
-            traefik.remove()
-    except docker.errors.NotFound:
-        pass
-
-
 # Append-only registry, executed in list order. Ids are recorded in
 # migrations.json once applied; reordering or renaming entries would re-run
 # or skip steps on existing installs.
@@ -419,15 +381,6 @@ MIGRATIONS: list[Migration] = [
             "(file provider rejects .json); init recreates it with oduflow.yml"
         ),
         apply=_migrate_traefik_yml_config,
-    ),
-    Migration(
-        id="0006-traefik-dynamic-directory",
-        description=(
-            "Recreate Traefik if it still mounts a single dynamic-config file; "
-            "init recreates it watching the /etc/traefik/dynamic directory so "
-            "operators can drop in their own *.yml"
-        ),
-        apply=_migrate_traefik_dynamic_directory,
     ),
 ]
 
