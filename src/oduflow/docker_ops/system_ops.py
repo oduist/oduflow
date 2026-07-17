@@ -441,46 +441,77 @@ def _resolve_instance_conf(name: str, data_dir: str) -> pathlib.Path:
     return _PACKAGE_ROOT / "templates" / name
 
 
+def _route_entrypoint(settings: Settings) -> dict[str, Any]:
+    """Entrypoint/TLS fragment shared by team and extra-route routers.
+
+    TLS mode routes on ``websecure`` with a Let's Encrypt cert; otherwise (behind
+    an upstream TLS terminator such as a Cloudflare tunnel) plain HTTP on ``web``.
+    """
+    if settings.routing_tls:
+        return {"entryPoints": ["websecure"], "tls": {"certResolver": "letsencrypt"}}
+    return {"entryPoints": ["web"]}
+
+
+def _resolve_upstream_url(url: str) -> str:
+    """Make a host-loopback upstream reachable from inside the Traefik container.
+
+    A route target of ``http://127.0.0.1:PORT`` (or ``localhost``) means "a
+    service listening on the host", but inside the Traefik container 127.0.0.1 is
+    the container's own loopback. Rewrite it to ``host.docker.internal`` (mapped
+    to host-gateway on the container) so the documented simple case just works.
+
+    Only ``http://`` loopbacks are rewritten. Rewriting an ``https://localhost``
+    upstream would make Traefik verify the backend certificate against
+    ``host.docker.internal`` while the host's cert is issued for ``localhost`` /
+    ``127.0.0.1`` — a guaranteed TLS mismatch (502). A TLS loopback backend is an
+    advanced case: point it at the host's real name, or use a drop-in dynamic
+    file with a ``serversTransport``. Non-loopback upstreams pass through.
+    """
+    return re.sub(
+        r"^(http://)(127\.0\.0\.1|localhost)(?=[:/]|$)",
+        r"\1host.docker.internal",
+        url,
+    )
+
+
 def _write_traefik_dynamic_config(settings: Settings, config_path: str) -> None:
-    """Generate traefik dynamic config that routes each team's hostname to oduflow."""
+    """Generate Traefik dynamic config: route each team hostname to Oduflow, plus
+    any static ``[route.*]`` entries to their external upstreams."""
     routers: dict[str, Any] = {}
+    services: dict[str, Any] = {
+        "oduflow": {
+            "loadBalancer": {
+                "servers": [{"url": f"http://host.docker.internal:{settings.port}"}]
+            }
+        }
+    }
+
     for team_id, team in settings.teams.items():
         if not team.hostname:
             continue
-        router_name = f"oduflow-team-{team_id}"
-        if settings.routing_tls:
-            routers[router_name] = {
-                "rule": f"Host(`{team.hostname}`)",
-                "service": "oduflow",
-                "entryPoints": ["websecure"],
-                "tls": {"certResolver": "letsencrypt"},
-            }
-        else:
-            # Behind an upstream TLS terminator (e.g. Cloudflare tunnel): plain
-            # HTTP on the web entrypoint, no TLS/ACME.
-            routers[router_name] = {
-                "rule": f"Host(`{team.hostname}`)",
-                "service": "oduflow",
-                "entryPoints": ["web"],
-            }
+        routers[f"oduflow-team-{team_id}"] = {
+            "rule": f"Host(`{team.hostname}`)",
+            "service": "oduflow",
+            **_route_entrypoint(settings),
+        }
+
+    # Static extra routes: an external hostname → an arbitrary upstream URL for a
+    # service Oduflow does not manage (see [route.*] in oduflow.toml).
+    for route in settings.extra_routes:
+        name = f"oduflow-route-{route.name}"
+        routers[name] = {
+            "rule": f"Host(`{route.host}`)",
+            "service": name,
+            **_route_entrypoint(settings),
+        }
+        services[name] = {
+            "loadBalancer": {"servers": [{"url": _resolve_upstream_url(route.url)}]}
+        }
 
     if not routers:
         return
 
-    config = {
-        "http": {
-            "routers": routers,
-            "services": {
-                "oduflow": {
-                    "loadBalancer": {
-                        "servers": [
-                            {"url": f"http://host.docker.internal:{settings.port}"}
-                        ]
-                    }
-                }
-            },
-        }
-    }
+    config = {"http": {"routers": routers, "services": services}}
 
     # Written to a ``.yml`` file: Traefik's file provider only accepts
     # .toml/.yaml/.yml (it rejects .json), and JSON is a valid subset of YAML,
@@ -510,25 +541,43 @@ def _ensure_traefik(client: DockerClient, settings: Settings) -> None:
     # Host path for the dynamic config, bind-mounted into the container below.
     # Use the resolved config dir (``/etc/oduflow`` when writable, else
     # ``~/.oduflow/conf``) so it works without root on macOS and lands under a
-    # path Docker Desktop shares — same placement as postgresql.conf.
-    traefik_config = os.path.join(settings.etc_dir, "traefik.yml")
-    _write_traefik_dynamic_config(settings, traefik_config)
+    # path Docker Desktop shares — same placement as postgresql.conf. We mount a
+    # whole directory (not a single file) so operators can drop their own
+    # ``*.yml`` dynamic-config files alongside Oduflow's generated ``oduflow.yml``
+    # (Traefik watches the directory); Oduflow only ever writes/overwrites
+    # ``oduflow.yml`` and never touches the operator's files.
+    traefik_dynamic_dir = os.path.join(settings.etc_dir, "traefik-dynamic")
+    os.makedirs(traefik_dynamic_dir, exist_ok=True)
+    _write_traefik_dynamic_config(
+        settings, os.path.join(traefik_dynamic_dir, "oduflow.yml")
+    )
 
     try:
         t = client.containers.get(settings.traefik_container)
         # Self-correcting drift control: _ensure_traefik never rewrites an
-        # existing container's args, so a flipped routing tls setting would
-        # otherwise be ignored until a manual recreate. The HTTP->HTTPS redirect
-        # arg is present only in TLS mode, so its presence must match
-        # routing_tls; recreate on mismatch (in either direction).
+        # existing container's args, so config that changed since the container
+        # was created would otherwise be ignored until a manual recreate.
+        # Recreate on either drift:
+        #   - routing tls: the HTTP->HTTPS redirect arg is present only in TLS
+        #     mode, so its presence must match routing_tls.
+        #   - file provider: older containers watch a single file
+        #     (--providers.file.filename); we now watch the dynamic directory
+        #     (--providers.file.directory), which is what lets operator drop-in
+        #     *.yml load. Recreate anything not already on the directory
+        #     provider. This supersedes a startup migration: it self-heals even
+        #     when the container was left over from a prior traefik-mode setup
+        #     while the server ran in port mode.
         cmd = t.attrs.get("Config", {}).get("Cmd") or []
         has_redirect = any("redirections" in str(arg) for arg in cmd)
-        if has_redirect != settings.routing_tls:
+        on_dir_provider = any(
+            str(arg).startswith("--providers.file.directory=") for arg in cmd
+        )
+        if has_redirect != settings.routing_tls or not on_dir_provider:
             logger.info(
-                "Recreating %s: routing tls changed (was tls=%s, now tls=%s)",
+                "Recreating %s: config drift (tls now=%s, on_dir_provider=%s)",
                 settings.traefik_container,
-                has_redirect,
                 settings.routing_tls,
+                on_dir_provider,
             )
             t.stop()
             t.remove()
@@ -541,13 +590,13 @@ def _ensure_traefik(client: DockerClient, settings: Settings) -> None:
 
     volumes = {
         "/var/run/docker.sock": {"bind": "/var/run/docker.sock", "mode": "ro"},
-        traefik_config: {"bind": "/etc/traefik/dynamic/oduflow.yml", "mode": "ro"},
+        traefik_dynamic_dir: {"bind": "/etc/traefik/dynamic", "mode": "ro"},
     }
     command = [
         "--log.level=INFO",
         "--providers.docker=true",
         "--providers.docker.exposedbydefault=false",
-        "--providers.file.filename=/etc/traefik/dynamic/oduflow.yml",
+        "--providers.file.directory=/etc/traefik/dynamic",
         "--providers.file.watch=true",
         "--entrypoints.web.address=:80",
     ]

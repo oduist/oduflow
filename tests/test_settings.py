@@ -317,3 +317,83 @@ class TestAgentSettings:
         toml.write_text('[team.1]\nhostname = "localhost"\nagent_env = "oops"\n')
         with pytest.raises(ValueError, match="agent_env must be a table"):
             Settings.from_toml(str(toml))
+
+
+class TestExtraRoutes:
+    def _traefik_toml(self, tmp_path, body):
+        toml = tmp_path / "oduflow.toml"
+        toml.write_text(
+            '[routing]\nmode = "traefik"\nacme_email = "a@b.co"\n'
+            '[team.1]\nhostname = "dev.example.com"\n' + body
+        )
+        return toml
+
+    def test_parse_route(self, tmp_path):
+        toml = self._traefik_toml(
+            tmp_path,
+            '[route.legacy-api]\nhost = "api.example.com"\nurl = "http://127.0.0.1:3000"\n',
+        )
+        s = Settings.from_toml(str(toml))
+        s.validate()
+        assert len(s.extra_routes) == 1
+        route = s.extra_routes[0]
+        assert route.name == "legacy-api"
+        assert route.host == "api.example.com"
+        assert route.url == "http://127.0.0.1:3000"
+
+    def test_host_scheme_is_stripped(self, tmp_path):
+        toml = self._traefik_toml(
+            tmp_path,
+            '[route.r]\nhost = "https://api.example.com/"\nurl = "http://10.0.0.5:80"\n',
+        )
+        s = Settings.from_toml(str(toml))
+        assert s.extra_routes[0].host == "api.example.com"
+
+    def test_route_host_with_path_rejected(self, tmp_path):
+        # A path component would land in Traefik's Host() rule and silently
+        # never match; it must be a loud config error.
+        toml = self._traefik_toml(
+            tmp_path,
+            '[route.r]\nhost = "api.example.com/v1"\nurl = "http://127.0.0.1:3000"\n',
+        )
+        with pytest.raises(ValueError, match="plain hostname"):
+            Settings.from_toml(str(toml)).validate()
+
+    def test_route_requires_traefik_mode(self, tmp_path):
+        toml = tmp_path / "oduflow.toml"
+        toml.write_text(
+            '[routing]\nmode = "port"\n[team.1]\nhostname = "localhost"\n'
+            '[route.r]\nhost = "api.example.com"\nurl = "http://127.0.0.1:3000"\n'
+        )
+        with pytest.raises(ValueError, match="require routing.mode = 'traefik'"):
+            Settings.from_toml(str(toml)).validate()
+
+    def test_route_empty_url_rejected(self, tmp_path):
+        toml = self._traefik_toml(tmp_path, '[route.r]\nhost = "api.example.com"\n')
+        with pytest.raises(ValueError, match="url must be set"):
+            Settings.from_toml(str(toml)).validate()
+
+    def test_route_bad_url_scheme_rejected(self, tmp_path):
+        toml = self._traefik_toml(
+            tmp_path,
+            '[route.r]\nhost = "api.example.com"\nurl = "ftp://x/1"\n',
+        )
+        with pytest.raises(ValueError, match="url must start with http"):
+            Settings.from_toml(str(toml)).validate()
+
+    def test_route_host_collision_with_team_rejected(self, tmp_path):
+        toml = self._traefik_toml(
+            tmp_path,
+            '[route.r]\nhost = "dev.example.com"\nurl = "http://127.0.0.1:3000"\n',
+        )
+        with pytest.raises(ValueError, match="collides"):
+            Settings.from_toml(str(toml)).validate()
+
+    def test_route_host_collision_between_routes_rejected(self, tmp_path):
+        toml = self._traefik_toml(
+            tmp_path,
+            '[route.a]\nhost = "api.example.com"\nurl = "http://127.0.0.1:3000"\n'
+            '[route.b]\nhost = "api.example.com"\nurl = "http://127.0.0.1:4000"\n',
+        )
+        with pytest.raises(ValueError, match="collides"):
+            Settings.from_toml(str(toml)).validate()

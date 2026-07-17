@@ -46,6 +46,92 @@ In traefik mode the self-hosted [OAuth Authorization Server](security.md#self-ho
 
 Auxiliary services also get Traefik routing. A service named `meilisearch` with base domain `dev.example.com` becomes accessible at `https://meilisearch.dev.example.com`. Custom hostnames are also supported.
 
+## Routing extra domains to external services
+
+Traefik in Oduflow can also forward a domain to a service that Oduflow does
+**not** manage — another Docker container, a process on the host, or a machine
+elsewhere. There are two ways, from simplest to most flexible.
+
+### 1. Declarative routes in `oduflow.toml`
+
+For the common "this hostname → that URL" case, add a `[route.<name>]` section:
+
+```toml
+[routing]
+mode = "traefik"
+acme_email = "admin@example.com"
+
+[team.1]
+hostname = "dev.example.com"
+
+[route.legacy-api]
+host = "api.example.com"
+url  = "http://127.0.0.1:3000"
+```
+
+On the next start Oduflow generates a Traefik router for `api.example.com` and
+forwards it to `http://127.0.0.1:3000`. In TLS mode the route gets its own
+Let's Encrypt certificate (point the domain's DNS at this server first), exactly
+like a team hostname; behind a `tls = false` upstream it is served over plain
+HTTP on port 80.
+
+Notes:
+
+- **`127.0.0.1` / `localhost` mean "on the Docker host".** Traefik runs in a
+  container, so Oduflow rewrites an `http://` loopback upstream to
+  `host.docker.internal` (mapped to the host gateway). So `http://127.0.0.1:3000`
+  reaches a service listening on port 3000 of the host. Use the real IP/hostname
+  for anything off the host. An `https://localhost` upstream is **not** rewritten
+  (that would break backend TLS certificate verification) — for a TLS backend on
+  the host, use its real hostname or a drop-in dynamic file with a
+  `serversTransport`.
+- `url` must be `http://…` or `https://…`; `host` must be a plain hostname (no
+  path) and unique across all routes and team hostnames.
+- These routes are declared once in config; the generated router set is
+  rewritten on every restart, so hand-editing the generated file is pointless
+  (use option 2 for custom Traefik config).
+
+### 2. Drop-in Traefik dynamic files
+
+For anything the simple `host → url` form can't express — middleware, header
+rewrites, custom TLS options, sticky sessions, multiple services — Oduflow
+mounts a **dynamic-config directory** that Traefik watches:
+
+- On the host it is `<config-dir>/traefik-dynamic/` — `/etc/oduflow/traefik-dynamic/`
+  when writable, otherwise `~/.oduflow/conf/traefik-dynamic/`.
+- Oduflow writes and overwrites only `oduflow.yml` there (its own routers). Any
+  **other** `*.yml`/`*.yaml`/`*.toml` file you place in that directory is loaded
+  by Traefik and **never touched by Oduflow** — it survives restarts and
+  upgrades.
+
+For example, `<config-dir>/traefik-dynamic/custom.yml`:
+
+```yaml
+http:
+  routers:
+    my-app:
+      rule: "Host(`app.example.com`)"
+      entryPoints: ["websecure"]
+      tls:
+        certResolver: letsencrypt
+      service: my-app
+      middlewares: ["my-headers"]
+  middlewares:
+    my-headers:
+      headers:
+        customRequestHeaders:
+          X-Forwarded-Proto: "https"
+  services:
+    my-app:
+      loadBalancer:
+        servers:
+          - url: "http://host.docker.internal:9000"
+```
+
+Traefik picks it up within a second (no restart needed). This is the full
+Traefik [file-provider dynamic configuration](https://doc.traefik.io/traefik/providers/file/),
+so use it when you outgrow the declarative routes above.
+
 ## Behind a Cloudflare tunnel (or other TLS-terminating upstream)
 
 If HTTPS is terminated upstream — for example by a **Cloudflare tunnel** (`cloudflared`) that already serves a valid certificate — Traefik should not obtain its own certificates or redirect to HTTPS. Set `tls = false`:
