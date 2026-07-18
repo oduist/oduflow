@@ -658,8 +658,16 @@ def _destroy_traefik(
         pass
 
 
-def _wait_pg_ready(client: DockerClient, settings: Settings, timeout: int = 30) -> None:
-    container = client.containers.get(settings.shared_db_container)
+def _wait_pg_ready(
+    client: DockerClient,
+    settings: Settings,
+    timeout: int = 30,
+    *,
+    container_name: str | None = None,
+) -> None:
+    # container_name selects the PostgreSQL instance: the shared dev one by
+    # default, or the production cluster (settings.prod_db_container).
+    container = client.containers.get(container_name or settings.shared_db_container)
     for _ in range(timeout):
         try:
             exit_code, _ = container.exec_run(["pg_isready", "-U", settings.db_user])
@@ -686,15 +694,20 @@ def _wait_pg_ready(client: DockerClient, settings: Settings, timeout: int = 30) 
             pass
         time.sleep(1)
     raise PrerequisiteNotMetError(
-        f"PostgreSQL ({settings.shared_db_container}) did not become ready within "
-        f"{timeout}s. Check its logs: docker logs {settings.shared_db_container}"
+        f"PostgreSQL ({container.name}) did not become ready within "
+        f"{timeout}s. Check its logs: docker logs {container.name}"
     )
 
 
 def _exec_sql(
-    client: DockerClient, settings: Settings, sql: str, db: str = "postgres"
+    client: DockerClient,
+    settings: Settings,
+    sql: str,
+    db: str = "postgres",
+    *,
+    container_name: str | None = None,
 ) -> str:
-    container = client.containers.get(settings.shared_db_container)
+    container = client.containers.get(container_name or settings.shared_db_container)
     exit_code, output = container.exec_run(
         ["psql", "-U", settings.db_user, "-d", db, "-tAc", sql]
     )
@@ -754,7 +767,13 @@ def check_db_quota(
 
 
 def _create_pg_role(
-    client: DockerClient, settings: Settings, username: str, password: str, db_name: str
+    client: DockerClient,
+    settings: Settings,
+    username: str,
+    password: str,
+    db_name: str,
+    *,
+    container_name: str | None = None,
 ) -> None:
     safe_pw = password.replace("'", "''")
     _exec_sql(
@@ -765,6 +784,7 @@ def _create_pg_role(
         f"CREATE ROLE \"{username}\" LOGIN PASSWORD '{safe_pw}'; "
         f"END IF; "
         f"END $$;",
+        container_name=container_name,
     )
     # Always sync the password — the role may already exist with a stale password
     # from a previously deleted environment.
@@ -772,37 +792,170 @@ def _create_pg_role(
         client,
         settings,
         f"ALTER ROLE \"{username}\" WITH LOGIN PASSWORD '{safe_pw}';",
+        container_name=container_name,
     )
-    _exec_sql(client, settings, f'ALTER DATABASE "{db_name}" OWNER TO "{username}";')
+    _exec_sql(
+        client,
+        settings,
+        f'ALTER DATABASE "{db_name}" OWNER TO "{username}";',
+        container_name=container_name,
+    )
     # Ensure the env role is NOT a member of the superuser role. Ownership of
     # template objects (needed for DDL during module upgrades) is handled by the
     # per-object reassignment in create_environment instead; superuser-role
     # membership would let the env role SET ROLE to superuser — a cross-tenant
     # RCE (#40). The REVOKE also de-escalates roles created before this change.
-    _exec_sql(client, settings, f'REVOKE "{settings.db_user}" FROM "{username}";')
+    _exec_sql(
+        client,
+        settings,
+        f'REVOKE "{settings.db_user}" FROM "{username}";',
+        container_name=container_name,
+    )
     logger.info("Created/ensured PG role '%s' for database '%s'", username, db_name)
 
 
-def _drop_pg_role(client: DockerClient, settings: Settings, username: str) -> None:
+def _drop_pg_role(
+    client: DockerClient,
+    settings: Settings,
+    username: str,
+    *,
+    container_name: str | None = None,
+) -> None:
     if username == settings.db_user:
         return
     try:
-        _exec_sql(client, settings, f'REVOKE "{settings.db_user}" FROM "{username}";')
+        _exec_sql(
+            client,
+            settings,
+            f'REVOKE "{settings.db_user}" FROM "{username}";',
+            container_name=container_name,
+        )
     except Exception:
         pass
     try:
-        _exec_sql(client, settings, f'DROP OWNED BY "{username}";')
+        _exec_sql(
+            client,
+            settings,
+            f'DROP OWNED BY "{username}";',
+            container_name=container_name,
+        )
     except Exception:
         pass
-    _exec_sql(client, settings, f'DROP ROLE IF EXISTS "{username}";')
+    _exec_sql(
+        client,
+        settings,
+        f'DROP ROLE IF EXISTS "{username}";',
+        container_name=container_name,
+    )
     logger.info("Dropped PG role '%s'", username)
 
 
-def _db_exists(client: DockerClient, settings: Settings, db_name: str) -> bool:
+def reassign_db_ownership(
+    client: DockerClient,
+    settings: Settings,
+    db_name: str,
+    new_user: str,
+    *,
+    container_name: str | None = None,
+) -> None:
+    """Reassign every object in *db_name* not owned by *new_user* to it.
+
+    A restored/cloned database's objects are owned by whatever role created
+    them — normally the superuser, but plain-SQL imports can leave objects
+    owned by a source env's role. DDL during module upgrades requires
+    ownership, so transfer it per-object instead of granting superuser-role
+    membership (which would be a cross-tenant RCE, #40). Linked
+    (SERIAL/identity) sequences are skipped: they follow their table's owner
+    automatically. System roles (pg_*) are left untouched.
+    """
+    _exec_sql(
+        client,
+        settings,
+        f'ALTER SCHEMA public OWNER TO "{new_user}";',
+        db=db_name,
+        container_name=container_name,
+    )
+    _exec_sql(
+        client,
+        settings,
+        rf"""
+        DO $$
+        DECLARE r RECORD;
+        BEGIN
+          FOR r IN SELECT n.nspname FROM pg_namespace n JOIN pg_roles o ON n.nspowner = o.oid
+                   WHERE o.rolname <> '{new_user}' AND o.rolname NOT LIKE 'pg\_%'
+                     AND n.nspname NOT LIKE 'pg\_%' AND n.nspname <> 'information_schema'
+          LOOP EXECUTE format('ALTER SCHEMA %I OWNER TO %I', r.nspname, '{new_user}'); END LOOP;
+
+          FOR r IN SELECT c.relkind AS kind, n.nspname AS sch, c.relname AS rel
+                   FROM pg_class c
+                   JOIN pg_namespace n ON c.relnamespace = n.oid
+                   JOIN pg_roles o ON c.relowner = o.oid
+                   WHERE o.rolname <> '{new_user}' AND o.rolname NOT LIKE 'pg\_%'
+                     AND n.nspname NOT LIKE 'pg\_%' AND n.nspname <> 'information_schema'
+                     AND c.relkind IN ('r', 'p', 'S', 'v', 'm', 'f')
+                     AND NOT (c.relkind = 'S' AND EXISTS (
+                         SELECT 1 FROM pg_depend d
+                         WHERE d.classid = 'pg_class'::regclass AND d.objid = c.oid
+                           AND d.refclassid = 'pg_class'::regclass AND d.deptype IN ('a', 'i')))
+          LOOP EXECUTE format('ALTER %s %I.%I OWNER TO %I',
+               CASE r.kind WHEN 'S' THEN 'SEQUENCE' WHEN 'v' THEN 'VIEW'
+                           WHEN 'm' THEN 'MATERIALIZED VIEW' WHEN 'f' THEN 'FOREIGN TABLE'
+                           ELSE 'TABLE' END, r.sch, r.rel, '{new_user}'); END LOOP;
+
+          FOR r IN SELECT p.oid::regprocedure AS sig
+                   FROM pg_proc p
+                   JOIN pg_namespace n ON p.pronamespace = n.oid
+                   JOIN pg_roles o ON p.proowner = o.oid
+                   WHERE o.rolname <> '{new_user}' AND o.rolname NOT LIKE 'pg\_%'
+                     AND n.nspname NOT LIKE 'pg\_%' AND n.nspname <> 'information_schema'
+          LOOP EXECUTE format('ALTER ROUTINE %s OWNER TO %I', r.sig, '{new_user}'); END LOOP;
+        END $$;
+        """,
+        db=db_name,
+        container_name=container_name,
+    )
+
+
+def drop_signaling_sequences(
+    client: DockerClient,
+    settings: Settings,
+    db_name: str,
+    *,
+    container_name: str | None = None,
+) -> None:
+    """Drop Odoo signaling sequences carried over from a source database.
+
+    Odoo re-creates them on first startup (CREATE SEQUENCE without IF NOT
+    EXISTS), so leftovers cause DuplicateTable errors.
+    """
+    _exec_sql(
+        client,
+        settings,
+        "DO $$ DECLARE r RECORD; BEGIN "
+        "FOR r IN SELECT c.relname FROM pg_class c "
+        "WHERE c.relkind = 'S' "
+        "AND (c.relname LIKE 'base_registry_signaling%' "
+        "OR c.relname LIKE 'base_cache_signaling%') "
+        "LOOP EXECUTE 'DROP SEQUENCE IF EXISTS ' || quote_ident(r.relname); "
+        "END LOOP; END $$;",
+        db=db_name,
+        container_name=container_name,
+    )
+
+
+def _db_exists(
+    client: DockerClient,
+    settings: Settings,
+    db_name: str,
+    *,
+    container_name: str | None = None,
+) -> bool:
     result = _exec_sql(
         client,
         settings,
         f"SELECT 1 FROM pg_database WHERE datname='{db_name}';",
+        container_name=container_name,
     )
     return result == "1"
 
@@ -1025,6 +1178,167 @@ def _ensure_pg_container(
     logger.info("Created container %s", settings.shared_db_container)
 
 
+def _prod_pg_conf_path(settings: Settings) -> str:
+    return os.path.join(settings.etc_dir, "postgresql-prod.conf")
+
+
+def _ensure_prod_pg_conf(settings: Settings) -> str:
+    """Auto-generate the production postgresql.conf once (``# KEEP`` contract:
+    an existing file is never rewritten — delete it to regenerate)."""
+    path = _prod_pg_conf_path(settings)
+    if os.path.isfile(path):
+        return path
+    from oduflow import prod_tune
+    from oduflow.pg_tune import detect_resources
+
+    res = detect_resources()
+    content = prod_tune.generate_prod_postgresql_conf(
+        res["total_ram_mb"],
+        res["cpu_count"],
+        source=res["source"],
+        oduflow_version=_get_oduflow_version(),
+    )
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(content)
+    logger.info(
+        "Config: %s (auto-tuned production profile: %d vCPU, %d MB RAM)",
+        path,
+        res["cpu_count"],
+        int(res["total_ram_mb"]),
+    )
+    return path
+
+
+def _ensure_prod_pg_container(
+    client: DockerClient, settings: Settings, system_labels: dict[str, str]
+) -> None:
+    """Start (or create) the production PostgreSQL container.
+
+    Unlike the dev instance there is no /tablespaces mount: everything stays
+    inside PGDATA so cluster-level WAL archiving and base backups (WAL-G)
+    cover the whole state. The wal-g binary and config directories are
+    bind-mounted read-only so backups can be enabled or reconfigured later
+    without recreating the container. No ports are published — production
+    Odoo containers reach it over the team networks.
+    """
+    from oduflow import walg
+
+    try:
+        db_container = client.containers.get(settings.prod_db_container)
+        if db_container.status != "running":
+            db_container.start()
+        return
+    except docker.errors.NotFound:
+        pass
+
+    conf_path = _ensure_prod_pg_conf(settings)
+    os.makedirs(walg.bin_host_dir(settings), exist_ok=True)
+    os.makedirs(walg.conf_host_dir(settings), exist_ok=True)
+    client.containers.run(
+        settings.prod_postgres_image or settings.postgres_image,
+        name=settings.prod_db_container,
+        detach=True,
+        network=settings.shared_network,
+        volumes={
+            settings.prod_db_volume: {
+                "bind": "/var/lib/postgresql/data",
+                "mode": "rw",
+            },
+            conf_path: {
+                "bind": "/etc/postgresql/postgresql.conf",
+                "mode": "ro",
+            },
+            walg.bin_host_dir(settings): {"bind": walg.BIN_MOUNT, "mode": "ro"},
+            walg.conf_host_dir(settings): {"bind": walg.CONF_MOUNT, "mode": "ro"},
+        },
+        command=["postgres", "-c", "config_file=/etc/postgresql/postgresql.conf"],
+        environment={
+            "POSTGRES_USER": settings.db_user,
+            "POSTGRES_PASSWORD": settings.db_password,
+        },
+        labels={**system_labels, "oduflow.prod": "true"},
+        restart_policy={"Name": "unless-stopped"},
+    )
+    logger.info("Created container %s", settings.prod_db_container)
+
+
+def prod_infra_exists(client: DockerClient, settings: Settings) -> bool:
+    try:
+        client.containers.get(settings.prod_db_container)
+        return True
+    except docker.errors.NotFound:
+        return False
+
+
+def _prod_infra_required(client: DockerClient, settings: Settings) -> bool:
+    if prod_infra_exists(client, settings):
+        return True
+    from oduflow import production_registry
+
+    return any(
+        production_registry.list_productions(team) for team in settings.teams.values()
+    )
+
+
+def ensure_prod_infra(
+    client: DockerClient, settings: Settings, *, force: bool = False
+) -> bool:
+    """Provision the production tier (idempotent, lazy).
+
+    Runs on every server start and from create_production (``force=True``).
+    Dev-only installs never grow a second PostgreSQL: without ``force`` this
+    is a no-op until a production exists or the container is already there.
+    Returns True when the production infra is up.
+    """
+    from oduflow import production_registry, walg
+
+    if not force and not _prod_infra_required(client, settings):
+        return False
+
+    system_labels = {settings.managed_label: "true", settings.system_label: "true"}
+
+    try:
+        client.volumes.get(settings.prod_db_volume)
+    except docker.errors.NotFound:
+        client.volumes.create(settings.prod_db_volume, labels=system_labels)
+        logger.info("Created volume %s", settings.prod_db_volume)
+
+    # WAL-G binary + config. Best-effort: a github outage must not block
+    # server startup or production provisioning — backups just stay off
+    # (archive_command remains the no-op) until the next start succeeds.
+    walg_ok = False
+    try:
+        walg.ensure_walg(settings)
+        walg_ok = True
+    except Exception as exc:
+        logger.warning("wal-g unavailable (backups disabled for now): %s", exc)
+    walg.write_walg_config(settings)
+
+    _ensure_prod_pg_container(client, settings, system_labels)
+    # walg.json must be readable by the container's postgres user (see
+    # apply_walg_config_ownership); do it once the PG image is present.
+    walg.apply_walg_config_ownership(settings, client)
+    _wait_pg_ready(client, settings, container_name=settings.prod_db_container)
+
+    # Attach the (possibly new) prod DB to every team network.
+    for team in settings.teams.values():
+        ensure_team_network(client, settings, team)
+
+    try:
+        walg.apply_archive_command(
+            client, settings, enabled=walg_ok and settings.backup is not None
+        )
+    except Exception as exc:
+        logger.warning("Could not set production archive_command: %s", exc)
+
+    # A server that died mid-deploy leaves deploy_in_progress flags behind.
+    for team in settings.teams.values():
+        production_registry.clear_stale_deploy_flags(team)
+
+    return True
+
+
 def ensure_team_tablespace(
     client: DockerClient, settings: Settings, team: TeamSettings
 ) -> str:
@@ -1076,9 +1390,10 @@ def ensure_team_network(
 
     Environment/service containers join only their team network, so one
     tenant's code can never reach another tenant's containers. The shared
-    PostgreSQL container (password-protected, per-env roles) and Traefik (in
-    traefik mode) are attached to every team network — they are the only
-    cross-team surface. Idempotent and cheap.
+    PostgreSQL containers (password-protected, per-env roles; dev and — when
+    provisioned — production) and Traefik (in traefik mode) are attached to
+    every team network — they are the only cross-team surface. Idempotent
+    and cheap.
     """
     net_name = get_team_network_name(team.team_id, settings.prefix)
     try:
@@ -1095,7 +1410,9 @@ def ensure_team_network(
         logger.info("Created network %s", net_name)
         _ensure_iptables_accept(client, net_name)
 
-    infra = [settings.shared_db_container]
+    # The production DB is lazily provisioned; the get-or-skip below already
+    # tolerates its absence.
+    infra = [settings.shared_db_container, settings.prod_db_container]
     if settings.routing_mode == "traefik":
         infra.append(settings.traefik_container)
     for container_name in infra:
@@ -1166,6 +1483,14 @@ def init_system(
 
     for team in settings.teams.values():
         ensure_team_network(client, settings, team)
+
+    # Production tier (second PG cluster + WAL-G): lazily provisioned — a
+    # no-op until the first production exists. Best-effort so a production
+    # infra hiccup never blocks dev environments from starting.
+    try:
+        ensure_prod_infra(client, settings)
+    except Exception:
+        logger.exception("Production infra initialization failed")
 
     # Per-team coding-agent containers. init_system runs on every server
     # start, so oduflow.toml is applied here: enabled teams get their container

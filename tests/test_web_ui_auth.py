@@ -388,3 +388,49 @@ def test_ws_accepts_basic_header():
     client = TestClient(_ws_app(_settings()))
     with client.websocket_connect(_WS_URL, headers=_basic("admin", _PW)) as ws:
         assert ws.receive_text() == "ok"
+
+
+# --- production endpoints ---------------------------------------------------
+
+
+def test_healthz_is_public():
+    from unittest.mock import patch
+
+    client = TestClient(_full_app(_settings()))
+    with patch(
+        "oduflow.health.collect_health", return_value={"ok": True, "checks": {}}
+    ):
+        resp = client.get("/healthz")
+    assert resp.status_code == 200
+    assert resp.json()["ok"] is True
+
+
+def test_healthz_degraded_is_503():
+    from unittest.mock import patch
+
+    client = TestClient(_full_app(_settings()))
+    with patch(
+        "oduflow.health.collect_health", return_value={"ok": False, "checks": {}}
+    ):
+        resp = client.get("/healthz")
+    assert resp.status_code == 503
+
+
+def test_github_webhook_is_public_but_verifies_hmac():
+    # No UI session: the route is reachable, but a bad signature is 401.
+    client = TestClient(_full_app(_settings()))
+    resp = client.post(
+        "/api/webhooks/github",
+        content=b"{}",
+        headers={
+            "x-github-event": "push",
+            "x-hub-signature-256": "sha256=deadbeef",
+        },
+    )
+    assert resp.status_code == 401
+
+
+def test_productions_api_requires_auth():
+    client = TestClient(_full_app(_settings()))
+    assert client.get("/api/productions").status_code == 401
+    assert client.post("/api/productions/x/stop").status_code == 401

@@ -77,10 +77,20 @@ MCP Clients (Cursor, Claude, etc.)
         ├── port_registry.py ── Stable port allocation (ports.json)
         ├── env_credentials.py ── Per-environment PostgreSQL credentials
         ├── sanitizer.py ── DB sanitization (SQL/Python scripts)
+        ├── production_registry.py ── Per-team productions.json (authoritative prod records)
+        ├── prod_tune.py ── Production PG + Odoo worker auto-tuning profiles
+        ├── walg.py ── WAL-G bootstrap, WAL archiving, base backups, cluster PITR
+        ├── s3_client.py ── boto3 wrapper + chunkstore S3 backend + multipart streaming
+        ├── backup_ops.py ── Production snapshots/restore/prune orchestration
+        ├── backup_scheduler.py ── Scheduled snapshots/base backups/retention (daemon thread)
+        ├── webhooks.py ── GitHub push webhooks → auto-deploy (HMAC, coalescing)
+        ├── health.py ── /healthz checks (dev/prod PG, Traefik, S3, disk)
+        ├── chunkstore/ ── Clean-room duplicacy-inspired CDC backup engine (filestore→S3)
         └── docker_ops/
             ├── client.py ── Docker SDK wrapper, UID/GID detection
-            ├── system_ops.py ── init_system, destroy, template management
+            ├── system_ops.py ── init_system, destroy, template management, prod PG infra
             ├── env_ops.py ── Environment create/delete, overlay filesystems
+            ├── production_ops.py ── Production lifecycle + deploy engine with code rollback
             ├── odoo_ops.py ── Module install/upgrade/test, exec, logs
             ├── service_ops.py ── Auxiliary services (Redis, Meilisearch, etc.)
             ├── service_presets.py ── Save/restore service configs

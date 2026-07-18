@@ -397,3 +397,86 @@ class TestExtraRoutes:
         )
         with pytest.raises(ValueError, match="collides"):
             Settings.from_toml(str(toml)).validate()
+
+
+class TestProductionSettings:
+    def test_defaults(self):
+        s = Settings()
+        assert s.prod_db_container == "oduflow-prod-db"
+        assert s.prod_db_volume == "oduflow-prod-db-data"
+        assert s.prod_postgres_image == ""
+        assert s.prod_workers_cap == 8
+        assert s.backup is None
+
+    def test_production_section_from_toml(self, tmp_path):
+        toml = tmp_path / "oduflow.toml"
+        toml.write_text(
+            "[production]\n"
+            'postgres_image = "postgres:17"\n'
+            "workers_cap = 12\n"
+            '[team.1]\nhostname = "localhost"\n'
+        )
+        s = Settings.from_toml(str(toml))
+        assert s.prod_postgres_image == "postgres:17"
+        assert s.prod_workers_cap == 12
+
+
+class TestBackupSettings:
+    def _toml(self, tmp_path, body: str):
+        toml = tmp_path / "oduflow.toml"
+        toml.write_text(body + '\n[team.1]\nhostname = "localhost"\n')
+        return str(toml)
+
+    def test_absent_section_disables_backups(self, tmp_path):
+        s = Settings.from_toml(self._toml(tmp_path, ""))
+        assert s.backup is None
+
+    def test_minimal_section(self, tmp_path):
+        s = Settings.from_toml(
+            self._toml(
+                tmp_path,
+                '[backup]\nbucket = "b"\naccess_key = "ak"\nsecret_key = "sk"\n',
+            )
+        )
+        assert s.backup is not None
+        assert s.backup.bucket == "b"
+        assert s.backup.prefix == "oduflow"
+        assert s.backup.snapshot_time == "02:00"
+        assert s.backup.walg_keep_full == 7
+        s.validate()
+
+    def test_partial_section_raises(self, tmp_path):
+        with pytest.raises(ValueError, match="requires all of"):
+            Settings.from_toml(self._toml(tmp_path, '[backup]\nbucket = "b"\n'))
+
+    def test_bad_snapshot_time_rejected_by_validate(self, tmp_path):
+        s = Settings.from_toml(
+            self._toml(
+                tmp_path,
+                '[backup]\nbucket = "b"\naccess_key = "a"\nsecret_key = "s"\n'
+                'snapshot_time = "25:99"\n',
+            )
+        )
+        with pytest.raises(ValueError, match="snapshot_time"):
+            s.validate()
+
+    def test_bad_keep_pair_rejected(self, tmp_path):
+        s = Settings.from_toml(
+            self._toml(
+                tmp_path,
+                '[backup]\nbucket = "b"\naccess_key = "a"\nsecret_key = "s"\n'
+                'keep = ["weekly"]\n',
+            )
+        )
+        with pytest.raises(ValueError, match="keep entries"):
+            s.validate()
+
+    def test_prefix_normalized(self, tmp_path):
+        s = Settings.from_toml(
+            self._toml(
+                tmp_path,
+                '[backup]\nbucket = "b"\naccess_key = "a"\nsecret_key = "s"\n'
+                'prefix = "/my/prefix/"\n',
+            )
+        )
+        assert s.backup.prefix == "my/prefix"

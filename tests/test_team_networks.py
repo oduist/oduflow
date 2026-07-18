@@ -15,6 +15,17 @@ def test_network_name():
     assert get_team_network_name("1") == "oduflow-1-net"
 
 
+def _containers_get_only(existing: dict[str, MagicMock]):
+    """containers.get side effect: known names resolve, others -> NotFound."""
+
+    def _get(name):
+        if name in existing:
+            return existing[name]
+        raise docker.errors.NotFound("nf")
+
+    return _get
+
+
 class TestEnsureTeamNetwork:
     def test_creates_and_attaches_infra(self):
         client = MagicMock()
@@ -22,7 +33,9 @@ class TestEnsureTeamNetwork:
         net = MagicMock()
         client.networks.create.return_value = net
         pg = MagicMock()
-        client.containers.get.return_value = pg
+        client.containers.get.side_effect = _containers_get_only(
+            {SETTINGS.shared_db_container: pg}
+        )
 
         with patch("oduflow.docker_ops.system_ops._ensure_iptables_accept"):
             name = ensure_team_network(client, SETTINGS, TEAM)
@@ -30,7 +43,23 @@ class TestEnsureTeamNetwork:
         assert name == "oduflow-1-net"
         labels = client.networks.create.call_args[1]["labels"]
         assert labels["oduflow.team"] == "1"
-        net.connect.assert_called_once_with(pg)  # port mode: PG only
+        net.connect.assert_called_once_with(pg)  # port mode: dev PG only
+
+    def test_prod_db_attached_when_present(self):
+        client = MagicMock()
+        net = MagicMock()
+        client.networks.get.return_value = net
+        pg, prod_pg = MagicMock(), MagicMock()
+        client.containers.get.side_effect = _containers_get_only(
+            {
+                SETTINGS.shared_db_container: pg,
+                SETTINGS.prod_db_container: prod_pg,
+            }
+        )
+
+        ensure_team_network(client, SETTINGS, TEAM)
+
+        assert net.connect.call_count == 2
 
     def test_traefik_attached_in_traefik_mode(self):
         settings = Settings(
@@ -39,10 +68,17 @@ class TestEnsureTeamNetwork:
         client = MagicMock()
         net = MagicMock()
         client.networks.get.return_value = net  # network already exists
+        pg, traefik = MagicMock(), MagicMock()
+        client.containers.get.side_effect = _containers_get_only(
+            {
+                settings.shared_db_container: pg,
+                settings.traefik_container: traefik,
+            }
+        )
 
         ensure_team_network(client, settings, TEAM)
 
-        # PG and Traefik both attached.
+        # PG and Traefik both attached (no prod DB provisioned).
         assert net.connect.call_count == 2
 
     def test_already_connected_is_fine(self):

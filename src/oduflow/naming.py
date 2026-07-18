@@ -72,6 +72,63 @@ def validate_env_name(env_name: str) -> str:
     return name
 
 
+# Production names are deliberately stricter than env names: they feed
+# container names, database identifiers, filesystem paths, Traefik router
+# names and S3 key prefixes without any slugification step, so only
+# lowercase alphanumerics and dashes are allowed.
+_PROD_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,30}$")
+
+# Internal namespace prefix separating production environments from dev
+# environments in every name-derived resource (containers, databases, PG
+# roles, workspace dirs). Dev tools reject names in this namespace; prod
+# containers additionally carry no branch label, so dev-side listings never
+# see them.
+PROD_ENV_PREFIX = "prod-"
+
+
+def validate_prod_name(name: str) -> str:
+    """Validate a production environment name and return it unchanged."""
+    if not name or not _PROD_NAME_RE.match(name):
+        raise ValueError(
+            f"Invalid production name '{name}': must start with a lowercase "
+            "letter or digit and contain only [a-z0-9-] (max 31 chars)."
+        )
+    return name
+
+
+def prod_env_name(name: str) -> str:
+    """Internal environment name for a production ("prod-{name}").
+
+    The single chokepoint mapping a production name into the shared naming
+    scheme: every name-derived helper (get_resource_name, get_db_name,
+    get_workspace_path, PG role generation) receives this value, which keeps
+    productions in a reserved namespace that dev environments cannot enter.
+    """
+    validate_prod_name(name)
+    return f"{PROD_ENV_PREFIX}{name}"
+
+
+_DOMAIN_RE = re.compile(
+    r"^[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?"
+    r"(\.[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?)+$"
+)
+
+
+def validate_domain(domain: str) -> str:
+    """Validate a production domain (FQDN) and return it lowercased.
+
+    The value lands in a Traefik ``Host(...)`` rule and in URLs, so only a
+    plain dotted hostname is accepted — no scheme, port, path or wildcard.
+    """
+    normalized = (domain or "").strip().lower().rstrip(".")
+    if not normalized or len(normalized) > 253 or not _DOMAIN_RE.match(normalized):
+        raise ValueError(
+            f"Invalid domain '{domain}': expected a fully-qualified hostname "
+            "like erp.example.com (no scheme, port, or wildcard)."
+        )
+    return normalized
+
+
 def slugify_branch(env_name: str) -> str:
     slug = env_name.replace("/", "-")
     slug = re.sub(r"[^a-zA-Z0-9_-]", "", slug)

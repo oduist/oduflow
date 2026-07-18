@@ -220,6 +220,8 @@ class TestCreateEnvironment:
     )
     @patch("oduflow.docker_ops.env_ops._ensure_system_ready")
     @patch("oduflow.docker_ops.env_ops.get_odoo_uid_gid", return_value="100:101")
+    @patch("oduflow.docker_ops.env_ops.reassign_db_ownership")
+    @patch("oduflow.docker_ops.env_ops.drop_signaling_sequences")
     @patch("oduflow.docker_ops.env_ops._exec_sql")
     @patch("oduflow.docker_ops.env_ops._db_exists", return_value=True)
     @patch("oduflow.docker_ops.env_ops._mount_filestore")
@@ -240,6 +242,8 @@ class TestCreateEnvironment:
         mock_mount,
         mock_db_exists,
         mock_sql,
+        mock_drop_seq,
+        mock_reassign,
         mock_uid_gid,
         mock_ready,
         mock_creds,
@@ -561,7 +565,11 @@ class TestReloadTemplate:
             patch("oduflow.docker_ops.system_ops._update_template_sizes"),
             patch(
                 "oduflow.docker_ops.system_ops._convert_custom_dump_to_sql_with_helper",
-                return_value=(0, "converted", "/tmp/flow-test/templates/mytpl/dump.sql"),
+                return_value=(
+                    0,
+                    "converted",
+                    "/tmp/flow-test/templates/mytpl/dump.sql",
+                ),
             ) as helper,
         ):
             result = system_ops.reload_template(TEST_SETTINGS, TEST_TEAM, "mytpl")
