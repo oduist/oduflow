@@ -1980,3 +1980,25 @@ class TestAgentContainer:
         )
 
         agent.exec_run.assert_not_called()
+
+
+class TestFinalizeShellScript:
+    """`odoo shell` rolls back at the end, so auto_commit must append a commit."""
+
+    def test_appends_commit_when_enabled(self):
+        out = odoo_ops._finalize_shell_script("x = 1", auto_commit=True)
+        assert out.splitlines()[-1] == "env.cr.commit()"
+        assert out.startswith("x = 1")
+
+    def test_no_commit_when_disabled(self):
+        out = odoo_ops._finalize_shell_script("x = 1\n", auto_commit=False)
+        assert "commit" not in out
+        assert out == "x = 1\n"
+
+    def test_trailing_newlines_normalized_before_commit(self):
+        # A dangling block or trailing blank lines must not push the commit
+        # off the top level or duplicate blank lines.
+        out = odoo_ops._finalize_shell_script(
+            "for i in range(3):\n    x = i\n\n\n", True
+        )
+        assert out == "for i in range(3):\n    x = i\nenv.cr.commit()\n"
