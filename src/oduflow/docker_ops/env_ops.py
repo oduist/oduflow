@@ -15,7 +15,7 @@ from typing import Any
 
 import docker
 from docker import DockerClient
-from oduflow import activity, settings
+from oduflow import activity, settings, usage
 from oduflow.docker_ops.client import chown_recursive, get_client, get_odoo_uid_gid
 from oduflow.docker_ops.stats import default_env_limits
 from oduflow.docker_ops.system_ops import (
@@ -1478,6 +1478,8 @@ def create_environment(
     result["local_path"] = repo_path if local_mount else ""
     result["template_lineage"] = lineage
     result["elapsed_seconds"] = round(time.time() - start_time, 1)
+    # Capability token the usage hook authenticates with (X-Oduflow-Env-Uid).
+    result["usage_uid"] = usage.register_token(settings, team, env_name)
     activity.touch(team, env_name)
     # Let the new env's MCP token resolve without waiting for the scan interval.
     invalidate_cache()
@@ -2177,6 +2179,11 @@ def delete_environment(
         logger.warning(msg, extra={"env_name": env_name})
         warnings.append(msg)
 
+    # Preserve usage accounting beyond the ephemeral environment, then drop its
+    # capability token. Archiving reads .usage.json, so it must precede rmtree.
+    usage.archive_on_delete(team, env_name)
+    usage.revoke_token(settings, team, env_name)
+
     if os.path.exists(workspace_path):
         _unmount_filestore(env_name, team)
         extra_dir = os.path.join(workspace_path, "extra")
@@ -2242,6 +2249,7 @@ def list_environments(settings: Settings, team: TeamSettings) -> list[dict[str, 
                 "created_at": container.labels.get("oduflow.created_at", "")
                 or container.attrs.get("Created", ""),
                 "note": _get_note_text(env_name, team.workspaces_dir),
+                "usage": usage.get_env_usage(team, env_name),
             }
 
         try:
@@ -2529,6 +2537,8 @@ def get_environment_info(
             "oduflow.created_at", ""
         ) or odoo_container.attrs.get("Created", "")
         result["note"] = _get_note_text(env_name, team.workspaces_dir)
+        result["usage"] = usage.get_env_usage(team, env_name)
+        result["usage_uid"] = usage.get_token(settings, team, env_name)
 
         if settings.routing_mode == "traefik":
             result["url"] = (

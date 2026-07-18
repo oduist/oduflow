@@ -135,6 +135,7 @@ workflow.
 | `GET` | `/api/stats` | Container/system metrics plus cached environment storage |
 | `GET` | `/api/usage` | Cached per-environment and team storage/quotas |
 | `POST` | `/api/usage/refresh` | Recompute all team storage usage; potentially expensive |
+| `POST` | `/api/llm-usage` | Report a session's LLM token usage for an environment (distinct from the storage-usage `/api/usage`). Authenticated by the per-environment capability token in the `X-Oduflow-Env-Uid` header (no dashboard login). Body: `session_id`, `duration_seconds`, `models`. See [LLM Usage Tracking](usage-tracking.md) |
 | `GET` | `/healthz` | Public health report; returns `200` when healthy, `503` when degraded |
 | `GET` | `/api/license` | License information |
 | `POST` | `/api/license/activate` | Activate body `key` |

@@ -100,6 +100,7 @@ All tools are accessible via MCP clients (Cursor, Cline, Amp, etc.) and the CLI 
 | **Agent Instructions** | | |
 | `get_agent_instructions` | | Get AI agent instructions for using Oduflow MCP tools |
 | `get_odoo_development_guide` | | Get Odoo development standards guide for a specific version (15–19) |
+| `get_claude_hooks` | | Return ready-to-install Claude Code hook setup that reports the environment's LLM token/time/model usage to the dashboard |
 | **Feedback** | | |
 | `report_issue` | | Build a prefilled link for the user to file a bug, feature request, or feedback about Oduflow on GitHub |
 

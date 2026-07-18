@@ -45,6 +45,7 @@ from oduflow import (
     git_ops,
     import_tokens,
     production_registry,
+    usage,
 )
 from oduflow.docker_ops import (
     env_ops,
@@ -83,6 +84,11 @@ _AUTH_COOKIE = "oduflow_ui_auth"
 # as /api/templates/{name}/delete with name="import" to unauthenticated calls.
 # NOTE: /api/templates/import-token (which mints the token) is deliberately NOT
 # public — it stays behind the UI login.
+#
+# /api/llm-usage is reachable without a UI session too: it carries its own
+# per-environment capability token in the X-Oduflow-Env-Uid header (the LLM
+# usage hook is an external process with no dashboard password). The handler
+# enforces that token. (Named to avoid the storage-usage /api/usage endpoint.)
 _PUBLIC_PATHS = frozenset(
     {
         "/login",
@@ -108,6 +114,7 @@ _PUBLIC_PATHS = frozenset(
         # Generated-artifact download: fetched by an agent with curl, which has
         # no dashboard session. Its one-time token is the sole credential.
         "/oduflow-artifact",
+        "/api/llm-usage",
     }
 )
 _PUBLIC_PREFIXES = ("/static/",)
@@ -3300,6 +3307,47 @@ def _build_routes(
             headers={"Content-Disposition": f'attachment; filename="{filename}"'},
         )
 
+    async def api_usage_report(request: Request) -> JSONResponse:
+        """Ingest a session's LLM usage. Authenticated and scoped purely by the
+        X-Oduflow-Env-Uid capability token (no UI session needed)."""
+        settings = get_settings()
+        uid = request.headers.get("x-oduflow-env-uid", "")
+        resolved = usage.resolve_token(settings, uid)
+        if resolved is None:
+            return JSONResponse(
+                {"ok": False, "error": "Invalid or missing X-Oduflow-Env-Uid"},
+                status_code=401,
+            )
+        team, env_name = resolved
+        try:
+            body = await request.json()
+        except Exception:
+            return JSONResponse(
+                {"ok": False, "error": "Invalid JSON body"}, status_code=400
+            )
+        session_id = str((body or {}).get("session_id") or "").strip()
+        if not session_id:
+            return JSONResponse(
+                {"ok": False, "error": "session_id is required"}, status_code=400
+            )
+        models = (body or {}).get("models") or {}
+        if not isinstance(models, dict):
+            return JSONResponse(
+                {"ok": False, "error": "models must be an object"}, status_code=400
+            )
+        try:
+            duration_seconds = float((body or {}).get("duration_seconds") or 0)
+        except (TypeError, ValueError):
+            duration_seconds = 0.0
+        usage.record(
+            team,
+            env_name,
+            session_id=session_id,
+            models=models,
+            duration_seconds=duration_seconds,
+        )
+        return JSONResponse({"ok": True, "usage": usage.get_env_usage(team, env_name)})
+
     async def ws_terminal(websocket: WebSocket) -> None:
         branch = websocket.path_params["branch"]
         await websocket.accept()
@@ -4720,6 +4768,7 @@ def _build_routes(
         # public + token-authenticated. See api_connect_land.
         Route("/oduflow-connect", api_connect_land, methods=["GET"]),
         Route("/oduflow-artifact", api_artifact_download, methods=["GET"]),
+        Route("/api/llm-usage", api_usage_report, methods=["POST"]),
         Route("/api/environments/{branch:path}/update", api_update, methods=["POST"]),
         Route(
             "/api/environments/{branch:path}/recreate", api_recreate, methods=["POST"]

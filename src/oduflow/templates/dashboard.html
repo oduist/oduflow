@@ -853,6 +853,30 @@
   }
   .stat-refresh svg { width: 13px; height: 13px; }
   .stat-refresh:hover { color: var(--accent); }
+  .env-usage { cursor: pointer; }
+  .env-usage:hover strong { color: var(--accent); }
+  .env-usage .usage-label { color: var(--text-dim); }
+  .usage-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-top: 16px;
+    font-size: var(--text-sm);
+  }
+  .usage-table th, .usage-table td {
+    padding: 6px 10px;
+    text-align: right;
+    border-bottom: 1px solid var(--border);
+    font-family: var(--font-mono);
+  }
+  .usage-table th {
+    color: var(--text-dim);
+    font-weight: 500;
+    font-size: var(--text-xs);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+  .usage-table th:first-child, .usage-table td:first-child { text-align: left; }
+  .usage-table tfoot td, .usage-table .usage-total td { color: var(--text); font-weight: 600; }
   .system-bar {
     position: fixed;
     bottom: 0;
@@ -1511,6 +1535,15 @@
       <button class="modal-close" onclick="closeServiceInfo()" aria-label="Close">&times;</button>
     </div>
     <div class="modal-body"><pre id="svc-info-content"></pre></div>
+  </div>
+</div>
+<div class="modal-overlay" id="env-usage-modal" onclick="closeUsage(event)">
+  <div class="modal modal-md">
+    <div class="modal-header">
+      <h2 id="env-usage-title">Usage</h2>
+      <button class="modal-close" onclick="closeUsage()" aria-label="Close">&times;</button>
+    </div>
+    <div class="modal-body"><div id="env-usage-content"></div></div>
   </div>
 </div>
 <div class="modal-overlay" id="console-modal" onclick="closeConsole(event)">
@@ -2511,6 +2544,20 @@ function renderEnvironments(envs, force) {
     // the containerized agent to clone).
     var showAgent = window.ODU_AGENT_ENABLED && !env.local_path;
 
+    var usageHtml = '';
+    var u = env.usage || {};
+    if (u.sessions) {
+      var ut = u.totals || {};
+      var modelNames = Object.keys(u.models || {}).map(shortModel).join(', ');
+      usageHtml = '<div class="env-meta env-usage" role="button" tabindex="0" ' +
+        'title="LLM usage — click for the per-model breakdown" ' +
+        'onclick="showUsage(\'' + escAttr(env.branch) + '\')">' +
+        '<span class="usage-label">Tokens: <strong>' + fmtTokens((ut.input_tokens || 0) + (ut.output_tokens || 0)) + '</strong></span>' +
+        '<span class="usage-label">Time: <strong>' + fmtDuration(u.duration_seconds) + '</strong></span>' +
+        (modelNames ? '<span class="usage-label">Models: <strong>' + esc(modelNames) + '</strong></span>' : '') +
+      '</div>';
+    }
+
     return '<div class="env-card" data-branch="' + esc(env.branch) + '">' +
       '<div class="env-header">' +
         '<div class="left">' +
@@ -2554,6 +2601,7 @@ function renderEnvironments(envs, force) {
               (showAgent
                 ? '<button role="menuitem" title="Terminal session with the coding agent for this environment" onclick="openAgentConsole(\'' + escAttr(env.branch) + '\')">Agent CLI</button>'
                 : '') +
+              '<button role="menuitem" title="LLM token/time usage reported for this environment" onclick="showUsage(\'' + escAttr(env.branch) + '\')">Usage stats</button>' +
               '<button role="menuitem" title="' + (env.note ? 'Edit the note on this environment' : 'Add a note to this environment') + '" onclick="editNote(\'' + escAttr(env.branch) + '\')">' +
                 (env.note ? 'Edit note' : 'Add note') + '</button>' +
               '<button role="menuitem" title="' + (env.protected ? 'Allow Stop, Update, Recreate and Delete again' : 'Disable Stop, Update, Recreate and Delete') + '" onclick="doProtect(\'' + escAttr(env.branch) + '\',' + (env.protected ? 'true' : 'false') + ')" ' + dis + '>' +
@@ -2579,6 +2627,7 @@ function renderEnvironments(envs, force) {
       urlHtml +
       metaHtml +
       extraHtml +
+      usageHtml +
       // The storage span renders even when everything is stopped: DB/disk
       // usage is exactly what you check before cleaning up idle environments.
       '<div class="containers">' + containerHtml +
@@ -4171,6 +4220,69 @@ function closeServiceInfo(event) {
   hideModal('svc-info-modal');
 }
 
+function fmtTokens(n) {
+  n = Number(n) || 0;
+  if (n >= 1e6) return (n / 1e6).toFixed(n >= 1e7 ? 0 : 1) + 'M';
+  if (n >= 1e3) return (n / 1e3).toFixed(n >= 1e4 ? 0 : 1) + 'K';
+  return String(n);
+}
+
+function fmtDuration(s) {
+  s = Math.round(Number(s) || 0);
+  if (s < 60) return s + 's';
+  var m = Math.floor(s / 60);
+  var h = Math.floor(m / 60);
+  m = m % 60;
+  return h ? (h + 'h ' + m + 'm') : (m + 'm');
+}
+
+// Drop the redundant "claude-" vendor prefix for compact display.
+function shortModel(m) { return String(m).replace(/^claude-/, ''); }
+
+function showUsage(branch) {
+  var env = cachedEnvs.find(function(e) { return e.branch === branch; });
+  var u = (env && env.usage) || {};
+  document.getElementById('env-usage-title').textContent = 'Usage — ' + branch;
+  var content = document.getElementById('env-usage-content');
+  if (!u.sessions) {
+    content.innerHTML = '<div class="empty">No LLM usage recorded yet.<br>' +
+      '<span class="empty-hint">Install the reporting hook: <code>get_claude_hooks(env_name="' + esc(branch) + '")</code></span></div>';
+    showModal('env-usage-modal');
+    return;
+  }
+  var t = u.totals || {};
+  var summary = '<div class="env-meta">' +
+    '<span class="usage-label">Total tokens: <strong>' + fmtTokens((t.input_tokens || 0) + (t.output_tokens || 0)) + '</strong></span>' +
+    '<span class="usage-label">Time: <strong>' + fmtDuration(u.duration_seconds) + '</strong></span>' +
+    '<span class="usage-label">Sessions: <strong>' + (u.sessions || 0) + '</strong></span>' +
+    '</div>';
+  var models = u.models || {};
+  var rows = Object.keys(models).sort().map(function(m) {
+    var x = models[m] || {};
+    var cache = (x.cache_read_tokens || 0) + (x.cache_creation_tokens || 0);
+    return '<tr><td>' + esc(shortModel(m)) + '</td>' +
+      '<td>' + fmtTokens(x.input_tokens) + '</td>' +
+      '<td>' + fmtTokens(x.output_tokens) + '</td>' +
+      '<td>' + fmtTokens(cache) + '</td></tr>';
+  }).join('');
+  var totalCache = (t.cache_read_tokens || 0) + (t.cache_creation_tokens || 0);
+  var table = '<table class="usage-table">' +
+    '<thead><tr><th>Model</th><th>Input</th><th>Output</th><th>Cache</th></tr></thead>' +
+    '<tbody>' + rows + '</tbody>' +
+    '<tfoot><tr class="usage-total"><td>Total</td>' +
+      '<td>' + fmtTokens(t.input_tokens) + '</td>' +
+      '<td>' + fmtTokens(t.output_tokens) + '</td>' +
+      '<td>' + fmtTokens(totalCache) + '</td></tr></tfoot>' +
+    '</table>';
+  content.innerHTML = summary + table;
+  showModal('env-usage-modal');
+}
+
+function closeUsage(event) {
+  if (event && event.target !== event.currentTarget) return;
+  hideModal('env-usage-modal');
+}
+
 async function doUpdateService(name) {
   if (!(await confirmDialog({
     title: 'Update service',
@@ -5539,6 +5651,7 @@ var MODAL_CLOSERS = {
   'feedback-modal': closeFeedbackModal,
   'logs-modal': closeLogsModal,
   'svc-info-modal': closeServiceInfo,
+  'env-usage-modal': closeUsage,
   'console-modal': closeConsole,
   'sql-modal': closeSqlConsole,
   'agent-modal': closeAgentConsole,

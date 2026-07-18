@@ -33,6 +33,7 @@ from oduflow import (
     production_registry,
     quotas,
     reaper,
+    usage,
 )
 from oduflow import settings as settings_module
 from oduflow.docker_ops import (
@@ -137,6 +138,18 @@ def _resolve_team(ctx: Context | None) -> TeamSettings:
     if len(settings.teams) == 1:
         return next(iter(settings.teams.values()))
     return settings.get_team("1")
+
+
+def _human_duration(seconds: float) -> str:
+    """Compact human duration, e.g. '3h 12m', '12m', '45s'."""
+    total = int(seconds or 0)
+    if total < 60:
+        return f"{total}s"
+    minutes, _ = divmod(total, 60)
+    hours, minutes = divmod(minutes, 60)
+    if hours:
+        return f"{hours}h {minutes}m"
+    return f"{minutes}m"
 
 
 # -- Output cache helpers --
@@ -717,6 +730,11 @@ def create_environment(
                 else "Code is ahead of the template database"
             )
             lines.append(f"\n⚠️ {label} — {lineage['message']}")
+        lines.append(
+            "Usage tracking: call get_claude_hooks(env_name="
+            f'"{resolved_env_name}") to install a Claude Code hook that records '
+            "token/time usage for this environment on the dashboard."
+        )
         setup_logs: list[str] = result.get("setup_logs", [])
         if setup_logs:
             lines.append("\n--- Setup Log ---")
@@ -1175,6 +1193,29 @@ def submit_agent_feedback(
 # =============================================================================
 
 
+def _dashboard_base_url(settings: Settings, team: TeamSettings) -> str:
+    """Best-effort public base URL of the dashboard for the usage hook to POST to."""
+    if settings.oauth_base_url:
+        return settings.oauth_base_url.rstrip("/")
+    host = team.hostname or "localhost"
+    if settings.routing_mode == "traefik":
+        return f"https://{host}"
+    return f"http://{host}:{settings.port}"
+
+
+_CLAUDE_HOOKS_SETTINGS_SNIPPET = """{
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          { "type": "command", "command": "python3 .claude/hooks/oduflow_usage_hook.py" }
+        ]
+      }
+    ]
+  }
+}"""
+
+
 @mcp.tool()
 @handle_errors
 def report_issue(
@@ -1219,6 +1260,96 @@ def report_issue(
         settings=_get_settings(),
     )
     return feedback.report_issue_message(url, normalized)
+
+
+@mcp.tool()
+@handle_errors
+def get_claude_hooks(env_name: str, ctx: Context = None) -> str:
+    """
+    Get ready-to-install Claude Code hook setup that records this environment's
+    LLM token/time/model usage on the Oduflow dashboard.
+
+    The agent cannot measure its own token consumption, so a Stop hook reads the
+    session transcript and POSTs the real numbers to Oduflow. Install it once per
+    repository; it selects the environment by the current git branch. Follow the
+    returned steps and create the files yourself.
+
+    Args:
+        env_name: The environment to wire usage reporting for.
+    """
+    import json
+    import pathlib
+
+    settings = _get_settings()
+    team = _resolve_team(ctx)
+    uid = usage.get_or_create_token(settings, team, env_name)
+    base_url = _dashboard_base_url(settings, team)
+
+    script_path = (
+        pathlib.Path(__file__).resolve().parent
+        / "templates"
+        / "hooks"
+        / "oduflow_usage_hook.py"
+    )
+    script = (
+        script_path.read_text(encoding="utf-8")
+        if script_path.is_file()
+        else "# (hook script not bundled in this build)"
+    )
+    map_example = json.dumps(
+        {"dashboard_url": base_url, "tokens": {"<your-git-branch>": uid}}, indent=2
+    )
+
+    parts = [
+        f"# Oduflow usage tracking — Claude Code hook for '{env_name}'",
+        "",
+        "This installs a Claude Code **Stop** hook that reports real LLM token "
+        "usage, wall-clock time and model names for this environment to the "
+        "Oduflow dashboard. The agent cannot count its own tokens, so the hook "
+        "reads them from the session transcript. Create the files below yourself.",
+        "",
+        "## 1. Hook script",
+        "",
+        "Write this to `.claude/hooks/oduflow_usage_hook.py`:",
+        "",
+        "```python",
+        script.rstrip("\n"),
+        "```",
+        "",
+        "## 2. Token map (per repository)",
+        "",
+        "Create or merge `.oduflow/usage-tokens.json` at the repo root. Use your "
+        "**current git branch** as the key (run `git rev-parse --abbrev-ref HEAD`):",
+        "",
+        "```json",
+        map_example,
+        "```",
+        "",
+        "This file holds a secret capability token — keep it out of git:",
+        "",
+        "```",
+        "echo '.oduflow/' >> .gitignore",
+        "```",
+        "",
+        "## 3. Enable the hook",
+        "",
+        "Merge this into `.claude/settings.json` (or `.claude/settings.local.json`):",
+        "",
+        "```json",
+        _CLAUDE_HOOKS_SETTINGS_SNIPPET,
+        "```",
+        "",
+        "## Notes",
+        "",
+        f"- Endpoint: `{base_url}/api/llm-usage` (needs the Oduflow dashboard "
+        "running in HTTP mode and reachable from your machine).",
+        "- Reporting is idempotent per session: the hook fires on every Stop and "
+        "updates the same session rather than double-counting.",
+        "- For another branch/environment, run get_claude_hooks again and add its "
+        "branch→UID entry to the same map file.",
+        f"- This environment's UID: `{uid}`",
+    ]
+    return "\n".join(parts)
 
 
 # =============================================================================
@@ -1562,6 +1693,17 @@ def get_environment_info(env_name: str, ctx: Context | None = None) -> str:
         if "cpu_percent" in cinfo:
             line += f" | CPU: {cinfo['cpu_percent']}% | RAM: {cinfo['mem_usage_mb']} MB ({cinfo['mem_percent']}%)"
         lines.append(line)
+    usage_stats = info.get("usage") or {}
+    if usage_stats.get("sessions"):
+        totals = usage_stats.get("totals") or {}
+        in_tok = totals.get("input_tokens", 0)
+        out_tok = totals.get("output_tokens", 0)
+        models = ", ".join(sorted((usage_stats.get("models") or {}).keys())) or "?"
+        lines.append(
+            f"Usage: {in_tok + out_tok} tokens (in {in_tok} / out {out_tok}), "
+            f"{_human_duration(usage_stats.get('duration_seconds', 0))}, "
+            f"{usage_stats['sessions']} session(s), models: {models}"
+        )
     return "\n".join(lines)
 
 

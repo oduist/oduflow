@@ -96,6 +96,7 @@ nav:
       - Coding Agent: agent.md
       - Auxiliary Services: services.md
       - Extra Addons Repositories: extra-addons.md
+      - LLM Usage Tracking: usage-tracking.md
   - Reference:
       - Web Dashboard & REST API: web-api.md
       - MCP Tools Reference: mcp-tools.md

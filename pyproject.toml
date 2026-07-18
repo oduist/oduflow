@@ -50,6 +50,9 @@ packages = ["src/oduflow"]
 [tool.ruff]
 line-length = 88
 target-version = "py310"
+# Bundled assets, not first-party source (the usage hook ships as a standalone
+# script the agent installs into its own repo, so it targets its own runtime).
+extend-exclude = ["src/oduflow/templates"]
 
 [tool.ruff.lint]
 # Keep a stable baseline across Ruff releases: syntax/style errors, Pyflakes,
@@ -69,6 +72,9 @@ ignore_missing_imports = true
 # (they ship __init__.py), so turning namespace packages off is safe and makes
 # `import docker` resolve to site-packages.
 namespace_packages = false
+# Bundled assets, not first-party source (the usage hook ships as a standalone
+# script targeting its own runtime).
+exclude = "src/oduflow/templates/"
 
 # Mutation testing (`mutmut run`). Scoped to the pure-logic modules: the Docker
 # orchestration layer (server.py, web_ui.py, docker_ops/) is exercised through
