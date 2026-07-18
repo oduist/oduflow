@@ -539,14 +539,23 @@ def _finalize_shell_script(python_code: str, auto_commit: bool) -> str:
 
     ``odoo shell`` rolls back its cursor when the piped script finishes (see
     ``odoo/cli/shell.py``), so ORM writes are discarded unless the script
-    commits itself. Appending ``env.cr.commit()`` on the top level persists a
-    successful run; if the user code raises, execution never reaches the commit
-    and Odoo rolls back — matching the documented "exception → rollback"
-    contract. ``env`` is always in scope inside ``odoo shell``.
+    commits itself. The cursor is captured under a private name *before* the
+    user code runs and committed through that handle afterwards. Committing via
+    ``env.cr`` directly would break for an otherwise-valid script that rebinds
+    ``env`` (e.g. ``env = os.environ`` while writing through ``self.env``),
+    silently rolling the successful writes back; ``__oduflow_cr__`` is captured
+    up front and is unlikely to be shadowed. If the user code raises, execution
+    never reaches the commit and Odoo rolls back — matching the documented
+    "exception → rollback" contract. ``env`` is always in scope inside
+    ``odoo shell``.
     """
     if not auto_commit:
         return python_code
-    return python_code.rstrip("\n") + "\nenv.cr.commit()\n"
+    return (
+        "__oduflow_cr__ = env.cr\n"
+        + python_code.rstrip("\n")
+        + "\n__oduflow_cr__.commit()\n"
+    )
 
 
 def run_odoo_shell(

@@ -1736,11 +1736,12 @@ def run_odoo_shell(
 
     Transaction handling: `odoo shell` rolls back its cursor when the piped
     script finishes, so ORM writes would otherwise be discarded. With
-    `auto_commit=True` (the default) an `env.cr.commit()` is appended, so a
-    successful run is persisted; if the code raises an exception, the commit is
-    never reached and the transaction is rolled back with the traceback
-    returned. Pass `auto_commit=False` for a read-only / dry-run inspection
-    where nothing should persist (Odoo rolls everything back at the end).
+    `auto_commit=True` (the default) the transaction is committed after your
+    code runs, so a successful run is persisted; if the code raises an
+    exception, the commit is never reached and the transaction is rolled back
+    with the traceback returned. Pass `auto_commit=False` for a read-only /
+    dry-run inspection where nothing should persist (Odoo rolls everything back
+    at the end).
 
     Args:
         env_name: The name of the environment.
