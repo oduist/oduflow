@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import copy
 import logging
+from collections.abc import Callable
 from typing import Any
 
 from fastmcp.exceptions import ToolError
@@ -163,12 +164,17 @@ def env_from_access_token() -> str | None:
 class OduflowTokenVerifier(TokenVerifier):
     """Verify Bearer tokens against team ``auth_token`` and per-env tokens."""
 
-    def __init__(self, settings: Settings) -> None:
+    def __init__(self, settings: Settings | Callable[[], Settings]) -> None:
         super().__init__()
-        self._settings = settings
+        # Accept either a concrete Settings (tests) or a getter (the running
+        # server passes ``_get_settings`` so hot config reloads — e.g. a newly
+        # provisioned team's ``auth_token`` — take effect without a restart).
+        self._get_settings: Callable[[], Settings] = (
+            settings if callable(settings) else (lambda: settings)
+        )
 
     async def verify_token(self, token: str) -> AccessToken | None:
-        resolved = await env_tokens.resolve_token_async(self._settings, token)
+        resolved = await env_tokens.resolve_token_async(self._get_settings(), token)
         if resolved is None:
             return None
         team_id, env_name = resolved

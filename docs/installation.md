@@ -335,9 +335,42 @@ systemctl status oduflow
 # Logs (follow)
 journalctl -u oduflow -f
 
-# Restart after config changes
+# Apply oduflow.toml changes WITHOUT downtime (hot reload — see below)
+systemctl reload oduflow
+
+# Full restart (only needed for host/port/routing/data_dir/database changes)
 systemctl restart oduflow
 ```
+
+### Apply config changes without a restart
+
+Editing `oduflow.toml` no longer requires restarting the service. The running
+server can **reload the file in place** — provisioning a new `[team.X]`, changing
+a quota, lifecycle window, or agent setting takes effect immediately and does not
+disrupt other teams:
+
+```bash
+# Validate the on-disk config first (exits non-zero on error; does not signal)
+oduflow reload --check
+
+# Apply it to the running server (sends SIGHUP)
+oduflow reload
+# …or, under systemd:
+systemctl reload oduflow
+```
+
+The reload is **validate-before-apply**: if the new `oduflow.toml` is invalid the
+running server is left untouched and keeps serving the previous config. The result
+is reported in the server logs. A handful of settings are read only at startup and
+still need a full `restart` to take effect — `[server] host`/`port`,
+`[routing] mode`, `[server] allow_insecure_http`, `[storage] data_dir`, the
+`[database]` credentials/image, and `[oauth] oauth_base_url`; the reload log warns
+when a changed field requires one. Removing a `[team.X]` section stops serving that
+team but never deletes its data.
+
+Because Oduflow is just a *reload target*, any config-management tool can drive it —
+for example a Salt/Ansible handler that renders `oduflow.toml`, gates on
+`oduflow reload --check`, then runs `oduflow reload`.
 
 ### Remove the service
 

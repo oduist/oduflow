@@ -102,6 +102,7 @@ MCP Clients (Cursor, Claude, etc.)
 - Granular locking via `LockManager`: per-branch, per-team, and system locks; operations on different branches run in parallel
 - Error hierarchy: `FlowError` → `BusyError | NotFoundError | ConflictError | PrerequisiteNotMetError | ExternalCommandError | ProtectedError` (in `errors.py`)
 - Settings are a `@dataclass` loaded from `oduflow.toml` via `Settings.from_toml()`; multi-team via `[team.*]` sections
+- Config hot-reload (`specs/0036`): SIGHUP / `oduflow reload` re-reads `oduflow.toml`, validates, and — if valid — atomically swaps the `_settings` singleton and re-runs the idempotent reconcile (`_ensure_initialized` + quotas) with **no restart**; invalid config leaves the server untouched. `server._do_reload` / `classify_settings_change` in `settings.py`. Delivery of the file is the operator's (Salt/Ansible/GitOps); Oduflow is only the reload target.
 - Filestore isolation: small templates use plain copies; large ones use fuse-overlayfs (threshold: `overlay_threshold_mb`)
 - File ownership: `os.chown()` on Linux, fallback to container-based `chown` on macOS
 

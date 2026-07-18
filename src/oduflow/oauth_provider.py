@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import logging
 import re
+from collections.abc import Callable
 from typing import Any
 from urllib.parse import urlparse
 
@@ -113,9 +114,13 @@ class HostRelativeAuthChallenge:
     inject an attacker origin into the challenge.
     """
 
-    def __init__(self, app: Any, settings: Settings) -> None:
+    def __init__(self, app: Any, settings: Settings | Callable[[], Settings]) -> None:
         self.app = app
-        self._settings = settings
+        # Accept a getter so a config reload's hot-added teams are recognized
+        # without a restart (mirrors OduflowOAuthProvider).
+        self._get_settings: Callable[[], Settings] = (
+            settings if callable(settings) else (lambda: settings)
+        )
 
     async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
         if scope.get("type") != "http":
@@ -126,7 +131,7 @@ class HostRelativeAuthChallenge:
         )
         # Only rewrite for a host that belongs to a registered team; a forged or
         # unexpected host is left with fastmcp's own (placeholder team) URL.
-        if self._settings.get_team_by_hostname(host) is None:
+        if self._get_settings().get_team_by_hostname(host) is None:
             await self.app(scope, receive, send)
             return
         origin = f"{scheme}://{host}"
@@ -181,7 +186,14 @@ class _FlexibleClient(OAuthClientInformationFull):
 class OduflowOAuthProvider(InMemoryOAuthProvider):
     """OAuth Authorization Server backed by ``team.auth_token`` values."""
 
-    def __init__(self, settings: Settings) -> None:
+    def __init__(self, settings: Settings | Callable[[], Settings]) -> None:
+        # Accept either a concrete Settings (tests) or a getter (the running
+        # server passes ``_get_settings`` so a config reload can re-register
+        # team clients — see :meth:`refresh_clients` — without a restart).
+        self._get_settings: Callable[[], Settings] = (
+            settings if callable(settings) else (lambda: settings)
+        )
+        current = self._get_settings()
         # Host-relative issuer: with no explicit oauth_base_url (the norm in
         # traefik mode) the issuer is derived per-request from the incoming Host,
         # so OAuth runs on each team's own TLS-terminated hostname. The
@@ -191,21 +203,28 @@ class OduflowOAuthProvider(InMemoryOAuthProvider):
         # get_routes() rebuilds the discovery metadata per-request, and
         # HostRelativeAuthChallenge rewrites the 401 WWW-Authenticate
         # resource_metadata origin to the request host.
-        self._host_relative = not settings.oauth_base_url
-        if settings.oauth_base_url:
-            base_url = settings.oauth_base_url
+        self._host_relative = not current.oauth_base_url
+        if current.oauth_base_url:
+            base_url = current.oauth_base_url
         else:
             placeholder_host = next(
-                (t.hostname for t in settings.teams.values() if t.hostname),
+                (t.hostname for t in current.teams.values() if t.hostname),
                 "localhost",
             )
             base_url = f"https://{placeholder_host}"
         super().__init__(base_url=base_url)
 
-        self._settings = settings
         self._token_to_team: dict[str, str] = {}
-        placeholder_redirect = AnyUrl("https://claude.ai/")
+        self._register_team_clients(current)
 
+    def _register_team_clients(self, settings: Settings) -> None:
+        """Preregister an OAuth client + access token for every team ``auth_token``.
+
+        Idempotent: re-registering an existing token is a no-op. Called at
+        startup and again on config reload so newly provisioned teams can
+        authenticate without restarting the server.
+        """
+        placeholder_redirect = AnyUrl("https://claude.ai/")
         for team in settings.teams.values():
             token = team.auth_token
             if not token:
@@ -236,6 +255,31 @@ class OduflowOAuthProvider(InMemoryOAuthProvider):
                 scopes=[],
                 expires_at=None,
             )
+
+    def refresh_clients(self) -> None:
+        """Reconcile preregistered team clients against the current config.
+
+        Adds clients for newly configured teams, drops clients for teams removed
+        from ``oduflow.toml``, and invalidates access tokens that no longer match
+        any team's current ``auth_token`` (removed team or rotated token).
+        Invoked by the server's reload handler.
+        """
+        settings = self._get_settings()
+        self._register_team_clients(settings)
+        live_ids = {
+            public_client_id(t.team_id)
+            for t in settings.teams.values()
+            if t.auth_token
+        }
+        for client_id in [cid for cid in self._token_to_team if cid not in live_ids]:
+            self.clients.pop(client_id, None)
+            self._token_to_team.pop(client_id, None)
+        # Every access token this provider holds equals a team auth_token (the
+        # preseeded entry, and the OAuth flow issues the same value), so anything
+        # outside the live set belongs to a removed team or a rotated token.
+        live_tokens = {t.auth_token for t in settings.teams.values() if t.auth_token}
+        for token in [tok for tok in self.access_tokens if tok not in live_tokens]:
+            self.access_tokens.pop(token, None)
 
     def get_routes(self, mcp_path: str | None = None) -> list[Route]:
         """OAuth routes, with discovery metadata made per-request when there is
@@ -289,7 +333,9 @@ class OduflowOAuthProvider(InMemoryOAuthProvider):
         scheme, host = _forwarded_scheme_host(
             request.scope["headers"], request.scope.get("scheme")
         )
-        if self._settings.get_team_by_hostname(host) is None:
+        # Read settings dynamically so a hot-added team's hostname is
+        # recognized after a config reload without a restart.
+        if self._get_settings().get_team_by_hostname(host) is None:
             return None
         return f"{scheme}://{host}"
 
@@ -344,7 +390,7 @@ class OduflowOAuthProvider(InMemoryOAuthProvider):
         """
         if not token:
             return None
-        resolved = await env_tokens.resolve_token_async(self._settings, token)
+        resolved = await env_tokens.resolve_token_async(self._get_settings(), token)
         if resolved is None:
             return None
         team_id, env_name = resolved

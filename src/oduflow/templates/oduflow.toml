@@ -1,3 +1,12 @@
+# Oduflow configuration.
+#
+# Apply changes to a running server WITHOUT a restart:
+#   oduflow reload --check   # validate this file (non-zero exit on error)
+#   oduflow reload           # apply it (SIGHUP; or: systemctl reload oduflow)
+# Most settings hot-apply (teams, quotas, lifecycle, agent). A full restart is
+# only needed for: [server] host/port/allow_insecure_http, [routing] mode,
+# [storage] data_dir, [database] user/password/image, [oauth] oauth_base_url.
+
 # ── Server ────────────────────────────────────────────
 [server]
 host = "0.0.0.0"
@@ -57,8 +66,8 @@ auto_delete_hours = 0             # delete stopped environments after N hours (D
 # environments only through the Oduflow MCP server. It is a HOSTING feature —
 # enable it per team (agent_enabled, below); local developers use their own
 # agents, so it is off by default. This global section holds only
-# deployment-wide bits; changes apply on server restart (the agent container
-# is recreated automatically when its config changed).
+# deployment-wide bits; changes hot-apply on `oduflow reload` (the agent
+# container is recreated automatically when its config changed).
 # [agent]
 # image = "oduist/oduflow-coder:latest"
 # claude_model = ""                # optional model override; empty = CLI default

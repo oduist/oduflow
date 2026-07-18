@@ -7,6 +7,7 @@ import logging
 import os
 import re
 from dataclasses import dataclass, field
+from typing import NamedTuple
 
 try:
     import tomllib
@@ -636,6 +637,85 @@ def find_toml() -> str:
         "oduflow.toml not found. Searched:\n"
         + "\n".join(f"  - {c}" for c in candidates)
         + "\nCreate one or set ODUFLOW_TOML environment variable."
+    )
+
+
+class ReloadDelta(NamedTuple):
+    """Result of :func:`classify_settings_change`.
+
+    ``hot`` / ``restart_required`` / ``removed_teams`` each hold human-readable
+    descriptions for the reload report.
+    """
+
+    hot: list[str]
+    restart_required: list[str]
+    removed_teams: list[str]
+
+    @property
+    def changed(self) -> bool:
+        return bool(self.hot or self.restart_required or self.removed_teams)
+
+
+# Top-level Settings fields consumed only at process/transport start: a change
+# needs a full restart to take effect. Swapping the settings singleton is
+# harmless for these (they are simply re-read on the next start), but the reload
+# report warns so the operator knows a restart is still required.
+_RESTART_REQUIRED_FIELDS: tuple[tuple[str, str], ...] = (
+    ("host", "[server] host"),
+    ("port", "[server] port"),
+    ("allow_insecure_http", "[server] allow_insecure_http"),
+    ("routing_mode", "[routing] mode"),
+    ("base_data_dir", "[storage] data_dir"),
+    ("db_user", "[database] user"),
+    ("db_password", "[database] password"),
+    ("postgres_image", "[database] image"),
+    ("oauth_base_url", "[oauth] oauth_base_url"),
+)
+
+# Deployment-wide fields that take effect on the next operation once the
+# singleton is swapped (no restart needed).
+_HOT_FIELDS: tuple[tuple[str, str], ...] = (
+    ("auto_stop_hours", "[lifecycle] auto_stop_hours"),
+    ("auto_delete_hours", "[lifecycle] auto_delete_hours"),
+    ("overlay_threshold_mb", "[storage] overlay_threshold_mb"),
+    ("allow_local_path", "[server] allow_local_path"),
+    ("agent_image", "[agent] image"),
+    ("agent_claude_model", "[agent] claude_model"),
+    ("agent_codex_model", "[agent] codex_model"),
+    ("acme_email", "[routing] acme_email"),
+)
+
+
+def classify_settings_change(old: Settings, new: Settings) -> ReloadDelta:
+    """Diff two Settings, splitting changes into hot-appliable vs restart-required.
+
+    Pure function (no I/O) so it is unit-testable. The running server applies the
+    whole validated ``new`` singleton regardless of this split; the classification
+    only drives the reload report — what took effect now versus what still needs a
+    full restart.
+    """
+    hot: list[str] = []
+    restart_required: list[str] = []
+
+    for attr, label in _RESTART_REQUIRED_FIELDS:
+        if getattr(old, attr) != getattr(new, attr):
+            restart_required.append(f"{label} changed")
+
+    for attr, label in _HOT_FIELDS:
+        if getattr(old, attr) != getattr(new, attr):
+            hot.append(f"{label} changed")
+
+    old_ids = set(old.teams)
+    new_ids = set(new.teams)
+    for tid in sorted(new_ids - old_ids):
+        hot.append(f"team {tid} added")
+    for tid in sorted(new_ids & old_ids):
+        if old.teams[tid] != new.teams[tid]:
+            hot.append(f"team {tid} settings changed")
+    removed_teams = sorted(old_ids - new_ids)
+
+    return ReloadDelta(
+        hot=hot, restart_required=restart_required, removed_teams=removed_teams
     )
 
 

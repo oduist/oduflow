@@ -35,6 +35,32 @@ See [Quick Start](quick-start.md) for MCP client configuration examples for both
 oduflow destroy
 ```
 
+## Config Reload
+
+Apply `oduflow.toml` changes to a running server **without a restart** (SIGHUP).
+Provisioning a new `[team.X]`, changing a quota, lifecycle window, or agent
+setting takes effect immediately and does not disrupt other teams.
+
+```bash
+# Validate the on-disk config and exit (non-zero on error); does not signal
+oduflow reload --check
+
+# Apply it to the running server (or: systemctl reload oduflow)
+oduflow reload
+```
+
+Reload is **validate-before-apply**: an invalid `oduflow.toml` leaves the running
+server untouched (it keeps serving the previous config). The outcome is written to
+the server logs. A few settings are read only at startup and still require a full
+`systemctl restart oduflow` — `[server] host`/`port`/`allow_insecure_http`,
+`[routing] mode`, `[storage] data_dir`, `[database]` credentials/image, and
+`[oauth] oauth_base_url`; the reload log warns when a changed field needs one.
+Removing a `[team.X]` section stops serving that team but never deletes its data.
+
+Config **delivery** is up to you — Oduflow is only a reload target. A typical
+Salt/Ansible handler renders `oduflow.toml`, gates on `oduflow reload --check`,
+then runs `oduflow reload`.
+
 ## Template Commands
 
 All template commands accept `--team` to specify the team ID (default: `1`).

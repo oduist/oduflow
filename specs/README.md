@@ -54,6 +54,7 @@ precursors).
 | [0033](0033-restricted-http-path-routing-for-services.md) | 2026-07-14 | Restricted HTTP path routing for auxiliary services |
 | [0034](0034-external-traefik-routes.md) | 2026-07-16 | External `[route.*]` domains → upstream URLs, plus operator drop-in Traefik dynamic files |
 | [0035](0035-production-hosting.md) | 2026-07-11 | Production hosting: dedicated PG cluster, WAL-G/S3 backups, snapshots, auto-rollback deploys |
+| [0036](0036-config-hot-reload.md) | 2026-07-18 | Config hot-reload: `oduflow.toml` without a restart (SIGHUP / `oduflow reload`) |
 
 ## Design docs
 

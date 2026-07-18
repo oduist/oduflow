@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import argparse
+import atexit
 import functools
 import logging
 import os
 import pathlib
 import re
+import signal
 import sys
+import threading
+import time
 import warnings
 from collections.abc import Awaitable, Callable
 from typing import Any, ParamSpec, TypeVar, cast
@@ -36,7 +40,12 @@ from oduflow.docker_ops import (
 )
 from oduflow import activity, git_ops, migrations, production_registry, quotas, reaper
 from oduflow import settings as settings_module
-from oduflow.errors import FlowError, NotFoundError, PrerequisiteNotMetError
+from oduflow.errors import (
+    BusyError,
+    FlowError,
+    NotFoundError,
+    PrerequisiteNotMetError,
+)
 from oduflow.locking import LockManager
 from oduflow.output_cache import OutputCache, CachedOutput
 from oduflow.settings import Settings, TeamSettings, find_toml
@@ -75,6 +84,12 @@ mcp = FastMCP("Oduflow", instructions=_MCP_INSTRUCTIONS, mask_error_details=True
 _locks = LockManager()
 _settings: Settings | None = None
 _instance_id: str = ""
+
+# Server-runtime handles used by config hot-reload (SIGHUP / `oduflow reload`).
+_reaper_thread: threading.Thread | None = None
+_auth_provider: object | None = None  # the built auth object, for OAuth refresh
+_reload_event = threading.Event()
+_reload_worker_started = False
 
 
 def _get_settings() -> Settings:
@@ -4300,9 +4315,24 @@ def _run_cli() -> None:
         help="Stop, disable, and remove the Oduflow systemd service",
     )
 
+    # --- Config hot-reload ---
+    p_reload_cfg = sub.add_parser(
+        "reload",
+        help="Reload oduflow.toml in the running server (SIGHUP), no restart",
+    )
+    p_reload_cfg.add_argument(
+        "--check",
+        action="store_true",
+        help="Validate oduflow.toml and exit (non-zero on error); do not signal",
+    )
+
     args = parser.parse_args()
 
     # --- Commands that don't need Settings -----------------------
+
+    if args.command == "reload":
+        _run_config_reload(check=args.check)
+        return
 
     if args.command == "list":
         _print_tools(verbose=args.verbose)
@@ -4506,14 +4536,234 @@ def _run_cli() -> None:
         return
 
 
+# -- Config hot-reload (SIGHUP / `oduflow reload`) --
+
+
+def _pid_file_path(settings: Settings) -> str:
+    return os.path.join(settings.base_data_dir, "oduflow.pid")
+
+
+def _write_pid_file(settings: Settings) -> None:
+    """Record our PID so `oduflow reload` can signal us with SIGHUP.
+
+    Only the long-running HTTP server writes this (see ``_install_reload_handler``):
+    stdio spawns a transient process per MCP client, and several sharing one
+    ``base_data_dir`` would otherwise clobber each other's PID file.
+    """
+    path = _pid_file_path(settings)
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as fh:
+            fh.write(f"{os.getpid()}\n")
+        atexit.register(_remove_pid_file, path)
+    except OSError:
+        logger.warning("Could not write PID file %s", path, exc_info=True)
+
+
+def _remove_pid_file(path: str) -> None:
+    """Remove the PID file, but only if it still holds *our* PID.
+
+    Guards against deleting a PID file another process has since taken over.
+    """
+    try:
+        with open(path) as fh:
+            owner = fh.read().strip()
+        if owner == str(os.getpid()):
+            os.unlink(path)
+    except OSError:
+        pass
+
+
+def _reconcile(settings: Settings) -> None:
+    """Re-run the idempotent startup reconcile for a (possibly new) config.
+
+    Mirrors the server-start sequence minus one-time migrations: ensure shared
+    infra + per-team resources (networks, PostgreSQL, data dirs, agent
+    containers) and re-apply disk quotas.
+    """
+    _ensure_initialized(settings)
+    quotas.apply_all(settings)
+
+
+def _do_reload() -> None:
+    """Reload oduflow.toml in place, triggered by SIGHUP / `oduflow reload`.
+
+    Validate-before-apply: an invalid new config leaves the running server
+    entirely untouched (the previous configuration keeps serving). A valid
+    config is swapped atomically, then the idempotent reconcile applies its
+    effects without a restart.
+    """
+    global _settings, _reaper_thread
+    logger.info("Reloading configuration (SIGHUP)…")
+    try:
+        new = Settings.from_toml(find_toml())
+        new.validate()
+    except Exception:
+        logger.error(
+            "Config reload aborted: the new oduflow.toml is invalid; keeping the "
+            "previous configuration.",
+            exc_info=True,
+        )
+        return
+
+    old = _settings if _settings is not None else new
+    delta = settings_module.classify_settings_change(old, new)
+
+    # Serialise against other system-level operations; retry briefly if busy.
+    acquired = False
+    for _ in range(10):
+        try:
+            _locks.acquire_system()
+            acquired = True
+            break
+        except BusyError:
+            time.sleep(1.0)
+    if not acquired:
+        logger.error(
+            "Config reload aborted: a system-level operation is in progress. "
+            "Retry `oduflow reload` shortly."
+        )
+        return
+    try:
+        _settings = new
+        # The Bearer verifier reads settings dynamically; the OAuth provider
+        # preregisters clients, so re-register them for hot team add/remove.
+        refresh = getattr(_auth_provider, "refresh_clients", None)
+        if callable(refresh):
+            try:
+                refresh()
+            except Exception:
+                logger.warning("OAuth client refresh failed", exc_info=True)
+        try:
+            _reconcile(new)
+        except Exception:
+            logger.error(
+                "Config swapped but reconcile failed; some resources may be "
+                "partially applied. Check the error and re-run `oduflow reload`.",
+                exc_info=True,
+            )
+        # Start the reaper if lifecycle was just enabled and it is not running.
+        if _reaper_thread is None and (
+            new.auto_stop_hours > 0 or new.auto_delete_hours > 0
+        ):
+            _reaper_thread = reaper.start_reaper(_get_settings, _locks)
+    finally:
+        _locks.release_system()
+
+    if not delta.changed:
+        logger.info("Configuration reload complete (no differences detected).")
+        return
+    for msg in delta.hot:
+        logger.info("reload: hot-applied — %s", msg)
+    for msg in delta.restart_required:
+        logger.warning("reload: requires a full restart to take effect — %s", msg)
+    for tid in delta.removed_teams:
+        logger.warning(
+            "reload: team %s removed from config — its data and containers are "
+            "left intact and it is no longer served. Remove it deliberately with "
+            "`oduflow destroy` or manual cleanup.",
+            tid,
+        )
+    logger.info("Configuration reload complete.")
+
+
+def _install_reload_handler(settings: Settings) -> None:
+    """Write the PID file and wire SIGHUP → in-thread config reload.
+
+    SIGHUP is the universal reload primitive (`systemctl reload`, `kill -HUP`,
+    `oduflow reload`). The signal handler only sets an event, so the actual
+    reload runs off the signal / event-loop path in a dedicated worker thread.
+    """
+    global _reload_worker_started
+    _write_pid_file(settings)
+    if _reload_worker_started or not hasattr(signal, "SIGHUP"):
+        return
+
+    def _worker() -> None:
+        while True:
+            _reload_event.wait()
+            _reload_event.clear()
+            try:
+                _do_reload()
+            except Exception:
+                logger.error("Unexpected error during config reload", exc_info=True)
+
+    threading.Thread(target=_worker, name="oduflow-config-reload", daemon=True).start()
+    signal.signal(signal.SIGHUP, lambda *_: _reload_event.set())
+    _reload_worker_started = True
+    logger.info(
+        "Config hot-reload enabled: `oduflow reload` (SIGHUP) applies "
+        "oduflow.toml changes without a restart."
+    )
+
+
+def _run_config_reload(*, check: bool) -> None:
+    """CLI `oduflow reload`: validate oduflow.toml and (unless --check) SIGHUP.
+
+    ``--check`` runs entirely in this process (no server needed) and exits
+    non-zero on an invalid config — ideal for a Salt/Ansible gate before
+    deploying config: render → `oduflow reload --check` → `oduflow reload`.
+    """
+    try:
+        settings = Settings.from_toml(find_toml())
+        settings.validate()
+    except Exception as exc:
+        print(f"oduflow.toml is INVALID: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    if check:
+        print(f"oduflow.toml OK: {settings.toml_path or find_toml()}")
+        return
+
+    if not hasattr(signal, "SIGHUP"):
+        print("SIGHUP is not supported on this platform.", file=sys.stderr)
+        sys.exit(1)
+
+    pid_path = _pid_file_path(settings)
+    if not os.path.isfile(pid_path):
+        print(
+            f"No running Oduflow server found (missing {pid_path}). "
+            "Is the server running?",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    try:
+        pid = int(open(pid_path).read().strip())
+    except (OSError, ValueError):
+        print(f"Could not read PID file {pid_path}.", file=sys.stderr)
+        sys.exit(1)
+
+    try:
+        os.kill(pid, signal.SIGHUP)
+    except ProcessLookupError:
+        print(
+            f"No process with PID {pid} (stale PID file). Is the server running?",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    except PermissionError:
+        print(
+            f"Not permitted to signal PID {pid}; run as the server's user or root.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    print(
+        f"Reload signal (SIGHUP) sent to Oduflow PID {pid}. "
+        "Check the server logs for the result."
+    )
+
+
 def _start_stdio() -> None:
     """Start the MCP server (stdio transport)."""
     import asyncio
 
     from oduflow.backup_scheduler import start_backup_scheduler
 
-    reaper.start_reaper(_get_settings, _locks)
+    global _reaper_thread
+    _reaper_thread = reaper.start_reaper(_get_settings, _locks)
     start_backup_scheduler(_get_settings, _locks)
+    # No PID file / SIGHUP reload in stdio: it is a transient per-client process.
+    # Config hot-reload targets the long-running HTTP server (`oduflow reload`).
     try:
         asyncio.run(mcp.run_stdio_async())
     except KeyboardInterrupt:
@@ -4555,6 +4805,8 @@ def _start_http() -> None:
     """Start the MCP server (HTTP transport)."""
     from fastmcp.server.http import create_streamable_http_app
 
+    global _auth_provider, _reaper_thread
+
     settings = _get_settings()
     # Secure the dashboard on upgrades without bricking MCP: auto-provision a
     # ui_password for existing configs that still have none. The fail-closed
@@ -4564,6 +4816,8 @@ def _start_http() -> None:
     port = settings.port
 
     auth = _build_auth(settings)
+    # Kept so a config reload can re-register OAuth clients for new teams.
+    _auth_provider = auth
 
     # Fail closed: never serve the MCP tool surface (run_odoo_command,
     # run_db_query, privileged service creation, …) unauthenticated by accident
@@ -4635,7 +4889,8 @@ def _start_http() -> None:
 
     mcp.add_middleware(ScopedAccessMiddleware(build_env_param_tools(mcp)))
 
-    reaper.start_reaper(_get_settings, _locks)
+    _reaper_thread = reaper.start_reaper(_get_settings, _locks)
+    _install_reload_handler(settings)
 
     from oduflow.backup_scheduler import start_backup_scheduler
 
@@ -4670,7 +4925,7 @@ def _start_http() -> None:
     if getattr(auth, "_host_relative", False):
         from oduflow.oauth_provider import HostRelativeAuthChallenge
 
-        served = HostRelativeAuthChallenge(served, settings)
+        served = HostRelativeAuthChallenge(served, _get_settings)
 
     # Behind Traefik every request arrives from the proxy's container IP, so
     # uvicorn's access log and the login rate-limiter would see one shared peer
@@ -4723,14 +4978,17 @@ def _build_auth(settings: Settings):  # type: ignore[no-untyped-def]
         # the OAuth client_secret and issued access token.
         from oduflow.oauth_provider import OduflowOAuthProvider
 
-        return OduflowOAuthProvider(settings)
+        # Pass the getter (not a snapshot) so a config reload's re-registered
+        # team clients and env-token resolution use the current settings.
+        return OduflowOAuthProvider(_get_settings)
 
     if has_team_token:
         # Verifies team auth_token (full access) and per-environment tokens
-        # (scoped /mcp/<env> access) — see oduflow.scoped_access.
+        # (scoped /mcp/<env> access) — see oduflow.scoped_access. Reads settings
+        # dynamically so a hot-added team's auth_token works without a restart.
         from oduflow.scoped_access import OduflowTokenVerifier
 
-        return OduflowTokenVerifier(settings)
+        return OduflowTokenVerifier(_get_settings)
 
     logger.warning("HTTP auth DISABLED (no auth_token or oauth_base_url set)")
     return None

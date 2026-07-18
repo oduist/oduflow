@@ -22,6 +22,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 ExecStart={oduflow_bin} --transport http
+ExecReload=/bin/kill -HUP $MAINPID
 WorkingDirectory=/
 Restart=on-failure
 RestartSec=5
