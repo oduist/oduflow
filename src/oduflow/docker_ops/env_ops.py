@@ -758,6 +758,40 @@ def _clone_repo(
         )
 
 
+def build_env_traefik_labels(
+    settings: Settings, team: TeamSettings, env_name: str
+) -> dict[str, str]:
+    """Traefik docker-provider routing labels for an environment's Odoo container.
+
+    Empty in port mode. This is the single source of an environment's routing
+    labels, shared by :func:`create_environment` and :func:`update_environment`
+    so a container recreated by an update always reflects the *current*
+    ``routing_mode`` / ``routing_tls`` / team ``hostname`` — labels are frozen at
+    container creation, so this is what lets a mode/TLS/hostname switch be
+    repaired by a plain ``update_environment`` instead of a destroy+create.
+    """
+    if settings.routing_mode != "traefik":
+        return {}
+    slug = slugify_branch(env_name)
+    router = f"oduflow-{team.team_id}-{slug}"
+    host = get_env_hostname(env_name, team.hostname)
+    labels: dict[str, str] = {
+        "traefik.enable": "true",
+        f"traefik.http.routers.{router}.rule": f"Host(`{host}`)",
+        f"traefik.http.services.{router}.loadbalancer.server.port": "8069",
+        "traefik.docker.network": get_team_network_name(team.team_id, settings.prefix),
+    }
+    if settings.routing_tls:
+        labels[f"traefik.http.routers.{router}.entrypoints"] = "websecure"
+        labels[f"traefik.http.routers.{router}.tls"] = "true"
+        labels[f"traefik.http.routers.{router}.tls.certresolver"] = "letsencrypt"
+    else:
+        # Upstream (e.g. Cloudflare tunnel) terminates TLS; Traefik routes plain
+        # HTTP on the web entrypoint. Public URL stays https://.
+        labels[f"traefik.http.routers.{router}.entrypoints"] = "web"
+    return labels
+
+
 def create_environment(
     settings: Settings,
     team: TeamSettings,
@@ -891,32 +925,7 @@ def create_environment(
     if env_vars:
         labels["oduflow.env_vars"] = json.dumps(env_vars)
 
-    if settings.routing_mode == "traefik":
-        slug = slugify_branch(env_name)
-        traefik_router = f"oduflow-{team.team_id}-{slug}"
-        traefik_host = get_env_hostname(env_name, team.hostname)
-        labels.update(
-            {
-                "traefik.enable": "true",
-                f"traefik.http.routers.{traefik_router}.rule": f"Host(`{traefik_host}`)",
-                f"traefik.http.services.{traefik_router}.loadbalancer.server.port": "8069",
-                "traefik.docker.network": get_team_network_name(
-                    team.team_id, settings.prefix
-                ),
-            }
-        )
-        if settings.routing_tls:
-            labels.update(
-                {
-                    f"traefik.http.routers.{traefik_router}.entrypoints": "websecure",
-                    f"traefik.http.routers.{traefik_router}.tls": "true",
-                    f"traefik.http.routers.{traefik_router}.tls.certresolver": "letsencrypt",
-                }
-            )
-        else:
-            # Upstream (e.g. Cloudflare tunnel) terminates TLS; Traefik routes
-            # plain HTTP on the web entrypoint. Public URL stays https://.
-            labels[f"traefik.http.routers.{traefik_router}.entrypoints"] = "web"
+    labels.update(build_env_traefik_labels(settings, team, env_name))
 
     logger.info(
         "Creating environment",
@@ -2640,8 +2649,12 @@ def update_environment(
     raw_cmd = container.attrs["Config"].get("Cmd") or []
     command = " ".join(raw_cmd) if raw_cmd else None
 
-    # Port bindings (only relevant in port mode)
+    # Port bindings (only relevant in port mode). Only read here; a fresh
+    # allocation (when switching into port mode) is deferred until just before
+    # the container is recreated, so an earlier abort (e.g. image pull failure)
+    # does not leak a reserved port.
     host_port: int | None = None
+    port_newly_allocated = False
     if settings.routing_mode == "port":
         port_bindings = container.attrs.get("HostConfig", {}).get("PortBindings") or {}
         tcp_bindings = port_bindings.get("8069/tcp")
@@ -2742,6 +2755,18 @@ def update_environment(
     else:
         labels.pop("oduflow.env_vars", None)
 
+    # Recompute the Traefik routing labels from the CURRENT settings instead of
+    # copying the old container's: labels are frozen at creation, so this is what
+    # lets a routing-mode / TLS / hostname switch be repaired by a plain
+    # update_environment. Strip every stale ``traefik.*`` key first so a
+    # traefik→port switch drops them and a renamed router does not linger.
+    labels = {k: v for k, v in labels.items() if not k.startswith("traefik.")}
+    labels.update(build_env_traefik_labels(settings, team, env_name))
+    if settings.routing_mode == "traefik":
+        # No published port in traefik mode; drop any stale reservation left from
+        # a previous port-mode life so the slot is reusable.
+        release_port(team.port_registry_path, env_name)
+
     # Verify extra addons worktrees are intact
     extra_addons_json = labels.get("oduflow.extra_addons", "")
     if extra_addons_json:
@@ -2754,6 +2779,20 @@ def update_environment(
             wt = os.path.join(extra_dir, rn)
             if not os.path.isdir(wt):
                 logger.warning("Extra addons worktree missing: %s", wt)
+
+    # Switching into port mode (was traefik) or a legacy container that never
+    # published a port: allocate one now, right before recreation, so any
+    # earlier abort could not have leaked the reservation.
+    if settings.routing_mode == "port" and host_port is None:
+        used_ports = _get_used_ports(client, settings, team, exclude_env=env_name)
+        host_port = allocate_port(
+            team.port_registry_path,
+            env_name,
+            team.port_range_start,
+            team.port_range_end,
+            used_ports=used_ports,
+        )
+        port_newly_allocated = True
 
     # ------------------------------------------------------------------
     # 4. Re-create the container with the same settings
@@ -2774,7 +2813,14 @@ def update_environment(
     if settings.routing_mode == "port" and host_port is not None:
         run_kwargs["ports"] = {"8069/tcp": host_port}
 
-    new_container = client.containers.run(**run_kwargs)
+    try:
+        new_container = client.containers.run(**run_kwargs)
+    except Exception:
+        # The old container is already gone; at least don't leak a port slot we
+        # freshly reserved for this recreate.
+        if port_newly_allocated:
+            release_port(team.port_registry_path, env_name)
+        raise
 
     # Regenerate and copy odoo.conf into the new container (repo .oduflow/ takes
     # priority over the instance conf; extra-addons paths merged from labels).

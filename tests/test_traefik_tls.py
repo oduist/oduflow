@@ -4,6 +4,7 @@ from unittest.mock import MagicMock
 import docker
 
 from oduflow.docker_ops import system_ops
+from oduflow.docker_ops.env_ops import build_env_traefik_labels
 from oduflow.settings import ExtraRoute, Settings, TeamSettings
 
 
@@ -37,6 +38,27 @@ class TestWriteDynamicConfig:
         router = json.loads(cfg.read_text())["http"]["routers"]["oduflow-team-1"]
         assert router["entryPoints"] == ["web"]
         assert "tls" not in router
+
+    def test_connect_landing_router_high_priority(self, tmp_path):
+        cfg = tmp_path / "traefik.yml"
+        system_ops._write_traefik_dynamic_config(
+            _traefik_settings(tmp_path, False), str(cfg)
+        )
+        router = json.loads(cfg.read_text())["http"]["routers"]["oduflow-connect"]
+        assert router["rule"] == "PathPrefix(`/oduflow-connect`)"
+        assert router["service"] == "oduflow"
+        # Must outrank the env's docker Host(...) router for this path.
+        assert router["priority"] == 100000
+        assert router["entryPoints"] == ["web"]
+
+    def test_connect_landing_router_tls_entrypoint(self, tmp_path):
+        cfg = tmp_path / "traefik.yml"
+        system_ops._write_traefik_dynamic_config(
+            _traefik_settings(tmp_path, True), str(cfg)
+        )
+        router = json.loads(cfg.read_text())["http"]["routers"]["oduflow-connect"]
+        assert router["entryPoints"] == ["websecure"]
+        assert router["tls"] == {"certResolver": "letsencrypt"}
 
     def test_extra_route_generates_router_and_service(self, tmp_path):
         cfg = tmp_path / "traefik.yml"
@@ -204,3 +226,51 @@ class TestEnsureTraefik:
         system_ops._ensure_traefik(client, _traefik_settings(tmp_path, False))
         existing.remove.assert_not_called()
         client.containers.run.assert_not_called()
+
+
+def _env_settings(routing_mode, tls):
+    team = TeamSettings(team_id="1", hostname="dev.example.com")
+    return Settings(
+        routing_mode=routing_mode,
+        routing_tls=tls,
+        teams={"1": team},
+    )
+
+
+class TestBuildEnvTraefikLabels:
+    """A3: single source of an environment's Traefik routing labels."""
+
+    ENV = "18.0"  # slug "180"
+    ROUTER = "oduflow-1-180"
+
+    def _labels(self, routing_mode, tls):
+        settings = _env_settings(routing_mode, tls)
+        return build_env_traefik_labels(settings, settings.teams["1"], self.ENV)
+
+    def test_port_mode_has_no_traefik_labels(self):
+        assert self._labels("port", False) == {}
+        assert self._labels("port", True) == {}
+
+    def test_no_tls_uses_web_entrypoint(self):
+        labels = self._labels("traefik", False)
+        assert labels["traefik.enable"] == "true"
+        assert (
+            labels[f"traefik.http.routers.{self.ROUTER}.rule"]
+            == "Host(`180.dev.example.com`)"
+        )
+        assert (
+            labels[f"traefik.http.services.{self.ROUTER}.loadbalancer.server.port"]
+            == "8069"
+        )
+        assert labels["traefik.docker.network"] == "oduflow-1-net"
+        assert labels[f"traefik.http.routers.{self.ROUTER}.entrypoints"] == "web"
+        assert f"traefik.http.routers.{self.ROUTER}.tls" not in labels
+
+    def test_tls_uses_websecure_and_certresolver(self):
+        labels = self._labels("traefik", True)
+        assert labels[f"traefik.http.routers.{self.ROUTER}.entrypoints"] == "websecure"
+        assert labels[f"traefik.http.routers.{self.ROUTER}.tls"] == "true"
+        assert (
+            labels[f"traefik.http.routers.{self.ROUTER}.tls.certresolver"]
+            == "letsencrypt"
+        )

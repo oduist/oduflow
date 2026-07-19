@@ -495,6 +495,18 @@ def _write_traefik_dynamic_config(settings: Settings, config_path: str) -> None:
             **_route_entrypoint(settings),
         }
 
+    # Cross-subdomain Connect As landing: ``/oduflow-connect`` on any env host is
+    # routed to Oduflow (not the env's Odoo) so Oduflow can set the session
+    # cookie host-only on that host. High priority so it beats the env's docker
+    # ``Host(...)`` router for this path only; every other path still hits Odoo.
+    if routers:
+        routers["oduflow-connect"] = {
+            "rule": "PathPrefix(`/oduflow-connect`)",
+            "service": "oduflow",
+            "priority": 100000,
+            **_route_entrypoint(settings),
+        }
+
     # Static extra routes: an external hostname → an arbitrary upstream URL for a
     # service Oduflow does not manage (see [route.*] in oduflow.toml).
     for route in settings.extra_routes:

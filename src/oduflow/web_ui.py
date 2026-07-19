@@ -43,6 +43,7 @@ from oduflow.docker_ops import (
 )
 from oduflow import activity
 from oduflow import agent_config
+from oduflow import connect_tokens
 from oduflow import git_ops
 from oduflow import import_tokens
 from oduflow import production_registry
@@ -93,6 +94,9 @@ _PUBLIC_PATHS = frozenset(
         # GitHub can't carry a UI session; the handler verifies its own
         # X-Hub-Signature-256 HMAC against per-team webhook secrets.
         "/api/webhooks/github",
+        # Cross-subdomain Connect As landing: reached on an ENV host (no
+        # dashboard session there), authenticated by its own one-time token.
+        "/oduflow-connect",
     }
 )
 _PUBLIC_PREFIXES = ("/static/",)
@@ -2502,16 +2506,24 @@ def _build_routes(
             )
 
     async def api_connect_open(request: Request) -> Response:
-        """Same-host "Open": mint a session and land the browser in the env
-        already logged in.
+        """ "Open": mint a session and land the browser in the env already
+        logged in.
 
         The dashboard's Open button can't set the session_id cookie from
         JavaScript: Odoo issues session_id as HttpOnly and cookies are shared
         across localhost ports, so a ``document.cookie`` write is silently
-        dropped and the env keeps the browser's stale session. Setting it here
-        via an HTTP Set-Cookie overrides the HttpOnly cookie, and the redirect
-        lands authenticated. Only meaningful when the dashboard and env share a
-        host (local/port mode) — the frontend only calls this in that case.
+        dropped and the env keeps the browser's stale session.
+
+        Port / same-host mode: the dashboard and env share a host, so an HTTP
+        Set-Cookie here (which overrides the HttpOnly cookie) reaches the env and
+        the redirect lands authenticated.
+
+        Traefik mode: the env lives on its own host, so a cookie set here would
+        not reach it (and a parent-domain cookie would not override a stale
+        host-only session_id on the env host). Instead mint the session, stash it
+        behind a one-time token, and 303 the browser to the env's own
+        ``/oduflow-connect`` (routed to Oduflow by Traefik), which sets the cookie
+        host-only there.
         """
         branch = request.path_params["branch"]
         try:
@@ -2520,6 +2532,11 @@ def _build_routes(
             user = (request.query_params.get("user") or "admin").strip() or "admin"
             activity.touch(team, branch)
             result = odoo_ops.connect_as_user(settings, team, branch, user)
+            if settings.routing_mode == "traefik":
+                env_host = result["cookie_domain"]
+                token = connect_tokens.issue(env_host, result["sid"])
+                landing = f"https://{env_host}/oduflow-connect?token={token}"
+                return RedirectResponse(landing, status_code=303)
             response: Response = RedirectResponse(result["url"], status_code=303)
             # Host-only cookie (no domain): scoped to the dashboard's host and,
             # since cookies ignore ports, sent to the env on the same host.
@@ -2541,6 +2558,37 @@ def _build_routes(
             return Response(
                 f"Connect failed: {e}", status_code=500, media_type="text/plain"
             )
+
+    async def api_connect_land(request: Request) -> Response:
+        """Traefik cross-subdomain Connect As landing, served ON the env host.
+
+        Consumes the one-time token minted by :func:`api_connect_open`, sets the
+        env's ``session_id`` cookie HOST-ONLY (no ``Domain`` → scoped to this env
+        host, so it overrides any stale host-only cookie Odoo left here), and
+        303-redirects to ``/web`` already authenticated. No dashboard session is
+        required or present on this host; the token is the sole credential.
+        """
+        token = request.query_params.get("token") or ""
+        env_host = request.url.hostname or ""
+        sid = connect_tokens.consume(token, env_host)
+        if not sid:
+            return Response(
+                "Connect link is invalid or expired. Reopen it from the dashboard.",
+                status_code=400,
+                media_type="text/plain",
+            )
+        response: Response = RedirectResponse(
+            f"https://{env_host}/web", status_code=303
+        )
+        response.set_cookie(
+            "session_id",
+            sid,
+            path="/",
+            httponly=True,
+            samesite="lax",
+            secure=_is_secure_request(request),
+        )
+        return response
 
     async def ws_terminal(websocket: WebSocket) -> None:
         branch = websocket.path_params["branch"]
@@ -3782,6 +3830,9 @@ def _build_routes(
             api_connect_open,
             methods=["GET"],
         ),
+        # Served on an env host (routed here by Traefik's PathPrefix router);
+        # public + token-authenticated. See api_connect_land.
+        Route("/oduflow-connect", api_connect_land, methods=["GET"]),
         Route("/api/environments/{branch:path}/update", api_update, methods=["POST"]),
         Route(
             "/api/environments/{branch:path}/recreate", api_recreate, methods=["POST"]
