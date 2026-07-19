@@ -9,6 +9,7 @@
 ### Security
 
 - **OAuth `client_id` is no longer the secret** — a team's OAuth `client_id` is now the non-secret identifier `team_<id>` (e.g. `team_1`); the team's `auth_token` is the `client_secret` and remains the issued access token. Previously `client_id == client_secret == auth_token`, so the secret appeared in the `/authorize` query string (and thus in server logs, browser history, and the `Referer`). The secret now travels only in the POST `/token` body. **Breaking:** re-enter any existing claude.ai connector as `Client ID = team_<id>`, `Client Secret = auth_token`.
+- **OAuth issues independent, expiring, revocable tokens** — completing the previous item, the OAuth Authorization Code / refresh exchange now mints an *independent, opaque* `access_token` (with a rotating refresh token) instead of handing back the team's `auth_token`. A minted access token expires (~1h) and can be revoked via the now-enabled `/revoke` endpoint; using a refresh token rotates the pair so a leaked refresh token is single-use. The OAuth client (claude.ai/IDE) therefore never stores the team's long-lived master secret. Minted tokens are persisted (`oauth_token_store.py`) so live connections survive an Oduflow restart. The `auth_token` still works as a non-expiring direct Bearer credential for curl/CLI, and per-environment tokens remain Bearer-only. (#83)
 
 ## v1.67.0
 

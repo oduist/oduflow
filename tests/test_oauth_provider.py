@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import tempfile
 
 import pytest
 
@@ -31,6 +32,9 @@ def _settings(**overrides):
     )
     return Settings(
         oauth_base_url=overrides.pop("oauth_base_url", "https://oduflow.example.com"),
+        # Minted-token store lives under base_data_dir; give each provider its own
+        # temp dir unless a test needs two providers to share one (persistence).
+        base_data_dir=overrides.pop("base_data_dir", tempfile.mkdtemp()),
         teams=teams,
         **overrides,
     )
@@ -40,10 +44,30 @@ def _run(coro):
     return asyncio.new_event_loop().run_until_complete(coro)
 
 
+def _mint(provider, client_id="team_1", scopes=None):
+    """Drive a code exchange and return the issued OAuthToken (opaque pair)."""
+    from mcp.server.auth.provider import AuthorizationCode
+    from pydantic import AnyUrl
+
+    client = _run(provider.get_client(client_id))
+    assert client is not None
+    code = AuthorizationCode(
+        code="dummy",
+        client_id=client_id,
+        redirect_uri=AnyUrl("https://claude.ai/cb"),
+        redirect_uri_provided_explicitly=True,
+        scopes=scopes if scopes is not None else [],
+        expires_at=9999999999,
+        code_challenge="abc",
+    )
+    return _run(provider.exchange_authorization_code(client, code))
+
+
 def _host_settings(*hostnames):
     """Host-relative Settings (no oauth_base_url) with a team per hostname."""
     return Settings(
         oauth_base_url="",
+        base_data_dir=tempfile.mkdtemp(),
         teams={
             str(i): TeamSettings(
                 team_id=str(i),
@@ -66,6 +90,7 @@ class TestOduflowOAuthProvider:
             routing_mode="traefik",
             acme_email="admin@example.com",
             oauth_base_url="",
+            base_data_dir=tempfile.mkdtemp(),
             teams={
                 "1": TeamSettings(
                     team_id="1",
@@ -125,46 +150,107 @@ class TestOduflowOAuthProvider:
 
         assert _run(provider.verify_token("nope")) is None
 
-    def test_exchange_authorization_code_returns_auth_token(self):
-        from mcp.server.auth.provider import AuthorizationCode
-        from pydantic import AnyUrl
-
+    def test_exchange_authorization_code_mints_opaque_token(self):
         provider = OduflowOAuthProvider(_settings())
-        client = _run(provider.get_client("team_1"))
-        assert client is not None
-        code = AuthorizationCode(
-            code="dummy",
-            client_id="team_1",
-            redirect_uri=AnyUrl("https://claude.ai/cb"),
-            redirect_uri_provided_explicitly=True,
-            scopes=["mcp"],
-            expires_at=9999999999,
-            code_challenge="abc",
-        )
-        token = _run(provider.exchange_authorization_code(client, code))
-        # The issued access/refresh token is the SECRET auth_token, not the
-        # public client_id.
-        assert token.access_token == "tok-a"
-        assert token.refresh_token == "tok-a"
+        token = _mint(provider, scopes=["mcp"])
+        # The issued tokens are independent, opaque, and NOT the auth_token or
+        # the public client_id.
+        assert token.access_token not in ("tok-a", "team_1")
+        assert token.refresh_token not in ("tok-a", "team_1")
+        assert token.access_token != token.refresh_token
+        assert len(token.access_token) >= 32
         assert token.token_type == "Bearer"
+        # The access token expires.
+        assert token.expires_in == 3600
+        # It resolves to the team (numeric team_id) so _resolve_team routes it
+        # exactly like the auth_token, preserving requested scopes.
+        access = _run(provider.load_access_token(token.access_token))
+        assert access is not None
+        assert access.client_id == "1"
+        assert access.scopes == ["mcp"]
+        assert access.expires_at is not None
 
-    def test_bearer_invariant_and_refresh(self):
+    def test_bearer_invariant(self):
         provider = OduflowOAuthProvider(_settings())
-        # The auth_token (the issued access token) still resolves to the team id
-        # via the preseeded, secret-keyed access token — the Bearer path is
-        # unchanged by the client_id/secret split.
+        # The auth_token still resolves to the team id via the preseeded,
+        # secret-keyed access token — the direct Bearer path is unchanged and
+        # never expires.
         access = _run(provider.load_access_token("tok-a"))
         assert access is not None
         assert access.client_id == "1"
+        assert access.expires_at is None
         # The public client_id is NOT a valid Bearer/access token on its own.
         assert _run(provider.load_access_token("team_1")) is None
-        # Refresh token equals the secret (auth_token), not the client_id.
+
+    def test_refresh_token_rotation(self):
+        provider = OduflowOAuthProvider(_settings())
+        token = _mint(provider)
         client = _run(provider.get_client("team_1"))
-        assert client is not None
-        rt = _run(provider.load_refresh_token(client, "tok-a"))
+
+        rt = _run(provider.load_refresh_token(client, token.refresh_token))
         assert rt is not None
         assert rt.client_id == "team_1"
+
+        rotated = _run(provider.exchange_refresh_token(client, rt, []))
+        # A brand-new pair is issued.
+        assert rotated.access_token != token.access_token
+        assert rotated.refresh_token != token.refresh_token
+        # The old pair is dead after rotation.
+        assert _run(provider.load_access_token(token.access_token)) is None
+        assert _run(provider.load_refresh_token(client, token.refresh_token)) is None
+        # The new access token still resolves to the team.
+        new_access = _run(provider.load_access_token(rotated.access_token))
+        assert new_access is not None
+        assert new_access.client_id == "1"
+        # A non-issued value is not a valid refresh token.
         assert _run(provider.load_refresh_token(client, "team_1")) is None
+
+    def test_minted_access_token_expires(self, monkeypatch):
+        from oduflow import oauth_token_store as store_mod
+
+        provider = OduflowOAuthProvider(_settings())
+        clock = {"t": 1000.0}
+        monkeypatch.setattr(store_mod.time, "time", lambda: clock["t"])
+        token = _mint(provider)
+        assert _run(provider.load_access_token(token.access_token)) is not None
+        # Advance past the TTL: the token is rejected and purged.
+        clock["t"] = 1000.0 + 3600 + 1
+        assert _run(provider.load_access_token(token.access_token)) is None
+
+    def test_revoke_deletes_minted_token(self):
+        provider = OduflowOAuthProvider(_settings())
+        token = _mint(provider)
+        access = _run(provider.load_access_token(token.access_token))
+        assert access is not None
+
+        _run(provider.revoke_token(access))
+        # Both the access token and its paired refresh token are gone.
+        assert _run(provider.load_access_token(token.access_token)) is None
+        client = _run(provider.get_client("team_1"))
+        assert _run(provider.load_refresh_token(client, token.refresh_token)) is None
+
+        # The preseeded auth_token is NOT revocable at runtime (config-bound).
+        preseeded = _run(provider.load_access_token("tok-a"))
+        assert preseeded is not None
+        _run(provider.revoke_token(preseeded))
+        assert _run(provider.load_access_token("tok-a")) is not None
+
+    def test_minted_tokens_persist_across_restart(self):
+        data_dir = tempfile.mkdtemp()
+        provider = OduflowOAuthProvider(_settings(base_data_dir=data_dir))
+        token = _mint(provider)
+
+        # A fresh provider on the same data dir (simulated restart) still honors
+        # the minted token — connections survive an upgrade/config reload.
+        restarted = OduflowOAuthProvider(_settings(base_data_dir=data_dir))
+        access = _run(restarted.load_access_token(token.access_token))
+        assert access is not None
+        assert access.client_id == "1"
+
+        # A revoke persists too: a third instance sees it gone.
+        _run(restarted.revoke_token(access))
+        again = OduflowOAuthProvider(_settings(base_data_dir=data_dir))
+        assert _run(again.load_access_token(token.access_token)) is None
 
     def test_flexible_redirect_uri(self):
         from pydantic import AnyUrl
@@ -225,6 +311,8 @@ class TestOduflowOAuthProvider:
         assert "/.well-known/oauth-authorization-server" in paths
         assert "/authorize" in paths
         assert "/token" in paths
+        # Revocation is enabled so minted tokens can be invalidated at runtime.
+        assert "/revoke" in paths
 
     def test_metadata_via_test_client(self):
         from starlette.applications import Starlette
@@ -239,7 +327,8 @@ class TestOduflowOAuthProvider:
         assert meta["issuer"].rstrip("/") == "https://oduflow.example.com"
         assert "authorization_endpoint" in meta
         assert "token_endpoint" in meta
-        # DCR is disabled — endpoint must not be advertised.
+        # Revocation is advertised; DCR is disabled and must not be.
+        assert "revocation_endpoint" in meta
         assert "registration_endpoint" not in meta
 
     def test_metadata_host_relative(self):

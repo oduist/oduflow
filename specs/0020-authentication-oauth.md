@@ -1,9 +1,9 @@
 # 0020 — Authentication for MCP HTTP transport: GitHub OAuth → self-hosted OAuth Authorization Server
 
-**Status:** Adopted (self-hosted AS is current; traefik uses a per-team, host-relative issuer; static Bearer tokens retained)
+**Status:** Adopted (self-hosted AS is current; traefik uses a per-team, host-relative issuer; the OAuth flow mints independent expiring/rotating/revocable tokens with a persistent store; static Bearer tokens retained)
 **Type:** Architecture
 **First introduced:** `97c3fc8` "add GitHub OAuth support for MCP HTTP transport" (2026-03-13)
-**Key code today:** `server.py` (`_build_auth`, transport/auth wiring), `oauth_provider.py` (`OduflowOAuthProvider`, host-relative `get_routes`), `settings.py` (`oauth_base_url`, `oauth_enabled`, per-team `auth_token`/`hostname`)
+**Key code today:** `server.py` (`_build_auth`, transport/auth wiring), `oauth_provider.py` (`OduflowOAuthProvider`, host-relative `get_routes`), `oauth_token_store.py` (persistent minted-token store), `settings.py` (`oauth_base_url`, `oauth_enabled`, per-team `auth_token`/`hostname`)
 
 ## Context
 
@@ -61,12 +61,12 @@ request context and threaded into per-team scoping.
   `Authorization` header. Both reduce to the same per-team `auth_token`.
 - **One secret, one public id.** A team is preregistered as an OAuth client whose
   `client_id` is the **non-secret** `team_<id>` (e.g. `team_1`) and whose
-  `client_secret` is the team's `auth_token`; the issued access token also equals
-  the `auth_token`. So an OAuth client and a raw-curl client present the *same*
-  secret, and after the OAuth dance the team resolves exactly as it does for
-  direct Bearer calls — no second identity system. Keeping the secret out of the
-  `client_id` matters because `client_id` travels in the `/authorize` query string
-  (see Evolution); the secret is sent only in the POST `/token` body.
+  `client_secret` is the team's `auth_token`. The OAuth flow mints an independent,
+  opaque, expiring access token (see Evolution) that carries the team's numeric id,
+  so after the OAuth dance the team resolves exactly as it does for a direct Bearer
+  `auth_token` call — no second identity system. Keeping the secret out of the
+  `client_id` matters because `client_id` travels in the `/authorize` query string;
+  the secret is sent only in the POST `/token` body.
 - **Scoping unchanged.** Once a request is authenticated to a team, the existing
   per-team resource scoping and locking apply; OAuth only changes *how the team
   is proven*, not what it can see.
@@ -136,6 +136,29 @@ request context and threaded into per-team scoping.
   Breaking: any already-configured claude.ai connector must be re-entered as
   `client_id = team_<id>`, `client_secret = auth_token`.
 
+- **Independent, expiring, revocable minted tokens (#83).** The credential split
+  (above) kept the *issued* access token equal to the `auth_token`, so the OAuth
+  client (claude.ai/IDE) still stored the team's long-lived master secret, the
+  token never expired, and `revoke_token` was a no-op. The code/refresh exchange
+  now **mints an independent, opaque access token** (`secrets.token_urlsafe`) with
+  a rotating refresh token: the client never receives `auth_token`; a leaked minted
+  token expires (default 1h — a fixed sensible default, not a config knob); using a
+  refresh token rotates the pair (the old one is invalidated); and the enabled
+  `/revoke` endpoint really deletes a token. A minted token stores the **numeric
+  `team_id` as its `client_id`** with empty scope, so `_resolve_team` routes it
+  identically to the `auth_token` (full team access). Minted tokens are **persisted**
+  (`oauth_token_store.py`, mirroring `port_registry`'s per-path thread lock +
+  cross-process flock + atomic `os.replace`, mode `0o600`) and served from an
+  in-memory cache on the per-request verify path; persistence means a restart
+  (upgrade, config reload) does not drop live claude.ai/IDE OAuth sessions. The
+  **direct Bearer path is unchanged**: the `auth_token` remains a preseeded,
+  non-expiring, non-revocable credential (curl/CLI), and per-environment tokens
+  ([[0028-scoped-environment-mcp-access]]) stay Bearer-only. The secret still never
+  rides in the front channel — the MCP SDK validates `client_secret` at `/token`
+  (`client_secret_post`) — so this is a token-lifecycle change layered on the
+  credential split. Not covered by unit tests: validate against a live claude.ai
+  connect + at least one IDE before shipping.
+
 ## History
 
 - `97c3fc8` (2026-03-13) — GitHub OAuth 2.1 for MCP HTTP transport alongside
@@ -158,3 +181,8 @@ request context and threaded into per-team scoping.
   (`/mcp/authorize`, `/mcp/token`, `/mcp/register`, `/mcp/.well-known/*`) to the
   real root routes so the flow reaches the AS instead of 401-ing on the scoped
   `/mcp/<env>` shim (breaking: reconfigure existing connectors).
+- `2026-07-19` — finish #83: the OAuth code/refresh exchange mints independent,
+  opaque, **expiring** access tokens with rotating refresh tokens and a real
+  `/revoke`, persisted across restarts (`oauth_token_store.py`); the `auth_token`
+  stays a non-expiring direct Bearer credential and per-env tokens stay
+  Bearer-only.
