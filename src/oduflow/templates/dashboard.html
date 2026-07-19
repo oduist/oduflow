@@ -1788,36 +1788,17 @@
       <button class="modal-close" onclick="closeConnect()">&times;</button>
     </div>
     <div class="modal-body">
-      <p class="modal-note">Mint a passwordless login session for a user and get back the session_id cookie plus a URL. Add the cookie to your browser or Playwright context to land in an authenticated session as that user — no login form, no password. The session id is a live credential; treat it like a password.</p>
       <div class="form-group">
-        <label for="connect-user">Log in as</label>
-        <select id="connect-user" aria-label="User to log in as"></select>
+        <label for="connect-user-internal">Internal user</label>
+        <select id="connect-user-internal" aria-label="Internal user to log in as"></select>
       </div>
-      <div class="form-actions">
-        <button class="btn btn-connect" id="connect-submit" onclick="submitConnect()">Connect</button>
-      </div>
-      <div id="connect-result" style="display:none;">
-        <div class="form-group">
-          <label for="connect-url">URL</label>
-          <div class="copy-row">
-            <input id="connect-url" class="mono-input" type="text" readonly>
-            <button class="btn" type="button" onclick="copyConnectField('connect-url', 'URL copied')">Copy</button>
-            <button class="btn" type="button" id="connect-open">Open</button>
-          </div>
-        </div>
-        <div class="form-group">
-          <label for="connect-cookie">Session cookie (session_id)</label>
-          <div class="copy-row">
-            <input id="connect-cookie" class="mono-input" type="password" readonly>
-            <button class="btn" type="button" id="connect-reveal" onclick="toggleConnectSecret()" aria-pressed="false">Show</button>
-            <button class="btn" type="button" onclick="copyConnectField('connect-cookie', 'Cookie copied')">Copy</button>
-          </div>
-        </div>
-        <p class="modal-note" id="connect-meta"></p>
-        <p class="modal-note">The Open button logs you in directly only when the dashboard shares the environment's host (local / port mode). On a separate host, add the cookie above to your browser (or Playwright) first.</p>
+      <div class="form-group">
+        <label for="connect-user-portal">Portal user</label>
+        <select id="connect-user-portal" aria-label="Portal user to log in as"></select>
       </div>
       <div class="form-actions">
         <button class="btn" onclick="closeConnect()">Close</button>
+        <button class="btn btn-connect" id="connect-submit" onclick="submitConnect()">Connect</button>
       </div>
     </div>
   </div>
@@ -2766,51 +2747,66 @@ function copyMcpField(id, label) {
 
 var _connectBranch = '';
 
+// Populate the Internal and Portal selects. They are mutually exclusive:
+// picking a value in one clears the other; submitConnect uses whichever is set.
+function fillConnectSelects(users, errMsg) {
+  var internalSel = document.getElementById('connect-user-internal');
+  var portalSel = document.getElementById('connect-user-portal');
+  if (errMsg) showToast(errMsg, true);
+  var opt = function(u, selected) {
+    var label = u.name ? (u.name + ' — ' + u.login) : u.login;
+    return '<option value="' + escAttr(u.login) + '"' +
+      (selected ? ' selected' : '') + '>' + esc(label) + '</option>';
+  };
+  var internal = users.filter(function(u) { return !u.share; });
+  var portal = users.filter(function(u) { return u.portal; });
+  // Internal select: preselect admin (common case = one click). Always keep a
+  // "— None —" entry so it can be reset when a portal user is picked. Fall back
+  // to a bare admin option when the list is empty or failed to load.
+  if (internal.length) {
+    internalSel.innerHTML = '<option value="">— None —</option>' +
+      internal.map(function(u) { return opt(u, u.login === 'admin'); }).join('');
+    internalSel.disabled = false;
+  } else {
+    internalSel.innerHTML = '<option value="admin" selected>admin</option>';
+    internalSel.disabled = false;
+  }
+  // Portal select: always starts unselected; disabled when there are none.
+  if (portal.length) {
+    portalSel.innerHTML = '<option value="">— None —</option>' +
+      portal.map(function(u) { return opt(u, false); }).join('');
+    portalSel.disabled = false;
+  } else {
+    portalSel.innerHTML = '<option value="">— No portal users —</option>';
+    portalSel.disabled = true;
+  }
+  internalSel.onchange = function() { if (internalSel.value) portalSel.value = ''; };
+  portalSel.onchange = function() { if (portalSel.value) internalSel.value = ''; };
+}
+
 async function openConnect(branch) {
   _connectBranch = branch;
   document.getElementById('connect-title').textContent = 'Connect As — ' + branch;
-  var sel = document.getElementById('connect-user');
+  var internalSel = document.getElementById('connect-user-internal');
+  var portalSel = document.getElementById('connect-user-portal');
   var submit = document.getElementById('connect-submit');
-  sel.innerHTML = '<option>Loading users…</option>';
-  sel.disabled = true;
+  internalSel.innerHTML = '<option>Loading users…</option>';
+  portalSel.innerHTML = '<option>Loading users…</option>';
+  internalSel.disabled = true;
+  portalSel.disabled = true;
   submit.disabled = true;
-  document.getElementById('connect-result').style.display = 'none';
-  var ck = document.getElementById('connect-cookie');
-  ck.type = 'password';
-  ck.value = '';
-  var reveal = document.getElementById('connect-reveal');
-  reveal.textContent = 'Show';
-  reveal.setAttribute('aria-pressed', 'false');
   showModal('connect-modal');
   try {
     var r = await fetch(API + '/' + encodeURIComponent(branch) + '/users');
     var data = await r.json();
     if (!data.ok) {
-      sel.innerHTML = '<option value="admin">admin</option>';
-      showToast(data.error || 'Failed to load users', true);
+      fillConnectSelects([], data.error || 'Failed to load users');
     } else {
-      var users = (data.result && data.result.users) || [];
-      if (!users.length) {
-        sel.innerHTML = '<option value="admin">admin</option>';
-      } else {
-        var opt = function(u) {
-          var label = u.name ? (u.name + ' — ' + u.login) : u.login;
-          return '<option value="' + escAttr(u.login) + '"' +
-            (u.login === 'admin' ? ' selected' : '') + '>' + esc(label) + '</option>';
-        };
-        var internal = users.filter(function(u) { return !u.share; });
-        var portal = users.filter(function(u) { return u.share; });
-        var html = '';
-        if (internal.length) html += '<optgroup label="Internal">' + internal.map(opt).join('') + '</optgroup>';
-        if (portal.length) html += '<optgroup label="Portal">' + portal.map(opt).join('') + '</optgroup>';
-        sel.innerHTML = html;
-      }
+      fillConnectSelects((data.result && data.result.users) || []);
     }
   } catch (e) {
-    sel.innerHTML = '<option value="admin">admin</option>';
-    showToast('Connection error: ' + e.message, true);
+    fillConnectSelects([], 'Connection error: ' + e.message);
   }
-  sel.disabled = false;
   submit.disabled = false;
 }
 
@@ -2819,66 +2815,19 @@ function closeConnect(event) {
   hideModal('connect-modal');
 }
 
-async function submitConnect() {
-  var user = document.getElementById('connect-user').value || 'admin';
-  var btn = document.getElementById('connect-submit');
-  var prev = btn.textContent;
-  btn.disabled = true;
-  btn.textContent = 'Connecting…';
-  try {
-    var r = await fetch(API + '/' + encodeURIComponent(_connectBranch) + '/connect-as', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ user: user })
-    });
-    var data = await r.json();
-    if (!data.ok) { showToast(data.error || 'Failed to connect', true); return; }
-    var res = data.result;
-    document.getElementById('connect-url').value = res.url || '';
-    var ck = document.getElementById('connect-cookie');
-    ck.type = 'password';
-    ck.value = (res.cookie && res.cookie.value) || '';
-    var reveal = document.getElementById('connect-reveal');
-    reveal.textContent = 'Show';
-    reveal.setAttribute('aria-pressed', 'false');
-    document.getElementById('connect-meta').textContent =
-      'Logged in as ' + res.login + ' (uid ' + res.uid + '). Session expires ' +
-      res.expires_at + '. Cookie domain: ' + res.cookie.domain + ', path /.';
-    var openBtn = document.getElementById('connect-open');
-    openBtn.onclick = function() { connectOpen(res.url, res.cookie); };
-    document.getElementById('connect-result').style.display = '';
-    showToast('Session minted for ' + res.login);
-  } catch (e) {
-    showToast('Connection error: ' + e.message, true);
-  } finally {
-    btn.disabled = false;
-    btn.textContent = prev;
-  }
-}
-
-function connectOpen(url, cookie) {
-  // Same host (local/port mode): the dashboard and the env share a hostname —
-  // cookies are not port-scoped, so dropping session_id here reaches the env.
-  // A different host (traefik subdomain) can't be set from the dashboard
-  // origin, so we just open and the operator adds the cookie themselves.
-  if (cookie && cookie.domain === location.hostname) {
-    document.cookie = 'session_id=' + cookie.value + '; path=/';
-  }
-  window.open(url, '_blank', 'noopener');
-}
-
-function toggleConnectSecret() {
-  var el = document.getElementById('connect-cookie');
-  var btn = document.getElementById('connect-reveal');
-  var show = el.type === 'password';
-  el.type = show ? 'text' : 'password';
-  btn.textContent = show ? 'Hide' : 'Show';
-  btn.setAttribute('aria-pressed', show ? 'true' : 'false');
-}
-
-function copyConnectField(id, label) {
-  var val = document.getElementById(id).value;
-  if (val) copyToClipboard(val, label);
+// Pick a user and open the env in a new tab, already logged in. The
+// /connect-open bridge does everything server-side (mint the session, then in
+// port mode set the cookie on the shared host, or in traefik mode redirect to
+// the env's own /oduflow-connect which sets it host-only there). One synchronous
+// window.open in the click handler — no popup-blocker fight, no cookie handling
+// in the browser.
+function submitConnect() {
+  var user = document.getElementById('connect-user-internal').value ||
+    document.getElementById('connect-user-portal').value;
+  if (!user) { showToast('Select an internal or portal user', true); return; }
+  window.open(API + '/' + encodeURIComponent(_connectBranch) +
+    '/connect-open?user=' + encodeURIComponent(user), '_blank', 'noopener');
+  hideModal('connect-modal');
 }
 
 async function loadEnvironments(force) {

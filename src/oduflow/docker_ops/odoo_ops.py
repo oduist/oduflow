@@ -813,12 +813,15 @@ def connect_as_user(
 def list_env_users(
     settings: Settings, team: TeamSettings, env_name: str
 ) -> list[dict[str, Any]]:
-    """Active login users of an environment (login, name, share).
+    """Active login users of an environment (login, name, share, portal).
 
     Powers the dashboard's "Connect as" picker. Reads the environment database
     directly via psql on the shared DB container (like ``reset_admin_password``),
-    so it works regardless of whether the Odoo HTTP server is up. ``share`` marks
-    portal users, letting the UI group internal vs. portal roles.
+    so it works regardless of whether the Odoo HTTP server is up. ``share`` is
+    True for both portal and public users; ``portal`` is True only for real
+    portal users (members of ``base.group_portal``). The UI uses this to offer
+    separate internal (``share`` False) and portal (``portal`` True) pickers and
+    to exclude the public/anonymous user from both.
     """
     import json
 
@@ -833,9 +836,17 @@ def list_env_users(
         )
     # json_agg → a single JSON array so the value parses cleanly without CSV
     # quoting concerns (partner names may contain commas).
+    # ``portal`` = membership in the base.group_portal user-type group, resolved
+    # by xml_id via ir_model_data so it is stable across Odoo versions/DBs. It
+    # is a strict subset of ``share`` (which also covers the public user).
     sql = (
         "SELECT COALESCE(json_agg(json_build_object("
-        "'login', u.login, 'name', p.name, 'share', u.share) "
+        "'login', u.login, 'name', p.name, 'share', u.share, "
+        "'portal', (u.id IN ("
+        "SELECT r.uid FROM res_groups_users_rel r "
+        "JOIN ir_model_data d ON d.model = 'res.groups' "
+        "AND d.module = 'base' AND d.name = 'group_portal' "
+        "WHERE r.gid = d.res_id))) "
         "ORDER BY u.share, lower(p.name)), '[]') "
         "FROM res_users u JOIN res_partner p ON p.id = u.partner_id "
         "WHERE u.active AND u.login IS NOT NULL AND u.login <> '__system__'"
