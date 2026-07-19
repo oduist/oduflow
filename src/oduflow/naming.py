@@ -246,7 +246,10 @@ def sanitize_repo_url(url: str) -> str:
     try:
         parsed = urlparse(url)
         if parsed.username or parsed.password:
-            clean = parsed._replace(netloc=parsed.hostname or "")
+            # Strip only userinfo.  Keep the original host spelling, IPv6
+            # brackets, and explicit port: this sanitized URL is also used for
+            # subsequent clones, not just display.
+            clean = parsed._replace(netloc=parsed.netloc.rsplit("@", 1)[-1])
             return urlunparse(clean)
     except Exception:
         pass

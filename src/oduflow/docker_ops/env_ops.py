@@ -96,6 +96,23 @@ def _redact_repo_urls(text: str, *urls: str) -> str:
     return redacted
 
 
+def _move_inline_repo_credentials(
+    repo_url: str, cred_file: str, git_user: str
+) -> tuple[str, str]:
+    """Store inline credentials and make their username authoritative."""
+    from oduflow.git_ops import extract_and_store_inline_credentials
+
+    clean_url, extracted_user = extract_and_store_inline_credentials(
+        repo_url, cred_file
+    )
+    if clean_url != repo_url:
+        # An explicit credential-bearing URL overrides template metadata. This
+        # also clears a stale username for token-as-username URLs, whose secret
+        # must not be copied into the Docker label.
+        git_user = extracted_user
+    return clean_url, git_user
+
+
 def _get_used_ports(
     client: DockerClient,
     settings: Settings,
@@ -910,13 +927,9 @@ def create_environment(
     # Clone/recreate/agent paths already authenticate via that store. No-op for
     # clean URLs and for live-mount (which never clones).
     if not local_mount and repo_url:
-        from oduflow.git_ops import extract_and_store_inline_credentials
-
-        repo_url, extracted_user = extract_and_store_inline_credentials(
-            repo_url, team.git_credentials_file()
+        repo_url, git_user = _move_inline_repo_credentials(
+            repo_url, team.git_credentials_file(), git_user
         )
-        if extracted_user and not git_user:
-            git_user = extracted_user
 
     labels = {
         settings.managed_label: "true",

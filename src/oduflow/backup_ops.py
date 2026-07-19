@@ -34,6 +34,7 @@ import logging
 import os
 import shutil
 import tempfile
+from collections.abc import Iterator
 from typing import Any
 
 from oduflow import chunkstore, production_registry, s3_client
@@ -96,7 +97,7 @@ def _snapshot_id(now: datetime.datetime | None = None) -> str:
     return (now or _now_utc()).strftime("%Y%m%dT%H%M%SZ")
 
 
-def _dump_stream(container: Any, db_user: str, db_name: str):
+def _dump_stream(container: Any, db_user: str, db_name: str) -> Iterator[bytes]:
     """Yield pg_dump -Fc stdout frames from a docker exec stream.
 
     Uses the low-level exec API so the command's exit code can be inspected

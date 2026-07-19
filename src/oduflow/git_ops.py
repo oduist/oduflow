@@ -2,7 +2,7 @@ import logging
 import os
 import re
 import subprocess
-from urllib.parse import urlparse
+from urllib.parse import ParseResult, urlparse
 from typing import Any
 
 from oduflow.errors import ExternalCommandError, FlowError
@@ -34,6 +34,14 @@ class InvalidRepoURLError(FlowError):
 
 class RepoAuthError(FlowError):
     """Repository authentication failed. Call setup_repo_auth first."""
+
+
+def _credential_host(parsed: ParseResult) -> str:
+    """Git credential-store host key, including an explicit port."""
+    hostname = parsed.hostname or ""
+    if ":" in hostname:
+        hostname = f"[{hostname}]"
+    return f"{hostname}:{parsed.port}" if parsed.port is not None else hostname
 
 
 def validate_repo_url(repo_url: str) -> None:
@@ -71,8 +79,8 @@ def _parse_authenticated_url(repo_url: str) -> tuple[str, str, str, str]:
         raise InvalidRepoURLError(
             "URL must contain credentials: https://user:PAT@github.com/owner/repo.git"
         )
-    clean_url = parsed._replace(netloc=parsed.hostname or "").geturl()
-    return clean_url, parsed.hostname or "", parsed.username, parsed.password
+    clean_url = sanitize_repo_url(repo_url)
+    return clean_url, _credential_host(parsed), parsed.username, parsed.password
 
 
 def _store_git_credentials(
@@ -98,7 +106,9 @@ def _store_git_credentials(
         os.chmod(cred_file, 0o600)
     except OSError:
         pass
-    logger.info("Git credentials stored for host=%s user=%s", host, username)
+    # A few providers accept token-as-username URLs. Never log this field: the
+    # caller cannot reliably distinguish an account name from a secret.
+    logger.info("Git credentials stored for host=%s", host)
 
 
 def extract_and_store_inline_credentials(
@@ -124,10 +134,12 @@ def extract_and_store_inline_credentials(
         return repo_url, ""
     if not parsed.username and not parsed.password:
         return repo_url, ""
-    host = parsed.hostname or ""
+    host = _credential_host(parsed)
     if not host:
         return repo_url, ""
-    _store_git_credentials(host, parsed.username or "", parsed.password or "", cred_file)
+    _store_git_credentials(
+        host, parsed.username or "", parsed.password or "", cred_file
+    )
     # Surface the username as the (non-secret) account name only when a separate
     # password is present. For token-as-username forms (password empty, token in
     # the username slot) keep it out of the label and rely on host-based matching.

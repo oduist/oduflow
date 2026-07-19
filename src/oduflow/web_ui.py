@@ -3430,7 +3430,8 @@ def _build_routes(
             locks.release_env(_prod_lock_key(team, name))
 
     def _production_action(
-        request: Request, action: Callable[..., dict]
+        request: Request,
+        action: Callable[[Settings, TeamSettings, str], dict[str, Any]],
     ) -> JSONResponse:
         """Shared lock/error wrapper for simple per-production POST actions."""
         settings = get_settings()
@@ -3638,7 +3639,9 @@ def _build_routes(
     def api_production_snapshot_now(request: Request) -> JSONResponse:
         from oduflow import backup_ops
 
-        def _snapshot(settings: Settings, team: TeamSettings, name: str) -> dict:
+        def _snapshot(
+            settings: Settings, team: TeamSettings, name: str
+        ) -> dict[str, Any]:
             return backup_ops.snapshot_production(settings, team, name, trigger="ui")
 
         return _production_action(request, _snapshot)
