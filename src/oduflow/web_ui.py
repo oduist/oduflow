@@ -1105,12 +1105,16 @@ def _build_routes(
     # --- Import from Odoo.sh (push-based template ingest) ------------------
 
     def _import_token_value(request: Request) -> str:
-        """Read the import token from an Authorization: Bearer header (preferred,
-        keeps it out of URLs/logs) or a ?token= query param as a fallback."""
+        """Read the import token from the Authorization: Bearer header only.
+
+        A ``?token=`` query param is deliberately NOT accepted: these endpoints
+        bypass Basic auth, so the token is the sole credential, and tokens in
+        URLs leak into reverse-proxy/CDN access logs and Referer headers. The
+        official ``import-odoo.sh`` client always sends the Bearer header."""
         auth = request.headers.get("authorization", "")
         if auth.startswith("Bearer "):
             return auth[len("Bearer ") :].strip()
-        return request.query_params.get("token", "").strip()
+        return ""
 
     def _resolve_import_token(
         request: Request,

@@ -6,6 +6,7 @@ from urllib.parse import urlparse
 from typing import Any
 
 from oduflow.errors import ExternalCommandError, FlowError
+from oduflow.naming import redact_url_credentials
 
 logger = logging.getLogger("oduflow")
 
@@ -77,7 +78,8 @@ def _parse_authenticated_url(repo_url: str) -> tuple[str, str, str, str]:
 def _store_git_credentials(
     host: str, username: str, password: str, cred_file: str
 ) -> None:
-    os.makedirs(os.path.dirname(cred_file), exist_ok=True)
+    # Don't trust the process umask for the dir holding the plaintext PAT store.
+    os.makedirs(os.path.dirname(cred_file), mode=0o700, exist_ok=True)
     env = git_env_for_team(cred_file)
 
     credential_input = (
@@ -90,6 +92,12 @@ def _store_git_credentials(
         capture_output=True,
         env=env,
     )
+    # git's store helper defaults the file to 0600, but enforce it explicitly as
+    # defense-in-depth (and to harden a pre-existing file created under a laxer umask).
+    try:
+        os.chmod(cred_file, 0o600)
+    except OSError:
+        pass
     logger.info("Git credentials stored for host=%s user=%s", host, username)
 
 
@@ -117,7 +125,9 @@ def setup_repo_auth(repo_url: str, cred_file: str) -> dict[str, str]:
             env=env,
         )
     except subprocess.CalledProcessError as e:
-        error_msg = e.stderr.decode("utf-8") if e.stderr else str(e)
+        error_msg = redact_url_credentials(
+            e.stderr.decode("utf-8") if e.stderr else str(e)
+        )
         raise ExternalCommandError(
             "git ls-remote (auth test)",
             e.returncode,
@@ -306,7 +316,7 @@ def pull_repo(
             env=env,
         )
     except subprocess.CalledProcessError as e:
-        error_msg = e.stderr or str(e)
+        error_msg = redact_url_credentials(e.stderr or str(e))
         raise ExternalCommandError("git pull", e.returncode, error_msg)
     except subprocess.TimeoutExpired:
         raise ExternalCommandError("git pull", -1, "Fetch timed out (60s).")

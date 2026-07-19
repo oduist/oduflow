@@ -69,6 +69,14 @@ def validate_env_name(env_name: str) -> str:
             f"Invalid environment name '{env_name}': '/'-separated segments must "
             "be non-empty and not '.' or '..'."
         )
+    # A name made up only of stripped characters (e.g. "@@@", non-ASCII) would
+    # slugify to "", producing a degenerate DB name ("oduflow_<team>_") that
+    # collides with every other such name. Require at least one slug char.
+    if not slugify_branch(name):
+        raise ValueError(
+            f"Invalid environment name '{env_name}': must contain at least one "
+            "alphanumeric, '_' or '-' character."
+        )
     return name
 
 
@@ -243,3 +251,16 @@ def sanitize_repo_url(url: str) -> str:
     except Exception:
         pass
     return url
+
+
+# Matches inline credentials embedded in any URL anywhere inside a larger string
+# (e.g. git's stderr, which frequently echoes the full remote incl. user:PAT@host).
+# sanitize_repo_url only handles a whole-string URL; this scrubs free text.
+_URL_CREDS_RE = re.compile(r"(\w+://)[^/\s@]+@")
+
+
+def redact_url_credentials(text: str) -> str:
+    """Redact ``scheme://user:pass@`` credentials embedded anywhere in text."""
+    if not text:
+        return text
+    return _URL_CREDS_RE.sub(r"\1***@", text)

@@ -54,6 +54,7 @@ from oduflow.naming import (
     get_resource_name,
     get_template_db_name,
     get_workspace_path,
+    redact_url_credentials,
     sanitize_repo_url,
     slugify_branch,
 )
@@ -742,7 +743,9 @@ def _clone_repo(
             env=git_env,
         )
     except subprocess.CalledProcessError as e:
-        error_msg = e.stderr.decode("utf-8") if e.stderr else str(e)
+        error_msg = redact_url_credentials(
+            e.stderr.decode("utf-8") if e.stderr else str(e)
+        )
         if any(kw.lower() in error_msg.lower() for kw in auth_keywords):
             raise RepoAuthError(
                 f"Git authentication failed for {sanitize_repo_url(repo_url)}. "

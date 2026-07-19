@@ -45,13 +45,20 @@ class OutputCache:
     def __init__(self) -> None:
         self._store: dict[str, CachedOutput] = {}
         self._lock = threading.Lock()
+        self._seq = 0
 
     def store(self, output: str, source_tool: str, source_args: str) -> CachedOutput:
         """Cache output, return CachedOutput with generated ID."""
         if len(output) > _MAX_OUTPUT_SIZE:
             output = output[:_MAX_OUTPUT_SIZE]
 
-        raw = f"{output[:1000]}{time.time()}".encode()
+        # A process-wide sequence guarantees a unique id even when two outputs
+        # share the same 1000-char prefix within one clock tick (identical
+        # prefix + equal time.time() would otherwise collide and overwrite).
+        with self._lock:
+            self._seq += 1
+            seq = self._seq
+        raw = f"{output[:1000]}{time.time()}{seq}".encode()
         output_id = hashlib.sha256(raw).hexdigest()[:8]
 
         lines = output.splitlines()

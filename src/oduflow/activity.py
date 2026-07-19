@@ -53,9 +53,15 @@ def parse_ts(value: str | None) -> float | None:
     if not value:
         return None
     try:
-        return datetime.fromisoformat(value).timestamp()
+        dt = datetime.fromisoformat(value)
     except ValueError:
         return None
+    # Records written by _now_iso() are tz-aware; a legacy/hand-edited naive
+    # value would otherwise be read as host-local time, shifting reaper
+    # stop/delete decisions by the UTC offset. Treat naive as UTC.
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.timestamp()
 
 
 def _thread_lock(path: str) -> threading.Lock:
