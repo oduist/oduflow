@@ -534,8 +534,36 @@ def write_file_in_environment(
     return {"path": path, "size": len(data)}
 
 
+def _finalize_shell_script(python_code: str, auto_commit: bool) -> str:
+    """Append an explicit commit to *python_code* when *auto_commit* is set.
+
+    ``odoo shell`` rolls back its cursor when the piped script finishes (see
+    ``odoo/cli/shell.py``), so ORM writes are discarded unless the script
+    commits itself. The cursor is captured under a private name *before* the
+    user code runs and committed through that handle afterwards. Committing via
+    ``env.cr`` directly would break for an otherwise-valid script that rebinds
+    ``env`` (e.g. ``env = os.environ`` while writing through ``self.env``),
+    silently rolling the successful writes back; ``__oduflow_cr__`` is captured
+    up front and is unlikely to be shadowed. If the user code raises, execution
+    never reaches the commit and Odoo rolls back — matching the documented
+    "exception → rollback" contract. ``env`` is always in scope inside
+    ``odoo shell``.
+    """
+    if not auto_commit:
+        return python_code
+    return (
+        "__oduflow_cr__ = env.cr\n"
+        + python_code.rstrip("\n")
+        + "\n__oduflow_cr__.commit()\n"
+    )
+
+
 def run_odoo_shell(
-    settings: Settings, team: TeamSettings, env_name: str, python_code: str
+    settings: Settings,
+    team: TeamSettings,
+    env_name: str,
+    python_code: str,
+    auto_commit: bool = True,
 ) -> dict[str, Any]:
     """Execute Python code in the Odoo shell context with full ORM access."""
     import io
@@ -564,7 +592,7 @@ def run_odoo_shell(
 
     # Write Python code to temp file via tar stream (avoids shell escaping)
     script_path = "/tmp/_oduflow_shell_script.py"
-    data = python_code.encode("utf-8")
+    data = _finalize_shell_script(python_code, auto_commit).encode("utf-8")
     tar_stream = io.BytesIO()
     with tarfile.open(fileobj=tar_stream, mode="w") as tar:
         info = tarfile.TarInfo(name="_oduflow_shell_script.py")

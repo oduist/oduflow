@@ -1753,6 +1753,7 @@ def write_file_in_odoo(
 def run_odoo_shell(
     env_name: str,
     python_code: str,
+    auto_commit: bool = True,
     ctx: Context | None = None,
 ) -> str:
     """
@@ -1769,18 +1770,27 @@ def run_odoo_shell(
     - Debug business logic: check workflow transitions, access rights
     - Run data-fix scripts
 
-    The code is executed in a single transaction that is committed at the end.
-    If the code raises an exception, the transaction is rolled back and the
-    traceback is returned.
+    Transaction handling: `odoo shell` rolls back its cursor when the piped
+    script finishes, so ORM writes would otherwise be discarded. With
+    `auto_commit=True` (the default) the transaction is committed after your
+    code runs, so a successful run is persisted; if the code raises an
+    exception, the commit is never reached and the transaction is rolled back
+    with the traceback returned. Pass `auto_commit=False` for a read-only /
+    dry-run inspection where nothing should persist (Odoo rolls everything back
+    at the end).
 
     Args:
         env_name: The name of the environment.
         python_code: Python code to execute. Use print() for output.
+        auto_commit: Commit the transaction after a successful run (default
+            True). Set to False to inspect without persisting any changes.
     """
     settings = _get_settings()
     team = _resolve_team(ctx)
     woke = _wake_for_work(settings, team, env_name)
-    result = odoo_ops.run_odoo_shell(settings, team, env_name, python_code)
+    result = odoo_ops.run_odoo_shell(
+        settings, team, env_name, python_code, auto_commit=auto_commit
+    )
     exit_code = result["exit_code"]
     output = result.get("output", "")
     status = "Success" if exit_code == 0 else "Error"

@@ -83,7 +83,7 @@ In live-mount mode, you as the agent must track the intent of your own edits. If
 
 | Tool | When to use |
 |---|---|
-| `run_odoo_shell(env_name, python_code)` | Execute Python in Odoo shell with full ORM access (`self.env`, models, registry). Use `print()` to produce output. |
+| `run_odoo_shell(env_name, python_code, auto_commit?)` | Execute Python in Odoo shell with full ORM access (`self.env`, models, registry). Use `print()` to produce output. Commits on success by default; pass `auto_commit=false` for a read-only dry run (changes rolled back). |
 | `write_file_in_odoo(env_name, path, content, user?)` | Write a text file inside the container (CSV imports, scripts, configs). Uses tar stream — no shell escaping issues. Do NOT use for source code. |
 | `http_request_to_odoo(env_name, path, method?, body?, headers?, session_id?)` | HTTP request to the running Odoo instance. Test controllers, JSON-RPC, REST endpoints. |
 | `search_in_odoo(env_name, pattern, path?, glob?, max_results?)` | Grep for a pattern inside container files. Fixed-string search with file/line numbers. |
