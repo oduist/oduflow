@@ -1281,6 +1281,14 @@ class TestRunEnvironmentTests:
         # Odoo 17 → modern --gevent-port flag.
         assert "--gevent-port 8090" in args
         assert "--workers 0" in args
+        # Issue #84: the per-env DB password must never be interpolated onto the
+        # odoo CLI (it would show up in the container's `ps`); it is passed via
+        # the PGPASSWORD env var instead. The username (-r) is not secret.
+        assert "test-pw" not in args
+        assert "-w" not in args.split()
+        assert container.exec_run.call_args.kwargs["environment"] == {
+            "PGPASSWORD": "test-pw"
+        }
 
     @patch(
         "oduflow.docker_ops.odoo_ops.load_credentials",
@@ -1327,6 +1335,35 @@ class TestRunEnvironmentTests:
         assert "--gevent-port" not in test_cmd
 
 
+class TestRunOdooShell:
+    @patch(
+        "oduflow.docker_ops.odoo_ops.load_credentials",
+        return_value={"pg_user": "u_1_main", "pg_password": "test-pw"},
+    )
+    def test_password_passed_via_pgpassword_env(
+        self, mock_load_creds, mock_docker_client
+    ):
+        container = MagicMock()
+        container.exec_run.return_value = (0, b"shell output")
+        mock_docker_client.containers.get.return_value = container
+
+        result = odoo_ops.run_odoo_shell(TEST_SETTINGS, TEST_TEAM, "main", "print(1)")
+
+        assert result["exit_code"] == 0
+        # First exec_run is the `sh -c "odoo shell ..."` invocation.
+        shell_call = container.exec_run.call_args_list[0]
+        sh_argv = shell_call[0][0]
+        assert sh_argv[:2] == ["sh", "-c"]
+        cmd = sh_argv[2]
+        assert "-r u_1_main" in cmd
+        assert "--database=oduflow_1_main" in cmd
+        # Issue #84: password goes through PGPASSWORD, never onto the odoo CLI.
+        assert "test-pw" not in cmd
+        assert "-w" not in cmd.split()
+        assert shell_call.kwargs["user"] == "odoo"
+        assert shell_call.kwargs["environment"] == {"PGPASSWORD": "test-pw"}
+
+
 class TestConnectAsUserScript:
     def test_numeric_user_lookup_preserves_active_filter(self):
         script = odoo_ops._build_connect_as_user_script("7")
@@ -1338,7 +1375,9 @@ class TestConnectAsUserScript:
         script = odoo_ops._build_connect_as_user_script("jane@acme.com")
 
         assert "user_env = env(user=u.id)" in script
-        assert "user_context = dict(user_env['res.users'].context_get() or {})" in script
+        assert (
+            "user_context = dict(user_env['res.users'].context_get() or {})" in script
+        )
         assert "user_context['uid'] = user.id" in script
         assert "'context': user_context" in script
         assert "'context': dict(u.context_get())" not in script

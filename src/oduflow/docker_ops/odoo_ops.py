@@ -89,11 +89,12 @@ def run_environment_tests(
         )
 
     _validate_module_names([m.strip() for m in modules.split(",") if m.strip()])
-    # allow_fallback=False: the creds are interpolated into the odoo CLI as
-    # `-r ... -w ...`, visible in the container's process argv, and tests run
-    # tenant-controlled code inside that container — the shared superuser
-    # password must never be exposed there (cross-tenant DB access on legacy
-    # environments predating per-env credentials).
+    # allow_fallback=False: tests run tenant-controlled code inside the odoo
+    # container, so the shared superuser password must never be exposed there
+    # (cross-tenant DB access on legacy environments predating per-env
+    # credentials). The per-env password itself is passed via the PGPASSWORD env
+    # var (see exec_run below), not on the odoo CLI, so it stays out of the
+    # container's process argv (`ps`).
     creds = load_credentials(
         env_name,
         team.workspaces_dir,
@@ -115,14 +116,16 @@ def run_environment_tests(
         f"odoo --test-enable --stop-after-init --workers 0 "
         f"--http-port 8089 {port_flag} 8090 -u {modules} "
         f"--db_host={settings.shared_db_container} "
-        f"-r {creds['pg_user']} -w {creds['pg_password']} "
+        f"-r {creds['pg_user']} "
         f"--database={env_db}"
     )
     logger.info(
         "Running tests",
         extra={"env_name": env_name, "modules": modules},
     )
-    exit_code, output = container.exec_run(cmd)
+    exit_code, output = container.exec_run(
+        cmd, environment={"PGPASSWORD": creds["pg_password"]}
+    )
 
     if isinstance(output, bytes):
         return output.decode("utf-8")
@@ -604,7 +607,7 @@ def run_odoo_shell(
     cmd = (
         f"odoo shell --no-http --stop-after-init "
         f"--db_host={settings.shared_db_container} "
-        f"-r {creds['pg_user']} -w {creds['pg_password']} "
+        f"-r {creds['pg_user']} "
         f"--database={env_db} "
         f"< {script_path}"
     )
@@ -613,7 +616,13 @@ def run_odoo_shell(
         "Running Odoo shell",
         extra={"env_name": env_name, "code_size": len(data)},
     )
-    exit_code, output = container.exec_run(["sh", "-c", cmd], user="odoo")
+    # Pass the per-env DB password via PGPASSWORD (libpq reads it) rather than
+    # `-w` on the odoo CLI, keeping it out of the container's process argv (`ps`).
+    exit_code, output = container.exec_run(
+        ["sh", "-c", cmd],
+        user="odoo",
+        environment={"PGPASSWORD": creds["pg_password"]},
+    )
     output_str = output.decode("utf-8") if isinstance(output, bytes) else str(output)
 
     # Cleanup temp file
