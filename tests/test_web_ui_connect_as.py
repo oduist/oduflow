@@ -99,8 +99,8 @@ def test_connect_as_error_surfaced(tmp_path):
 def test_env_users_lists(tmp_path):
     client = _client(_open_settings(tmp_path))
     users = [
-        {"login": "admin", "name": "Mitchell Admin", "share": False},
-        {"login": "portal", "name": "Portal User", "share": True},
+        {"login": "admin", "name": "Mitchell Admin", "share": False, "portal": False},
+        {"login": "portal", "name": "Portal User", "share": True, "portal": True},
     ]
     with patch("oduflow.web_ui.odoo_ops.list_env_users", return_value=users):
         resp = client.get("/api/environments/18.0/users")
