@@ -904,6 +904,20 @@ def create_environment(
         )
     env_db = get_db_name(env_name, team.team_id)
 
+    # Keep inline git credentials (https://user:PAT@host/...) out of the Docker
+    # label (world-readable via `docker inspect`, copied into template metadata):
+    # move them into the team credential store, then persist only a sanitized URL.
+    # Clone/recreate/agent paths already authenticate via that store. No-op for
+    # clean URLs and for live-mount (which never clones).
+    if not local_mount and repo_url:
+        from oduflow.git_ops import extract_and_store_inline_credentials
+
+        repo_url, extracted_user = extract_and_store_inline_credentials(
+            repo_url, team.git_credentials_file()
+        )
+        if extracted_user and not git_user:
+            git_user = extracted_user
+
     labels = {
         settings.managed_label: "true",
         settings.team_label: team.team_id,

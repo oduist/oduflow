@@ -15,9 +15,11 @@ import secrets
 import socket
 import threading
 import time
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 from itsdangerous import BadData, URLSafeTimedSerializer
+from starlette.datastructures import Headers
+from starlette.exceptions import HTTPException
 from starlette.requests import HTTPConnection, Request
 from starlette.responses import (
     HTMLResponse,
@@ -200,6 +202,25 @@ def _check_cookie_token(token: str, settings: Settings) -> "TeamSettings | None"
     return team
 
 
+def _is_cross_origin(headers: Headers) -> bool:
+    """Whether Origin/Referer mark this as a cross-site request (CSRF).
+
+    Compares the Origin (or, absent that, Referer) host:port against the
+    request's own Host header. Returns False when neither header is present —
+    non-browser clients (curl, the import shell script) carry no ambient cookie
+    and cannot be driven cross-site by a victim's browser, so there is nothing
+    to forge."""
+    host = headers.get("host", "")
+    source = headers.get("origin", "") or headers.get("referer", "")
+    if not source:
+        return False
+    try:
+        netloc = urlsplit(source).netloc
+    except Exception:
+        return True
+    return netloc != host
+
+
 class BasicAuthMiddleware:
     def __init__(self, app: ASGIApp, get_settings: Callable[[], Settings]) -> None:
         self._app = app
@@ -224,6 +245,29 @@ class BasicAuthMiddleware:
             if token:
                 team = _check_cookie_token(token, self._get_settings())
         if team:
+            # CSRF: browsers authenticate with an ambient cookie, so reject
+            # cross-site state-changing requests (unsafe HTTP methods and every
+            # WebSocket handshake — cross-site WS hijacking targets the shell/SQL
+            # terminals). SameSite=Strict is the first line; this is the
+            # server-side backstop. Non-browser clients send no Origin/Referer
+            # and are unaffected.
+            method = scope.get("method", "")
+            is_unsafe = scope["type"] == "websocket" or method in (
+                "POST",
+                "PUT",
+                "PATCH",
+                "DELETE",
+            )
+            if is_unsafe and _is_cross_origin(conn.headers):
+                if scope["type"] == "websocket":
+                    await WebSocket(scope, receive, send).close(code=1008)
+                else:
+                    forbidden: Response = JSONResponse(
+                        {"ok": False, "error": "Cross-origin request blocked"},
+                        status_code=403,
+                    )
+                    await forbidden(scope, receive, send)
+                return
             scope.setdefault("state", {})["team"] = team
             await self._app(scope, receive, send)
             return
@@ -497,6 +541,13 @@ def _build_routes(
             team: TeamSettings = request.state.team
             return team
         settings = get_settings()
+        # When auth is enforced (any team has a ui_password), the middleware
+        # always populates request.state.team for non-public paths. Reaching
+        # here means the request bypassed auth — default-deny instead of silently
+        # acting as team "1" (tenant-isolation hazard). The single-team fallback
+        # is only for the open (auth-disabled) server.
+        if any(t.ui_password for t in settings.teams.values()):
+            raise HTTPException(status_code=401, detail="Unauthorized")
         if len(settings.teams) == 1:
             return next(iter(settings.teams.values()))
         return settings.get_team("1")

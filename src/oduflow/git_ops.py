@@ -6,7 +6,7 @@ from urllib.parse import urlparse
 from typing import Any
 
 from oduflow.errors import ExternalCommandError, FlowError
-from oduflow.naming import redact_url_credentials
+from oduflow.naming import redact_url_credentials, sanitize_repo_url
 
 logger = logging.getLogger("oduflow")
 
@@ -99,6 +99,40 @@ def _store_git_credentials(
     except OSError:
         pass
     logger.info("Git credentials stored for host=%s user=%s", host, username)
+
+
+def extract_and_store_inline_credentials(
+    repo_url: str, cred_file: str
+) -> tuple[str, str]:
+    """Move inline URL credentials into the git credential store.
+
+    If *repo_url* embeds ``user:PAT@host`` credentials, store them in
+    *cred_file* (the team credential store that clone/pull already
+    authenticate against) and return ``(sanitized_url, username)``. Otherwise
+    return ``(repo_url, "")`` unchanged.
+
+    Purpose: keep the PAT out of the Docker ``oduflow.repo`` label, which is
+    world-readable via ``docker inspect`` and copied verbatim into saved
+    template metadata. This is a network-free move; SSRF at clone time is gated
+    separately by ``validate_repo_url`` at the tool layer.
+    """
+    if not repo_url:
+        return repo_url, ""
+    try:
+        parsed = urlparse(repo_url)
+    except Exception:
+        return repo_url, ""
+    if not parsed.username and not parsed.password:
+        return repo_url, ""
+    host = parsed.hostname or ""
+    if not host:
+        return repo_url, ""
+    _store_git_credentials(host, parsed.username or "", parsed.password or "", cred_file)
+    # Surface the username as the (non-secret) account name only when a separate
+    # password is present. For token-as-username forms (password empty, token in
+    # the username slot) keep it out of the label and rely on host-based matching.
+    label_user = parsed.username if (parsed.username and parsed.password) else ""
+    return sanitize_repo_url(repo_url), label_user or ""
 
 
 def setup_repo_auth(repo_url: str, cred_file: str) -> dict[str, str]:
