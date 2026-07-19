@@ -2873,7 +2873,7 @@ async function submitConnect() {
       'Logged in as ' + res.login + ' (uid ' + res.uid + '). Session expires ' +
       res.expires_at + '. Cookie domain: ' + res.cookie.domain + ', path /.';
     var openBtn = document.getElementById('connect-open');
-    openBtn.onclick = function() { connectOpen(res.url, res.cookie); };
+    openBtn.onclick = function() { connectOpen(res.url, res.cookie, res.login); };
     document.getElementById('connect-result').style.display = '';
     showToast('Session minted for ' + res.login);
   } catch (e) {
@@ -2884,14 +2884,20 @@ async function submitConnect() {
   }
 }
 
-function connectOpen(url, cookie) {
-  // Same host (local/port mode): the dashboard and the env share a hostname —
-  // cookies are not port-scoped, so dropping session_id here reaches the env.
-  // A different host (traefik subdomain) can't be set from the dashboard
-  // origin, so we just open and the operator adds the cookie themselves.
+function connectOpen(url, cookie, login) {
+  // Same host (local/port mode): the dashboard and the env share a hostname, so
+  // a cookie set for that host reaches the env across ports. We can't set it
+  // from JS — Odoo issues session_id as HttpOnly, so a document.cookie write is
+  // silently dropped once any env session exists — so navigate through the
+  // connect-open bridge, which sets the cookie via an HTTP Set-Cookie (this
+  // overrides the HttpOnly one) and redirects into the env already logged in.
   if (cookie && cookie.domain === location.hostname) {
-    document.cookie = 'session_id=' + cookie.value + '; path=/';
+    window.open(API + '/' + encodeURIComponent(_connectBranch) +
+      '/connect-open?user=' + encodeURIComponent(login), '_blank', 'noopener');
+    return;
   }
+  // Different host (traefik subdomain): the cookie can't be set from the
+  // dashboard origin, so we just open and the operator adds the cookie.
   window.open(url, '_blank', 'noopener');
 }
 

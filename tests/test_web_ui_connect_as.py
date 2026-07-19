@@ -1,8 +1,11 @@
 """REST endpoints behind the dashboard's Connect As button (issue #78).
 
 api_connect_as mints a session and returns the cookie payload; api_env_users
-feeds the user picker. Both delegate to odoo_ops and are exercised here with the
-docker layer mocked, mirroring test_web_ui_create_lock's TestClient harness.
+feeds the user picker; api_connect_open is the same-host "Open" bridge that mints
+a session and 303-redirects into the env with the session_id set via HTTP
+Set-Cookie (so it overrides Odoo's HttpOnly cookie, which JS can't touch). All
+delegate to odoo_ops and are exercised here with the docker layer mocked,
+mirroring test_web_ui_create_lock's TestClient harness.
 """
 
 from unittest.mock import patch
@@ -94,6 +97,43 @@ def test_connect_as_error_surfaced(tmp_path):
     data = resp.json()
     assert data["ok"] is False
     assert data.get("error")
+
+
+def test_connect_open_redirects_and_sets_cookie(tmp_path):
+    client = _client(_open_settings(tmp_path))
+    with (
+        patch(
+            "oduflow.web_ui.odoo_ops.connect_as_user", return_value=dict(_MINT)
+        ) as mock,
+        patch("oduflow.web_ui.activity.touch"),
+    ):
+        resp = client.get(
+            "/api/environments/18.0/connect-open",
+            params={"user": "jane@acme.com"},
+            follow_redirects=False,
+        )
+    assert resp.status_code == 303
+    assert resp.headers["location"] == "http://localhost:50001/web"
+    # session_id set server-side + HttpOnly so it overrides Odoo's HttpOnly cookie
+    # that a JS document.cookie write cannot touch.
+    set_cookie = resp.headers["set-cookie"]
+    assert "session_id=" + "s" * 80 in set_cookie
+    assert "httponly" in set_cookie.lower()
+    # (settings, team, branch, user) — branch from the URL, user from the query.
+    assert mock.call_args.args[2] == "18.0"
+    assert mock.call_args.args[3] == "jane@acme.com"
+
+
+def test_connect_open_defaults_to_admin(tmp_path):
+    client = _client(_open_settings(tmp_path))
+    with (
+        patch(
+            "oduflow.web_ui.odoo_ops.connect_as_user", return_value=dict(_MINT)
+        ) as mock,
+        patch("oduflow.web_ui.activity.touch"),
+    ):
+        client.get("/api/environments/18.0/connect-open", follow_redirects=False)
+    assert mock.call_args.args[3] == "admin"
 
 
 def test_env_users_lists(tmp_path):

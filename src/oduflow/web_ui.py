@@ -2501,6 +2501,47 @@ def _build_routes(
                 {"ok": False, "error": "Internal server error."}, status_code=500
             )
 
+    async def api_connect_open(request: Request) -> Response:
+        """Same-host "Open": mint a session and land the browser in the env
+        already logged in.
+
+        The dashboard's Open button can't set the session_id cookie from
+        JavaScript: Odoo issues session_id as HttpOnly and cookies are shared
+        across localhost ports, so a ``document.cookie`` write is silently
+        dropped and the env keeps the browser's stale session. Setting it here
+        via an HTTP Set-Cookie overrides the HttpOnly cookie, and the redirect
+        lands authenticated. Only meaningful when the dashboard and env share a
+        host (local/port mode) — the frontend only calls this in that case.
+        """
+        branch = request.path_params["branch"]
+        try:
+            settings = get_settings()
+            team = _get_ui_team(request)
+            user = (request.query_params.get("user") or "admin").strip() or "admin"
+            activity.touch(team, branch)
+            result = odoo_ops.connect_as_user(settings, team, branch, user)
+            response: Response = RedirectResponse(result["url"], status_code=303)
+            # Host-only cookie (no domain): scoped to the dashboard's host and,
+            # since cookies ignore ports, sent to the env on the same host.
+            # HttpOnly mirrors Odoo's own session_id so it overrides it cleanly.
+            response.set_cookie(
+                "session_id",
+                result["sid"],
+                path="/",
+                httponly=True,
+                samesite="lax",
+            )
+            return response
+        except FlowError as e:
+            return Response(
+                f"Connect failed: {e}", status_code=400, media_type="text/plain"
+            )
+        except Exception as e:
+            logger.exception("Unexpected error in api_connect_open")
+            return Response(
+                f"Connect failed: {e}", status_code=500, media_type="text/plain"
+            )
+
     async def ws_terminal(websocket: WebSocket) -> None:
         branch = websocket.path_params["branch"]
         await websocket.accept()
@@ -3735,6 +3776,11 @@ def _build_routes(
             "/api/environments/{branch:path}/connect-as",
             api_connect_as,
             methods=["POST"],
+        ),
+        Route(
+            "/api/environments/{branch:path}/connect-open",
+            api_connect_open,
+            methods=["GET"],
         ),
         Route("/api/environments/{branch:path}/update", api_update, methods=["POST"]),
         Route(
