@@ -24,7 +24,7 @@ The token is used to both authenticate and identify the team. This is implemente
 
 Oduflow can act as its own OAuth 2.1 Authorization Server, so MCP clients that require an OAuth flow (e.g. Claude.ai Remote MCP, MCP Inspector) can connect without any external identity provider.
 
-The team's OAuth **`client_id`** is a non-secret identifier, `team_<id>` (e.g. `team_1` for `[team.1]`); the **`client_secret`** is the team's `auth_token`. Only the `client_id` appears in the authorization URL — the secret is sent solely in the token request body, so it never leaks into logs or browser history. When the OAuth flow completes, the issued `access_token` is exactly the team's `auth_token` from `oduflow.toml` — so the same value works as a plain Bearer token for CLI clients.
+The team's OAuth **`client_id`** is a non-secret identifier, `team_<id>` (e.g. `team_1` for `[team.1]`); the **`client_secret`** is the team's `auth_token`. Only the `client_id` appears in the authorization URL — the secret is sent solely in the token request body, so it never leaks into logs or browser history. When the OAuth flow completes, Oduflow issues an **independent, opaque access token that expires** (with a refresh token to obtain a new one) — the client never receives the `auth_token` itself, so a compromised OAuth token has a bounded lifetime and can be revoked. The `auth_token` stays valid as a plain Bearer token for CLI clients (see [Bearer-only mode](#bearer-only-mode-cli-automation)).
 
 ### Setup
 
@@ -54,7 +54,8 @@ Either way, Oduflow exposes:
 
 - `GET /.well-known/oauth-authorization-server` — discovery metadata
 - `GET /authorize` — authorization endpoint (Authorization Code + PKCE)
-- `POST /token` — token endpoint
+- `POST /token` — token endpoint (mints/rotates the access + refresh token pair)
+- `POST /revoke` — revoke a minted access or refresh token
 
 Dynamic Client Registration (`/register`) is **disabled** — clients must use the preregistered credentials.
 
@@ -71,7 +72,7 @@ Dynamic Client Registration (`/register`) is **disabled** — clients must use t
 
 4. Claude.ai performs the OAuth flow against your Oduflow instance, receives an access token, and connects.
 
-The issued access token is the team's `auth_token`, so each team's claude.ai connector ends up scoped to its own workspaces, templates, and credentials.
+The issued access token is an independent, expiring token bound to that team (not the `auth_token`), so each team's claude.ai connector ends up scoped to its own workspaces, templates, and credentials while Claude never stores the master secret. Claude.ai transparently uses its refresh token to obtain a new access token when the old one expires; the connection also survives an Oduflow restart because minted tokens are persisted.
 
 ### Bearer-only mode (CLI / automation)
 

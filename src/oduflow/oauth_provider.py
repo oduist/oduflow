@@ -5,14 +5,20 @@ non-secret identifier (``team_<id>``, e.g. ``team_1``) and whose
 ``client_secret`` is the team's ``auth_token``. Keeping the secret out of the
 ``client_id`` matters because ``client_id`` travels in the ``/authorize`` query
 string (logs, browser history, Referer); the secret is sent only in the POST
-``/token`` body. After a successful Authorization Code + PKCE flow the issued
-``access_token`` is the team ``auth_token``, so the existing Bearer-token path in
-``_resolve_team()`` keeps working unchanged.
+``/token`` body. A successful Authorization Code + PKCE flow mints an
+*independent*, opaque, expiring ``access_token`` (with a rotating
+``refresh_token``) — the OAuth client never receives the team ``auth_token``.
+Minted tokens are persisted (see :mod:`oduflow.oauth_token_store`) so they
+survive a restart, expire, and can be revoked. The team ``auth_token`` itself
+stays valid as a preseeded, non-expiring direct Bearer credential (curl/CLI),
+and a minted token carries the numeric ``team_id`` as its ``client_id`` so
+``_resolve_team()`` routes it exactly like the ``auth_token``.
 """
 
 from __future__ import annotations
 
 import logging
+import os
 import re
 from typing import Any
 from urllib.parse import urlparse
@@ -38,6 +44,7 @@ from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
 
 from oduflow import env_tokens
+from oduflow.oauth_token_store import OAuthTokenStore
 from oduflow.scoped_access import ENV_SCOPE_PREFIX
 from oduflow.settings import Settings
 
@@ -50,6 +57,12 @@ _DANGEROUS_REDIRECT_SCHEMES = {"javascript", "data", "vbscript", "file"}
 _LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "::1", "[::1]"}
 
 _RESOURCE_METADATA_RE = re.compile(r'resource_metadata="([^"]+)"')
+
+# Minted OAuth access tokens expire after this many seconds; the client obtains
+# a fresh pair via its refresh token. Intentionally not a config knob — a
+# sensible default (matches the SDK's DEFAULT_ACCESS_TOKEN_EXPIRY_SECONDS).
+_ACCESS_TOKEN_TTL_SECONDS = 3600
+_TOKEN_STORE_FILENAME = "oauth_tokens.json"
 
 
 def public_client_id(team_id: str) -> str:
@@ -200,10 +213,20 @@ class OduflowOAuthProvider(InMemoryOAuthProvider):
                 "localhost",
             )
             base_url = f"https://{placeholder_host}"
-        super().__init__(base_url=base_url)
+        # Enable the /revoke endpoint so a client can really invalidate a minted
+        # token (revoke_token deletes it from the persistent store).
+        super().__init__(
+            base_url=base_url,
+            revocation_options=RevocationOptions(enabled=True),
+        )
 
         self._settings = settings
         self._token_to_team: dict[str, str] = {}
+        # Persistent store of minted (opaque, expiring) access/refresh tokens.
+        self._token_store = OAuthTokenStore(
+            os.path.join(settings.base_data_dir, _TOKEN_STORE_FILENAME),
+            access_ttl=_ACCESS_TOKEN_TTL_SECONDS,
+        )
         placeholder_redirect = AnyUrl("https://claude.ai/")
 
         for team in settings.teams.values():
@@ -358,9 +381,22 @@ class OduflowOAuthProvider(InMemoryOAuthProvider):
     async def load_access_token(  # type: ignore[override]
         self, token: str
     ) -> AccessToken | None:
+        # 1. Preseeded team auth_token (direct Bearer, non-expiring).
         existing = await super().load_access_token(token)
         if existing is not None:
             return existing
+        # 2. A minted OAuth access token from the persistent store. Its stored
+        # client_id is the numeric team_id, so it routes like the auth_token.
+        # get_access() drops the token and returns None once expired.
+        record = self._token_store.get_access(token)
+        if record is not None:
+            return AccessToken(
+                token=token,
+                client_id=str(record.get("client_id", "")),
+                scopes=list(record.get("scopes", [])),
+                expires_at=record.get("expires_at"),
+            )
+        # 3. A per-environment token (scoped Bearer).
         identity = await self._env_identity(token)
         if identity is None:
             return None
@@ -393,19 +429,21 @@ class OduflowOAuthProvider(InMemoryOAuthProvider):
 
             raise TokenError("invalid_client", "Unknown client.")
 
-        # The issued access token is the client SECRET (the team auth_token, or
-        # never the public client_id, which would not authenticate as a Bearer
-        # token downstream.
-        token = client.client_secret or cid
-        scope = (
-            " ".join(authorization_code.scopes) if authorization_code.scopes else None
+        # Mint an independent, opaque, expiring access token (+ refresh token)
+        # rather than handing back the team auth_token. The minted token's stored
+        # client_id is the numeric team_id, so a full-access (empty-scope) token
+        # routes exactly like the auth_token in _resolve_team().
+        team_id = self._token_to_team[cid]
+        scopes = list(authorization_code.scopes or [])
+        access, refresh, _expires_at = self._token_store.mint_pair(
+            client_id=team_id, scopes=scopes
         )
         return OAuthToken(
-            access_token=token,
+            access_token=access,
             token_type="Bearer",
-            expires_in=None,
-            refresh_token=token,
-            scope=scope,
+            expires_in=_ACCESS_TOKEN_TTL_SECONDS,
+            refresh_token=refresh,
+            scope=" ".join(scopes) if scopes else None,
         )
 
     async def load_refresh_token(
@@ -414,20 +452,18 @@ class OduflowOAuthProvider(InMemoryOAuthProvider):
         refresh_token: str,
     ) -> RefreshToken | None:
         cid = client.client_id
-        # The refresh token we issue equals the client secret (team auth_token),
-        # not the public client_id.
-        if (
-            cid is not None
-            and refresh_token == client.client_secret
-            and cid in self._token_to_team
-        ):
-            return RefreshToken(
-                token=refresh_token,
-                client_id=cid,
-                scopes=[],
-                expires_at=None,
-            )
-        return None
+        if cid is None or cid not in self._token_to_team:
+            return None
+        record = self._token_store.get_refresh(refresh_token)
+        # The refresh token must belong to this client's team.
+        if record is None or record.get("client_id") != self._token_to_team[cid]:
+            return None
+        return RefreshToken(
+            token=refresh_token,
+            client_id=cid,
+            scopes=list(record.get("scopes", [])),
+            expires_at=None,
+        )
 
     async def exchange_refresh_token(
         self,
@@ -435,16 +471,24 @@ class OduflowOAuthProvider(InMemoryOAuthProvider):
         refresh_token: RefreshToken,
         scopes: list[str],
     ) -> OAuthToken:
-        token = refresh_token.token
+        # Rotate: the old access+refresh pair is invalidated and a new pair is
+        # minted with the refresh token's original team/scopes.
+        rotated = self._token_store.rotate(refresh_token.token)
+        if rotated is None:
+            from mcp.server.auth.provider import TokenError
+
+            raise TokenError("invalid_grant", "Unknown or already-used refresh token.")
+        access, refresh, _expires_at, _client_id, minted_scopes = rotated
         return OAuthToken(
-            access_token=token,
+            access_token=access,
             token_type="Bearer",
-            expires_in=None,
-            refresh_token=token,
-            scope=" ".join(scopes) if scopes else None,
+            expires_in=_ACCESS_TOKEN_TTL_SECONDS,
+            refresh_token=refresh,
+            scope=" ".join(minted_scopes) if minted_scopes else None,
         )
 
     async def revoke_token(self, token: AccessToken | RefreshToken) -> None:
-        # Tokens are tied to oduflow.toml; runtime revocation would just
-        # break the next request. Operator should rotate auth_token instead.
-        return None
+        # Really delete the minted token (and its paired token) from the store.
+        # The preseeded auth_token and per-env tokens are not in the store, so
+        # revoking them is a no-op (rotate auth_token in oduflow.toml instead).
+        self._token_store.revoke(token.token)

@@ -2186,7 +2186,7 @@ The token is used to both authenticate and identify the team. This is implemente
 
 Oduflow can act as its own OAuth 2.1 Authorization Server, so MCP clients that require an OAuth flow (e.g. Claude.ai Remote MCP, MCP Inspector) can connect without any external identity provider.
 
-When the OAuth flow completes, the issued `access_token` is exactly the team's `auth_token` from `oduflow.toml` — so the same value works as a plain Bearer token for CLI clients.
+The OAuth `client_id` is the non-secret `team_<id>` and the `client_secret` is the team's `auth_token` (sent only in the token request body, never in the authorization URL). When the OAuth flow completes, Oduflow mints an **independent, opaque, expiring** `access_token` (with a rotating refresh token) — the client never receives the `auth_token`, and a minted token can be revoked. The `auth_token` itself stays valid as a plain Bearer token for CLI clients.
 
 ### Setup
 
@@ -2216,7 +2216,8 @@ Either way, Oduflow exposes:
 
 - `GET /.well-known/oauth-authorization-server` — discovery metadata
 - `GET /authorize` — authorization endpoint (Authorization Code + PKCE)
-- `POST /token` — token endpoint
+- `POST /token` — token endpoint (mints/rotates the access + refresh token pair)
+- `POST /revoke` — revoke a minted access or refresh token
 
 Dynamic Client Registration (`/register`) is **disabled** — clients must use the preregistered credentials.
 
@@ -2233,7 +2234,7 @@ Dynamic Client Registration (`/register`) is **disabled** — clients must use t
 
 4. Claude.ai performs the OAuth flow against your Oduflow instance, receives an access token, and connects.
 
-The issued access token is the team's `auth_token`, so each team's claude.ai connector ends up scoped to its own workspaces, templates, and credentials.
+The issued access token is an independent, expiring token bound to that team (not the `auth_token`), so each team's claude.ai connector ends up scoped to its own workspaces, templates, and credentials without Claude ever storing the master secret; it refreshes transparently and survives an Oduflow restart (minted tokens are persisted).
 
 ### Bearer-only mode (CLI / automation)
 
