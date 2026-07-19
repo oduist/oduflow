@@ -2,10 +2,11 @@ import logging
 import os
 import re
 import subprocess
-from urllib.parse import urlparse
+from urllib.parse import ParseResult, urlparse
 from typing import Any
 
 from oduflow.errors import ExternalCommandError, FlowError
+from oduflow.naming import redact_url_credentials, sanitize_repo_url
 
 logger = logging.getLogger("oduflow")
 
@@ -33,6 +34,14 @@ class InvalidRepoURLError(FlowError):
 
 class RepoAuthError(FlowError):
     """Repository authentication failed. Call setup_repo_auth first."""
+
+
+def _credential_host(parsed: ParseResult) -> str:
+    """Git credential-store host key, including an explicit port."""
+    hostname = parsed.hostname or ""
+    if ":" in hostname:
+        hostname = f"[{hostname}]"
+    return f"{hostname}:{parsed.port}" if parsed.port is not None else hostname
 
 
 def validate_repo_url(repo_url: str) -> None:
@@ -70,14 +79,15 @@ def _parse_authenticated_url(repo_url: str) -> tuple[str, str, str, str]:
         raise InvalidRepoURLError(
             "URL must contain credentials: https://user:PAT@github.com/owner/repo.git"
         )
-    clean_url = parsed._replace(netloc=parsed.hostname or "").geturl()
-    return clean_url, parsed.hostname or "", parsed.username, parsed.password
+    clean_url = sanitize_repo_url(repo_url)
+    return clean_url, _credential_host(parsed), parsed.username, parsed.password
 
 
 def _store_git_credentials(
     host: str, username: str, password: str, cred_file: str
 ) -> None:
-    os.makedirs(os.path.dirname(cred_file), exist_ok=True)
+    # Don't trust the process umask for the dir holding the plaintext PAT store.
+    os.makedirs(os.path.dirname(cred_file), mode=0o700, exist_ok=True)
     env = git_env_for_team(cred_file)
 
     credential_input = (
@@ -90,7 +100,51 @@ def _store_git_credentials(
         capture_output=True,
         env=env,
     )
-    logger.info("Git credentials stored for host=%s user=%s", host, username)
+    # git's store helper defaults the file to 0600, but enforce it explicitly as
+    # defense-in-depth (and to harden a pre-existing file created under a laxer umask).
+    try:
+        os.chmod(cred_file, 0o600)
+    except OSError:
+        pass
+    # A few providers accept token-as-username URLs. Never log this field: the
+    # caller cannot reliably distinguish an account name from a secret.
+    logger.info("Git credentials stored for host=%s", host)
+
+
+def extract_and_store_inline_credentials(
+    repo_url: str, cred_file: str
+) -> tuple[str, str]:
+    """Move inline URL credentials into the git credential store.
+
+    If *repo_url* embeds ``user:PAT@host`` credentials, store them in
+    *cred_file* (the team credential store that clone/pull already
+    authenticate against) and return ``(sanitized_url, username)``. Otherwise
+    return ``(repo_url, "")`` unchanged.
+
+    Purpose: keep the PAT out of the Docker ``oduflow.repo`` label, which is
+    world-readable via ``docker inspect`` and copied verbatim into saved
+    template metadata. This is a network-free move; SSRF at clone time is gated
+    separately by ``validate_repo_url`` at the tool layer.
+    """
+    if not repo_url:
+        return repo_url, ""
+    try:
+        parsed = urlparse(repo_url)
+    except Exception:
+        return repo_url, ""
+    if not parsed.username and not parsed.password:
+        return repo_url, ""
+    host = _credential_host(parsed)
+    if not host:
+        return repo_url, ""
+    _store_git_credentials(
+        host, parsed.username or "", parsed.password or "", cred_file
+    )
+    # Surface the username as the (non-secret) account name only when a separate
+    # password is present. For token-as-username forms (password empty, token in
+    # the username slot) keep it out of the label and rely on host-based matching.
+    label_user = parsed.username if (parsed.username and parsed.password) else ""
+    return sanitize_repo_url(repo_url), label_user or ""
 
 
 def setup_repo_auth(repo_url: str, cred_file: str) -> dict[str, str]:
@@ -117,7 +171,9 @@ def setup_repo_auth(repo_url: str, cred_file: str) -> dict[str, str]:
             env=env,
         )
     except subprocess.CalledProcessError as e:
-        error_msg = e.stderr.decode("utf-8") if e.stderr else str(e)
+        error_msg = redact_url_credentials(
+            e.stderr.decode("utf-8") if e.stderr else str(e)
+        )
         raise ExternalCommandError(
             "git ls-remote (auth test)",
             e.returncode,
@@ -306,7 +362,7 @@ def pull_repo(
             env=env,
         )
     except subprocess.CalledProcessError as e:
-        error_msg = e.stderr or str(e)
+        error_msg = redact_url_credentials(e.stderr or str(e))
         raise ExternalCommandError("git pull", e.returncode, error_msg)
     except subprocess.TimeoutExpired:
         raise ExternalCommandError("git pull", -1, "Fetch timed out (60s).")

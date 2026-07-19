@@ -177,7 +177,7 @@ def _run_snapshot_job(
     except BusyError:
         return  # deploy/restore in flight; still due next tick
     started = time.time()
-    backup_state = {
+    backup_state: dict[str, Any] = {
         "last_attempt_at": now.isoformat(),
     }
     try:

@@ -293,15 +293,17 @@ def prod_lock_key(team_id: str, name: str) -> str:
     return f"prod:{team_id}:{name}"
 
 
-def with_prod_lock(fn):
+def with_prod_lock(fn: Callable[P, R]) -> Callable[P, R]:
     """Acquire the production's lock before executing the tool function."""
 
     @functools.wraps(fn)
-    def wrapper(*args, **kwargs):
-        name = kwargs.get("name") or (args[0] if args else None)
-        if not name:
+    def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
+        raw_name = kwargs.get("name") or (args[0] if args else None)
+        if not raw_name:
             raise ToolError("name is required")
-        team = _resolve_team(kwargs.get("ctx"))
+        name = cast(str, raw_name)
+        ctx = cast("Context | None", kwargs.get("ctx"))
+        team = _resolve_team(ctx)
         key = prod_lock_key(team.team_id, name)
         _locks.acquire_env(key)
         try:
@@ -2782,7 +2784,7 @@ def create_production(
     extra_addons: dict[str, str] | None = None,
     auto_update: bool = False,
     template_name: str = "",
-    ctx: Context = None,
+    ctx: Context | None = None,
 ) -> str:
     """
     Create a PRODUCTION Odoo environment (long-lived, own domain, dedicated
@@ -2840,7 +2842,7 @@ def create_production(
 
 @mcp.tool()
 @handle_errors
-def list_productions(ctx: Context = None) -> str:
+def list_productions(ctx: Context | None = None) -> str:
     """
     List the team's production environments with status, domain, deployed
     commit, and last deploy result.
@@ -2857,7 +2859,7 @@ def list_productions(ctx: Context = None) -> str:
 
 @mcp.tool()
 @handle_errors
-def get_production_info(name: str, ctx: Context = None) -> str:
+def get_production_info(name: str, ctx: Context | None = None) -> str:
     """
     Detailed information about a production: status, health, deployed commit,
     recent branch commits, deploy history, and backup state.
@@ -2880,7 +2882,7 @@ def production_logs(
     n_lines: int = 100,
     grep: str = "",
     level: str = "",
-    ctx: Context = None,
+    ctx: Context | None = None,
 ) -> str:
     """
     Fetch logs from a production's Odoo container.
@@ -2907,7 +2909,7 @@ def production_logs(
 @mcp.tool()
 @handle_errors
 @with_prod_lock
-def start_production(name: str, ctx: Context = None) -> str:
+def start_production(name: str, ctx: Context | None = None) -> str:
     """
     Start a stopped production environment.
 
@@ -2923,7 +2925,7 @@ def start_production(name: str, ctx: Context = None) -> str:
 @mcp.tool()
 @handle_errors
 @with_prod_lock
-def stop_production(name: str, ctx: Context = None) -> str:
+def stop_production(name: str, ctx: Context | None = None) -> str:
     """
     Stop a production environment. WARNING: takes the production offline.
 
@@ -2939,7 +2941,7 @@ def stop_production(name: str, ctx: Context = None) -> str:
 @mcp.tool()
 @handle_errors
 @with_prod_lock
-def restart_production(name: str, ctx: Context = None) -> str:
+def restart_production(name: str, ctx: Context | None = None) -> str:
     """
     Restart a production's Odoo container (brief downtime).
 
@@ -2955,7 +2957,9 @@ def restart_production(name: str, ctx: Context = None) -> str:
 @mcp.tool()
 @handle_errors
 @with_prod_lock
-def set_production_auto_update(name: str, enabled: bool, ctx: Context = None) -> str:
+def set_production_auto_update(
+    name: str, enabled: bool, ctx: Context | None = None
+) -> str:
     """
     Enable/disable automatic deployment of GitHub push webhooks for a
     production. When enabled, a push to the production's branch triggers
@@ -2981,7 +2985,7 @@ def update_production(
     install: str = "",
     upgrade: str = "",
     restart: bool = False,
-    ctx: Context = None,
+    ctx: Context | None = None,
 ) -> str:
     """
     Deploy the latest commits of a production's branch — with AUTOMATIC CODE
@@ -3032,7 +3036,9 @@ def update_production(
 @mcp.tool()
 @handle_errors
 @with_prod_lock
-def rollback_production(name: str, to_commit: str = "", ctx: Context = None) -> str:
+def rollback_production(
+    name: str, to_commit: str = "", ctx: Context | None = None
+) -> str:
     """
     Manually roll a production's CODE back to a previous commit and restart.
     (The database is not touched — restore a snapshot for data rollback.)
@@ -3047,12 +3053,12 @@ def rollback_production(name: str, to_commit: str = "", ctx: Context = None) -> 
     result = production_ops.rollback_production(
         settings, team, name, to_commit, trigger="mcp"
     )
-    return result["message"]
+    return str(result["message"])
 
 
 @mcp.tool()
 @handle_errors
-def production_deploys(name: str, limit: int = 20, ctx: Context = None) -> str:
+def production_deploys(name: str, limit: int = 20, ctx: Context | None = None) -> str:
     """
     Deploy history of a production (newest last): commits, actions, modules,
     status (success / rolled_back / rollback_failed), errors.
@@ -3074,7 +3080,7 @@ def production_deploys(name: str, limit: int = 20, ctx: Context = None) -> str:
 @mcp.tool()
 @handle_errors
 @with_prod_lock
-def snapshot_production(name: str, note: str = "", ctx: Context = None) -> str:
+def snapshot_production(name: str, note: str = "", ctx: Context | None = None) -> str:
     """
     Take a snapshot of a production to S3: database dump + deduplicated
     filestore revision + manifest (with the deployed commit sha). Snapshots
@@ -3107,7 +3113,7 @@ def snapshot_production(name: str, note: str = "", ctx: Context = None) -> str:
 @mcp.tool()
 @handle_errors
 def list_production_snapshots(
-    name: str, refresh: bool = False, ctx: Context = None
+    name: str, refresh: bool = False, ctx: Context | None = None
 ) -> str:
     """
     List a production's snapshots (oldest first): id, created_at, sizes,
@@ -3136,7 +3142,7 @@ def list_production_snapshots(
 @handle_errors
 @with_prod_lock
 def restore_production(
-    name: str, snapshot_id: str, confirm: str = "", ctx: Context = None
+    name: str, snapshot_id: str, confirm: str = "", ctx: Context | None = None
 ) -> str:
     """
     Restore a production's DATABASE and FILESTORE from a snapshot.
@@ -3169,7 +3175,7 @@ def restore_production(
 
 @mcp.tool()
 @handle_errors
-def production_backup_status(ctx: Context = None) -> str:
+def production_backup_status(ctx: Context | None = None) -> str:
     """
     Backup posture for the team: per-production snapshot state (schedule,
     last snapshot, last error) and cluster WAL-G state (base backups, WAL
@@ -3189,7 +3195,7 @@ def production_backup_status(ctx: Context = None) -> str:
 @handle_errors
 @with_prod_lock
 def set_production_backup_schedule(
-    name: str, schedule: str, ctx: Context = None
+    name: str, schedule: str, ctx: Context | None = None
 ) -> str:
     """
     Override a production's daily snapshot time.
@@ -3211,7 +3217,7 @@ def set_production_backup_schedule(
 
 @mcp.tool()
 @handle_errors
-def prune_production_backups(ctx: Context = None) -> str:
+def prune_production_backups(ctx: Context | None = None) -> str:
     """
     Apply the retention policy ([backup] keep) to the team's snapshots and
     filestore chunk store now (runs weekly on schedule anyway). Uses safe
@@ -3235,7 +3241,7 @@ def prune_production_backups(ctx: Context = None) -> str:
 @mcp.tool()
 @handle_errors
 def restore_cluster_pitr(
-    target_time: str = "", confirm: str = "", ctx: Context = None
+    target_time: str = "", confirm: str = "", ctx: Context | None = None
 ) -> str:
     """
     DISASTER RECOVERY: restore the WHOLE production PostgreSQL cluster from
@@ -3264,7 +3270,9 @@ def restore_cluster_pitr(
     _resolve_team(ctx)  # authenticate the caller; PITR spans all teams
     _locks.acquire_env("prod:__cluster__")
     try:
-        client = system_ops.get_client()
+        from oduflow.docker_ops.client import get_client
+
+        client = get_client()
         # Stop every production Odoo container (all teams share the cluster).
         stopped: list[str] = []
         for team_cfg in settings.teams.values():
@@ -3301,7 +3309,7 @@ def delete_production(
     name: str,
     confirm: str = "",
     drop_database: bool = False,
-    ctx: Context = None,
+    ctx: Context | None = None,
 ) -> str:
     """
     Delete a production environment. The container and registry record are

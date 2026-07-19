@@ -54,6 +54,7 @@ from oduflow.naming import (
     get_resource_name,
     get_template_db_name,
     get_workspace_path,
+    redact_url_credentials,
     sanitize_repo_url,
     slugify_branch,
 )
@@ -93,6 +94,23 @@ def _redact_repo_urls(text: str, *urls: str) -> str:
         if url:
             redacted = redacted.replace(url, sanitize_repo_url(url))
     return redacted
+
+
+def _move_inline_repo_credentials(
+    repo_url: str, cred_file: str, git_user: str
+) -> tuple[str, str]:
+    """Store inline credentials and make their username authoritative."""
+    from oduflow.git_ops import extract_and_store_inline_credentials
+
+    clean_url, extracted_user = extract_and_store_inline_credentials(
+        repo_url, cred_file
+    )
+    if clean_url != repo_url:
+        # An explicit credential-bearing URL overrides template metadata. This
+        # also clears a stale username for token-as-username URLs, whose secret
+        # must not be copied into the Docker label.
+        git_user = extracted_user
+    return clean_url, git_user
 
 
 def _get_used_ports(
@@ -742,7 +760,9 @@ def _clone_repo(
             env=git_env,
         )
     except subprocess.CalledProcessError as e:
-        error_msg = e.stderr.decode("utf-8") if e.stderr else str(e)
+        error_msg = redact_url_credentials(
+            e.stderr.decode("utf-8") if e.stderr else str(e)
+        )
         if any(kw.lower() in error_msg.lower() for kw in auth_keywords):
             raise RepoAuthError(
                 f"Git authentication failed for {sanitize_repo_url(repo_url)}. "
@@ -900,6 +920,16 @@ def create_environment(
             "in oduflow.toml [server] to enable it."
         )
     env_db = get_db_name(env_name, team.team_id)
+
+    # Keep inline git credentials (https://user:PAT@host/...) out of the Docker
+    # label (world-readable via `docker inspect`, copied into template metadata):
+    # move them into the team credential store, then persist only a sanitized URL.
+    # Clone/recreate/agent paths already authenticate via that store. No-op for
+    # clean URLs and for live-mount (which never clones).
+    if not local_mount and repo_url:
+        repo_url, git_user = _move_inline_repo_credentials(
+            repo_url, team.git_credentials_file(), git_user
+        )
 
     labels = {
         settings.managed_label: "true",

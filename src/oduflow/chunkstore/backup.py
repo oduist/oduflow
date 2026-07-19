@@ -358,6 +358,7 @@ def backup(
             and "sc" in prev_entry
         )
         if unchanged and st.st_size > 0:
+            assert prev_entry is not None
             # Splice the previous revision's chunks in: cut the new stream
             # first so chunks never mix new bytes and preserved refs.
             stream.flush()

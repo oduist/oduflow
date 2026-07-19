@@ -76,7 +76,9 @@ def verify_signature(secret: str, body: bytes, signature_header: str) -> bool:
     return hmac.compare_digest(expected, digest.strip().lower())
 
 
-def resolve_team(settings: Settings, body: bytes, signature_header: str):
+def resolve_team(
+    settings: Settings, body: bytes, signature_header: str
+) -> TeamSettings | None:
     """The team whose webhook secret signed this request (None = no match)."""
     for team in settings.teams.values():
         try:

@@ -73,6 +73,15 @@ URL** that is logged, labelled, or shown.
 - **Strip on the way out.** Any path that exposes a repo URL — startup logs, the
   environment list API, container labels — routes it through `sanitize_repo_url`
   first, so a token can be entered once but is never readable afterward.
+- **Never write the secret in the first place.** At `create_environment` time,
+  `extract_and_store_inline_credentials` moves any inline `user:PAT@host`
+  credential out of the URL into the team credential store and persists only the
+  sanitized URL in the `oduflow.repo` label (and thus in saved template
+  metadata). This closes a write-path gap where the label previously stored the
+  raw URL and only read/log paths sanitized it — a token was recoverable via
+  `docker inspect` until the environment was recreated. git stderr is likewise
+  scrubbed (`redact_url_credentials`) so a credential-bearing remote echoed in an
+  error never reaches the caller or the logs.
 
 ## Consequences
 
@@ -100,3 +109,10 @@ URL** that is logged, labelled, or shown.
   `git ls-remote` (replacing a shallow clone), list/validate/delete API + the
   dashboard Credentials tab, persistent `.git-credentials` store, and a
   credential helper configured at startup.
+- security audit hardening (2026-07-19) — enforced "creds never in labels" on the
+  **write** path: `extract_and_store_inline_credentials` moves inline
+  `user:PAT@host` credentials into the credential store at `create_environment`
+  time so the `oduflow.repo` label / template metadata only ever hold a sanitized
+  URL (previously the raw URL was stored and only read paths sanitized).
+  `redact_url_credentials` scrubs credential-bearing remotes from git stderr;
+  `.git-credentials` dir/file modes forced to `0o700`/`0o600`.
