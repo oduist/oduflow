@@ -505,9 +505,11 @@ def _build_routes(
             return JSONResponse({"ok": True, "environments": envs})
         except FlowError as e:
             return _error_response(e)
-        except Exception as e:
+        except Exception:
             logger.exception("Unexpected error in api_list")
-            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+            return JSONResponse(
+                {"ok": False, "error": "Internal server error."}, status_code=500
+            )
 
     def api_start(request: Request) -> JSONResponse:
         branch = request.path_params["branch"]
@@ -522,9 +524,11 @@ def _build_routes(
             return JSONResponse({"ok": True, "result": result})
         except FlowError as e:
             return _error_response(e)
-        except Exception as e:
+        except Exception:
             logger.exception("Unexpected error in api_start")
-            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+            return JSONResponse(
+                {"ok": False, "error": "Internal server error."}, status_code=500
+            )
         finally:
             locks.release_env(branch)
 
@@ -541,9 +545,11 @@ def _build_routes(
             return JSONResponse({"ok": True, "result": result})
         except FlowError as e:
             return _error_response(e)
-        except Exception as e:
+        except Exception:
             logger.exception("Unexpected error in api_stop")
-            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+            return JSONResponse(
+                {"ok": False, "error": "Internal server error."}, status_code=500
+            )
         finally:
             locks.release_env(branch)
 
@@ -560,9 +566,11 @@ def _build_routes(
             return JSONResponse({"ok": True, "result": result})
         except FlowError as e:
             return _error_response(e)
-        except Exception as e:
+        except Exception:
             logger.exception("Unexpected error in api_restart")
-            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+            return JSONResponse(
+                {"ok": False, "error": "Internal server error."}, status_code=500
+            )
         finally:
             locks.release_env(branch)
 
@@ -580,9 +588,11 @@ def _build_routes(
             return JSONResponse({"ok": True, "result": result})
         except FlowError as e:
             return _error_response(e)
-        except Exception as e:
+        except Exception:
             logger.exception("Unexpected error in api_sync")
-            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+            return JSONResponse(
+                {"ok": False, "error": "Internal server error."}, status_code=500
+            )
         finally:
             locks.release_env(branch)
 
@@ -599,9 +609,11 @@ def _build_routes(
             return JSONResponse({"ok": True, "result": {"deleted": branch}})
         except FlowError as e:
             return _error_response(e)
-        except Exception as e:
+        except Exception:
             logger.exception("Unexpected error in api_delete")
-            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+            return JSONResponse(
+                {"ok": False, "error": "Internal server error."}, status_code=500
+            )
         finally:
             locks.release_env(branch)
 
@@ -640,9 +652,11 @@ def _build_routes(
             return JSONResponse({"ok": True, "result": result})
         except FlowError as e:
             return _error_response(e)
-        except Exception as e:
+        except Exception:
             logger.exception("Unexpected error in api_update")
-            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+            return JSONResponse(
+                {"ok": False, "error": "Internal server error."}, status_code=500
+            )
         finally:
             locks.release_env(branch)
 
@@ -700,9 +714,11 @@ def _build_routes(
             return JSONResponse({"ok": True, "result": result})
         except FlowError as e:
             return _error_response(e)
-        except Exception as e:
+        except Exception:
             logger.exception("Unexpected error in api_recreate")
-            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+            return JSONResponse(
+                {"ok": False, "error": "Internal server error."}, status_code=500
+            )
         finally:
             locks.release_env(branch)
 
@@ -754,9 +770,11 @@ def _build_routes(
             return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
         except FlowError as e:
             return _error_response(e)
-        except Exception as e:
+        except Exception:
             logger.exception("Unexpected error in api_save_as_template")
-            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+            return JSONResponse(
+                {"ok": False, "error": "Internal server error."}, status_code=500
+            )
         finally:
             locks.release_team(team.team_id)
 
@@ -900,9 +918,11 @@ def _build_routes(
             # in the server journal.
             logger.warning("create_environment failed for %s: %s", env_name, e)
             return _error_response(e)
-        except Exception as e:
+        except Exception:
             logger.exception("Unexpected error in api_create")
-            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+            return JSONResponse(
+                {"ok": False, "error": "Internal server error."}, status_code=500
+            )
         finally:
             locks.release_env(env_name)
 
@@ -924,9 +944,11 @@ def _build_routes(
             return JSONResponse({"ok": True, "logs": logs})
         except FlowError as e:
             return _error_response(e)
-        except Exception as e:
+        except Exception:
             logger.exception("Unexpected error in api_logs")
-            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+            return JSONResponse(
+                {"ok": False, "error": "Internal server error."}, status_code=500
+            )
 
     def api_stats(request: Request) -> JSONResponse:
         try:
@@ -945,9 +967,11 @@ def _build_routes(
                     "storage": storage,
                 }
             )
-        except Exception as e:
+        except Exception:
             logger.exception("Unexpected error in api_stats")
-            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+            return JSONResponse(
+                {"ok": False, "error": "Internal server error."}, status_code=500
+            )
 
     def api_storage_refresh(request: Request) -> JSONResponse:
         branch = request.path_params["branch"]
@@ -956,9 +980,11 @@ def _build_routes(
             return JSONResponse({"ok": True, "storage": entry})
         except FlowError as e:
             return _error_response(e)
-        except Exception as e:
+        except Exception:
             logger.exception("Unexpected error in api_storage_refresh")
-            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+            return JSONResponse(
+                {"ok": False, "error": "Internal server error."}, status_code=500
+            )
 
     def api_usage(request: Request) -> JSONResponse:
         """Cached per-team usage + quotas — the read side for external
@@ -976,9 +1002,11 @@ def _build_routes(
                     "usage": read_storage_cache(team),
                 }
             )
-        except Exception as e:
+        except Exception:
             logger.exception("Unexpected error in api_usage")
-            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+            return JSONResponse(
+                {"ok": False, "error": "Internal server error."}, status_code=500
+            )
 
     def api_usage_refresh(request: Request) -> JSONResponse:
         """Recompute storage for every environment plus team totals. Heavy
@@ -999,9 +1027,11 @@ def _build_routes(
             )
         except FlowError as e:
             return _error_response(e)
-        except Exception as e:
+        except Exception:
             logger.exception("Unexpected error in api_usage_refresh")
-            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+            return JSONResponse(
+                {"ok": False, "error": "Internal server error."}, status_code=500
+            )
 
     def api_templates(request: Request) -> JSONResponse:
         try:
@@ -1009,9 +1039,11 @@ def _build_routes(
             return JSONResponse({"ok": True, "templates": templates})
         except FlowError as e:
             return _error_response(e)
-        except Exception as e:
+        except Exception:
             logger.exception("Unexpected error in api_templates")
-            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+            return JSONResponse(
+                {"ok": False, "error": "Internal server error."}, status_code=500
+            )
 
     def api_template_delete(request: Request) -> JSONResponse:
         name = request.path_params["name"]
@@ -1025,9 +1057,11 @@ def _build_routes(
             return JSONResponse({"ok": True, "result": result})
         except FlowError as e:
             return _error_response(e)
-        except Exception as e:
+        except Exception:
             logger.exception("Unexpected error in api_template_delete")
-            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+            return JSONResponse(
+                {"ok": False, "error": "Internal server error."}, status_code=500
+            )
         finally:
             locks.release_team(team.team_id)
 
@@ -1056,9 +1090,11 @@ def _build_routes(
             return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
         except FlowError as e:
             return _error_response(e)
-        except Exception as e:
+        except Exception:
             logger.exception("Unexpected error in api_template_rename")
-            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+            return JSONResponse(
+                {"ok": False, "error": "Internal server error."}, status_code=500
+            )
         finally:
             locks.release_team(team.team_id)
 
@@ -1187,9 +1223,11 @@ def _build_routes(
             record = import_tokens.create_token(team, template_name)
         except ValueError as e:
             return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
-        except Exception as e:
+        except Exception:
             logger.exception("Unexpected error in api_import_token")
-            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+            return JSONResponse(
+                {"ok": False, "error": "Internal server error."}, status_code=500
+            )
 
         base = str(request.base_url).rstrip("/")
         # Behind a TLS-terminating proxy request.base_url is http://; honour
@@ -1315,11 +1353,13 @@ def _build_routes(
                     async for chunk in request.stream():
                         f.write(chunk)
                 os.replace(part, dest)
-            except Exception as e:
+            except Exception:
                 if os.path.exists(part):
                     os.remove(part)
                 logger.exception("Failed to receive dump for %s", template_name)
-                return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+                return JSONResponse(
+                    {"ok": False, "error": "Internal server error."}, status_code=500
+                )
             return JSONResponse({"ok": True})
 
         # Chunked upload: append at `offset`, complete when the part hits `total`.
@@ -1337,9 +1377,11 @@ def _build_routes(
             )
         try:
             state, size = await _receive_offset_chunk(request, part, offset)
-        except Exception as e:
+        except Exception:
             logger.exception("Failed to receive dump chunk for %s", template_name)
-            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+            return JSONResponse(
+                {"ok": False, "error": "Internal server error."}, status_code=500
+            )
         if state == "gap":
             return JSONResponse(
                 {
@@ -1381,11 +1423,13 @@ def _build_routes(
             # extracted, so a truncated upload is never mistaken for a complete
             # chunk on resume.
             system_ops.extract_filestore_chunk(tmp_tar, fs_dir, chunk)
-        except Exception as e:
+        except Exception:
             logger.exception(
                 "Failed to receive filestore chunk %s for %s", chunk, template_name
             )
-            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+            return JSONResponse(
+                {"ok": False, "error": "Internal server error."}, status_code=500
+            )
         finally:
             if os.path.exists(tmp_tar):
                 os.remove(tmp_tar)
@@ -1474,11 +1518,13 @@ def _build_routes(
                         f.write(data)
                 os.replace(part, final_tar)
                 _finish()
-            except Exception as e:
+            except Exception:
                 logger.exception(
                     "Failed to receive addon %s for %s", name, template_name
                 )
-                return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+                return JSONResponse(
+                    {"ok": False, "error": "Internal server error."}, status_code=500
+                )
             finally:
                 if os.path.exists(part):
                     os.remove(part)
@@ -1497,11 +1543,13 @@ def _build_routes(
             )
         try:
             state, size = await _receive_offset_chunk(request, part, offset)
-        except Exception as e:
+        except Exception:
             logger.exception(
                 "Failed to receive addon chunk %s for %s", name, template_name
             )
-            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+            return JSONResponse(
+                {"ok": False, "error": "Internal server error."}, status_code=500
+            )
         if state == "gap":
             return JSONResponse(
                 {
@@ -1516,11 +1564,13 @@ def _build_routes(
             try:
                 os.replace(part, final_tar)
                 _finish()
-            except Exception as e:
+            except Exception:
                 logger.exception(
                     "Failed to finalize addon %s for %s", name, template_name
                 )
-                return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+                return JSONResponse(
+                    {"ok": False, "error": "Internal server error."}, status_code=500
+                )
         return JSONResponse({"ok": True, "received": size, "complete": complete})
 
     async def api_import_addon_remote(request: Request) -> JSONResponse:
@@ -1598,9 +1648,11 @@ def _build_routes(
             return JSONResponse({"ok": True, "result": result})
         except FlowError as e:
             return _error_response(e)
-        except Exception as e:
+        except Exception:
             logger.exception("Unexpected error in api_import_finalize")
-            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+            return JSONResponse(
+                {"ok": False, "error": "Internal server error."}, status_code=500
+            )
         finally:
             locks.release_team(team.team_id)
 
@@ -1610,9 +1662,11 @@ def _build_routes(
             return JSONResponse({"ok": True, "services": services})
         except FlowError as e:
             return _error_response(e)
-        except Exception as e:
+        except Exception:
             logger.exception("Unexpected error in api_services")
-            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+            return JSONResponse(
+                {"ok": False, "error": "Internal server error."}, status_code=500
+            )
 
     async def api_service_create(request: Request) -> JSONResponse:
         team = _get_ui_team(request)
@@ -1672,9 +1726,11 @@ def _build_routes(
             return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
         except FlowError as e:
             return _error_response(e)
-        except Exception as e:
+        except Exception:
             logger.exception("Unexpected error in api_service_create")
-            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+            return JSONResponse(
+                {"ok": False, "error": "Internal server error."}, status_code=500
+            )
         finally:
             locks.release_team(team.team_id)
 
@@ -1748,9 +1804,11 @@ def _build_routes(
             return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
         except FlowError as e:
             return _error_response(e)
-        except Exception as e:
+        except Exception:
             logger.exception("Unexpected error in api_service_update")
-            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+            return JSONResponse(
+                {"ok": False, "error": "Internal server error."}, status_code=500
+            )
         finally:
             locks.release_team(team.team_id)
 
@@ -1763,9 +1821,11 @@ def _build_routes(
             return JSONResponse({"ok": True, "result": result})
         except FlowError as e:
             return _error_response(e)
-        except Exception as e:
+        except Exception:
             logger.exception("Unexpected error in api_service_restart")
-            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+            return JSONResponse(
+                {"ok": False, "error": "Internal server error."}, status_code=500
+            )
 
     def api_service_delete(request: Request) -> JSONResponse:
         name = request.path_params["name"]
@@ -1781,9 +1841,11 @@ def _build_routes(
             return JSONResponse({"ok": True, "result": result})
         except FlowError as e:
             return _error_response(e)
-        except Exception as e:
+        except Exception:
             logger.exception("Unexpected error in api_service_delete")
-            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+            return JSONResponse(
+                {"ok": False, "error": "Internal server error."}, status_code=500
+            )
         finally:
             locks.release_team(team.team_id)
 
@@ -1800,9 +1862,11 @@ def _build_routes(
             return JSONResponse({"ok": True, "logs": logs})
         except FlowError as e:
             return _error_response(e)
-        except Exception as e:
+        except Exception:
             logger.exception("Unexpected error in api_service_logs")
-            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+            return JSONResponse(
+                {"ok": False, "error": "Internal server error."}, status_code=500
+            )
 
     def api_service_presets(request: Request) -> JSONResponse:
         try:
@@ -1810,9 +1874,11 @@ def _build_routes(
             return JSONResponse({"ok": True, "presets": presets})
         except FlowError as e:
             return _error_response(e)
-        except Exception as e:
+        except Exception:
             logger.exception("Unexpected error in api_service_presets")
-            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+            return JSONResponse(
+                {"ok": False, "error": "Internal server error."}, status_code=500
+            )
 
     async def api_service_restore(request: Request) -> JSONResponse:
         team = _get_ui_team(request)
@@ -1872,9 +1938,11 @@ def _build_routes(
             return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
         except FlowError as e:
             return _error_response(e)
-        except Exception as e:
+        except Exception:
             logger.exception("Unexpected error in api_service_restore")
-            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+            return JSONResponse(
+                {"ok": False, "error": "Internal server error."}, status_code=500
+            )
         finally:
             locks.release_team(team.team_id)
 
@@ -1885,9 +1953,11 @@ def _build_routes(
             return JSONResponse({"ok": True, "result": {"deleted": name}})
         except FlowError as e:
             return _error_response(e)
-        except Exception as e:
+        except Exception:
             logger.exception("Unexpected error in api_service_preset_delete")
-            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+            return JSONResponse(
+                {"ok": False, "error": "Internal server error."}, status_code=500
+            )
 
     def api_volumes(request: Request) -> JSONResponse:
         try:
@@ -1895,9 +1965,11 @@ def _build_routes(
             return JSONResponse({"ok": True, "volumes": vols})
         except FlowError as e:
             return _error_response(e)
-        except Exception as e:
+        except Exception:
             logger.exception("Unexpected error in api_volumes")
-            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+            return JSONResponse(
+                {"ok": False, "error": "Internal server error."}, status_code=500
+            )
 
     async def api_volume_create(request: Request) -> JSONResponse:
         team = _get_ui_team(request)
@@ -1920,9 +1992,11 @@ def _build_routes(
             return JSONResponse({"ok": True, "result": result})
         except FlowError as e:
             return _error_response(e)
-        except Exception as e:
+        except Exception:
             logger.exception("Unexpected error in api_volume_create")
-            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+            return JSONResponse(
+                {"ok": False, "error": "Internal server error."}, status_code=500
+            )
         finally:
             locks.release_team(team.team_id)
 
@@ -1938,9 +2012,11 @@ def _build_routes(
             return JSONResponse({"ok": True, "result": result})
         except FlowError as e:
             return _error_response(e)
-        except Exception as e:
+        except Exception:
             logger.exception("Unexpected error in api_volume_delete")
-            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+            return JSONResponse(
+                {"ok": False, "error": "Internal server error."}, status_code=500
+            )
         finally:
             locks.release_team(team.team_id)
 
@@ -1967,9 +2043,11 @@ def _build_routes(
                             {"filename": fpath.name, "title": _guide_title(str(fpath))}
                         )
             return JSONResponse({"ok": True, "guides": guides})
-        except Exception as e:
+        except Exception:
             logger.exception("Unexpected error in api_agent_guides_list")
-            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+            return JSONResponse(
+                {"ok": False, "error": "Internal server error."}, status_code=500
+            )
 
     def api_agent_guide_get(request: Request) -> JSONResponse:
         try:
@@ -1993,9 +2071,11 @@ def _build_routes(
                     {"ok": False, "error": "Guide not found"}, status_code=404
                 )
             return JSONResponse({"ok": True, "content": content, "filename": filename})
-        except Exception as e:
+        except Exception:
             logger.exception("Unexpected error in api_agent_guide_get")
-            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+            return JSONResponse(
+                {"ok": False, "error": "Internal server error."}, status_code=500
+            )
 
     def api_agent_info(request: Request) -> JSONResponse:
         """Whether the coding agent is enabled for this team, and its default
@@ -2011,9 +2091,11 @@ def _build_routes(
                     "default": agent_config.effective_agent_default(team),
                 }
             )
-        except Exception as e:
+        except Exception:
             logger.exception("Unexpected error in api_agent_info")
-            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+            return JSONResponse(
+                {"ok": False, "error": "Internal server error."}, status_code=500
+            )
 
     def api_agent_acp_info(request: Request) -> JSONResponse:
         """Info the browser chat needs before connecting: the in-container
@@ -2036,9 +2118,11 @@ def _build_routes(
                     "session_id": agent_sessions.get_session(team, branch, agent_type),
                 }
             )
-        except Exception as e:
+        except Exception:
             logger.exception("Unexpected error in api_agent_acp_info")
-            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+            return JSONResponse(
+                {"ok": False, "error": "Internal server error."}, status_code=500
+            )
 
     async def api_agent_acp_session(request: Request) -> JSONResponse:
         """Persist (or clear) the durable session id for this environment+agent.
@@ -2057,9 +2141,11 @@ def _build_routes(
             else:
                 agent_sessions.clear_session(team, branch, agent_type)
             return JSONResponse({"ok": True})
-        except Exception as e:
+        except Exception:
             logger.exception("Unexpected error in api_agent_acp_session")
-            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+            return JSONResponse(
+                {"ok": False, "error": "Internal server error."}, status_code=500
+            )
 
     def api_license(request: Request) -> JSONResponse:
         settings = get_settings()
@@ -2079,9 +2165,11 @@ def _build_routes(
             return JSONResponse({"ok": True, "license": info.to_dict()})
         except ValueError as e:
             return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
-        except Exception as e:
+        except Exception:
             logger.exception("Unexpected error in api_license_activate")
-            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+            return JSONResponse(
+                {"ok": False, "error": "Internal server error."}, status_code=500
+            )
 
     def api_extra_repos(request: Request) -> JSONResponse:
         from oduflow.extra_addons import list_extra_repos
@@ -2091,9 +2179,11 @@ def _build_routes(
             return JSONResponse({"ok": True, "repos": repos})
         except FlowError as e:
             return _error_response(e)
-        except Exception as e:
+        except Exception:
             logger.exception("Unexpected error in api_extra_repos")
-            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+            return JSONResponse(
+                {"ok": False, "error": "Internal server error."}, status_code=500
+            )
 
     async def api_extra_repo_add(request: Request) -> JSONResponse:
         team = _get_ui_team(request)
@@ -2117,9 +2207,11 @@ def _build_routes(
             return JSONResponse({"ok": True, "result": result})
         except FlowError as e:
             return _error_response(e)
-        except Exception as e:
+        except Exception:
             logger.exception("Unexpected error in api_extra_repo_add")
-            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+            return JSONResponse(
+                {"ok": False, "error": "Internal server error."}, status_code=500
+            )
         finally:
             locks.release_team(team.team_id)
 
@@ -2137,9 +2229,11 @@ def _build_routes(
             return JSONResponse({"ok": True, "result": summary})
         except FlowError as e:
             return _error_response(e)
-        except Exception as e:
+        except Exception:
             logger.exception("Unexpected error in api_extra_repo_pull")
-            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+            return JSONResponse(
+                {"ok": False, "error": "Internal server error."}, status_code=500
+            )
         finally:
             locks.release_team(team.team_id)
 
@@ -2153,9 +2247,11 @@ def _build_routes(
             return JSONResponse({"ok": True, "result": result})
         except FlowError as e:
             return _error_response(e)
-        except Exception as e:
+        except Exception:
             logger.exception("Unexpected error in api_extra_repo_protect")
-            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+            return JSONResponse(
+                {"ok": False, "error": "Internal server error."}, status_code=500
+            )
 
     def api_extra_repo_unprotect(request: Request) -> JSONResponse:
         name = request.path_params["name"]
@@ -2167,9 +2263,11 @@ def _build_routes(
             return JSONResponse({"ok": True, "result": result})
         except FlowError as e:
             return _error_response(e)
-        except Exception as e:
+        except Exception:
             logger.exception("Unexpected error in api_extra_repo_unprotect")
-            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+            return JSONResponse(
+                {"ok": False, "error": "Internal server error."}, status_code=500
+            )
 
     def api_extra_repo_delete(request: Request) -> JSONResponse:
         name = request.path_params["name"]
@@ -2185,9 +2283,11 @@ def _build_routes(
             return JSONResponse({"ok": True, "result": {"deleted": name}})
         except FlowError as e:
             return _error_response(e)
-        except Exception as e:
+        except Exception:
             logger.exception("Unexpected error in api_extra_repo_delete")
-            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+            return JSONResponse(
+                {"ok": False, "error": "Internal server error."}, status_code=500
+            )
         finally:
             locks.release_team(team.team_id)
 
@@ -2198,9 +2298,11 @@ def _build_routes(
             team = _get_ui_team(request)
             creds = list_credentials(cred_file=team.git_credentials_file())
             return JSONResponse({"ok": True, "credentials": creds})
-        except Exception as e:
+        except Exception:
             logger.exception("Unexpected error in api_credentials")
-            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+            return JSONResponse(
+                {"ok": False, "error": "Internal server error."}, status_code=500
+            )
 
     async def api_credential_add(request: Request) -> JSONResponse:
         try:
@@ -2220,9 +2322,11 @@ def _build_routes(
             return JSONResponse({"ok": True, "result": result})
         except FlowError as e:
             return _error_response(e)
-        except Exception as e:
+        except Exception:
             logger.exception("Unexpected error in api_credential_add")
-            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+            return JSONResponse(
+                {"ok": False, "error": "Internal server error."}, status_code=500
+            )
 
     async def api_credential_delete(request: Request) -> JSONResponse:
         try:
@@ -2251,9 +2355,11 @@ def _build_routes(
             return JSONResponse(
                 {"ok": True, "result": {"host": host, "username": username}}
             )
-        except Exception as e:
+        except Exception:
             logger.exception("Unexpected error in api_credential_delete")
-            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+            return JSONResponse(
+                {"ok": False, "error": "Internal server error."}, status_code=500
+            )
 
     async def api_credential_validate(request: Request) -> JSONResponse:
         try:
@@ -2272,9 +2378,11 @@ def _build_routes(
                 host, username, cred_file=team.git_credentials_file()
             )
             return JSONResponse({"ok": True, "status": status})
-        except Exception as e:
+        except Exception:
             logger.exception("Unexpected error in api_credential_validate")
-            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+            return JSONResponse(
+                {"ok": False, "error": "Internal server error."}, status_code=500
+            )
 
     def api_protect(request: Request) -> JSONResponse:
         branch = request.path_params["branch"]
@@ -2284,9 +2392,11 @@ def _build_routes(
             return JSONResponse({"ok": True, "result": result})
         except FlowError as e:
             return _error_response(e)
-        except Exception as e:
+        except Exception:
             logger.exception("Unexpected error in api_protect")
-            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+            return JSONResponse(
+                {"ok": False, "error": "Internal server error."}, status_code=500
+            )
 
     def api_unprotect(request: Request) -> JSONResponse:
         branch = request.path_params["branch"]
@@ -2296,9 +2406,11 @@ def _build_routes(
             return JSONResponse({"ok": True, "result": result})
         except FlowError as e:
             return _error_response(e)
-        except Exception as e:
+        except Exception:
             logger.exception("Unexpected error in api_unprotect")
-            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+            return JSONResponse(
+                {"ok": False, "error": "Internal server error."}, status_code=500
+            )
 
     async def api_set_note(request: Request) -> JSONResponse:
         branch = request.path_params["branch"]
@@ -2310,9 +2422,11 @@ def _build_routes(
             return JSONResponse({"ok": True, "result": result})
         except FlowError as e:
             return _error_response(e)
-        except Exception as e:
+        except Exception:
             logger.exception("Unexpected error in api_set_note")
-            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+            return JSONResponse(
+                {"ok": False, "error": "Internal server error."}, status_code=500
+            )
 
     def api_mcp_access(request: Request) -> JSONResponse:
         branch = request.path_params["branch"]
@@ -2332,9 +2446,11 @@ def _build_routes(
             return JSONResponse({"ok": True, "result": {"url": url, "token": token}})
         except FlowError as e:
             return _error_response(e)
-        except Exception as e:
+        except Exception:
             logger.exception("Unexpected error in api_mcp_access")
-            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+            return JSONResponse(
+                {"ok": False, "error": "Internal server error."}, status_code=500
+            )
 
     def api_env_users(request: Request) -> JSONResponse:
         branch = request.path_params["branch"]
@@ -2345,9 +2461,11 @@ def _build_routes(
             return JSONResponse({"ok": True, "result": {"users": users}})
         except FlowError as e:
             return _error_response(e)
-        except Exception as e:
+        except Exception:
             logger.exception("Unexpected error in api_env_users")
-            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+            return JSONResponse(
+                {"ok": False, "error": "Internal server error."}, status_code=500
+            )
 
     async def api_connect_as(request: Request) -> JSONResponse:
         branch = request.path_params["branch"]
@@ -2377,9 +2495,11 @@ def _build_routes(
             )
         except FlowError as e:
             return _error_response(e)
-        except Exception as e:
+        except Exception:
             logger.exception("Unexpected error in api_connect_as")
-            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+            return JSONResponse(
+                {"ok": False, "error": "Internal server error."}, status_code=500
+            )
 
     async def ws_terminal(websocket: WebSocket) -> None:
         branch = websocket.path_params["branch"]
@@ -3116,9 +3236,11 @@ def _build_routes(
             )
         except FlowError as e:
             return _error_response(e)
-        except Exception as e:
+        except Exception:
             logger.exception("api_productions failed")
-            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+            return JSONResponse(
+                {"ok": False, "error": "Internal server error."}, status_code=500
+            )
 
     async def api_production_create(request: Request) -> JSONResponse:
         settings = get_settings()
@@ -3155,9 +3277,11 @@ def _build_routes(
             return _error_response(e)
         except ValueError as e:
             return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
-        except Exception as e:
+        except Exception:
             logger.exception("api_production_create failed")
-            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+            return JSONResponse(
+                {"ok": False, "error": "Internal server error."}, status_code=500
+            )
         finally:
             locks.release_env(_prod_lock_key(team, name))
 
@@ -3179,9 +3303,11 @@ def _build_routes(
             return _error_response(e)
         except ValueError as e:
             return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
-        except Exception as e:
+        except Exception:
             logger.exception("production action failed for '%s'", name)
-            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+            return JSONResponse(
+                {"ok": False, "error": "Internal server error."}, status_code=500
+            )
         finally:
             locks.release_env(_prod_lock_key(team, name))
 
@@ -3203,9 +3329,11 @@ def _build_routes(
             return JSONResponse({"ok": True, **info})
         except FlowError as e:
             return _error_response(e)
-        except Exception as e:
+        except Exception:
             logger.exception("api_production_info failed")
-            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+            return JSONResponse(
+                {"ok": False, "error": "Internal server error."}, status_code=500
+            )
 
     def api_production_update(request: Request) -> JSONResponse:
         """Deploy in a background thread: deploys can run for minutes and
@@ -3251,9 +3379,11 @@ def _build_routes(
             return JSONResponse({"ok": True, **result})
         except FlowError as e:
             return _error_response(e)
-        except Exception as e:
+        except Exception:
             logger.exception("api_production_rollback failed")
-            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+            return JSONResponse(
+                {"ok": False, "error": "Internal server error."}, status_code=500
+            )
         finally:
             locks.release_env(_prod_lock_key(team, name))
 
@@ -3269,9 +3399,11 @@ def _build_routes(
             return JSONResponse({"ok": True})
         except FlowError as e:
             return _error_response(e)
-        except Exception as e:
+        except Exception:
             logger.exception("api_production_auto_update failed")
-            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+            return JSONResponse(
+                {"ok": False, "error": "Internal server error."}, status_code=500
+            )
 
     def api_production_logs(request: Request) -> JSONResponse:
         try:
@@ -3285,9 +3417,11 @@ def _build_routes(
             return JSONResponse({"ok": True, "logs": logs})
         except FlowError as e:
             return _error_response(e)
-        except Exception as e:
+        except Exception:
             logger.exception("api_production_logs failed")
-            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+            return JSONResponse(
+                {"ok": False, "error": "Internal server error."}, status_code=500
+            )
 
     def api_production_deploys(request: Request) -> JSONResponse:
         try:
@@ -3298,9 +3432,11 @@ def _build_routes(
             return JSONResponse({"ok": True, "deploys": deploys})
         except FlowError as e:
             return _error_response(e)
-        except Exception as e:
+        except Exception:
             logger.exception("api_production_deploys failed")
-            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+            return JSONResponse(
+                {"ok": False, "error": "Internal server error."}, status_code=500
+            )
 
     async def api_production_delete(request: Request) -> JSONResponse:
         settings = get_settings()
@@ -3329,9 +3465,11 @@ def _build_routes(
             return JSONResponse({"ok": True, **result})
         except FlowError as e:
             return _error_response(e)
-        except Exception as e:
+        except Exception:
             logger.exception("api_production_delete failed")
-            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+            return JSONResponse(
+                {"ok": False, "error": "Internal server error."}, status_code=500
+            )
         finally:
             locks.release_env(_prod_lock_key(team, name))
 
@@ -3347,9 +3485,11 @@ def _build_routes(
             return JSONResponse({"ok": True, "snapshots": manifests})
         except FlowError as e:
             return _error_response(e)
-        except Exception as e:
+        except Exception:
             logger.exception("api_production_snapshots failed")
-            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+            return JSONResponse(
+                {"ok": False, "error": "Internal server error."}, status_code=500
+            )
 
     def api_production_snapshot_now(request: Request) -> JSONResponse:
         from oduflow import backup_ops
@@ -3391,9 +3531,11 @@ def _build_routes(
             return JSONResponse({"ok": True, **result})
         except FlowError as e:
             return _error_response(e)
-        except Exception as e:
+        except Exception:
             logger.exception("api_production_restore failed")
-            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+            return JSONResponse(
+                {"ok": False, "error": "Internal server error."}, status_code=500
+            )
         finally:
             locks.release_env(_prod_lock_key(team, name))
 
@@ -3415,9 +3557,11 @@ def _build_routes(
             return JSONResponse({"ok": True})
         except FlowError as e:
             return _error_response(e)
-        except Exception as e:
+        except Exception:
             logger.exception("api_production_backup_schedule failed")
-            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+            return JSONResponse(
+                {"ok": False, "error": "Internal server error."}, status_code=500
+            )
 
     def api_production_backup_status(request: Request) -> JSONResponse:
         try:
@@ -3430,9 +3574,11 @@ def _build_routes(
             )
         except FlowError as e:
             return _error_response(e)
-        except Exception as e:
+        except Exception:
             logger.exception("api_production_backup_status failed")
-            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+            return JSONResponse(
+                {"ok": False, "error": "Internal server error."}, status_code=500
+            )
 
     # ------------------------------------------------------------------
     # Health + GitHub webhook (both PUBLIC paths with their own auth)
