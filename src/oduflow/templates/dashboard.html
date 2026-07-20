@@ -3553,12 +3553,21 @@ async function submitCreate() {
 
   try {
     var extraAddonsObj = {};
+    var missingBranch = [];
     document.querySelectorAll('.cr-extra-cb:checked').forEach(function(cb) {
       var repoName = cb.value;
       var branchInput = document.querySelector('.cr-extra-branch-input[data-repo="' + repoName + '"]');
       var br = branchInput ? branchInput.value.trim() : '';
-      extraAddonsObj[repoName] = br;
+      if (!br) { missingBranch.push(repoName); }
+      else { extraAddonsObj[repoName] = br; }
     });
+    if (missingBranch.length) {
+      errEl.textContent = 'Branch is required for extra addon(s): ' + missingBranch.join(', ') + '.';
+      errEl.style.display = 'block';
+      btn.disabled = false;
+      btn.textContent = 'Create';
+      return;
+    }
     var payload = {
       env_name: branch,
       repo_url: repo,
