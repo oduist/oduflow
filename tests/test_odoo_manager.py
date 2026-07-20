@@ -538,17 +538,42 @@ class TestReloadTemplate:
 
         system_ops.reload_template(TEST_SETTINGS, TEST_TEAM, "mytpl")
 
-        restore_cmd = db_container.exec_run.call_args[0][0]
-        joined = " ".join(restore_cmd)
-        assert "pg_restore" in joined
+        # exec_run is also used for the post-restore /tmp cleanup, so locate the
+        # pg_restore invocation explicitly rather than assuming it is the last.
+        restore_cmds = [
+            call.args[0]
+            for call in db_container.exec_run.call_args_list
+            if "pg_restore" in " ".join(call.args[0])
+        ]
+        assert restore_cmds, "expected a pg_restore invocation"
+        joined = " ".join(restore_cmds[0])
         assert "--no-owner" in joined
+
+        # The dump copied into the container's /tmp must be removed afterwards so
+        # the oduflow-db writable layer does not accumulate full-size dumps.
+        cleanup_cmds = [
+            call.args[0]
+            for call in db_container.exec_run.call_args_list
+            if call.args[0][:2] == ["rm", "-f"]
+        ]
+        assert cleanup_cmds, "expected the /tmp dump copy to be cleaned up"
+        assert all(c[2].startswith("/tmp/") for c in cleanup_cmds)
 
     def test_restore_retries_unsupported_archive_with_helper(self, mock_docker_client):
         db_container = MagicMock()
-        db_container.exec_run.side_effect = [
-            (1, b"pg_restore: error: unsupported version (1.16) in file header"),
-            (0, b"helper sql restored"),
-        ]
+
+        # Route by command so the post-restore /tmp cleanup (extra `rm -f`
+        # exec_run calls) does not exhaust a fixed side_effect list: only the
+        # initial pg_restore fails with the unsupported-archive error.
+        def _exec_run(cmd, *args, **kwargs):
+            if cmd and cmd[0] == "pg_restore":
+                return (
+                    1,
+                    b"pg_restore: error: unsupported version (1.16) in file header",
+                )
+            return (0, b"helper sql restored")
+
+        db_container.exec_run.side_effect = _exec_run
         mock_docker_client.containers.get.return_value = db_container
 
         with (
@@ -577,8 +602,12 @@ class TestReloadTemplate:
         assert result["status"] == "reloaded"
         helper.assert_called_once()
         assert copy_file.call_args_list[-1].args[1].endswith("dump.sql")
-        psql_cmd = db_container.exec_run.call_args_list[-1].args[0]
-        assert psql_cmd[0] == "psql"
+        psql_cmds = [
+            call.args[0]
+            for call in db_container.exec_run.call_args_list
+            if call.args[0] and call.args[0][0] == "psql"
+        ]
+        assert psql_cmds, "expected a psql invocation via the helper path"
         assert any(
             'DROP DATABASE IF EXISTS "oduflow_template_1_mytpl"' in call.args[2]
             for call in sql.call_args_list
