@@ -1556,184 +1556,215 @@ def reload_template(
     db_container = client.containers.get(settings.shared_db_container)
     tmp_name = os.path.basename(resolved_dump)
 
+    # Every dump copied into the db container's /tmp for pg_restore/psql is a
+    # full-size file in the container's writable layer. Track each copy and
+    # delete it in the finally below once the restore is done — otherwise every
+    # import/reload/refresh leaves the dump behind and the oduflow-db container
+    # grows without bound (mirrors the prod seed cleanup in production_ops).
+    container_tmp_files = {tmp_name}
     _copy_file_to_container(db_container, resolved_dump, "/tmp")
 
-    # pg_restore runs with --no-owner so restored objects are owned by the
-    # restoring superuser, not by whatever role the dump recorded. For
-    # env-derived templates that role is the source env's per-env role
-    # (u_<team>_<env>), which is dropped when the env is deleted — keeping it as
-    # owner makes deletion fail with "objects depend on it" and leaks an orphan
-    # role. create_environment re-assigns ownership to the new per-env role when
-    # provisioning from a template. (--no-owner is meaningful only at restore
-    # time for archive formats. The psql path for plain-SQL/external dumps is
-    # left untouched.)
-    restore_tool = "psql" if use_psql else "pg_restore"
-    if is_gzipped:
-        if use_psql:
-            pipeline = (
-                f"gunzip -c /tmp/{tmp_name} | psql -U {settings.db_user} -d {tpl_db}"
-            )
-        else:
-            pipeline = (
-                f"gunzip -c /tmp/{tmp_name} | "
-                f"pg_restore --no-owner -U {settings.db_user} -d {tpl_db}"
-            )
-        restore_cmd = ["bash", "-c", f"set -o pipefail; {pipeline}"]
-    else:
-        if use_psql:
-            restore_cmd = [
-                "psql",
-                "-U",
-                settings.db_user,
-                "-d",
-                tpl_db,
-                "-f",
-                f"/tmp/{tmp_name}",
-            ]
-        else:
-            restore_cmd = [
-                "pg_restore",
-                "--no-owner",
-                "-U",
-                settings.db_user,
-                "-d",
-                tpl_db,
-                f"/tmp/{tmp_name}",
-            ]
-
-    logger.info("DB restore started, template_db=%s, dump=%s", tpl_db, resolved_dump)
-    restore_start = time.monotonic()
-
-    exit_code, output = db_container.exec_run(restore_cmd)
-
-    restore_elapsed = time.monotonic() - restore_start
-    output_str = output.decode("utf-8") if isinstance(output, bytes) else str(output)
-
-    if exit_code != 0:
-        if restore_tool == "pg_restore" and _is_pg_restore_archive_version_error(
-            output_str
-        ):
-            logger.warning(
-                "pg_restore in %s cannot read dump archive; retrying with %s helper",
-                settings.shared_db_container,
-                _PG_RESTORE_HELPER_IMAGE,
-            )
-            _exec_sql(
-                client,
-                settings,
-                f'DROP DATABASE IF EXISTS "{tpl_db}" WITH (FORCE);',
-            )
-            _exec_sql(
-                client, settings, f'CREATE DATABASE "{tpl_db}" TABLESPACE "{ts_name}";'
-            )
-            helper_start = time.monotonic()
-            helper_exit, helper_output, helper_sql_path = (
-                _convert_custom_dump_to_sql_with_helper(
-                    client, settings, resolved_dump, is_gzipped=is_gzipped
-                )
-            )
-            restore_elapsed += time.monotonic() - helper_start
-            if helper_exit != 0:
-                exit_code = helper_exit
-                output_str = helper_output
+    try:
+        # pg_restore runs with --no-owner so restored objects are owned by the
+        # restoring superuser, not by whatever role the dump recorded. For
+        # env-derived templates that role is the source env's per-env role
+        # (u_<team>_<env>), which is dropped when the env is deleted — keeping it
+        # as owner makes deletion fail with "objects depend on it" and leaks an
+        # orphan role. create_environment re-assigns ownership to the new per-env
+        # role when provisioning from a template. (--no-owner is meaningful only
+        # at restore time for archive formats. The psql path for plain-SQL/
+        # external dumps is left untouched.)
+        restore_tool = "psql" if use_psql else "pg_restore"
+        if is_gzipped:
+            if use_psql:
+                pipeline = f"gunzip -c /tmp/{tmp_name} | psql -U {settings.db_user} -d {tpl_db}"
             else:
-                helper_tmp_name = os.path.basename(helper_sql_path)
-                _copy_file_to_container(db_container, helper_sql_path, "/tmp")
-                psql_cmd = [
+                pipeline = (
+                    f"gunzip -c /tmp/{tmp_name} | "
+                    f"pg_restore --no-owner -U {settings.db_user} -d {tpl_db}"
+                )
+            restore_cmd = ["bash", "-c", f"set -o pipefail; {pipeline}"]
+        else:
+            if use_psql:
+                restore_cmd = [
                     "psql",
                     "-U",
                     settings.db_user,
                     "-d",
                     tpl_db,
                     "-f",
-                    f"/tmp/{helper_tmp_name}",
+                    f"/tmp/{tmp_name}",
                 ]
-                psql_start = time.monotonic()
-                exit_code, output = db_container.exec_run(psql_cmd)
-                restore_elapsed += time.monotonic() - psql_start
-                output_str = (
-                    output.decode("utf-8") if isinstance(output, bytes) else str(output)
-                )
-                restore_tool = "psql"
-                template_dir = os.path.abspath(team.get_template_dir(template_name))
-                if (
-                    exit_code == 0
-                    and dump_path is None
-                    and os.path.abspath(resolved_dump).startswith(template_dir + os.sep)
-                    and os.path.abspath(helper_sql_path)
-                    != os.path.abspath(resolved_dump)
-                ):
-                    with contextlib.suppress(OSError):
-                        os.remove(resolved_dump)
+            else:
+                restore_cmd = [
+                    "pg_restore",
+                    "--no-owner",
+                    "-U",
+                    settings.db_user,
+                    "-d",
+                    tpl_db,
+                    f"/tmp/{tmp_name}",
+                ]
+
+        logger.info(
+            "DB restore started, template_db=%s, dump=%s", tpl_db, resolved_dump
+        )
+        restore_start = time.monotonic()
+
+        exit_code, output = db_container.exec_run(restore_cmd)
+
+        restore_elapsed = time.monotonic() - restore_start
+        output_str = (
+            output.decode("utf-8") if isinstance(output, bytes) else str(output)
+        )
 
         if exit_code != 0:
-            logger.error(
-                "DB restore failed after %.1fs: %s", restore_elapsed, output_str
+            if restore_tool == "pg_restore" and _is_pg_restore_archive_version_error(
+                output_str
+            ):
+                logger.warning(
+                    "pg_restore in %s cannot read dump archive; retrying with %s helper",
+                    settings.shared_db_container,
+                    _PG_RESTORE_HELPER_IMAGE,
+                )
+                _exec_sql(
+                    client,
+                    settings,
+                    f'DROP DATABASE IF EXISTS "{tpl_db}" WITH (FORCE);',
+                )
+                _exec_sql(
+                    client,
+                    settings,
+                    f'CREATE DATABASE "{tpl_db}" TABLESPACE "{ts_name}";',
+                )
+                helper_start = time.monotonic()
+                helper_exit, helper_output, helper_sql_path = (
+                    _convert_custom_dump_to_sql_with_helper(
+                        client, settings, resolved_dump, is_gzipped=is_gzipped
+                    )
+                )
+                restore_elapsed += time.monotonic() - helper_start
+                if helper_exit != 0:
+                    exit_code = helper_exit
+                    output_str = helper_output
+                else:
+                    helper_tmp_name = os.path.basename(helper_sql_path)
+                    _copy_file_to_container(db_container, helper_sql_path, "/tmp")
+                    container_tmp_files.add(helper_tmp_name)
+                    psql_cmd = [
+                        "psql",
+                        "-U",
+                        settings.db_user,
+                        "-d",
+                        tpl_db,
+                        "-f",
+                        f"/tmp/{helper_tmp_name}",
+                    ]
+                    psql_start = time.monotonic()
+                    exit_code, output = db_container.exec_run(psql_cmd)
+                    restore_elapsed += time.monotonic() - psql_start
+                    output_str = (
+                        output.decode("utf-8")
+                        if isinstance(output, bytes)
+                        else str(output)
+                    )
+                    restore_tool = "psql"
+                    template_dir = os.path.abspath(team.get_template_dir(template_name))
+                    if (
+                        exit_code == 0
+                        and dump_path is None
+                        and os.path.abspath(resolved_dump).startswith(
+                            template_dir + os.sep
+                        )
+                        and os.path.abspath(helper_sql_path)
+                        != os.path.abspath(resolved_dump)
+                    ):
+                        with contextlib.suppress(OSError):
+                            os.remove(resolved_dump)
+
+            if exit_code != 0:
+                logger.error(
+                    "DB restore failed after %.1fs: %s", restore_elapsed, output_str
+                )
+                raise ExternalCommandError(restore_tool, exit_code, output_str)
+
+        if output_str.strip():
+            logger.info("DB restore output: %s", output_str)
+
+        logger.info("DB restore finished in %.1fs", restore_elapsed)
+
+        table_count = _exec_sql(
+            client,
+            settings,
+            "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='public' AND table_type='BASE TABLE';",
+            tpl_db,
+        ).strip()
+
+        try:
+            num_tables = int(table_count)
+        except ValueError:
+            num_tables = 0
+
+        if num_tables == 0:
+            error_msg = (
+                f"Dump restore succeeded but no tables found in database {tpl_db}"
             )
-            raise ExternalCommandError(restore_tool, exit_code, output_str)
+            logger.error(error_msg)
+            raise ExternalCommandError("restore", 1, error_msg)
 
-    if output_str.strip():
-        logger.info("DB restore output: %s", output_str)
+        logger.info("Verified %d tables in restored database %s", num_tables, tpl_db)
 
-    logger.info("DB restore finished in %.1fs", restore_elapsed)
+        if dump_path:
+            tpl_dir = team.get_template_dir(template_name)
+            os.makedirs(tpl_dir, exist_ok=True)
+            base = "dump.sql" if use_psql else "dump.pgdump"
+            if is_gzipped:
+                base += ".gz"
+            dest_path = os.path.join(tpl_dir, base)
+            for old_name in (
+                "dump.sql",
+                "dump.pgdump",
+                "dump.sql.gz",
+                "dump.pgdump.gz",
+            ):
+                old_path = os.path.join(tpl_dir, old_name)
+                if old_path == dest_path:
+                    continue
+                if os.path.isfile(old_path):
+                    os.remove(old_path)
+                    logger.info("Removed old dump %s", old_path)
+            if not os.path.exists(dest_path) or not os.path.samefile(
+                dump_path, dest_path
+            ):
+                shutil.copy2(dump_path, dest_path)
+            logger.info("Saved dump to workspace: %s", dest_path)
 
-    table_count = _exec_sql(
-        client,
-        settings,
-        "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='public' AND table_type='BASE TABLE';",
-        tpl_db,
-    ).strip()
+        _exec_sql(
+            client,
+            settings,
+            f"UPDATE pg_database SET datistemplate=true WHERE datname='{tpl_db}';",
+        )
 
-    try:
-        num_tables = int(table_count)
-    except ValueError:
-        num_tables = 0
-
-    if num_tables == 0:
-        error_msg = f"Dump restore succeeded but no tables found in database {tpl_db}"
-        logger.error(error_msg)
-        raise ExternalCommandError("restore", 1, error_msg)
-
-    logger.info("Verified %d tables in restored database %s", num_tables, tpl_db)
-
-    if dump_path:
-        tpl_dir = team.get_template_dir(template_name)
-        os.makedirs(tpl_dir, exist_ok=True)
-        base = "dump.sql" if use_psql else "dump.pgdump"
-        if is_gzipped:
-            base += ".gz"
-        dest_path = os.path.join(tpl_dir, base)
-        for old_name in ("dump.sql", "dump.pgdump", "dump.sql.gz", "dump.pgdump.gz"):
-            old_path = os.path.join(tpl_dir, old_name)
-            if old_path == dest_path:
-                continue
-            if os.path.isfile(old_path):
-                os.remove(old_path)
-                logger.info("Removed old dump %s", old_path)
-        if not os.path.exists(dest_path) or not os.path.samefile(dump_path, dest_path):
-            shutil.copy2(dump_path, dest_path)
-        logger.info("Saved dump to workspace: %s", dest_path)
-
-    _exec_sql(
-        client,
-        settings,
-        f"UPDATE pg_database SET datistemplate=true WHERE datname='{tpl_db}';",
-    )
-
-    _update_template_sizes(team, settings, template_name)
-    logger.info(
-        "Template DB reloaded, template_db=%s, restore_time=%.1fs, tables=%d",
-        tpl_db,
-        restore_elapsed,
-        num_tables,
-    )
-    return {
-        "status": "reloaded",
-        "template_db": tpl_db,
-        "restore_seconds": round(restore_elapsed, 1),
-        "tables": str(num_tables),
-        "message": output_str,
-    }
+        _update_template_sizes(team, settings, template_name)
+        logger.info(
+            "Template DB reloaded, template_db=%s, restore_time=%.1fs, tables=%d",
+            tpl_db,
+            restore_elapsed,
+            num_tables,
+        )
+        return {
+            "status": "reloaded",
+            "template_db": tpl_db,
+            "restore_seconds": round(restore_elapsed, 1),
+            "tables": str(num_tables),
+            "message": output_str,
+        }
+    finally:
+        # Reclaim the container's writable layer regardless of how the restore
+        # exited (success, restore error, or an unexpected failure mid-flight).
+        for _leftover in container_tmp_files:
+            with contextlib.suppress(Exception):
+                db_container.exec_run(["rm", "-f", f"/tmp/{_leftover}"])
 
 
 def init_template(
