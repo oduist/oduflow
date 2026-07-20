@@ -13,6 +13,7 @@ from oduflow.errors import (
     ConflictError,
     ExternalCommandError,
     NotFoundError,
+    PrerequisiteNotMetError,
     ProtectedError,
 )
 from oduflow.git_ops import RepoAuthError, git_env_for_team
@@ -514,6 +515,16 @@ def fetch_extra_repo(
 def create_worktree(
     team: TeamSettings, repo_name: str, branch: str, target_path: str
 ) -> str:
+    # A blank branch would produce `git worktree add ... ""` → the cryptic
+    # `fatal: invalid reference:`. Reject it up front with a clear message,
+    # naming the repo (the empty branch itself is useless in the error). This
+    # is the shared choke point for every caller — env create, production
+    # deploy, webhook auto-deploy — so guarding here covers them all.
+    if not branch or not branch.strip():
+        raise PrerequisiteNotMetError(
+            f"Extra addon repo '{repo_name}' requires a branch (e.g. '18.0'); "
+            "none was given."
+        )
     bare_path = os.path.join(team.shared_repos_dir, repo_name)
     if not os.path.isdir(bare_path):
         raise NotFoundError(f"Extra repo '{repo_name}' not found. Add it first.")
