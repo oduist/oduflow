@@ -4669,6 +4669,14 @@ def _start_http() -> None:
 
     import uvicorn
 
+    from oduflow.mcp_log_filters import install_stateless_disconnect_filter
+
+    # A client that disconnects mid-tool (long ops like create_environment can
+    # outlast its HTTP timeout) makes the SDK log a benign ClosedResourceError
+    # as an ERROR "Stateless session crashed" traceback. Quiet those; the
+    # operation itself still completes server-side.
+    install_stateless_disconnect_filter()
+
     # Outermost shim so /mcp/<env> routes to the canonical /mcp route.
     served: Any = ScopedEnvASGI(app)
     # When the OAuth issuer is derived per-request (traefik, no fixed
