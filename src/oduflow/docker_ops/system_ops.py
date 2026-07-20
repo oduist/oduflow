@@ -14,6 +14,7 @@ import stat
 import subprocess
 import tarfile
 import time
+import uuid
 from importlib.metadata import PackageNotFoundError, version
 
 import docker
@@ -988,7 +989,11 @@ def _is_text_dump(path: str) -> bool:
 
 
 def _copy_file_to_container(
-    container: docker.models.containers.Container, src_path: str, dest_dir: str
+    container: docker.models.containers.Container,
+    src_path: str,
+    dest_dir: str,
+    *,
+    archive_name: str | None = None,
 ) -> None:
     import tempfile
 
@@ -996,7 +1001,7 @@ def _copy_file_to_container(
         tmp_path = tmp.name
     try:
         with tarfile.open(tmp_path, mode="w") as tar:
-            tar.add(src_path, arcname=os.path.basename(src_path))
+            tar.add(src_path, arcname=archive_name or os.path.basename(src_path))
         with open(tmp_path, "rb") as f:
             container.put_archive(dest_dir, f)
     finally:
@@ -1554,17 +1559,27 @@ def reload_template(
     _exec_sql(client, settings, f'CREATE DATABASE "{tpl_db}" TABLESPACE "{ts_name}";')
 
     db_container = client.containers.get(settings.shared_db_container)
-    tmp_name = os.path.basename(resolved_dump)
-
     # Every dump copied into the db container's /tmp for pg_restore/psql is a
     # full-size file in the container's writable layer. Track each copy and
     # delete it in the finally below once the restore is done — otherwise every
     # import/reload/refresh leaves the dump behind and the oduflow-db container
     # grows without bound (mirrors the prod seed cleanup in production_ops).
-    container_tmp_files = {tmp_name}
-    _copy_file_to_container(db_container, resolved_dump, "/tmp")
+    container_tmp_files: set[str] = set()
 
     try:
+        # The DB container is shared across teams, whose locks do not contend.
+        # Use an opaque per-restore name so one restore cannot overwrite or
+        # clean up another restore's input file.
+        container_dump_name = f"oduflow-restore-{uuid.uuid4().hex}"
+        container_dump_path = f"/tmp/{container_dump_name}"
+        container_tmp_files.add(container_dump_path)
+        _copy_file_to_container(
+            db_container,
+            resolved_dump,
+            "/tmp",
+            archive_name=container_dump_name,
+        )
+
         # pg_restore runs with --no-owner so restored objects are owned by the
         # restoring superuser, not by whatever role the dump recorded. For
         # env-derived templates that role is the source env's per-env role
@@ -1577,10 +1592,10 @@ def reload_template(
         restore_tool = "psql" if use_psql else "pg_restore"
         if is_gzipped:
             if use_psql:
-                pipeline = f"gunzip -c /tmp/{tmp_name} | psql -U {settings.db_user} -d {tpl_db}"
+                pipeline = f"gunzip -c {container_dump_path} | psql -U {settings.db_user} -d {tpl_db}"
             else:
                 pipeline = (
-                    f"gunzip -c /tmp/{tmp_name} | "
+                    f"gunzip -c {container_dump_path} | "
                     f"pg_restore --no-owner -U {settings.db_user} -d {tpl_db}"
                 )
             restore_cmd = ["bash", "-c", f"set -o pipefail; {pipeline}"]
@@ -1593,7 +1608,7 @@ def reload_template(
                     "-d",
                     tpl_db,
                     "-f",
-                    f"/tmp/{tmp_name}",
+                    container_dump_path,
                 ]
             else:
                 restore_cmd = [
@@ -1603,7 +1618,7 @@ def reload_template(
                     settings.db_user,
                     "-d",
                     tpl_db,
-                    f"/tmp/{tmp_name}",
+                    container_dump_path,
                 ]
 
         logger.info(
@@ -1648,9 +1663,15 @@ def reload_template(
                     exit_code = helper_exit
                     output_str = helper_output
                 else:
-                    helper_tmp_name = os.path.basename(helper_sql_path)
-                    _copy_file_to_container(db_container, helper_sql_path, "/tmp")
-                    container_tmp_files.add(helper_tmp_name)
+                    helper_container_name = f"oduflow-restore-{uuid.uuid4().hex}"
+                    helper_container_path = f"/tmp/{helper_container_name}"
+                    container_tmp_files.add(helper_container_path)
+                    _copy_file_to_container(
+                        db_container,
+                        helper_sql_path,
+                        "/tmp",
+                        archive_name=helper_container_name,
+                    )
                     psql_cmd = [
                         "psql",
                         "-U",
@@ -1658,7 +1679,7 @@ def reload_template(
                         "-d",
                         tpl_db,
                         "-f",
-                        f"/tmp/{helper_tmp_name}",
+                        helper_container_path,
                     ]
                     psql_start = time.monotonic()
                     exit_code, output = db_container.exec_run(psql_cmd)
@@ -1764,7 +1785,7 @@ def reload_template(
         # exited (success, restore error, or an unexpected failure mid-flight).
         for _leftover in container_tmp_files:
             with contextlib.suppress(Exception):
-                db_container.exec_run(["rm", "-f", f"/tmp/{_leftover}"])
+                db_container.exec_run(["rm", "-f", _leftover])
 
 
 def init_template(

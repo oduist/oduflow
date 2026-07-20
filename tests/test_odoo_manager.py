@@ -512,6 +512,10 @@ class TestCreateEnvironment:
 class TestReloadTemplate:
     @patch("oduflow.docker_ops.system_ops._update_template_sizes")
     @patch("oduflow.docker_ops.system_ops._copy_file_to_container")
+    @patch(
+        "oduflow.docker_ops.system_ops.ensure_team_tablespace",
+        return_value="oduflow_team_1",
+    )
     @patch("oduflow.docker_ops.system_ops._is_text_dump", return_value=False)
     @patch("oduflow.docker_ops.system_ops._db_exists", return_value=False)
     @patch("oduflow.docker_ops.system_ops._exec_sql", return_value="5")
@@ -524,6 +528,7 @@ class TestReloadTemplate:
         mock_sql,
         mock_db_exists,
         mock_text,
+        mock_tablespace,
         mock_copy,
         mock_sizes,
         mock_docker_client,
@@ -537,6 +542,12 @@ class TestReloadTemplate:
         mock_docker_client.containers.get.return_value = db_container
 
         system_ops.reload_template(TEST_SETTINGS, TEST_TEAM, "mytpl")
+        system_ops.reload_template(TEST_SETTINGS, TEST_TEAM, "mytpl")
+
+        archive_names = [
+            call.kwargs["archive_name"] for call in mock_copy.call_args_list
+        ]
+        assert len(set(archive_names)) == 2
 
         # exec_run is also used for the post-restore /tmp cleanup, so locate the
         # pg_restore invocation explicitly rather than assuming it is the last.
@@ -546,8 +557,10 @@ class TestReloadTemplate:
             if "pg_restore" in " ".join(call.args[0])
         ]
         assert restore_cmds, "expected a pg_restore invocation"
-        joined = " ".join(restore_cmds[0])
-        assert "--no-owner" in joined
+        assert all("--no-owner" in " ".join(cmd) for cmd in restore_cmds)
+        assert {cmd[-1] for cmd in restore_cmds} == {
+            f"/tmp/{name}" for name in archive_names
+        }
 
         # The dump copied into the container's /tmp must be removed afterwards so
         # the oduflow-db writable layer does not accumulate full-size dumps.
@@ -556,8 +569,44 @@ class TestReloadTemplate:
             for call in db_container.exec_run.call_args_list
             if call.args[0][:2] == ["rm", "-f"]
         ]
-        assert cleanup_cmds, "expected the /tmp dump copy to be cleaned up"
-        assert all(c[2].startswith("/tmp/") for c in cleanup_cmds)
+        assert {cmd[2] for cmd in cleanup_cmds} == {
+            f"/tmp/{name}" for name in archive_names
+        }
+
+    @patch("oduflow.docker_ops.system_ops._update_template_sizes")
+    @patch("oduflow.docker_ops.system_ops._copy_file_to_container")
+    @patch(
+        "oduflow.docker_ops.system_ops.ensure_team_tablespace",
+        return_value="oduflow_team_1",
+    )
+    @patch("oduflow.docker_ops.system_ops._is_text_dump", return_value=False)
+    @patch("oduflow.docker_ops.system_ops._db_exists", return_value=False)
+    @patch("oduflow.docker_ops.system_ops._exec_sql", return_value="5")
+    @patch("oduflow.docker_ops.system_ops._wait_pg_ready")
+    @patch("oduflow.docker_ops.system_ops.os.path.isfile", return_value=True)
+    def test_cleanup_when_initial_copy_fails(
+        self,
+        mock_isfile,
+        mock_wait,
+        mock_sql,
+        mock_db_exists,
+        mock_text,
+        mock_tablespace,
+        mock_copy,
+        mock_sizes,
+        mock_docker_client,
+    ):
+        db_container = MagicMock()
+        mock_docker_client.containers.get.return_value = db_container
+        mock_copy.side_effect = RuntimeError("upload failed")
+
+        with pytest.raises(RuntimeError, match="upload failed"):
+            system_ops.reload_template(TEST_SETTINGS, TEST_TEAM, "mytpl")
+
+        archive_name = mock_copy.call_args.kwargs["archive_name"]
+        db_container.exec_run.assert_called_once_with(
+            ["rm", "-f", f"/tmp/{archive_name}"]
+        )
 
     def test_restore_retries_unsupported_archive_with_helper(self, mock_docker_client):
         db_container = MagicMock()
@@ -616,6 +665,57 @@ class TestReloadTemplate:
             'CREATE DATABASE "oduflow_template_1_mytpl"' in call.args[2]
             for call in sql.call_args_list
         )
+
+    def test_cleanup_when_helper_copy_fails(self, mock_docker_client):
+        db_container = MagicMock()
+
+        def _exec_run(cmd, *args, **kwargs):
+            if cmd and cmd[0] == "pg_restore":
+                return (
+                    1,
+                    b"pg_restore: error: unsupported version (1.16) in file header",
+                )
+            return (0, b"")
+
+        db_container.exec_run.side_effect = _exec_run
+        mock_docker_client.containers.get.return_value = db_container
+
+        with (
+            patch("oduflow.docker_ops.system_ops.os.path.isfile", return_value=True),
+            patch("oduflow.docker_ops.system_ops._wait_pg_ready"),
+            patch("oduflow.docker_ops.system_ops._exec_sql", return_value="5"),
+            patch("oduflow.docker_ops.system_ops._db_exists", return_value=False),
+            patch(
+                "oduflow.docker_ops.system_ops.ensure_team_tablespace",
+                return_value="oduflow_team_1",
+            ),
+            patch("oduflow.docker_ops.system_ops._is_text_dump", return_value=False),
+            patch(
+                "oduflow.docker_ops.system_ops._copy_file_to_container",
+                side_effect=[None, RuntimeError("helper upload failed")],
+            ) as copy_file,
+            patch("oduflow.docker_ops.system_ops._update_template_sizes"),
+            patch(
+                "oduflow.docker_ops.system_ops._convert_custom_dump_to_sql_with_helper",
+                return_value=(
+                    0,
+                    "converted",
+                    "/tmp/flow-test/templates/mytpl/dump.sql",
+                ),
+            ),
+        ):
+            with pytest.raises(RuntimeError, match="helper upload failed"):
+                system_ops.reload_template(TEST_SETTINGS, TEST_TEAM, "mytpl")
+
+        archive_names = [
+            call.kwargs["archive_name"] for call in copy_file.call_args_list
+        ]
+        cleanup_paths = {
+            call.args[0][2]
+            for call in db_container.exec_run.call_args_list
+            if call.args[0][:2] == ["rm", "-f"]
+        }
+        assert cleanup_paths == {f"/tmp/{name}" for name in archive_names}
 
 
 class TestPullEnvironmentLocal:
