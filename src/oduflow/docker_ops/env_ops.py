@@ -1621,6 +1621,17 @@ def _ensure_agent_container(
             restart_policy={"Name": "unless-stopped"},
         )
         logger.info("Agent container ensured", extra={"container": container_name})
+        # Report which Claude credential the (re)created container will use, so
+        # authentication failures can be diagnosed from the logs. The secret
+        # value is never logged, only the selected mode.
+        auth_label = {
+            "setup_token": "subscription (CLAUDE_CODE_OAUTH_TOKEN)",
+            "api_key": "Console API (ANTHROPIC_API_KEY)",
+            "interactive": "interactive /login",
+        }.get(_claude_auth_mode(settings, team), "unknown")
+        logger.info(
+            "Claude auth: %s", auth_label, extra={"container": container_name}
+        )
     except Exception:
         logger.warning("Agent container ensure failed", exc_info=True)
 
