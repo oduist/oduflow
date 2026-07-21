@@ -15,11 +15,16 @@ Any change to the web dashboard (`src/oduflow/templates/dashboard.html`, served 
 
 Read both before touching dashboard UI. Key hard rules: no external CDNs (all assets ship with the package), every `var(--*)` must be declared in `:root`, status is never conveyed by color alone, no emoji as UI affordances.
 
-The dashboard loads `/static/chat.js` with its own positive integer cache
-version in the query string. Whenever
-`src/oduflow/templates/static/chat.js` changes, increment that `v` value in
-`src/oduflow/templates/dashboard.html`. This cache version is independent of
-the Oduflow product version.
+The dashboard loads `/static/chat.js` and `/static/acp-client.js` with a
+shared positive integer cache version in the query string, held in the
+`CHAT_V` variable in `src/oduflow/templates/dashboard.html`. Whenever either
+`src/oduflow/templates/static/chat.js` or
+`src/oduflow/templates/static/acp-client.js` changes, increment `CHAT_V`. The
+two files are an interdependent pair of our own code, so one shared version
+busts both at once and prevents a stale mismatch between them. This cache
+version is independent of the Oduflow product version. (The vendored
+third-party assets — `marked.min.js`, `xterm.js`, etc. — are not versioned this
+way; bump the filename if you ever upgrade them.)
 
 ## Commands
 
