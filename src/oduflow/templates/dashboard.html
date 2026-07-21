@@ -4926,7 +4926,7 @@ function ensureChatAssets() {
   // chat.js and acp-client.js are an interdependent pair of our own code; bump
   // this shared CHAT_V whenever either one changes (see AGENTS.md). One version
   // busts both at once, preventing a stale chat.js/acp-client.js mismatch.
-  var CHAT_V = '2';
+  var CHAT_V = '3';
   _chatAssets = Promise.all([
     loadScript('/static/marked.min.js'),
     loadScript('/static/acp-client.js?v=' + CHAT_V)

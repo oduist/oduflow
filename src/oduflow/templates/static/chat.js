@@ -23,6 +23,7 @@
 
   var instances = {};      // key -> instance
   var activeKey = null;
+  var FOLLOW_BOTTOM_THRESHOLD = 48;
 
   function keyOf(branch, type) { return branch + ' ' + type; }
   function labelOf(type) { return AGENT_LABELS[type] || type; }
@@ -87,9 +88,18 @@
   // -- DOM helpers scoped to an instance -------------------------------------
   function q(inst, sel) { return inst.el.querySelector(sel); }
 
-  function scrollToBottom(inst) {
+  function updateFollowOutput(inst) {
     var m = q(inst, '.chat-messages');
-    if (m) m.scrollTop = m.scrollHeight;
+    if (!m) return;
+    var distance = m.scrollHeight - m.scrollTop - m.clientHeight;
+    inst.followOutput = distance <= FOLLOW_BOTTOM_THRESHOLD;
+  }
+
+  function scrollToBottom(inst, force) {
+    var m = q(inst, '.chat-messages');
+    if (!m) return;
+    if (force) inst.followOutput = true;
+    if (inst.followOutput) m.scrollTop = m.scrollHeight;
   }
 
   function newTurn() {
@@ -196,6 +206,7 @@
     if (activity) updateActivitySummary(activity);
     inst.turn = null;
     finishUserChunks(inst);
+    scrollToBottom(inst);
   }
 
   function addUser(inst, text) {
@@ -204,7 +215,7 @@
     wrap.appendChild(el('div', 'chat-bubble', text));
     q(inst, '.chat-messages').appendChild(wrap);
     finishUserChunks(inst);
-    scrollToBottom(inst);
+    scrollToBottom(inst, true);
   }
 
   function appendUserChunk(inst, text) {
@@ -394,6 +405,7 @@
     var tool = inst.tools[u.toolCallId];
     if (tool) {
       patchTool(tool, u);
+      scrollToBottom(inst);
     } else {
       createTool(inst, u);
     }
@@ -640,6 +652,7 @@
     var messages = el('div', 'chat-messages');
     messages.setAttribute('role', 'log');
     messages.setAttribute('aria-live', 'polite');
+    messages.addEventListener('scroll', function () { updateFollowOutput(inst); }, { passive: true });
     root.appendChild(messages);
 
     var perm = el('div', 'chat-permission');
@@ -711,6 +724,7 @@
     inst.userChunkBubble = null;
     inst.userChunkBuffer = '';
     inst.tools = Object.create(null);
+    inst.followOutput = true;
     q(inst, '.chat-messages').innerHTML = '';
   }
 
@@ -883,7 +897,7 @@
       key: key, branch: branch, type: type, status: 'connecting', busy: false,
       client: new window.AcpClient(wsUrlFor(branch, type)),
       sessionId: null, cwd: null, turn: null, tools: Object.create(null), pill: null, unread: false,
-      userChunkBubble: null, userChunkBuffer: '',
+      userChunkBubble: null, userChunkBuffer: '', followOutput: true,
       history: [], titled: false
     };
     buildInstanceDom(inst);
