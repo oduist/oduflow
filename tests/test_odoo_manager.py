@@ -1878,6 +1878,69 @@ class TestAgentContainer:
         mock_docker_client.containers.run.assert_not_called()
         mock_docker_client.volumes.create.assert_not_called()
 
+    def test_claude_auth_mode_and_credential_normalization(self, monkeypatch):
+        for key in env_ops._AGENT_PROVIDER_CREDENTIALS:
+            monkeypatch.delenv(key, raising=False)
+
+        interactive_team = self._team()
+        interactive_settings = self._settings(team=interactive_team)
+        assert (
+            env_ops._claude_auth_mode(interactive_settings, interactive_team)
+            == "interactive"
+        )
+
+        api_team = self._team(
+            agent_env={"ANTHROPIC_API_KEY": "  sk-ant-api  ", "MY_FLAG": "  keep  "}
+        )
+        api_settings = self._settings(team=api_team)
+        api_env = env_ops._agent_env_vars(api_settings, api_team)
+        assert api_env["ANTHROPIC_API_KEY"] == "sk-ant-api"
+        assert api_env["MY_FLAG"] == "  keep  "
+        assert env_ops._claude_auth_mode(api_settings, api_team) == "api_key"
+
+        token_team = self._team(
+            agent_env={
+                "CLAUDE_CODE_OAUTH_TOKEN": "  sk-ant-oat  ",
+                "ANTHROPIC_API_KEY": "  ignored-key  ",
+            }
+        )
+        token_settings = self._settings(team=token_team)
+        token_env = env_ops._agent_env_vars(token_settings, token_team)
+        assert token_env["CLAUDE_CODE_OAUTH_TOKEN"] == "sk-ant-oat"
+        assert "ANTHROPIC_API_KEY" not in token_env
+        assert env_ops._claude_auth_mode(token_settings, token_team) == "setup_token"
+
+    def test_blank_team_credential_masks_server_value(self, monkeypatch):
+        monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "server-token")
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "server-key")
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        team = self._team(
+            agent_env={
+                "CLAUDE_CODE_OAUTH_TOKEN": "  ",
+                "ANTHROPIC_API_KEY": " team-key ",
+            }
+        )
+        settings = self._settings(team=team)
+
+        env = env_ops._agent_env_vars(settings, team)
+
+        assert "CLAUDE_CODE_OAUTH_TOKEN" not in env
+        assert env["ANTHROPIC_API_KEY"] == "team-key"
+        assert env_ops._claude_auth_mode(settings, team) == "api_key"
+
+    def test_multi_team_ignores_server_claude_credentials(self, monkeypatch):
+        monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "operator-token")
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "operator-key")
+        team1 = self._team()
+        team2 = TeamSettings(team_id="2", data_dir="/tmp/flow-test-2")
+        settings = Settings(
+            base_data_dir="/tmp/flow-test",
+            teams={"1": team1, "2": team2},
+        )
+
+        assert env_ops._agent_env_vars(settings, team1) == {}
+        assert env_ops._claude_auth_mode(settings, team1) == "interactive"
+
     @patch("oduflow.docker_ops.env_ops.os.path.isfile", return_value=True)
     def test_ensure_creates_single_container_with_volumes(
         self, mock_isfile, monkeypatch, mock_docker_client

@@ -399,6 +399,75 @@ def _acp_adapter_cmd(agent_type: str) -> list[str]:
     return ["claude-code-acp"]
 
 
+_CLAUDE_AUTH_GUIDANCE_MARKER = "Oduflow authentication guidance:"
+
+
+def _annotate_acp_auth_error(
+    frame: str, agent_type: str, auth_mode: str, team_id: str
+) -> str:
+    """Add mode-specific recovery to Claude ACP authentication errors.
+
+    The adapter returns provider failures as JSON-RPC response frames. Keep the
+    provider's original code/data/message intact and append guidance only for
+    recognizable authentication failures. In particular, quota/spend-limit
+    failures must remain untouched: silently trying a different credential
+    could switch accounts or billing modes.
+    """
+    if agent_type != "claude":
+        return frame
+    try:
+        message = json.loads(frame)
+    except (TypeError, ValueError):
+        return frame
+    if not isinstance(message, dict) or not isinstance(message.get("error"), dict):
+        return frame
+    error = message["error"]
+    error_message = error.get("message")
+    if not isinstance(error_message, str):
+        return frame
+
+    lowered = error_message.lower()
+    specific_markers = (
+        "invalid bearer token",
+        "invalid api key",
+        "oauth token has expired",
+        "oauth token expired",
+        "oauth token revoked",
+    )
+    generic_401 = "401" in lowered and (
+        "failed to authenticate" in lowered or "authentication_error" in lowered
+    )
+    if not generic_401 and not any(marker in lowered for marker in specific_markers):
+        return frame
+    if _CLAUDE_AUTH_GUIDANCE_MARKER in error_message:
+        return frame
+
+    if auth_mode == "setup_token":
+        guidance = (
+            "Claude is using CLAUDE_CODE_OAUTH_TOKEN, which overrides interactive "
+            "/login. Run `claude setup-token` while signed in to the intended "
+            "account, replace the token in "
+            f"[team.{team_id}.agent_env] (or the single-team server environment), "
+            "then restart Oduflow."
+        )
+    elif auth_mode == "api_key":
+        guidance = (
+            "Claude is using ANTHROPIC_API_KEY (Console API billing). Update or "
+            "remove that key in "
+            f"[team.{team_id}.agent_env] (or the single-team server environment), "
+            "then restart Oduflow."
+        )
+    else:
+        guidance = (
+            "No Claude environment credential is configured. Open Agent CLI for "
+            "this team, run `/login`, complete the interactive sign-in, then "
+            "reopen Agent Chat."
+        )
+
+    error["message"] = f"{error_message}\n\n{_CLAUDE_AUTH_GUIDANCE_MARKER} {guidance}"
+    return json.dumps(message, separators=(",", ":"), ensure_ascii=False)
+
+
 def _codex_cli_cmd(mcp_url: str, model: str = "") -> list[str]:
     """Build the hosted Codex CLI command.
 
@@ -3273,6 +3342,7 @@ def _build_routes(
             agent_type = agent_config.resolve_agent_type(
                 websocket.query_params.get("type"), team
             )
+            claude_auth_mode = env_ops._claude_auth_mode(settings, team)
 
             container_name = get_agent_container_name(team.team_id, settings.prefix)
             try:
@@ -3399,9 +3469,14 @@ def _build_routes(
                             line, buf = buf.split(b"\n", 1)
                             text = line.strip()
                             if text:
-                                await websocket.send_text(
-                                    text.decode("utf-8", "replace")
+                                frame = text.decode("utf-8", "replace")
+                                frame = _annotate_acp_auth_error(
+                                    frame,
+                                    agent_type,
+                                    claude_auth_mode,
+                                    team.team_id,
                                 )
+                                await websocket.send_text(frame)
                 except Exception:
                     pass
                 finally:
