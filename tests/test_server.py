@@ -374,6 +374,49 @@ class TestErrorHandling:
             _call_tool("restart_environment", env_name="main")
 
 
+class TestProductionFeatureGate:
+    @pytest.mark.parametrize(
+        "tool_name",
+        [
+            "create_production",
+            "list_productions",
+            "get_production_info",
+            "production_logs",
+            "start_production",
+            "stop_production",
+            "restart_production",
+            "set_production_auto_update",
+            "update_production",
+            "rollback_production",
+            "production_deploys",
+            "snapshot_production",
+            "list_production_snapshots",
+            "restore_production",
+            "production_backup_status",
+            "set_production_backup_schedule",
+            "prune_production_backups",
+            "restore_cluster_pitr",
+            "delete_production",
+        ],
+    )
+    def test_every_production_tool_is_rejected_when_disabled(self, tool_name):
+        with pytest.raises(ToolError, match="Production hosting is disabled"):
+            _call_tool(tool_name)
+
+    @patch("oduflow.docker_ops.production_ops.list_productions", return_value=[])
+    def test_enabled_production_tool_runs(self, mock_list):
+        import oduflow.server
+
+        oduflow.server._settings = Settings(
+            prod_enabled=True,
+            teams={"1": TEST_TEAM},
+        )
+        assert _call_tool("list_productions") == (
+            "No productions found. Use create_production to provision one."
+        )
+        mock_list.assert_called_once()
+
+
 def _get_tool_fn(tool_name: str):
     """Get a sync-callable wrapper for a registered MCP tool."""
     import asyncio

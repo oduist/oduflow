@@ -19,7 +19,7 @@ def team(tmp_path):
 
 @pytest.fixture
 def settings(team, tmp_path):
-    return Settings(base_data_dir=str(tmp_path), teams={"1": team})
+    return Settings(base_data_dir=str(tmp_path), prod_enabled=True, teams={"1": team})
 
 
 def _sign(secret: str, body: bytes) -> str:
@@ -119,6 +119,20 @@ class TestMatchProductions:
 
 
 class TestHandleGithubEvent:
+    def test_disabled_production_returns_404(self, team, tmp_path):
+        settings = Settings(base_data_dir=str(tmp_path), teams={"1": team})
+        with patch.object(webhooks, "resolve_team") as resolve:
+            status, body = webhooks.handle_github_event(
+                settings,
+                LockManager(),
+                event="push",
+                body=b"{}",
+                signature_header="sha256=deadbeef",
+            )
+        assert status == 404
+        assert body == {"ok": False, "error": "production hosting disabled"}
+        resolve.assert_not_called()
+
     def test_bad_signature_401(self, settings, team):
         production_registry.create_production(team, "erp", {})
         status, body = webhooks.handle_github_event(

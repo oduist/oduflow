@@ -71,6 +71,7 @@ def team(tmp_path):
 def settings(team, tmp_path):
     return Settings(
         base_data_dir=str(tmp_path),
+        prod_enabled=True,
         backup=BackupSettings(
             bucket="b", access_key="a", secret_key="s", snapshot_time="02:00"
         ),
@@ -84,6 +85,28 @@ class TestTick:
         with patch.object(sched, "_run_snapshot_job") as job:
             sched.tick(settings, LockManager())
         job.assert_not_called()
+
+    def test_disabled_production_is_noop(self, settings):
+        settings = Settings(
+            base_data_dir=settings.base_data_dir,
+            prod_enabled=False,
+            backup=settings.backup,
+            teams=settings.teams,
+        )
+        with patch.object(sched, "_run_snapshot_job") as job:
+            sched.tick(settings, LockManager())
+        job.assert_not_called()
+
+    def test_disabled_production_does_not_start_scheduler(self, settings):
+        settings = Settings(
+            base_data_dir=settings.base_data_dir,
+            prod_enabled=False,
+            backup=settings.backup,
+            teams=settings.teams,
+        )
+        with patch("threading.Thread") as thread:
+            assert sched.start_backup_scheduler(lambda: settings, LockManager()) is None
+        thread.assert_not_called()
 
     def test_due_snapshot_fires(self, settings, team):
         production_registry.create_production(team, "erp", {})

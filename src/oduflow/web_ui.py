@@ -611,7 +611,11 @@ def _build_routes(
 
     def dashboard(request: Request) -> HTMLResponse:
         html_path = _TEMPLATE_DIR / "dashboard.html"
-        response = HTMLResponse(html_path.read_text(encoding="utf-8"))
+        html = html_path.read_text(encoding="utf-8").replace(
+            "__PRODUCTION_TAB_HIDDEN__",
+            "" if get_settings().prod_enabled else "hidden",
+        )
+        response = HTMLResponse(html)
         team = getattr(request.state, "team", None)
         if team is not None and team.ui_password:
             _set_session_cookie(response, team, request)
@@ -3945,6 +3949,85 @@ def _build_routes(
         )
         return JSONResponse(payload, status_code=status)
 
+    production_routes: list[BaseRoute] = []
+    if get_settings().prod_enabled:
+        production_routes = [
+            Route("/api/productions", api_productions, methods=["GET"]),
+            Route("/api/productions/create", api_production_create, methods=["POST"]),
+            Route(
+                "/api/productions/backup-status",
+                api_production_backup_status,
+                methods=["GET"],
+            ),
+            Route("/api/productions/{name}", api_production_info, methods=["GET"]),
+            Route(
+                "/api/productions/{name}/start",
+                api_production_start,
+                methods=["POST"],
+            ),
+            Route(
+                "/api/productions/{name}/stop",
+                api_production_stop,
+                methods=["POST"],
+            ),
+            Route(
+                "/api/productions/{name}/restart",
+                api_production_restart,
+                methods=["POST"],
+            ),
+            Route(
+                "/api/productions/{name}/update",
+                api_production_update,
+                methods=["POST"],
+            ),
+            Route(
+                "/api/productions/{name}/rollback",
+                api_production_rollback,
+                methods=["POST"],
+            ),
+            Route(
+                "/api/productions/{name}/auto-update",
+                api_production_auto_update,
+                methods=["POST"],
+            ),
+            Route(
+                "/api/productions/{name}/logs",
+                api_production_logs,
+                methods=["GET"],
+            ),
+            Route(
+                "/api/productions/{name}/deploys",
+                api_production_deploys,
+                methods=["GET"],
+            ),
+            Route(
+                "/api/productions/{name}/delete",
+                api_production_delete,
+                methods=["POST"],
+            ),
+            Route(
+                "/api/productions/{name}/snapshots",
+                api_production_snapshots,
+                methods=["GET"],
+            ),
+            Route(
+                "/api/productions/{name}/snapshot",
+                api_production_snapshot_now,
+                methods=["POST"],
+            ),
+            Route(
+                "/api/productions/{name}/restore",
+                api_production_restore,
+                methods=["POST"],
+            ),
+            Route(
+                "/api/productions/{name}/backup-schedule",
+                api_production_backup_schedule,
+                methods=["POST"],
+            ),
+            Route("/api/webhooks/github", webhook_github, methods=["POST"]),
+        ]
+
     return [
         Route("/", dashboard, methods=["GET"]),
         Route("/login", login, methods=["GET", "POST"]),
@@ -3974,65 +4057,8 @@ def _build_routes(
         Route("/api/templates/{name}/rename", api_template_rename, methods=["POST"]),
         Route("/api/environments", api_list, methods=["GET"]),
         Route("/api/environments/create", api_create, methods=["POST"]),
-        Route("/api/productions", api_productions, methods=["GET"]),
-        Route("/api/productions/create", api_production_create, methods=["POST"]),
-        Route(
-            "/api/productions/backup-status",
-            api_production_backup_status,
-            methods=["GET"],
-        ),
-        Route("/api/productions/{name}", api_production_info, methods=["GET"]),
-        Route("/api/productions/{name}/start", api_production_start, methods=["POST"]),
-        Route("/api/productions/{name}/stop", api_production_stop, methods=["POST"]),
-        Route(
-            "/api/productions/{name}/restart",
-            api_production_restart,
-            methods=["POST"],
-        ),
-        Route(
-            "/api/productions/{name}/update", api_production_update, methods=["POST"]
-        ),
-        Route(
-            "/api/productions/{name}/rollback",
-            api_production_rollback,
-            methods=["POST"],
-        ),
-        Route(
-            "/api/productions/{name}/auto-update",
-            api_production_auto_update,
-            methods=["POST"],
-        ),
-        Route("/api/productions/{name}/logs", api_production_logs, methods=["GET"]),
-        Route(
-            "/api/productions/{name}/deploys",
-            api_production_deploys,
-            methods=["GET"],
-        ),
-        Route(
-            "/api/productions/{name}/delete", api_production_delete, methods=["POST"]
-        ),
-        Route(
-            "/api/productions/{name}/snapshots",
-            api_production_snapshots,
-            methods=["GET"],
-        ),
-        Route(
-            "/api/productions/{name}/snapshot",
-            api_production_snapshot_now,
-            methods=["POST"],
-        ),
-        Route(
-            "/api/productions/{name}/restore",
-            api_production_restore,
-            methods=["POST"],
-        ),
-        Route(
-            "/api/productions/{name}/backup-schedule",
-            api_production_backup_schedule,
-            methods=["POST"],
-        ),
+        *production_routes,
         Route("/healthz", healthz, methods=["GET"]),
-        Route("/api/webhooks/github", webhook_github, methods=["POST"]),
         Route("/api/stats", api_stats, methods=["GET"]),
         Route("/api/usage", api_usage, methods=["GET"]),
         Route("/api/usage/refresh", api_usage_refresh, methods=["POST"]),

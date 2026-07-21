@@ -293,6 +293,24 @@ def prod_lock_key(team_id: str, name: str) -> str:
     return f"prod:{team_id}:{name}"
 
 
+_PRODUCTION_DISABLED_MESSAGE = (
+    "Production hosting is disabled. Set enabled = true in the [production] "
+    "section of oduflow.toml and restart Oduflow."
+)
+
+
+def production_enabled(fn: Callable[P, R]) -> Callable[P, R]:
+    """Reject production MCP calls before they acquire locks or touch state."""
+
+    @functools.wraps(fn)
+    def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
+        if not _get_settings().prod_enabled:
+            raise PrerequisiteNotMetError(_PRODUCTION_DISABLED_MESSAGE)
+        return fn(*args, **kwargs)
+
+    return wrapper
+
+
 def with_prod_lock(fn: Callable[P, R]) -> Callable[P, R]:
     """Acquire the production's lock before executing the tool function."""
 
@@ -2773,6 +2791,7 @@ def delete_file_in_volume(
 
 @mcp.tool()
 @handle_errors
+@production_enabled
 @with_prod_lock
 def create_production(
     name: str,
@@ -2842,6 +2861,7 @@ def create_production(
 
 @mcp.tool()
 @handle_errors
+@production_enabled
 def list_productions(ctx: Context | None = None) -> str:
     """
     List the team's production environments with status, domain, deployed
@@ -2859,6 +2879,7 @@ def list_productions(ctx: Context | None = None) -> str:
 
 @mcp.tool()
 @handle_errors
+@production_enabled
 def get_production_info(name: str, ctx: Context | None = None) -> str:
     """
     Detailed information about a production: status, health, deployed commit,
@@ -2877,6 +2898,7 @@ def get_production_info(name: str, ctx: Context | None = None) -> str:
 
 @mcp.tool()
 @handle_errors
+@production_enabled
 def production_logs(
     name: str,
     n_lines: int = 100,
@@ -2908,6 +2930,7 @@ def production_logs(
 
 @mcp.tool()
 @handle_errors
+@production_enabled
 @with_prod_lock
 def start_production(name: str, ctx: Context | None = None) -> str:
     """
@@ -2924,6 +2947,7 @@ def start_production(name: str, ctx: Context | None = None) -> str:
 
 @mcp.tool()
 @handle_errors
+@production_enabled
 @with_prod_lock
 def stop_production(name: str, ctx: Context | None = None) -> str:
     """
@@ -2940,6 +2964,7 @@ def stop_production(name: str, ctx: Context | None = None) -> str:
 
 @mcp.tool()
 @handle_errors
+@production_enabled
 @with_prod_lock
 def restart_production(name: str, ctx: Context | None = None) -> str:
     """
@@ -2956,6 +2981,7 @@ def restart_production(name: str, ctx: Context | None = None) -> str:
 
 @mcp.tool()
 @handle_errors
+@production_enabled
 @with_prod_lock
 def set_production_auto_update(
     name: str, enabled: bool, ctx: Context | None = None
@@ -2979,6 +3005,7 @@ def set_production_auto_update(
 
 @mcp.tool()
 @handle_errors
+@production_enabled
 @with_prod_lock
 def update_production(
     name: str,
@@ -3035,6 +3062,7 @@ def update_production(
 
 @mcp.tool()
 @handle_errors
+@production_enabled
 @with_prod_lock
 def rollback_production(
     name: str, to_commit: str = "", ctx: Context | None = None
@@ -3058,6 +3086,7 @@ def rollback_production(
 
 @mcp.tool()
 @handle_errors
+@production_enabled
 def production_deploys(name: str, limit: int = 20, ctx: Context | None = None) -> str:
     """
     Deploy history of a production (newest last): commits, actions, modules,
@@ -3079,6 +3108,7 @@ def production_deploys(name: str, limit: int = 20, ctx: Context | None = None) -
 
 @mcp.tool()
 @handle_errors
+@production_enabled
 @with_prod_lock
 def snapshot_production(name: str, note: str = "", ctx: Context | None = None) -> str:
     """
@@ -3112,6 +3142,7 @@ def snapshot_production(name: str, note: str = "", ctx: Context | None = None) -
 
 @mcp.tool()
 @handle_errors
+@production_enabled
 def list_production_snapshots(
     name: str, refresh: bool = False, ctx: Context | None = None
 ) -> str:
@@ -3140,6 +3171,7 @@ def list_production_snapshots(
 
 @mcp.tool()
 @handle_errors
+@production_enabled
 @with_prod_lock
 def restore_production(
     name: str, snapshot_id: str, confirm: str = "", ctx: Context | None = None
@@ -3175,6 +3207,7 @@ def restore_production(
 
 @mcp.tool()
 @handle_errors
+@production_enabled
 def production_backup_status(ctx: Context | None = None) -> str:
     """
     Backup posture for the team: per-production snapshot state (schedule,
@@ -3193,6 +3226,7 @@ def production_backup_status(ctx: Context | None = None) -> str:
 
 @mcp.tool()
 @handle_errors
+@production_enabled
 @with_prod_lock
 def set_production_backup_schedule(
     name: str, schedule: str, ctx: Context | None = None
@@ -3217,6 +3251,7 @@ def set_production_backup_schedule(
 
 @mcp.tool()
 @handle_errors
+@production_enabled
 def prune_production_backups(ctx: Context | None = None) -> str:
     """
     Apply the retention policy ([backup] keep) to the team's snapshots and
@@ -3240,6 +3275,7 @@ def prune_production_backups(ctx: Context | None = None) -> str:
 
 @mcp.tool()
 @handle_errors
+@production_enabled
 def restore_cluster_pitr(
     target_time: str = "", confirm: str = "", ctx: Context | None = None
 ) -> str:
@@ -3304,6 +3340,7 @@ def restore_cluster_pitr(
 
 @mcp.tool()
 @handle_errors
+@production_enabled
 @with_prod_lock
 def delete_production(
     name: str,

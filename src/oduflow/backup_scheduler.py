@@ -339,6 +339,8 @@ def _run_prune_job(
 
 def tick(settings: Settings, locks: LockManager) -> None:
     """One scheduler pass. Cheap when nothing is due."""
+    if not settings.prod_enabled:
+        return
     backup = settings.backup
     if backup is None:
         return
@@ -418,8 +420,11 @@ def start_backup_scheduler(
     locks: LockManager,
     interval: float = TICK_SECONDS,
 ) -> threading.Thread | None:
-    """Start the scheduler thread. Returns None when [backup] is absent."""
+    """Start the scheduler thread when production and backups are enabled."""
     settings = get_settings()
+    if not settings.prod_enabled:
+        logger.info("Backup scheduler disabled (production hosting disabled)")
+        return None
     if settings.backup is None:
         logger.info("Backup scheduler disabled ([backup] not configured)")
         return None

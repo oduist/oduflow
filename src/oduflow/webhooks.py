@@ -199,6 +199,8 @@ def handle_github_event(
     signature_header: str,
 ) -> tuple[int, dict[str, Any]]:
     """Process a GitHub webhook request; returns (http_status, json_body)."""
+    if not settings.prod_enabled:
+        return 404, {"ok": False, "error": "production hosting disabled"}
     team = resolve_team(settings, body, signature_header)
     if team is None:
         return 401, {"ok": False, "error": "invalid signature"}

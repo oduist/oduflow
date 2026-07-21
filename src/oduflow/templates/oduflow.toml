@@ -84,14 +84,16 @@ auto_delete_hours = 0             # delete stopped environments after N hours (D
 # Productions (long-lived customer environments with their own domain and a
 # dedicated production PostgreSQL cluster) are created at runtime via the
 # create_production MCP tool or the dashboard's Production tab — not here.
-# Both sections are optional. See https://docs.oduflow.dev/production/
+# Production hosting is disabled by default. Uncomment the section header and
+# enabled flag, then restart Oduflow. See https://docs.oduflow.dev/production/
 # [production]
+# enabled = true
 # postgres_image = ""             # default: [database].image
 # workers_cap = 8                 # upper bound for auto-tuned Odoo workers
 
 # S3 backups for productions: continuous WAL archiving (WAL-G), scheduled
 # snapshots (pg_dump + deduplicated filestore) and retention. Presence of
-# the section (bucket + keys) enables the whole backup subsystem.
+# the section (bucket + keys) configures backups; jobs run while production is enabled.
 # [backup]
 # bucket = ""
 # access_key = ""

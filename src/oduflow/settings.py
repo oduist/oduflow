@@ -223,11 +223,12 @@ class Settings:
     traefik_container: str = "oduflow-traefik"
     traefik_acme_volume: str = "oduflow-traefik-acme"
 
-    # Production hosting ([production] TOML section — every key optional).
+    # Production hosting ([production] TOML section — strict opt-in).
     # Productions themselves are created at runtime via MCP/UI and live in
     # per-team registries (productions.json), not in TOML. The production
     # PostgreSQL cluster is physically separate from the dev one and is
     # provisioned lazily (first production or existing container).
+    prod_enabled: bool = False
     prod_db_container: str = "oduflow-prod-db"
     prod_db_volume: str = "oduflow-prod-db-data"
     prod_postgres_image: str = ""  # empty = [database].image
@@ -446,6 +447,9 @@ class Settings:
         lifecycle = raw.get("lifecycle", {})
         agent = raw.get("agent", {})
         production = raw.get("production", {})
+        prod_enabled = production.get("enabled", False)
+        if not isinstance(prod_enabled, bool):
+            raise ValueError("[production] enabled must be true or false")
         oauth = raw.get("oauth", server)  # [oauth] section or fall back to [server]
         routing_mode = str(routing.get("mode", "port")).strip().lower()
         backup = _parse_backup_section(raw.get("backup", {}))
@@ -571,6 +575,7 @@ class Settings:
             auto_stop_hours=int(lifecycle.get("auto_stop_hours", 48)),
             auto_delete_hours=int(lifecycle.get("auto_delete_hours", 0)),
             oauth_base_url=str(oauth.get("oauth_base_url", "")).strip(),
+            prod_enabled=prod_enabled,
             prod_postgres_image=str(production.get("postgres_image", "")).strip(),
             prod_walg_version=str(production.get("walg_version", "")).strip(),
             prod_workers_cap=int(production.get("workers_cap", 8)),
