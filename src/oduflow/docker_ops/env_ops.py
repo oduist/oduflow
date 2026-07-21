@@ -1296,6 +1296,13 @@ def create_environment(
     return result
 
 
+_AGENT_PROVIDER_CREDENTIALS = (
+    "CLAUDE_CODE_OAUTH_TOKEN",
+    "ANTHROPIC_API_KEY",
+    "OPENAI_API_KEY",
+)
+
+
 def _agent_env_vars(settings: Settings, team: TeamSettings) -> dict[str, str]:
     """Variables injected into the team's agent container.
 
@@ -1314,15 +1321,43 @@ def _agent_env_vars(settings: Settings, team: TeamSettings) -> dict[str, str]:
     """
     env: dict[str, str] = {}
     if len(settings.teams) == 1:
-        for key in ("CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY", "OPENAI_API_KEY"):
+        for key in _AGENT_PROVIDER_CREDENTIALS:
             value = os.environ.get(key, "").strip()
             if value:
                 env[key] = value
     env.update(team.agent_env)
 
-    if env.get("CLAUDE_CODE_OAUTH_TOKEN", "").strip():
+    # Credentials are routinely pasted from another terminal. Normalize only
+    # the known secret values (arbitrary user variables may intentionally carry
+    # surrounding whitespace), and make an explicitly blank team override mask
+    # a same-named server credential instead of injecting an empty value.
+    for key in _AGENT_PROVIDER_CREDENTIALS:
+        if key not in env:
+            continue
+        value = env[key].strip()
+        if value:
+            env[key] = value
+        else:
+            env.pop(key)
+
+    if env.get("CLAUDE_CODE_OAUTH_TOKEN"):
         env.pop("ANTHROPIC_API_KEY", None)
     return env
+
+
+def _claude_auth_mode(settings: Settings, team: TeamSettings) -> str:
+    """Return the one effective Claude credential mode, without secrets.
+
+    Environment credentials are alternatives, not an automatic fallback
+    chain: a setup token wins over an API key, and a persisted interactive
+    login is used only when neither environment credential is present.
+    """
+    env = _agent_env_vars(settings, team)
+    if env.get("CLAUDE_CODE_OAUTH_TOKEN"):
+        return "setup_token"
+    if env.get("ANTHROPIC_API_KEY"):
+        return "api_key"
+    return "interactive"
 
 
 def get_agent_mcp_url(settings: Settings, team: TeamSettings, env_name: str) -> str:
@@ -1586,6 +1621,17 @@ def _ensure_agent_container(
             restart_policy={"Name": "unless-stopped"},
         )
         logger.info("Agent container ensured", extra={"container": container_name})
+        # Report which Claude credential the (re)created container will use, so
+        # authentication failures can be diagnosed from the logs. The secret
+        # value is never logged, only the selected mode.
+        auth_label = {
+            "setup_token": "subscription (CLAUDE_CODE_OAUTH_TOKEN)",
+            "api_key": "Console API (ANTHROPIC_API_KEY)",
+            "interactive": "interactive /login",
+        }.get(_claude_auth_mode(settings, team), "unknown")
+        logger.info(
+            "Claude auth: %s", auth_label, extra={"container": container_name}
+        )
     except Exception:
         logger.warning("Agent container ensure failed", exc_info=True)
 

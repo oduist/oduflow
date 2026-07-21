@@ -100,6 +100,62 @@ read the container logs.
 
 ---
 
+## Agent Chat: Claude returns `401 Invalid bearer token`
+
+The ACP session may open successfully and fail only on the first prompt:
+
+```text
+Failed to authenticate. API Error: 401 ... Invalid bearer token
+```
+
+This is a Claude provider credential failure, not an Oduflow MCP-token failure.
+Claude authentication is selected in this order:
+
+1. `CLAUDE_CODE_OAUTH_TOKEN` (subscription setup token)
+2. `ANTHROPIC_API_KEY` (Console API billing)
+3. the interactive `/login` saved on the team's persistent agent home volume
+
+A configured setup token or API key overrides the interactive login. Oduflow
+does not automatically fall back after an authentication error because doing so
+could silently switch the account or billing method.
+
+To keep subscription authentication, generate a fresh token on a trusted
+machine while signed in to the intended Claude account:
+
+```bash
+claude setup-token
+```
+
+Replace `CLAUDE_CODE_OAUTH_TOKEN` under `[team.<id>.agent_env]` in
+`oduflow.toml`. In a single-team deployment, the Oduflow systemd service may
+instead supply this variable through its server environment; update the source
+that is actually in use. Do not print the token with `docker inspect`, `env`, or
+diagnostic shell commands.
+
+Restart Oduflow so the changed config hash recreates the agent container. Its
+home and workspace volumes are persistent, so conversations, login state, and
+checkouts survive:
+
+```bash
+systemctl restart oduflow
+journalctl -u oduflow --since "5 minutes ago" \
+  | grep -E 'Agent config changed|Claude auth:'
+```
+
+The log should report subscription auth. Send a real Agent Chat prompt to
+verify the new token; local auth-status output alone does not prove that
+Anthropic accepts it.
+
+To use interactive authentication instead, remove both
+`CLAUDE_CODE_OAUTH_TOKEN` and `ANTHROPIC_API_KEY` from the team config and, for
+single-team deployments, from the server environment. Restart Oduflow, open
+Agent CLI, run `/login`, complete sign-in, and reopen Agent Chat.
+
+The separate `$/ping` "Method not found" line is harmless adapter noise and is
+not the cause of the `401`.
+
+---
+
 ## Overlay filestore
 
 Large template filestores are shared with `fuse-overlayfs` instead of copied.

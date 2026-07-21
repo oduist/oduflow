@@ -79,6 +79,16 @@ When `CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY` is configured, the
 container automatically marks Claude Code's first-run onboarding as complete,
 so Agent CLI opens directly in the REPL without asking to select a login method.
 
+Claude supports three alternative authentication modes. Oduflow selects exactly
+one for each team: a non-empty `CLAUDE_CODE_OAUTH_TOKEN` wins, otherwise a
+non-empty `ANTHROPIC_API_KEY` uses Console API billing, otherwise Claude uses the
+interactive `/login` stored on the team's persistent agent home volume. Known
+credential values are trimmed when loaded, so whitespace accidentally copied
+around a token is not sent to Anthropic. A configured environment credential
+always overrides the persisted interactive login; if Anthropic rejects it,
+Agent Chat fails closed with mode-specific recovery guidance instead of silently
+trying another account or billing method.
+
 See the [`[agent]`](installation.md#agent-settings) and
 [per-team](installation.md#per-team-settings) settings tables for the full
 reference.
