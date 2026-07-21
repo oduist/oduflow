@@ -92,43 +92,173 @@
     if (m) m.scrollTop = m.scrollHeight;
   }
 
+  function newTurn() {
+    return {
+      activity: null,
+      candidateWrap: null,
+      candidateBubble: null,
+      candidateBuffer: '',
+      streamType: null,
+      thoughtBox: null,
+      thoughtBuffer: '',
+      planBox: null
+    };
+  }
+
+  function currentTurn(inst) {
+    if (!inst.turn) inst.turn = newTurn();
+    return inst.turn;
+  }
+
+  function finishUserChunks(inst) {
+    inst.userChunkBubble = null;
+    inst.userChunkBuffer = '';
+  }
+
+  function pluralCount(count, singular, plural) {
+    return count + ' ' + (count === 1 ? singular : plural);
+  }
+
+  function updateActivitySummary(activity) {
+    var parts = [];
+    if (activity.toolCount) parts.push(pluralCount(activity.toolCount, 'tool call', 'tool calls'));
+    if (activity.messageCount) parts.push(pluralCount(activity.messageCount, 'message', 'messages'));
+    activity.label.textContent = parts.length ? parts.join(', ') : 'Details';
+
+    var failed = false;
+    var running = false;
+    for (var i = 0; i < activity.tools.length; i++) {
+      var status = activity.tools[i].status;
+      if (status === 'failed') failed = true;
+      if (status === 'pending' || status === 'in_progress' || !status) running = true;
+    }
+    var statusText = failed ? 'failed' : (running ? 'running' : '');
+    activity.status.textContent = statusText ? ' · ' + statusText : '';
+    activity.status.setAttribute('data-status', statusText || 'completed');
+  }
+
+  function ensureActivity(inst) {
+    var turn = currentTurn(inst);
+    if (turn.activity) return turn.activity;
+
+    var details = el('details', 'chat-activity');
+    var summary = el('summary', 'chat-activity-summary');
+    var label = el('span', 'chat-activity-label', 'Details');
+    var status = el('span', 'chat-activity-state');
+    summary.appendChild(label);
+    summary.appendChild(status);
+    details.appendChild(summary);
+    var body = el('div', 'chat-activity-body');
+    details.appendChild(body);
+
+    var messages = q(inst, '.chat-messages');
+    if (turn.candidateWrap && turn.candidateWrap.parentNode === messages) {
+      messages.insertBefore(details, turn.candidateWrap);
+    } else {
+      messages.appendChild(details);
+    }
+    turn.activity = {
+      el: details,
+      label: label,
+      status: status,
+      body: body,
+      toolCount: 0,
+      messageCount: 0,
+      messages: [],
+      tools: []
+    };
+    return turn.activity;
+  }
+
+  function archiveCandidate(inst) {
+    var turn = currentTurn(inst);
+    if (!turn.candidateWrap) return;
+    var activity = ensureActivity(inst);
+    activity.body.appendChild(turn.candidateWrap);
+    activity.messages.push(turn.candidateWrap);
+    activity.messageCount += 1;
+    updateActivitySummary(activity);
+    turn.candidateWrap = null;
+    turn.candidateBubble = null;
+    turn.candidateBuffer = '';
+  }
+
+  function finalizeTurn(inst) {
+    if (!inst.turn) return;
+    var turn = inst.turn;
+    var activity = turn.activity;
+    if (activity && !turn.candidateWrap && activity.messages.length) {
+      var finalWrap = activity.messages.pop();
+      var messages = q(inst, '.chat-messages');
+      messages.insertBefore(finalWrap, activity.el.nextSibling);
+      activity.messageCount -= 1;
+    }
+    if (activity) updateActivitySummary(activity);
+    inst.turn = null;
+    finishUserChunks(inst);
+  }
+
   function addUser(inst, text) {
+    finalizeTurn(inst);
     var wrap = el('div', 'chat-msg chat-msg-user');
     wrap.appendChild(el('div', 'chat-bubble', text));
     q(inst, '.chat-messages').appendChild(wrap);
-    inst.agentBubble = null;
+    finishUserChunks(inst);
+    scrollToBottom(inst);
+  }
+
+  function appendUserChunk(inst, text) {
+    if (!text) return;
+    if (!inst.userChunkBubble) {
+      finalizeTurn(inst);
+      var wrap = el('div', 'chat-msg chat-msg-user');
+      inst.userChunkBubble = el('div', 'chat-bubble');
+      inst.userChunkBuffer = '';
+      wrap.appendChild(inst.userChunkBubble);
+      q(inst, '.chat-messages').appendChild(wrap);
+    }
+    inst.userChunkBuffer += text;
+    inst.userChunkBubble.textContent = inst.userChunkBuffer;
     scrollToBottom(inst);
   }
 
   function appendAgent(inst, text) {
     if (!text) return;
-    if (!inst.agentBubble) {
+    finishUserChunks(inst);
+    var turn = currentTurn(inst);
+    if (turn.streamType !== 'agent' || !turn.candidateBubble) {
       var wrap = el('div', 'chat-msg chat-msg-agent');
       var bubble = el('div', 'chat-bubble chat-md');
       wrap.appendChild(bubble);
       q(inst, '.chat-messages').appendChild(wrap);
-      inst.agentBubble = bubble;
-      inst.agentBuffer = '';
+      turn.candidateWrap = wrap;
+      turn.candidateBubble = bubble;
+      turn.candidateBuffer = '';
     }
-    inst.agentBuffer += text;
-    inst.agentBubble.innerHTML = renderMarkdown(inst.agentBuffer);
+    turn.streamType = 'agent';
+    turn.candidateBuffer += text;
+    turn.candidateBubble.innerHTML = renderMarkdown(turn.candidateBuffer);
     scrollToBottom(inst);
   }
 
   function appendThought(inst, text) {
     if (!text) return;
-    if (!inst.thoughtBox) {
+    finishUserChunks(inst);
+    var turn = currentTurn(inst);
+    archiveCandidate(inst);
+    if (turn.streamType !== 'thought' || !turn.thoughtBox) {
+      var activity = ensureActivity(inst);
       var det = el('details', 'chat-thinking');
       det.appendChild(el('summary', null, 'Reasoning'));
       var body = el('div', 'chat-thinking-body');
       det.appendChild(body);
-      q(inst, '.chat-messages').appendChild(det);
-      inst.thoughtBox = body;
-      inst.thoughtBuffer = '';
+      activity.body.appendChild(det);
+      turn.thoughtBox = body;
+      turn.thoughtBuffer = '';
     }
-    inst.thoughtBuffer += text;
-    inst.thoughtBox.textContent = inst.thoughtBuffer;
-    inst.agentBubble = null;
+    turn.streamType = 'thought';
+    turn.thoughtBuffer += text;
+    turn.thoughtBox.textContent = turn.thoughtBuffer;
     scrollToBottom(inst);
   }
 
@@ -139,39 +269,155 @@
     return 'pending';
   }
 
-  function renderToolCall(inst, u) {
-    var card = el('div', 'chat-tool');
-    var head = el('div', 'chat-tool-head');
-    head.appendChild(el('span', 'chat-tool-title', u.title || u.kind || 'Tool'));
-    var st = el('span', 'chat-tool-status', toolStatusText(u.status));
-    st.setAttribute('data-status', u.status || 'pending');
-    head.appendChild(st);
-    card.appendChild(head);
-    q(inst, '.chat-messages').appendChild(card);
-    inst.tools[u.toolCallId] = card;
-    inst.agentBubble = null;
+  function hasOwn(obj, name) {
+    return Object.prototype.hasOwnProperty.call(obj, name);
+  }
+
+  function formatToolValue(value) {
+    if (typeof value === 'string') return value;
+    try {
+      var json = JSON.stringify(value, null, 2);
+      return json === undefined ? String(value) : json;
+    } catch (e) {
+      return String(value);
+    }
+  }
+
+  function toolOutputValue(tool) {
+    if (tool.hasRawOutput) return tool.rawOutput;
+    if (!tool.hasContent) return undefined;
+    if (Array.isArray(tool.content) && tool.content.length === 1) {
+      var item = tool.content[0];
+      if (item && item.type === 'content' && item.content && item.content.type === 'text') {
+        return item.content.text || '';
+      }
+    }
+    return tool.content;
+  }
+
+  function renderToolPayload(tool) {
+    tool.input.textContent = tool.hasRawInput
+      ? formatToolValue(tool.rawInput)
+      : 'Not provided by agent';
+    var output = toolOutputValue(tool);
+    tool.output.textContent = output === undefined
+      ? 'Not provided by agent'
+      : formatToolValue(output);
+  }
+
+  function patchTool(tool, u) {
+    var wasFailed = tool.status === 'failed';
+    if (hasOwn(u, 'title') && u.title != null) tool.title = u.title;
+    if (hasOwn(u, 'kind') && u.kind != null) tool.kind = u.kind;
+    if (hasOwn(u, 'status') && u.status != null) tool.status = u.status;
+    if (hasOwn(u, 'rawInput')) {
+      tool.hasRawInput = true;
+      tool.rawInput = u.rawInput;
+    }
+    if (hasOwn(u, 'rawOutput')) {
+      tool.hasRawOutput = true;
+      tool.rawOutput = u.rawOutput;
+    }
+    if (hasOwn(u, 'content')) {
+      tool.hasContent = true;
+      tool.content = u.content;
+    }
+
+    tool.titleEl.textContent = tool.title || tool.kind || 'Tool';
+    tool.statusEl.textContent = toolStatusText(tool.status);
+    tool.statusEl.setAttribute('data-status', tool.status || 'pending');
+    renderToolPayload(tool);
+    updateActivitySummary(tool.activity);
+    if (tool.status === 'failed' && !wasFailed) {
+      tool.activity.el.open = true;
+      tool.el.open = true;
+    }
+  }
+
+  function createTool(inst, u) {
+    finishUserChunks(inst);
+    var turn = currentTurn(inst);
+    archiveCandidate(inst);
+    turn.streamType = 'tool';
+    turn.thoughtBox = null;
+    turn.thoughtBuffer = '';
+    var activity = ensureActivity(inst);
+
+    var details = el('details', 'chat-tool');
+    var head = el('summary', 'chat-tool-head');
+    var title = el('span', 'chat-tool-title');
+    var status = el('span', 'chat-tool-status');
+    head.appendChild(title);
+    head.appendChild(status);
+    details.appendChild(head);
+
+    var payload = el('div', 'chat-tool-payload');
+    var inputSection = el('div', 'chat-tool-payload-section');
+    inputSection.appendChild(el('div', 'chat-tool-payload-label', 'Input'));
+    var input = el('pre', 'chat-tool-payload-value');
+    inputSection.appendChild(input);
+    payload.appendChild(inputSection);
+    var outputSection = el('div', 'chat-tool-payload-section');
+    outputSection.appendChild(el('div', 'chat-tool-payload-label', 'Output'));
+    var output = el('pre', 'chat-tool-payload-value');
+    outputSection.appendChild(output);
+    payload.appendChild(outputSection);
+    details.appendChild(payload);
+    activity.body.appendChild(details);
+
+    var tool = {
+      el: details,
+      titleEl: title,
+      statusEl: status,
+      input: input,
+      output: output,
+      activity: activity,
+      title: null,
+      kind: null,
+      status: null,
+      hasRawInput: false,
+      rawInput: undefined,
+      hasRawOutput: false,
+      rawOutput: undefined,
+      hasContent: false,
+      content: undefined
+    };
+    activity.tools.push(tool);
+    activity.toolCount += 1;
+    inst.tools[u.toolCallId] = tool;
+    patchTool(tool, u);
     scrollToBottom(inst);
+    return tool;
+  }
+
+  function renderToolCall(inst, u) {
+    var tool = inst.tools[u.toolCallId];
+    if (tool) {
+      patchTool(tool, u);
+    } else {
+      createTool(inst, u);
+    }
   }
 
   function updateToolCall(inst, u) {
-    var card = inst.tools[u.toolCallId];
-    if (!card) { renderToolCall(inst, u); return; }
-    if (u.status) {
-      var st = card.querySelector('.chat-tool-status');
-      st.textContent = toolStatusText(u.status);
-      st.setAttribute('data-status', u.status);
-    }
-    if (u.title) {
-      card.querySelector('.chat-tool-title').textContent = u.title;
-    }
+    var tool = inst.tools[u.toolCallId];
+    if (!tool) { createTool(inst, u); return; }
+    patchTool(tool, u);
+    scrollToBottom(inst);
   }
 
   function renderPlan(inst, u) {
+    finishUserChunks(inst);
+    var turn = currentTurn(inst);
+    archiveCandidate(inst);
     var entries = u.entries || u.plan || [];
-    if (inst.planBox && inst.planBox.parentNode) {
-      inst.planBox.parentNode.removeChild(inst.planBox);
+    var box = turn.planBox;
+    if (!box) {
+      box = el('div', 'chat-plan');
+      ensureActivity(inst).body.appendChild(box);
+      turn.planBox = box;
     }
-    var box = el('div', 'chat-plan');
+    box.innerHTML = '';
     box.appendChild(el('div', 'chat-plan-title', 'Plan'));
     var list = el('ul', 'chat-plan-list');
     for (var i = 0; i < entries.length; i++) {
@@ -181,9 +427,9 @@
       list.appendChild(li);
     }
     box.appendChild(list);
-    q(inst, '.chat-messages').appendChild(box);
-    inst.planBox = box;
-    inst.agentBubble = null;
+    turn.streamType = 'plan';
+    turn.thoughtBox = null;
+    turn.thoughtBuffer = '';
     scrollToBottom(inst);
   }
 
@@ -289,7 +535,7 @@
     var u = params && params.update;
     if (!u) return;
     switch (u.sessionUpdate) {
-      case 'user_message_chunk': addUser(inst, contentText(u.content)); break;
+      case 'user_message_chunk': appendUserChunk(inst, contentText(u.content)); break;
       case 'agent_message_chunk': appendAgent(inst, contentText(u.content)); break;
       case 'agent_thought_chunk': appendThought(inst, contentText(u.content)); break;
       case 'tool_call': renderToolCall(inst, u); break;
@@ -461,12 +707,10 @@
   }
 
   function resetTranscript(inst) {
-    inst.agentBubble = null;
-    inst.agentBuffer = '';
-    inst.thoughtBox = null;
-    inst.thoughtBuffer = '';
-    inst.planBox = null;
-    inst.tools = {};
+    inst.turn = null;
+    inst.userChunkBubble = null;
+    inst.userChunkBuffer = '';
+    inst.tools = Object.create(null);
     q(inst, '.chat-messages').innerHTML = '';
   }
 
@@ -487,9 +731,8 @@
     prompt
       .catch(function (e) { addErrorLine(inst, e.message || String(e)); })
       .then(function () {
+        finalizeTurn(inst);
         setBusy(inst, false);
-        inst.agentBubble = null;
-        inst.thoughtBox = null;
         if (inst.status !== 'closed') setStatus(inst, 'ready');
       });
     q(inst, '.chat-input').focus();
@@ -532,6 +775,7 @@
     setStatus(inst, 'connecting');
     resetTranscript(inst);
     inst.client.loadSession(sid, inst.cwd).then(function (res) {
+      finalizeTurn(inst);
       inst.sessionId = sid;
       if (res && res.models) applyModels(inst, res.models);
       addSystemLine(inst, 'Switched to a previous conversation.');
@@ -542,6 +786,7 @@
       if (!previousId) return startFallbackSession(inst);
       resetTranscript(inst);
       return inst.client.loadSession(previousId, inst.cwd).then(function (res) {
+        finalizeTurn(inst);
         inst.sessionId = previousId;
         if (res && res.models) applyModels(inst, res.models);
         addSystemLine(inst, 'Could not open that conversation. Restored the current conversation.');
@@ -594,6 +839,7 @@
       }).then(function () {
         if (info.session_id) {
           return inst.client.loadSession(info.session_id, inst.cwd).then(function (res) {
+            finalizeTurn(inst);
             inst.sessionId = info.session_id;
             if (res && res.models) applyModels(inst, res.models);
             renderHistoryMenu(inst);
@@ -636,8 +882,8 @@
     var inst = {
       key: key, branch: branch, type: type, status: 'connecting', busy: false,
       client: new window.AcpClient(wsUrlFor(branch, type)),
-      sessionId: null, cwd: null, agentBubble: null, agentBuffer: '',
-      thoughtBox: null, tools: {}, planBox: null, pill: null, unread: false,
+      sessionId: null, cwd: null, turn: null, tools: Object.create(null), pill: null, unread: false,
+      userChunkBubble: null, userChunkBuffer: '',
       history: [], titled: false
     };
     buildInstanceDom(inst);
