@@ -1825,6 +1825,51 @@ class TestAgentContainer:
         base.update(kw)
         return Settings(**base)
 
+    def test_agent_mcp_url_uses_public_team_hostname_in_traefik_mode(self):
+        team = self._team(hostname="mirageflow.ca")
+        settings = self._settings(team=team, routing_mode="traefik")
+
+        assert (
+            env_ops.get_agent_mcp_url(settings, team, "feature/x")
+            == "https://mirageflow.ca/mcp/feature/x"
+        )
+
+    def test_agent_mcp_url_uses_oauth_base_url_in_port_mode(self):
+        team = self._team()
+        settings = self._settings(
+            team=team,
+            oauth_base_url="https://oduflow.example.com/",
+        )
+
+        assert (
+            env_ops.get_agent_mcp_url(settings, team, "feature/x")
+            == "https://oduflow.example.com/mcp/feature/x"
+        )
+
+    def test_agent_mcp_url_falls_back_to_host_gateway_in_local_port_mode(self):
+        team = self._team()
+        settings = self._settings(team=team)
+
+        assert (
+            env_ops.get_agent_mcp_url(settings, team, "feature/x")
+            == "http://host.docker.internal:8000/mcp/feature/x"
+        )
+
+    def test_refresh_agent_mcp_config_uses_current_public_url(self):
+        team = self._team(hostname="mirageflow.ca")
+        settings = self._settings(team=team, routing_mode="traefik")
+        container = MagicMock()
+        container.exec_run.return_value = (0, b"")
+
+        env_ops.refresh_agent_mcp_config(container, settings, team, "feature/x")
+
+        cmd = container.exec_run.call_args.args[0]
+        assert cmd[:2] == ["sh", "-c"]
+        assert cmd[4] == "/workspace/feature-x/.mcp.json"
+        assert cmd[5] == "https://mirageflow.ca/mcp/feature/x"
+        assert "ODUFLOW_MCP_TOKEN" in cmd[2]
+        assert container.exec_run.call_args.kwargs["user"] == "agent"
+
     def test_disabled_creates_nothing(self, mock_docker_client):
         team = self._team(agent_enabled=False)
         env_ops._ensure_agent_container(

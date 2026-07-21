@@ -8,6 +8,7 @@
 
 ### Bug Fixes
 
+- **Hosted agents use the reachable scoped MCP endpoint** — Agent CLI and Agent Chat now use the team's public HTTPS `/mcp/<environment>` URL in Traefik mode (and an explicit `oauth_base_url` in port mode), matching the dashboard's **MCP Access** dialog. Local port-mode deployments retain the `host.docker.internal` fallback.
 - **claude.ai OAuth connector reaches the authorization endpoint** — a claude.ai custom connector derives its OAuth endpoints path-relative to the MCP URL (requesting `https://<host>/mcp/authorize` and `/mcp/token`) instead of following the root endpoints advertised by discovery. The outer scoped-access shim treated `authorize`/`token` as an environment name and rewrote the request onto the auth-protected `/mcp` endpoint, so the flow failed with `401 invalid_token` before it could start. Oduflow now routes the reserved OAuth/discovery sub-paths requested under `/mcp/` (`/mcp/authorize`, `/mcp/token`, `/mcp/register`, `/mcp/.well-known/*`) to the real root routes. Scoped `/mcp/<env>` connectors remain Bearer-only.
 
 ### Security
