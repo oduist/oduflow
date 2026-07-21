@@ -45,6 +45,7 @@ from oduflow.naming import (
     get_agent_checkout_dir,
     get_agent_container_name,
     get_agent_home_volume_name,
+    get_agent_upload_dir,
     get_agent_workspace_volume_name,
     get_db_name,
     get_env_hostname,
@@ -1629,9 +1630,7 @@ def _ensure_agent_container(
             "api_key": "Console API (ANTHROPIC_API_KEY)",
             "interactive": "interactive /login",
         }.get(_claude_auth_mode(settings, team), "unknown")
-        logger.info(
-            "Claude auth: %s", auth_label, extra={"container": container_name}
-        )
+        logger.info("Claude auth: %s", auth_label, extra={"container": container_name})
     except Exception:
         logger.warning("Agent container ensure failed", exc_info=True)
 
@@ -1723,7 +1722,7 @@ def ensure_agent_env_checkout(
 def _agent_remove_env(
     client: DockerClient, settings: Settings, team: TeamSettings, env_name: str
 ) -> None:
-    """Remove one environment's checkout from the team's agent container.
+    """Remove one environment's checkout and Agent Chat attachments.
 
     Best-effort; the container itself keeps running (it serves other envs).
     """
@@ -1746,7 +1745,14 @@ def _agent_remove_env(
         return
     with contextlib.suppress(Exception):
         container.exec_run(
-            ["rm", "-rf", get_agent_checkout_dir(env_name)], user=AGENT_USER
+            [
+                "rm",
+                "-rf",
+                "--",
+                get_agent_checkout_dir(env_name),
+                get_agent_upload_dir(env_name),
+            ],
+            user=AGENT_USER,
         )
 
 

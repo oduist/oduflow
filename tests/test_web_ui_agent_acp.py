@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import json
+from unittest.mock import patch
 
 import pytest
 from starlette.applications import Starlette
@@ -17,6 +18,7 @@ _PW = "s3cret"
 _BRANCH = "feature-x"
 _INFO_URL = f"/api/environments/{_BRANCH}/agent-acp/info?type=claude"
 _SESSION_URL = f"/api/environments/{_BRANCH}/agent-acp/session"
+_ATTACHMENTS_URL = f"/api/environments/{_BRANCH}/agent-acp/attachments"
 
 
 def _basic() -> dict[str, str]:
@@ -24,8 +26,13 @@ def _basic() -> dict[str, str]:
     return {"Authorization": f"Basic {blob}"}
 
 
-def _client(tmp_path) -> TestClient:
-    team = TeamSettings(team_id="1", data_dir=str(tmp_path / "team-1"), ui_password=_PW)
+def _client(tmp_path, *, agent_enabled: bool = False) -> TestClient:
+    team = TeamSettings(
+        team_id="1",
+        data_dir=str(tmp_path / "team-1"),
+        ui_password=_PW,
+        agent_enabled=agent_enabled,
+    )
     settings = Settings(base_data_dir=str(tmp_path), teams={"1": team})
     app = Starlette()
     mount_web_ui(app, lambda: settings, LockManager())
@@ -45,6 +52,66 @@ def test_info_starts_with_empty_history(tmp_path):
     assert response.status_code == 200
     assert response.json()["session_id"] is None
     assert response.json()["history"] == []
+    assert response.json()["attachment_limits"] == {
+        "max_file_bytes": 25 * 1024 * 1024,
+        "max_files": 5,
+    }
+
+
+def test_attachment_upload_streams_raw_body_and_returns_descriptor(tmp_path):
+    client = _client(tmp_path, agent_enabled=True)
+    captured = {}
+    descriptor = {
+        "id": "a" * 32,
+        "name": "notes.txt",
+        "path": "/workspace/.oduflow-uploads/feature-x/a/notes.txt",
+        "uri": "file:///workspace/.oduflow-uploads/feature-x/a/notes.txt",
+        "mimeType": "text/plain",
+        "size": 5,
+    }
+
+    def _store(*args):
+        captured["body"] = args[5].read()
+        return descriptor
+
+    with patch(
+        "oduflow.web_ui.agent_uploads.store_attachment", side_effect=_store
+    ) as store:
+        response = client.post(
+            _ATTACHMENTS_URL + "?name=notes.txt",
+            content=b"hello",
+            headers={"Content-Type": "text/plain"},
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {"ok": True, "attachment": descriptor}
+    args = store.call_args.args
+    assert args[2:5] == (_BRANCH, "notes.txt", "text/plain")
+    assert captured["body"] == b"hello"
+    assert args[6] == 5
+
+
+def test_attachment_upload_rejects_oversized_body_before_storage(tmp_path, monkeypatch):
+    client = _client(tmp_path, agent_enabled=True)
+    monkeypatch.setattr("oduflow.web_ui.agent_uploads.MAX_FILE_BYTES", 3)
+
+    with patch("oduflow.web_ui.agent_uploads.store_attachment") as store:
+        response = client.post(_ATTACHMENTS_URL + "?name=large.bin", content=b"four")
+
+    assert response.status_code == 413
+    assert "no larger" in response.json()["error"]
+    store.assert_not_called()
+
+
+def test_attachment_delete_calls_scoped_storage(tmp_path):
+    client = _client(tmp_path, agent_enabled=True)
+
+    with patch("oduflow.web_ui.agent_uploads.delete_attachment") as delete:
+        response = client.delete(_ATTACHMENTS_URL + "/" + "a" * 32)
+
+    assert response.status_code == 200
+    assert response.json() == {"ok": True}
+    assert delete.call_args.args[2:] == (_BRANCH, "a" * 32)
 
 
 def test_post_adds_session_and_title_is_first_write_wins(tmp_path):

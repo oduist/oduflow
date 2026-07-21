@@ -2283,6 +2283,23 @@ class TestAgentContainer:
 
         agent.exec_run.assert_not_called()
 
+    def test_remove_env_removes_checkout_and_chat_attachments(self, mock_docker_client):
+        team = self._team()
+        agent = MagicMock()
+        mock_docker_client.containers.get.return_value = agent
+
+        env_ops._agent_remove_env(
+            mock_docker_client, self._settings(team=team), team, "feature/x"
+        )
+
+        assert agent.exec_run.call_args.args[0] == [
+            "rm",
+            "-rf",
+            "--",
+            "/workspace/feature-x",
+            "/workspace/.oduflow-uploads/feature-x",
+        ]
+
 
 class TestFinalizeShellScript:
     """`odoo shell` rolls back at the end, so auto_commit must append a commit."""

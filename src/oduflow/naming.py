@@ -195,6 +195,15 @@ def get_agent_checkout_dir(env_name: str) -> str:
     return f"/workspace/{slugify_branch(env_name)}"
 
 
+def get_agent_upload_dir(env_name: str) -> str:
+    """Directory for Agent Chat attachments inside the team's workspace volume.
+
+    Attachments deliberately live outside the environment's git checkout so
+    they never appear in ``git status`` or get committed by the coding agent.
+    """
+    return f"/workspace/.oduflow-uploads/{slugify_branch(env_name)}"
+
+
 def get_workspace_path(env_name: str, workspaces_dir: str) -> str:
     return os.path.join(workspaces_dir, env_name.replace("/", "-"))
 
