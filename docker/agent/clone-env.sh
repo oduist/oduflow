@@ -7,7 +7,7 @@
 #   BRANCH      branch to check out
 #   SLUG        filesystem-safe env slug; checkout goes to /workspace/<SLUG>
 #   MCP_URL     this environment's SCOPED Oduflow MCP endpoint (/mcp/<env>;
-#               optional; enables Claude's .mcp.json)
+#               optional; enables the Oduflow entry in Claude's .mcp.json)
 #   GIT_USER    commit author for this checkout (optional; global default otherwise)
 #
 # No token argument on purpose: nothing secret is ever written to the checkout.
@@ -67,20 +67,23 @@ if [ -n "$GIT_USER" ]; then
     git -C "$DEST" config user.email "${GIT_USER}@oduflow.local"
 fi
 
-# Claude Code: project-scoped .mcp.json at the checkout root. The Authorization
-# value is a ${VAR} placeholder — Claude Code expands environment variables in
-# .mcp.json, and the scoped per-env token arrives via the session's exec env.
+# Claude Code: project-scoped .mcp.json at the checkout root. Agent Browser is
+# always available as a local stdio MCP. When present, the Oduflow Authorization
+# value is a ${VAR} placeholder — Claude expands it from the scoped token in the
+# session's exec env, so no secret is written to the checkout.
+jq -n \
+    --arg url "$MCP_URL" \
+    '{mcpServers: ({agent_browser: {type: "stdio", command: "agent-browser", args: ["mcp", "--tools", "all"]}} + (if $url == "" then {} else {oduflow: {type: "http", url: $url, headers: {Authorization: "Bearer ${ODUFLOW_MCP_TOKEN}"}}} end))}' \
+    > "$DEST/.mcp.json"
+# Not secret (the Oduflow value is a placeholder, not a token), but still a
+# generated artifact a `git add -A` by the agent should never push. Local
+# exclude, so the repo's own .gitignore stays untouched.
+mkdir -p "$DEST/.git/info"
+if ! grep -qxF '/.mcp.json' "$DEST/.git/info/exclude" 2>/dev/null; then
+    echo '/.mcp.json' >> "$DEST/.git/info/exclude"
+fi
 if [ -n "$MCP_URL" ]; then
-    jq -n \
-        --arg url "$MCP_URL" \
-        '{mcpServers: {oduflow: {type: "http", url: $url, headers: {Authorization: "Bearer ${ODUFLOW_MCP_TOKEN}"}}}}' \
-        > "$DEST/.mcp.json"
-    # Not secret (a placeholder, not a token), but still a generated artifact a
-    # `git add -A` by the agent should never push. Local exclude, so the repo's
-    # own .gitignore stays untouched.
-    mkdir -p "$DEST/.git/info"
-    if ! grep -qxF '/.mcp.json' "$DEST/.git/info/exclude" 2>/dev/null; then
-        echo '/.mcp.json' >> "$DEST/.git/info/exclude"
-    fi
-    log "wrote $DEST/.mcp.json -> $MCP_URL (git-excluded)"
+    log "wrote $DEST/.mcp.json -> Agent Browser + $MCP_URL (git-excluded)"
+else
+    log "wrote $DEST/.mcp.json -> Agent Browser (git-excluded)"
 fi

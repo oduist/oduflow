@@ -399,6 +399,79 @@ def _acp_adapter_cmd(agent_type: str) -> list[str]:
     return ["claude-code-acp"]
 
 
+def _codex_cli_cmd(mcp_url: str, model: str = "") -> list[str]:
+    """Build the hosted Codex CLI command.
+
+    Docker is the security boundary for hosted agents: the container is
+    per-team and runs as the unprivileged ``agent`` user. Disabling Codex's
+    nested Linux sandbox avoids requiring user namespaces (bubblewrap), which
+    Docker's default seccomp profile intentionally blocks.
+    """
+    cmd = [
+        "codex",
+        "--dangerously-bypass-approvals-and-sandbox",
+        "-c",
+        f'mcp_servers.oduflow.url="{mcp_url}"',
+        "-c",
+        'mcp_servers.oduflow.bearer_token_env_var="ODUFLOW_MCP_TOKEN"',
+    ]
+    if model:
+        cmd += ["--model", model]
+    return cmd
+
+
+def _wire_codex_acp_mcp(frame: str, mcp_url: str, mcp_token: str) -> str:
+    """Inject built-in MCP servers into Codex ACP session-open requests.
+
+    The browser intentionally knows neither URL nor token. The WebSocket relay
+    augments only ``session/new``/``session/load``/``session/resume`` frames on
+    their way to the adapter, using codex-acp's native client-provided MCP
+    contract. Agent Browser is a local credentialless stdio server. Oduflow is
+    added only when a scoped token exists; that credential lives only in this
+    exec's environment and stdio and is never returned to the browser or disk.
+    """
+    try:
+        message = json.loads(frame)
+    except json.JSONDecodeError:
+        return frame
+    if not isinstance(message, dict) or message.get("method") not in {
+        "session/new",
+        "session/load",
+        "session/resume",
+    }:
+        return frame
+    params = message.get("params")
+    if not isinstance(params, dict):
+        return frame
+    existing = params.get("mcpServers")
+    servers = existing if isinstance(existing, list) else []
+    servers = [
+        server
+        for server in servers
+        if not isinstance(server, dict)
+        or server.get("name") not in {"agent_browser", "oduflow"}
+    ]
+    servers.append(
+        {
+            "name": "agent_browser",
+            "command": "agent-browser",
+            "args": ["mcp", "--tools", "all"],
+            "env": [],
+        }
+    )
+    if mcp_token:
+        servers.append(
+            {
+                "type": "http",
+                "name": "oduflow",
+                "url": mcp_url,
+                "headers": [{"name": "Authorization", "value": f"Bearer {mcp_token}"}],
+            }
+        )
+    params["mcpServers"] = servers
+    return json.dumps(message, separators=(",", ":"))
+
+
 class _LoginRateLimiter:
     """Best-effort in-memory throttle for failed logins (issue #56).
 
@@ -2940,7 +3013,9 @@ def _build_routes(
             checkout = get_agent_checkout_dir(branch)
 
             def _checkout_missing() -> bool:
-                code, _ = container.exec_run(["test", "-d", checkout])
+                code, _ = container.exec_run(
+                    ["test", "-d", checkout], user=env_ops.AGENT_USER
+                )
                 return bool(code != 0)
 
             missing = await asyncio.get_event_loop().run_in_executor(
@@ -2985,20 +3060,14 @@ def _build_routes(
             exec_env = {
                 "ODUFLOW_MCP_URL": mcp_url,
                 "ODUFLOW_MCP_TOKEN": mcp_token or "",
+                "AGENT_BROWSER_SESSION": os.path.basename(checkout),
             }
 
             if agent_type == "codex":
                 # Codex has no project-scoped config; wire the Oduflow MCP
-                # server via CLI overrides (values are parsed as TOML).
-                cmd = [
-                    "codex",
-                    "-c",
-                    f'mcp_servers.oduflow.url="{mcp_url}"',
-                    "-c",
-                    'mcp_servers.oduflow.bearer_token_env_var="ODUFLOW_MCP_TOKEN"',
-                ]
-                if settings.agent_codex_model:
-                    cmd += ["--model", settings.agent_codex_model]
+                # server via CLI overrides. Docker is the outer sandbox, so
+                # Codex does not attempt a nested bubblewrap sandbox.
+                cmd = _codex_cli_cmd(mcp_url, settings.agent_codex_model)
             else:
                 cmd = ["claude"]
                 if settings.agent_claude_model:
@@ -3013,6 +3082,7 @@ def _build_routes(
                 stderr=True,
                 workdir=checkout,
                 environment=exec_env,
+                user=env_ops.AGENT_USER,
             )["Id"]
             sock = client.api.exec_start(exec_id, detach=False, tty=True, socket=True)
             raw_sock = sock._sock
@@ -3189,7 +3259,9 @@ def _build_routes(
             checkout = get_agent_checkout_dir(branch)
 
             def _checkout_missing() -> bool:
-                code, _ = container.exec_run(["test", "-d", checkout])
+                code, _ = container.exec_run(
+                    ["test", "-d", checkout], user=env_ops.AGENT_USER
+                )
                 return bool(code != 0)
 
             missing = await asyncio.get_event_loop().run_in_executor(
@@ -3213,9 +3285,9 @@ def _build_routes(
 
             # SCOPED per-env MCP credentials for THIS session only (see the
             # matching block in ws_agent_console). Claude's adapter picks them
-            # up via the ${VAR} placeholders in the checkout's .mcp.json; the
-            # Codex adapter has no override channel yet (best-effort, per the
-            # ADR) so its chat runs without Oduflow MCP for now.
+            # up via the ${VAR} placeholders in the checkout's .mcp.json;
+            # Codex ACP receives the same server through its native session
+            # request contract in browser_to_docker below.
             try:
                 mcp_token = await asyncio.get_event_loop().run_in_executor(
                     None, lambda: env_ops.get_env_token(settings, team, branch)
@@ -3228,17 +3300,17 @@ def _build_routes(
                     "MCP Access existed) — the agent cannot drive it over MCP. "
                     "Update or recreate the environment."
                 )
-            if agent_type == "codex":
-                await _notice(
-                    "Codex chat cannot reach the Oduflow MCP server yet (its "
-                    "ACP adapter has no configuration channel) — the agent can "
-                    "edit and push code, but use Claude chat or the Agent CLI "
-                    "to drive the environment."
-                )
+            mcp_url = env_ops.get_agent_mcp_url(settings, branch)
             exec_env = {
-                "ODUFLOW_MCP_URL": env_ops.get_agent_mcp_url(settings, branch),
+                "ODUFLOW_MCP_URL": mcp_url,
                 "ODUFLOW_MCP_TOKEN": mcp_token or "",
+                "AGENT_BROWSER_SESSION": os.path.basename(checkout),
             }
+            if agent_type == "codex":
+                # codex-acp maps this official mode to approval_policy=never
+                # and dangerFullAccess. Docker + the unprivileged agent user
+                # remain the outer security boundary for browser chat.
+                exec_env["INITIAL_AGENT_MODE"] = "agent-full-access"
 
             exec_id = client.api.exec_create(
                 container.id,
@@ -3249,6 +3321,7 @@ def _build_routes(
                 stderr=True,
                 workdir=checkout,
                 environment=exec_env,
+                user=env_ops.AGENT_USER,
             )["Id"]
             sock = client.api.exec_start(exec_id, detach=False, tty=False, socket=True)
             raw_sock = sock._sock
@@ -3300,6 +3373,8 @@ def _build_routes(
                         text = await websocket.receive_text()
                         if not text:
                             continue
+                        if agent_type == "codex":
+                            text = _wire_codex_acp_mcp(text, mcp_url, mcp_token or "")
                         frame = text if text.endswith("\n") else text + "\n"
                         await loop.run_in_executor(
                             None, raw_sock.sendall, frame.encode("utf-8")

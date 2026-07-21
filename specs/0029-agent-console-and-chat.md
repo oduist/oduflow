@@ -41,17 +41,26 @@ WebSocket↔`docker exec` bridge:
   ACP adapter (`claude-code-acp` / `codex-acp`), rendered by a vendored,
   framework-free browser client (`acp-client.js` + `chat.js`). One durable
   session per (environment, agent) is persisted and resumed via ACP
-  `session/load`; chats minimize to a dock so several run in parallel.
+`session/load`; chats minimize to a dock so several run in parallel.
+
+The coder also ships a local Agent Browser MCP backed by Debian Chromium. Both
+agents receive it automatically; browser profiles are separated by environment
+slug. Codex sessions run without approval prompts or a nested process sandbox:
+the CLI bypasses approvals and sandboxing, while ACP uses its
+`agent-full-access` mode. This deliberate trust choice is bounded by the
+dedicated unprivileged user and per-team Docker container described in
+[[0037-built-in-agent-browser-and-noninteractive-codex]].
 
 The agent never touches host files: it edits its own clone → `git push` → drives
 the environment through the Oduflow MCP server (`pull_and_apply`, tests). MCP
 access is **scoped and per session**: the team `auth_token` never enters the
-agent container (a console is a root shell there — anything the container
-holds, its user can read). Instead each console/chat exec injects that
+agent container (a console can read anything held by its unprivileged container
+user). Instead each console/chat exec injects that
 environment's per-env token ([[0028-scoped-environment-mcp-access]]) plus its
 `/mcp/<env>` URL into its own exec environment; Claude resolves them through
 `${VAR}` placeholders in the checkout's `.mcp.json` (which therefore contains
-no secret), Codex through per-session `-c mcp_servers.*` CLI overrides. A
+no secret), Codex CLI through per-session `-c mcp_servers.*` overrides, and
+Codex ACP through the adapter's client-provided HTTP MCP session contract. A
 leaked session credential grants only the ADR-0028 dev-loop allowlist on the
 one environment the session already controls.
 
@@ -98,10 +107,12 @@ runtime state is `agent_sessions.json` (durable ACP session ids) in
   [[0028-scoped-environment-mcp-access]]); those stay operator actions.
 - Environments created before per-env tokens existed have no
   `oduflow.mcp_token` label; their consoles warn and the agent works without
-  MCP until the environment is updated/recreated. The Codex ACP adapter has no
-  config-override channel yet, so Codex *chat* runs without Oduflow MCP for
-  now (the Codex CLI console is fully wired) — consistent with the adapter's
-  best-effort status below.
+  MCP until the environment is updated/recreated. Both Claude and Codex chat
+  receive the same environment-scoped MCP authority once a token exists.
+- The long-lived container, interactive CLIs, checkout hooks and ACP adapters
+  run as the dedicated unprivileged `agent` user. A short-lived networkless
+  root init container only migrates ownership of legacy persistent volumes and
+  copies the team git credential store; it exits before any agent starts.
 - Server-level provider keys (`ANTHROPIC_API_KEY` etc.) are inherited by the
   container **only in single-team deployments**; with several teams each team
   must set its own keys in the dashboard, so an operator credential never
@@ -110,14 +121,15 @@ runtime state is `agent_sessions.json` (durable ACP session ids) in
   Chat / Agent CLI): there is nothing for the containerized agent to clone,
   the host path is deliberately not mounted into it, and the local developer
   uses their own agents anyway.
-- **The published image redistributes only Apache-2.0 software** (Codex CLI +
-  Codex ACP adapter). Claude Code and its adapter are under Anthropic's
-  Commercial Terms, so `entrypoint.sh` npm-installs them at first container
-  start onto the persistent HOME volume — downloaded by the end user's
-  container directly from npm, never shipped by us.
-- Claude is the clean path (`loadSession: true` verified upstream); the Codex
-  ACP adapter is best-effort, and the client self-heals a failed resume by
-  starting fresh.
+- **The published image contains redistributable open-source software.** Codex
+  CLI, Codex ACP and Agent Browser are Apache-2.0; Debian Chromium preserves
+  its upstream BSD-style/component license notices in the image. Claude Code
+  and its adapter are under Anthropic's Commercial Terms, so `entrypoint.sh`
+  npm-installs them at first container start onto the persistent HOME volume —
+  downloaded by the end user's container directly from npm, never shipped by
+  us.
+- The browser client self-heals an adapter's failed session resume by starting
+  a fresh chat.
 
 ## History
 
@@ -138,3 +150,20 @@ runtime state is `agent_sessions.json` (durable ACP session ids) in
   scoped per-environment tokens from [[0028-scoped-environment-mcp-access]] in
   their own exec env; `.mcp.json` holds a `${ODUFLOW_MCP_TOKEN}` placeholder
   instead of a secret, and the global Codex config holds no Oduflow endpoint.
+- 2026-07-21 — moved the long-lived coder container and every interactive/ACP
+  exec from root to the dedicated `agent` user. Existing per-team HOME and
+  workspace volumes are migrated in place by a short-lived, networkless root
+  init container, preserving logins, runtime-installed Claude packages and
+  checkouts; the host git credential store is copied into the migrated HOME
+  with `0600` permissions before the unprivileged container starts.
+- 2026-07-21 — completed scoped MCP wiring for Codex ACP chat after
+  `codex-acp` gained per-session config support. The relay injects a
+  client-provided HTTP MCP entry into ACP session-open frames for the
+  environment's `/mcp/<env>` endpoint; the bearer travels only over that
+  exec's local stdin and is never exposed to the browser or written to disk.
+  API-key auth was also adapted to current Codex releases by materializing
+  persistent `auth.json` through `codex login --with-api-key` at startup.
+- 2026-07-21 — added the built-in Agent Browser MCP and Chromium runtime for
+  both Claude and Codex, with per-environment browser profiles. Codex CLI and
+  ACP sessions now run non-interactively without approval prompts or a nested
+  process sandbox; see [[0037-built-in-agent-browser-and-noninteractive-codex]].

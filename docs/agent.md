@@ -36,6 +36,11 @@ environment (at `/workspace/<slug>` in the container), edits its own clone,
 server** (`pull_and_apply`, `run_odoo_tests`, etc.) — the same closed loop a
 remote MCP client uses.
 
+The image also includes **Agent Browser MCP** backed by Debian Chromium. It is
+wired automatically into both Claude and Codex with the complete Agent Browser
+tool set. Each environment gets a separate browser profile, while browser data
+persists with the team's agent HOME volume across container recreation.
+
 Lifecycle is automatic: the container is created on startup for each enabled
 team and removed for disabled ones; `create_environment` adds the environment's
 checkout, `delete_environment` removes it. The container carries a hash of its
@@ -93,6 +98,11 @@ reference.
   only in single-team deployments; with several teams, each team sets its own
   keys in `[team.X.agent_env]` so an operator credential never leaks to
   tenants.
+- **Codex sandbox and approvals.** Codex CLI uses
+  `--dangerously-bypass-approvals-and-sandbox`, and Codex ACP starts in
+  `agent-full-access`, so installed MCP tools run without interactive
+  permission prompts or a nested Bubblewrap sandbox. The security boundary is
+  the unprivileged `agent` user inside the per-team Docker container.
 
 ## Limitations
 
@@ -100,11 +110,8 @@ reference.
 - Environments created before per-environment tokens existed have no scoped
   token; their consoles warn and the agent works without MCP until the
   environment is updated/recreated.
-- The Codex ACP adapter has no config-override channel yet, so **Codex *chat*
-  runs without Oduflow MCP** for now (the Codex CLI console is fully wired);
-  Claude is the fully supported path.
-
-The published image redistributes only Apache-2.0 software (Codex CLI + its ACP
-adapter). Claude Code and its adapter are installed at first container start
-onto the persistent home volume — downloaded directly from npm by the end
-user's container.
+The published image contains redistributable open-source software: Codex CLI,
+Codex ACP and Agent Browser are Apache-2.0, and Debian Chromium includes its
+upstream component license notices. Claude Code and its adapter are installed
+at first container start onto the persistent home volume — downloaded directly
+from npm by the end user's container.

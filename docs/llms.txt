@@ -183,7 +183,7 @@ For OAuth-based MCP clients like Claude.ai Remote MCP, Oduflow runs its own OAut
 
 ## Coding Agent (hosting)
 
-An opt-in, per-team hosting feature: Oduflow runs one coding-agent container per team (`oduist/oduflow-coder`, Claude Code + OpenAI Codex) and exposes two dashboard surfaces — **Agent CLI** (the agent's TUI in the browser) and **Agent Chat** (a browser ACP chat with durable per-environment sessions). The agent edits its own git checkout, `git push`es, and drives the environment only through the Oduflow MCP server with a scoped per-environment token. It is off by default; enable it per team with `agent_enabled` and set provider credentials under `[team.X.agent_env]`. The agent UI is hidden for live-mount (`local_path`) environments.
+An opt-in, per-team hosting feature: Oduflow runs one coding-agent container per team (`oduist/oduflow-coder`, Claude Code + OpenAI Codex) and exposes two dashboard surfaces — **Agent CLI** (the agent's TUI in the browser) and **Agent Chat** (a browser ACP chat with durable per-environment sessions). The agent edits its own git checkout, `git push`es, and drives the environment through the Oduflow MCP server with a scoped per-environment token. A built-in Agent Browser MCP and Chromium provide browser automation to both agents, with one persistent profile per environment. Codex runs installed MCP methods without interactive approval prompts. It is off by default; enable it per team with `agent_enabled` and set provider credentials under `[team.X.agent_env]`. The agent UI is hidden for live-mount (`local_path`) environments.
 
 ## Typical Agent Workflow
 

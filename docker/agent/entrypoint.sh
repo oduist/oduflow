@@ -13,8 +13,9 @@
 #      the npm prefix on the persistent home volume. They are proprietary
 #      (Anthropic Commercial Terms), so the published image must not
 #      redistribute them; the container downloads them directly, once.
-#   3. Write the base Codex config (feature flags only — NO Oduflow endpoint
-#      or token here; see the MCP note below).
+#   3. Write the base Codex config (feature flags + built-in Agent Browser MCP;
+#      NO Oduflow endpoint or token here) and add Agent Browser to existing
+#      Claude checkout configs; see the MCP note below.
 #   4. Resolve provider auth: subscription if a subscription credential is
 #      present, otherwise an API key (per provider).
 #   5. Stay alive. Per-env checkouts are created on demand by the env_ops hooks
@@ -26,7 +27,9 @@
 # console/chat exec injects ODUFLOW_MCP_TOKEN — the SCOPED per-environment
 # token (see ADR 0028) — plus the /mcp/<env> URL into its own environment;
 # Claude reads them through the ${VAR} placeholders in the checkout's
-# .mcp.json, Codex through `-c mcp_servers.*` CLI overrides.
+# .mcp.json. Codex CLI uses `-c mcp_servers.*` overrides; the web relay adds
+# the same scoped server to Codex ACP session-open requests. Agent Browser is a
+# local stdio MCP available to both agents and contains no Oduflow credential.
 #
 # Expected environment (injected by _ensure_agent_container; team-wide):
 #   ODUFLOW_GIT_USER    credential username to match in the store (optional)
@@ -34,9 +37,10 @@
 #   CLAUDE_CODE_OAUTH_TOKEN | ANTHROPIC_API_KEY   (+ optional ANTHROPIC_MODEL)
 #   OPENAI_API_KEY                                 (+ optional CODEX_MODEL)
 # Mounts:
-#   /run/oduflow/git-credentials   git credential store (read-only)
+#   HOME already contains the copied team git credential store; a readable
+#   /run/oduflow/git-credentials is also accepted for standalone use.
 #   /run/oduflow/codex-auth.json   optional Codex subscription seed (auth.json)
-#   HOME (/root)                   persistent home volume (auth + sessions)
+#   HOME (/home/agent)             persistent home volume (auth + sessions)
 #   /workspace                     persistent workspace volume (per-env checkouts)
 
 set -euo pipefail
@@ -49,14 +53,16 @@ CRED_FILE="$HOME/.git-credentials"
 # --- 1. git credentials ------------------------------------------------------
 git config --global user.name  "${ODUFLOW_GIT_USER:-oduflow-coder}"
 git config --global user.email "${ODUFLOW_GIT_USER:-agent}@oduflow.local"
-if [ -f "$CRED_SRC" ]; then
+if [ -r "$CRED_SRC" ]; then
     # Copy so refresh/rotation never writes back to the shared store.
     cp "$CRED_SRC" "$CRED_FILE"
     chmod 600 "$CRED_FILE"
+fi
+if [ -f "$CRED_FILE" ]; then
     git config --global credential.helper "store --file=$CRED_FILE"
     log "git credential store wired"
 else
-    log "WARNING: no git credential store at $CRED_SRC (private repos will fail)"
+    log "WARNING: no git credential store in HOME (private repos will fail)"
 fi
 
 # --- 2. Claude Code: runtime install onto the home volume --------------------
@@ -75,19 +81,54 @@ else
     fi
 fi
 
-# --- 3. base Codex config (feature flags only) -------------------------------
+# --- 3. base Codex config ----------------------------------------------------
 # Streamable-HTTP MCP needs the rmcp client. The Oduflow MCP server itself is
 # deliberately NOT configured here: its URL and token are per environment and
 # per session (scoped tokens, ADR 0028) and are supplied by the web console as
 # `codex -c mcp_servers.oduflow.*` overrides + the session's exec env. Keeping
 # them out of the global config means no session can see another environment's
-# credentials — and the container itself holds no MCP secret at all.
+# credentials — and the container itself holds no MCP secret at all. Agent
+# Browser is safe to configure globally because it is local and credentialless;
+# AGENT_BROWSER_SESSION on each exec isolates its browser state per environment.
 mkdir -p "$CODEX_HOME"
 {
     echo "[features]"
     echo "experimental_use_rmcp_client = true"
+    echo
+    echo "[mcp_servers.agent_browser]"
+    echo 'command = "agent-browser"'
+    echo 'args = ["mcp", "--tools", "all"]'
 } > "$CODEX_HOME/config.toml"
-log "base Codex config written (MCP wiring is per session)"
+log "base Codex config written (Agent Browser built in; Oduflow is per session)"
+
+# Existing checkouts predate the built-in browser and survive image/container
+# recreation on the workspace volume. Merge the local server into their
+# generated Claude configs in place so they gain the capability immediately;
+# preserve each checkout's scoped Oduflow entry and any custom MCP servers.
+shopt -s nullglob
+for git_dir in /workspace/*/.git; do
+    checkout="${git_dir%/.git}"
+    mcp_file="$checkout/.mcp.json"
+    mcp_tmp="$mcp_file.tmp.$$"
+    if [ -f "$mcp_file" ]; then
+        if ! jq '.mcpServers = ((if (.mcpServers | type) == "object" then .mcpServers else {} end) + {agent_browser: {type: "stdio", command: "agent-browser", args: ["mcp", "--tools", "all"]}})' \
+            "$mcp_file" > "$mcp_tmp"; then
+            rm -f "$mcp_tmp"
+            log "WARNING: could not add Agent Browser to malformed $mcp_file"
+            continue
+        fi
+    else
+        jq -n '{mcpServers: {agent_browser: {type: "stdio", command: "agent-browser", args: ["mcp", "--tools", "all"]}}}' \
+            > "$mcp_tmp"
+    fi
+    mv "$mcp_tmp" "$mcp_file"
+    mkdir -p "$checkout/.git/info"
+    if ! grep -qxF '/.mcp.json' "$checkout/.git/info/exclude" 2>/dev/null; then
+        echo '/.mcp.json' >> "$checkout/.git/info/exclude"
+    fi
+done
+shopt -u nullglob
+log "existing Claude checkout MCP configs refreshed"
 
 # --- 4a. Claude auth ---------------------------------------------------------
 # Subscription (CLAUDE_CODE_OAUTH_TOKEN) outranks a key. If the OAuth token is
@@ -114,7 +155,15 @@ fi
 # prefer an API key.
 mkdir -p "$CODEX_HOME"
 if [ -n "${OPENAI_API_KEY:-}" ]; then
-    log "Codex auth: API key (OPENAI_API_KEY)"
+    # Current Codex releases require an explicit login to materialize auth.json;
+    # merely inheriting OPENAI_API_KEY is not enough. This is idempotent and
+    # intentionally runs on every start so key rotation updates the persistent
+    # HOME volume. The key is passed on stdin and never appears in argv/logs.
+    if printf '%s' "$OPENAI_API_KEY" | codex login --with-api-key >/dev/null 2>&1; then
+        log "Codex auth: API key (OPENAI_API_KEY) -> auth.json written"
+    else
+        log "WARNING: codex login --with-api-key failed (Codex will prompt for auth)"
+    fi
 elif [ -f "/run/oduflow/codex-auth.json" ] && [ ! -f "$CODEX_HOME/auth.json" ]; then
     cp "/run/oduflow/codex-auth.json" "$CODEX_HOME/auth.json"
     chmod 600 "$CODEX_HOME/auth.json"

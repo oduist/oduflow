@@ -55,6 +55,7 @@ precursors).
 | [0034](0034-external-traefik-routes.md) | 2026-07-16 | External `[route.*]` domains → upstream URLs, plus operator drop-in Traefik dynamic files |
 | [0035](0035-production-hosting.md) | 2026-07-11 | Production hosting: dedicated PG cluster, WAL-G/S3 backups, snapshots, auto-rollback deploys |
 | [0036](0036-cross-subdomain-connect-as-landing.md) | 2026-07-19 | Cross-subdomain "Connect as user" landing: one-time token → env-host `/oduflow-connect` sets the session cookie host-only |
+| [0037](0037-built-in-agent-browser-and-noninteractive-codex.md) | 2026-07-21 | Built-in Agent Browser MCP and non-interactive Codex trust model |
 
 ## Design docs
 

@@ -65,6 +65,10 @@ from oduflow.settings import Settings, TeamSettings
 
 logger = logging.getLogger("oduflow")
 
+AGENT_USER = "agent"
+AGENT_HOME = "/home/agent"
+_AGENT_RUNTIME_VERSION = "3"  # browser MCP + non-root runtime
+
 
 def _trace(msg: str, *args: object) -> None:
     if settings.TRACE:
@@ -1342,16 +1346,79 @@ def _agent_config_hash(
 
     Stored as a container label; a mismatch on ensure means oduflow.toml
     changed (credentials, image, port), so the container is recreated. HOME
-    and /workspace are volumes — nothing is lost. The git-credentials mount is
-    fixed at container creation, so its presence is part of the fingerprint:
-    a container created before setup_repo_auth would otherwise keep matching
-    forever and never pick up the credentials file."""
+    and /workspace are volumes — nothing is lost. Git credentials are copied
+    into HOME by the volume init step at container creation, so their presence
+    is part of the fingerprint: a container created before setup_repo_auth
+    would otherwise keep matching forever and never pick up the file."""
     import hashlib
 
     payload = json.dumps(
-        [image, sorted(env.items()), has_git_credentials], separators=(",", ":")
+        [
+            _AGENT_RUNTIME_VERSION,
+            image,
+            sorted(env.items()),
+            has_git_credentials,
+        ],
+        separators=(",", ":"),
     )
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
+
+
+def _prepare_agent_volumes(
+    client: DockerClient,
+    image: str,
+    home_volume: str,
+    workspace_volume: str,
+    cred_file: str | None,
+) -> None:
+    """Make persistent agent data usable by the unprivileged image user.
+
+    Older coder images mounted HOME at ``/root`` and consequently left both
+    named volumes root-owned. A short-lived, networkless init container runs
+    as root only to migrate that existing data and copy the host credential
+    store; the long-lived container and every agent exec run as ``agent``.
+    Marker files avoid recursively walking large checkouts after migration.
+    """
+    volumes: dict[str, dict[str, str]] = {
+        home_volume: {"bind": AGENT_HOME, "mode": "rw"},
+        workspace_volume: {"bind": "/workspace", "mode": "rw"},
+    }
+    if cred_file:
+        volumes[cred_file] = {
+            "bind": "/run/oduflow/git-credentials",
+            "mode": "ro",
+        }
+
+    script = """
+if ! id agent >/dev/null 2>&1; then
+    echo "incompatible coder image: missing required user 'agent'" >&2
+    echo "build the current docker/agent image and configure [agent].image to that tag" >&2
+    exit 64
+fi
+if [ ! -f /home/agent/.oduflow-owner-v2 ]; then
+    chown -R agent:agent /home/agent
+    touch /home/agent/.oduflow-owner-v2
+    chown agent:agent /home/agent/.oduflow-owner-v2
+fi
+if [ ! -f /workspace/.oduflow-owner-v2 ]; then
+    chown -R agent:agent /workspace
+    touch /workspace/.oduflow-owner-v2
+    chown agent:agent /workspace/.oduflow-owner-v2
+fi
+if [ -f /run/oduflow/git-credentials ]; then
+    install -m 600 -o agent -g agent \
+        /run/oduflow/git-credentials /home/agent/.git-credentials
+fi
+"""
+    client.containers.run(
+        image=image,
+        command=["-eu", "-c", script],
+        entrypoint=["/bin/sh"],
+        user="root",
+        remove=True,
+        network_disabled=True,
+        volumes=volumes,
+    )
 
 
 def _ensure_agent_container(
@@ -1423,14 +1490,9 @@ def _ensure_agent_container(
         ensure_team_network(client, settings, team)
 
         volumes: dict[str, dict[str, str]] = {
-            home_volume: {"bind": "/root", "mode": "rw"},
+            home_volume: {"bind": AGENT_HOME, "mode": "rw"},
             workspace_volume: {"bind": "/workspace", "mode": "rw"},
         }
-        if has_git_credentials:
-            volumes[cred_file] = {
-                "bind": "/run/oduflow/git-credentials",
-                "mode": "ro",
-            }
 
         labels = dict(agent_labels)
         labels.update(
@@ -1445,15 +1507,24 @@ def _ensure_agent_container(
 
         with contextlib.suppress(Exception):
             client.images.pull(settings.agent_image)
+        _prepare_agent_volumes(
+            client,
+            settings.agent_image,
+            home_volume,
+            workspace_volume,
+            cred_file if has_git_credentials else None,
+        )
         client.containers.run(
             image=settings.agent_image,
             name=container_name,
             detach=True,
+            user=AGENT_USER,
             network=get_team_network_name(team.team_id, settings.prefix),
             environment=agent_env,
             labels=labels,
             volumes=volumes,
             extra_hosts={"host.docker.internal": "host-gateway"},
+            shm_size="1g",
             restart_policy={"Name": "unless-stopped"},
         )
         logger.info("Agent container ensured", extra={"container": container_name})
@@ -1494,7 +1565,7 @@ def _agent_add_env(
             get_agent_mcp_url(settings, env_name),
             git_user,
         ]
-        exit_code, output = container.exec_run(cmd)
+        exit_code, output = container.exec_run(cmd, user=AGENT_USER)
         if exit_code not in (0, None):
             detail = (
                 output.decode("utf-8", "replace")
@@ -1570,7 +1641,9 @@ def _agent_remove_env(
         )
         return
     with contextlib.suppress(Exception):
-        container.exec_run(["rm", "-rf", get_agent_checkout_dir(env_name)])
+        container.exec_run(
+            ["rm", "-rf", get_agent_checkout_dir(env_name)], user=AGENT_USER
+        )
 
 
 def _remove_agent_container(

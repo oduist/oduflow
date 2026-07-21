@@ -160,7 +160,7 @@ Same JSON format in `claude_desktop_config.json` or `.amp/settings.json`.
 
 ## Coding Agent (hosting)
 
-An opt-in, per-team hosting feature: Oduflow runs one coding-agent container per team (`oduist/oduflow-coder`, Claude Code + OpenAI Codex) and exposes two dashboard surfaces — **Agent CLI** (the agent's TUI in the browser) and **Agent Chat** (a browser ACP chat with durable per-environment sessions). The agent edits its own git checkout, `git push`es, and drives the environment only through the Oduflow MCP server with a scoped per-environment token. It is off by default; enable it per team with `agent_enabled` and set provider credentials under `[team.X.agent_env]`. The agent UI is hidden for live-mount (`local_path`) environments. See the **Coding Agent** section below for details.
+An opt-in, per-team hosting feature: Oduflow runs one coding-agent container per team (`oduist/oduflow-coder`, Claude Code + OpenAI Codex) and exposes two dashboard surfaces — **Agent CLI** (the agent's TUI in the browser) and **Agent Chat** (a browser ACP chat with durable per-environment sessions). The agent edits its own git checkout, `git push`es, and drives the environment through the Oduflow MCP server with a scoped per-environment token. A built-in Agent Browser MCP and Chromium provide browser automation to both agents, with one persistent profile per environment. Codex runs installed MCP methods without interactive approval prompts. It is off by default; enable it per team with `agent_enabled` and set provider credentials under `[team.X.agent_env]`. The agent UI is hidden for live-mount (`local_path`) environments. See the **Coding Agent** section below for details.
 
 ## Typical Agent Workflow
 
@@ -1409,6 +1409,8 @@ Both drive the same agent container over the dashboard's existing WebSocket ↔ 
 
 The agent never touches host files. It holds one full git checkout per environment (at `/workspace/<slug>` in the container), edits its own clone, `git push`es, and then drives the environment **only through the Oduflow MCP server** (`pull_and_apply`, `run_odoo_tests`, etc.) — the same closed loop a remote MCP client uses.
 
+The image also includes **Agent Browser MCP** backed by Debian Chromium. It is wired automatically into both Claude and Codex with the complete Agent Browser tool set. Each environment gets a separate browser profile, while browser data persists with the team's agent HOME volume across container recreation.
+
 Lifecycle is automatic: the container is created on startup for each enabled team and removed for disabled ones; `create_environment` adds the environment's checkout, `delete_environment` removes it. The container carries a hash of its injected config as a label and is **recreated automatically** when the config changes.
 
 The dashboard exposes one status endpoint and two WebSocket surfaces (available only when `agent_enabled` is set):
@@ -1450,14 +1452,13 @@ Opening an Agent CLI or Agent Chat is arbitrary code execution **inside the team
 - **Per-team isolation.** Each team gets its own agent container, volumes, and network; the dashboard auth middleware resolves the team, so a team can only ever reach its own agent.
 - **Scoped MCP access.** The team `auth_token` never enters the agent container. Each session injects that **environment's** scoped per-environment token, which grants only the dev-loop allowlist on the one environment the session already controls. The agent **cannot** create, delete, or stop environments, or touch templates, services, or volumes — those remain operator actions.
 - **Credentials.** Server-level provider keys are inherited by the container only in single-team deployments; with several teams, each team sets its own keys in `[team.X.agent_env]`.
+- **Codex sandbox and approvals.** Codex CLI uses `--dangerously-bypass-approvals-and-sandbox`, and Codex ACP starts in `agent-full-access`, so installed MCP tools run without interactive permission prompts or a nested Bubblewrap sandbox. The security boundary is the unprivileged `agent` user inside the per-team Docker container.
 
 ## Limitations
 
 - Hidden for live-mount (`local_path`) environments.
 - Environments created before per-environment tokens existed have no scoped token; their consoles warn and the agent works without MCP until the environment is updated/recreated.
-- The Codex ACP adapter has no config-override channel yet, so **Codex *chat*** runs without Oduflow MCP for now (the Codex CLI console is fully wired); Claude is the fully supported path.
-
-The published image redistributes only Apache-2.0 software (Codex CLI + its ACP adapter). Claude Code and its adapter are installed at first container start onto the persistent home volume — downloaded directly from npm by the end user's container.
+The published image contains redistributable open-source software: Codex CLI, Codex ACP and Agent Browser are Apache-2.0, and Debian Chromium includes its upstream component license notices. Claude Code and its adapter are installed at first container start onto the persistent home volume — downloaded directly from npm by the end user's container.
 
 ---
 

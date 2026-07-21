@@ -1853,9 +1853,23 @@ class TestAgentContainer:
         assert "oduflow-1-agent-home" in created
         assert "oduflow-1-agent-workspace" in created
 
-        mock_docker_client.containers.run.assert_called_once()
-        kwargs = mock_docker_client.containers.run.call_args.kwargs
+        # A short-lived root init migrates/copies persistent data; only the
+        # second call is the long-lived, unprivileged agent container.
+        assert mock_docker_client.containers.run.call_count == 2
+        init_kwargs = mock_docker_client.containers.run.call_args_list[0].kwargs
+        assert init_kwargs["user"] == "root"
+        assert init_kwargs["network_disabled"] is True
+        assert init_kwargs["remove"] is True
+        assert "missing required user 'agent'" in init_kwargs["command"][2]
+        assert init_kwargs["volumes"]["oduflow-1-agent-home"]["bind"] == ("/home/agent")
+        assert any(
+            v["bind"] == "/run/oduflow/git-credentials"
+            for v in init_kwargs["volumes"].values()
+        )
+
+        kwargs = mock_docker_client.containers.run.call_args_list[1].kwargs
         assert kwargs["name"] == "oduflow-1-agent"
+        assert kwargs["user"] == "agent"
         # Tenant isolation: the agent joins the team network, not a shared one.
         assert kwargs["network"] == "oduflow-1-net"
         assert kwargs["labels"]["oduflow.agent"] == "true"
@@ -1866,10 +1880,13 @@ class TestAgentContainer:
         # Team-wide: no per-env branch label.
         assert s.branch_label not in kwargs["labels"]
         assert kwargs["extra_hosts"] == {"host.docker.internal": "host-gateway"}
+        assert kwargs["shm_size"] == "1g"
         vols = kwargs["volumes"]
-        assert vols["oduflow-1-agent-home"]["bind"] == "/root"
+        assert vols["oduflow-1-agent-home"]["bind"] == "/home/agent"
         assert vols["oduflow-1-agent-workspace"]["bind"] == "/workspace"
-        assert any(v["bind"] == "/run/oduflow/git-credentials" for v in vols.values())
+        assert not any(
+            v["bind"] == "/run/oduflow/git-credentials" for v in vols.values()
+        )
         env = kwargs["environment"]
         # The team auth_token must never enter the container: any console
         # session could read it. Sessions get SCOPED per-env tokens via their
@@ -1933,17 +1950,16 @@ class TestAgentContainer:
         env_ops._ensure_agent_container(mock_docker_client, s, team)
 
         existing.remove.assert_called_once_with(force=True)
-        mock_docker_client.containers.run.assert_called_once()
+        assert mock_docker_client.containers.run.call_count == 2
         env = mock_docker_client.containers.run.call_args.kwargs["environment"]
         assert env["OPENAI_API_KEY"] == "new-key"
 
     def test_ensure_recreates_when_git_credentials_appear(
         self, monkeypatch, mock_docker_client
     ):
-        # Mounts are fixed at creation: a container created BEFORE
-        # setup_repo_auth has no credentials mount, so the file appearing later
-        # must change the fingerprint and trigger a recreate — otherwise
-        # private-repo clones fail forever.
+        # Credentials are copied into HOME at creation: a container created
+        # BEFORE setup_repo_auth has no copy, so the file appearing later must
+        # change the fingerprint and trigger a recreate.
         monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
@@ -1970,7 +1986,7 @@ class TestAgentContainer:
             env_ops._ensure_agent_container(mock_docker_client, s, team)
 
         existing.remove.assert_called_once_with(force=True)
-        vols = mock_docker_client.containers.run.call_args.kwargs["volumes"]
+        vols = mock_docker_client.containers.run.call_args_list[0].kwargs["volumes"]
         assert any(v["bind"] == "/run/oduflow/git-credentials" for v in vols.values())
 
     def test_api_key_when_no_subscription(self, monkeypatch, mock_docker_client):
@@ -2066,6 +2082,7 @@ class TestAgentContainer:
         assert cmd[4] == "http://host.docker.internal:8000/mcp/feature/x"
         assert cmd[5] == "alice"
         assert "tok" not in cmd
+        assert container.exec_run.call_args.kwargs["user"] == "agent"
 
     def test_add_env_skipped_when_disabled(self, mock_docker_client):
         team = self._team(agent_enabled=False)
@@ -2115,6 +2132,7 @@ class TestAgentContainer:
         assert cmd[3] == "prod"  # slug from env name -> checkout dir
         assert cmd[4] == "http://host.docker.internal:8000/mcp/prod"
         assert cmd[5] == "alice"
+        assert agent.exec_run.call_args.kwargs["user"] == "agent"
 
     def test_ensure_env_checkout_skips_repo_for_live_mount(
         self, monkeypatch, mock_docker_client
