@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 from unittest.mock import patch
@@ -26,7 +27,7 @@ def _basic() -> dict[str, str]:
     return {"Authorization": f"Basic {blob}"}
 
 
-def _client(tmp_path, *, agent_enabled: bool = False) -> TestClient:
+def _app(tmp_path, *, agent_enabled: bool = False) -> Starlette:
     team = TeamSettings(
         team_id="1",
         data_dir=str(tmp_path / "team-1"),
@@ -36,7 +37,11 @@ def _client(tmp_path, *, agent_enabled: bool = False) -> TestClient:
     settings = Settings(base_data_dir=str(tmp_path), teams={"1": team})
     app = Starlette()
     mount_web_ui(app, lambda: settings, LockManager())
-    return TestClient(app, headers=_basic())
+    return app
+
+
+def _client(tmp_path, *, agent_enabled: bool = False) -> TestClient:
+    return TestClient(_app(tmp_path, agent_enabled=agent_enabled), headers=_basic())
 
 
 def _post(client: TestClient, session_id: str, title: str | None = None):
@@ -100,6 +105,41 @@ def test_attachment_upload_rejects_oversized_body_before_storage(tmp_path, monke
 
     assert response.status_code == 413
     assert "no larger" in response.json()["error"]
+    store.assert_not_called()
+
+
+def test_attachment_upload_handles_client_disconnect_quietly(tmp_path):
+    """An aborted XHR (Remove during upload) must not raise through ASGI."""
+    app = _app(tmp_path, agent_enabled=True)
+    messages = [
+        {"type": "http.request", "body": b"partial", "more_body": True},
+        {"type": "http.disconnect"},
+    ]
+    sent = []
+
+    async def receive():
+        return messages.pop(0)
+
+    async def send(message):
+        sent.append(message)
+
+    scope = {
+        "type": "http",
+        "http_version": "1.1",
+        "method": "POST",
+        "scheme": "http",
+        "server": ("testserver", 80),
+        "client": ("testclient", 123),
+        "root_path": "",
+        "path": f"/api/environments/{_BRANCH}/agent-acp/attachments",
+        "query_string": b"name=notes.txt",
+        "headers": [(b"authorization", _basic()["Authorization"].encode())],
+    }
+
+    with patch("oduflow.web_ui.agent_uploads.store_attachment") as store:
+        asyncio.run(app(scope, receive, send))
+
+    assert sent[0]["status"] == 400
     store.assert_not_called()
 
 
