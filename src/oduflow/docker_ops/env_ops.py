@@ -1325,18 +1325,76 @@ def _agent_env_vars(settings: Settings, team: TeamSettings) -> dict[str, str]:
     return env
 
 
-def get_agent_mcp_url(settings: Settings, env_name: str) -> str:
+def get_agent_mcp_url(settings: Settings, team: TeamSettings, env_name: str) -> str:
     """This environment's SCOPED MCP endpoint as seen from the agent container.
 
     The scoped ``/mcp/<env>`` endpoint + per-environment token (ADR 0028) is
     the only Oduflow access the agent gets — the team ``auth_token`` never
-    enters the agent container. The MCP server runs on the host, reached over
-    the host gateway."""
+    enters the agent container. In Traefik mode agents use the team's public
+    TLS endpoint, matching the dashboard's MCP Access URL. Port mode uses an
+    explicitly configured public OAuth base when available, otherwise it falls
+    back to the Docker host gateway for local deployments."""
     from urllib.parse import quote
 
-    return (
-        f"http://host.docker.internal:{settings.port}/mcp/{quote(env_name, safe='/')}"
+    if settings.routing_mode == "traefik":
+        base = f"https://{team.hostname}"
+    elif settings.oauth_base_url:
+        base = settings.oauth_base_url.rstrip("/")
+    else:
+        base = f"http://host.docker.internal:{settings.port}"
+    return f"{base}/mcp/{quote(env_name, safe='/')}"
+
+
+def refresh_agent_mcp_config(
+    container: docker.models.containers.Container,
+    settings: Settings,
+    team: TeamSettings,
+    env_name: str,
+) -> None:
+    """Refresh an existing Claude checkout's generated Oduflow MCP entry.
+
+    Agent workspaces persist across Oduflow/coder upgrades, so a checkout may
+    still contain the old host-gateway URL even after URL selection is fixed.
+    Rewrite only the generated ``oduflow`` entry, preserving Agent Browser and
+    any user-added servers. The token remains an environment placeholder and
+    is never written to disk.
+    """
+    config_path = os.path.join(get_agent_checkout_dir(env_name), ".mcp.json")
+    script = """\
+set -eu
+config_path=$1
+mcp_url=$2
+[ -f "$config_path" ] || exit 0
+tmp_path="${config_path}.tmp.$$"
+trap 'rm -f "$tmp_path"' EXIT
+jq --arg url "$mcp_url" \
+  '.mcpServers.oduflow = {type: "http", url: $url, headers: {Authorization: "Bearer ${ODUFLOW_MCP_TOKEN}"}}' \
+  "$config_path" > "$tmp_path"
+mv "$tmp_path" "$config_path"
+"""
+    exit_code, output = container.exec_run(
+        [
+            "sh",
+            "-c",
+            script,
+            "sh",
+            config_path,
+            get_agent_mcp_url(settings, team, env_name),
+        ],
+        user=AGENT_USER,
     )
+    if exit_code not in (0, None):
+        detail = (
+            output.decode("utf-8", "replace")
+            if isinstance(output, (bytes, bytearray))
+            else output
+        )
+        logger.warning(
+            "Agent MCP config refresh for '%s' exited %s: %s",
+            env_name,
+            exit_code,
+            detail,
+        )
 
 
 def _agent_config_hash(
@@ -1562,7 +1620,7 @@ def _agent_add_env(
             repo_url,
             branch,
             slugify_branch(env_name),
-            get_agent_mcp_url(settings, env_name),
+            get_agent_mcp_url(settings, team, env_name),
             git_user,
         ]
         exit_code, output = container.exec_run(cmd, user=AGENT_USER)
