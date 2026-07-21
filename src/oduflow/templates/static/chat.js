@@ -329,13 +329,33 @@
     return fetch(apiBase(branch) + '/info?type=' + encodeURIComponent(type), { credentials: 'same-origin' })
       .then(function (r) { return r.json(); });
   }
-  function postSession(branch, type, sessionId) {
+  function postSession(branch, type, sessionId, title) {
+    var body = { type: type, session_id: sessionId || '' };
+    if (title !== undefined) body.title = title;
     return fetch(apiBase(branch) + '/session', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       credentials: 'same-origin',
-      body: JSON.stringify({ type: type, session_id: sessionId || '' })
-    }).catch(function () {});
+      body: JSON.stringify(body)
+    }).then(function (r) { return r.json(); })
+      .catch(function () { return null; });
+  }
+
+  function refreshHistory(inst, res) {
+    if (res && Array.isArray(res.history)) inst.history = res.history;
+    var current = null;
+    for (var i = 0; i < inst.history.length; i++) {
+      if (inst.history[i].session_id === inst.sessionId) {
+        current = inst.history[i];
+        break;
+      }
+    }
+    inst.titled = !!(current && current.title);
+    renderHistoryMenu(inst);
+  }
+
+  function titleFrom(text) {
+    return (text.split(/\r?\n/, 1)[0] || '').replace(/\s+/g, ' ').trim().slice(0, 80);
   }
 
   // -- instance construction --------------------------------------------------
@@ -351,6 +371,19 @@
     model.setAttribute('aria-label', 'Model');
     left.appendChild(model);
     sub.appendChild(left);
+
+    var historyWrap = el('div', 'menu-wrap chat-history-wrap');
+    var historyBtn = el('button', 'chat-new chat-history-toggle', 'History');
+    historyBtn.type = 'button';
+    historyBtn.setAttribute('aria-haspopup', 'menu');
+    historyBtn.setAttribute('aria-expanded', 'false');
+    historyBtn.onclick = function (event) { renderHistoryMenu(inst); toggleMenu(event); };
+    historyWrap.appendChild(historyBtn);
+    var historyMenu = el('div', 'menu chat-history-menu');
+    historyMenu.setAttribute('role', 'menu');
+    historyWrap.appendChild(historyMenu);
+    sub.appendChild(historyWrap);
+
     var newBtn = el('button', 'chat-new', 'New conversation');
     newBtn.type = 'button';
     newBtn.title = 'End this conversation and start a fresh one';
@@ -389,6 +422,52 @@
     root.appendChild(form);
 
     inst.el = root;
+    renderHistoryMenu(inst);
+  }
+
+  function renderHistoryMenu(inst) {
+    if (!inst.el) return;
+    var menu = q(inst, '.chat-history-menu');
+    if (!menu) return;
+    menu.innerHTML = '';
+    if (!inst.history.length) {
+      var empty = el('button', 'chat-history-item', 'No previous conversations');
+      empty.type = 'button';
+      empty.disabled = true;
+      empty.setAttribute('role', 'menuitem');
+      menu.appendChild(empty);
+      return;
+    }
+    for (var i = 0; i < inst.history.length; i++) {
+      (function (entry) {
+        var current = entry.session_id === inst.sessionId;
+        var item = el('button', 'chat-history-item');
+        item.type = 'button';
+        item.setAttribute('role', 'menuitem');
+        item.disabled = current;
+        item.appendChild(el('span', 'chat-history-title', entry.title || 'Untitled conversation'));
+        var meta = el('span', 'chat-history-meta');
+        var timestamp = entry.last_used_at || entry.created_at;
+        meta.appendChild(el('span', null, timestamp ? relTime(timestamp) : 'Time unavailable'));
+        if (current) meta.appendChild(el('span', 'chat-history-current', 'Current'));
+        item.appendChild(meta);
+        item.onclick = function () {
+          closeMenus();
+          switchToSession(inst, entry.session_id);
+        };
+        menu.appendChild(item);
+      })(inst.history[i]);
+    }
+  }
+
+  function resetTranscript(inst) {
+    inst.agentBubble = null;
+    inst.agentBuffer = '';
+    inst.thoughtBox = null;
+    inst.thoughtBuffer = '';
+    inst.planBox = null;
+    inst.tools = {};
+    q(inst, '.chat-messages').innerHTML = '';
   }
 
   function sendPrompt(inst) {
@@ -399,7 +478,13 @@
     ta.value = '';
     setBusy(inst, true);
     setStatus(inst, 'thinking');
-    inst.client.prompt(inst.sessionId, text)
+    var prompt = inst.client.prompt(inst.sessionId, text);
+    if (!inst.titled && inst.sessionId) {
+      inst.titled = true;
+      postSession(inst.branch, inst.type, inst.sessionId, titleFrom(text))
+        .then(function (res) { refreshHistory(inst, res); });
+    }
+    prompt
       .catch(function (e) { addErrorLine(inst, e.message || String(e)); })
       .then(function () {
         setBusy(inst, false);
@@ -411,17 +496,78 @@
   }
 
   function startNewConversation(inst) {
-    if (!inst.client || inst.client.closed) return;
+    if (!inst.client || inst.client.closed) {
+      addErrorLine(inst, 'The chat connection is closed. Reopen the chat to start a conversation.');
+      return;
+    }
+    if (inst.busy) {
+      addSystemLine(inst, 'Stop the current response before starting a new conversation.');
+      return;
+    }
     setStatus(inst, 'connecting');
     inst.client.newSession(inst.cwd).then(function (res) {
       inst.sessionId = res.sessionId;
-      inst.agentBubble = null; inst.thoughtBox = null; inst.tools = {}; inst.planBox = null;
-      q(inst, '.chat-messages').innerHTML = '';
+      inst.titled = false;
+      resetTranscript(inst);
       applyModels(inst, res.models);
-      postSession(inst.branch, inst.type, res.sessionId);
+      postSession(inst.branch, inst.type, res.sessionId)
+        .then(function (saved) { refreshHistory(inst, saved); });
       setStatus(inst, 'ready');
       addSystemLine(inst, 'Started a new conversation.');
     }).catch(function (e) { addErrorLine(inst, e.message || String(e)); setStatus(inst, 'error'); });
+  }
+
+  function switchToSession(inst, sid) {
+    if (sid === inst.sessionId) return;
+    if (!inst.client || inst.client.closed) {
+      addErrorLine(inst, 'The chat connection is closed. Reopen the chat to switch conversations.');
+      return;
+    }
+    if (inst.busy) {
+      addSystemLine(inst, 'Stop the current response before switching.');
+      return;
+    }
+
+    var previousId = inst.sessionId;
+    setStatus(inst, 'connecting');
+    resetTranscript(inst);
+    inst.client.loadSession(sid, inst.cwd).then(function (res) {
+      inst.sessionId = sid;
+      if (res && res.models) applyModels(inst, res.models);
+      addSystemLine(inst, 'Switched to a previous conversation.');
+      setStatus(inst, 'ready');
+      return postSession(inst.branch, inst.type, sid)
+        .then(function (saved) { refreshHistory(inst, saved); });
+    }).catch(function () {
+      if (!previousId) return startFallbackSession(inst);
+      resetTranscript(inst);
+      return inst.client.loadSession(previousId, inst.cwd).then(function (res) {
+        inst.sessionId = previousId;
+        if (res && res.models) applyModels(inst, res.models);
+        addSystemLine(inst, 'Could not open that conversation. Restored the current conversation.');
+        setStatus(inst, 'ready');
+        return postSession(inst.branch, inst.type, previousId)
+          .then(function (saved) { refreshHistory(inst, saved); });
+      }).catch(function () {
+        return startFallbackSession(inst);
+      });
+    }).catch(function (e) {
+      addErrorLine(inst, e.message || String(e));
+      setStatus(inst, 'error');
+    });
+  }
+
+  function startFallbackSession(inst) {
+    resetTranscript(inst);
+    return inst.client.newSession(inst.cwd).then(function (res) {
+      inst.sessionId = res.sessionId;
+      inst.titled = false;
+      applyModels(inst, res.models);
+      addSystemLine(inst, 'Could not restore the conversation. Started a new conversation.');
+      setStatus(inst, 'ready');
+      return postSession(inst.branch, inst.type, res.sessionId)
+        .then(function (saved) { refreshHistory(inst, saved); });
+    });
   }
 
   function bootstrap(inst) {
@@ -429,6 +575,15 @@
     fetchInfo(inst.branch, inst.type).then(function (info) {
       if (!info || !info.ok) throw new Error((info && info.error) || 'Failed to load chat info');
       inst.cwd = info.cwd;
+      inst.history = Array.isArray(info.history) ? info.history : [];
+      inst.titled = false;
+      for (var i = 0; i < inst.history.length; i++) {
+        if (inst.history[i].session_id === info.session_id) {
+          inst.titled = !!inst.history[i].title;
+          break;
+        }
+      }
+      renderHistoryMenu(inst);
       inst.client.on('update', function (p) { handleUpdate(inst, p); });
       inst.client.on('permission', function (p) { renderPermission(inst, p.requestId, p.params); });
       inst.client.on('error', function (msg) { addErrorLine(inst, msg); });
@@ -441,20 +596,26 @@
           return inst.client.loadSession(info.session_id, inst.cwd).then(function (res) {
             inst.sessionId = info.session_id;
             if (res && res.models) applyModels(inst, res.models);
+            renderHistoryMenu(inst);
             addSystemLine(inst, 'Resumed your previous conversation.');
           }).catch(function () {
             // Stale/invalid stored session — start fresh.
+            resetTranscript(inst);
             return inst.client.newSession(inst.cwd).then(function (res) {
               inst.sessionId = res.sessionId;
+              inst.titled = false;
               applyModels(inst, res.models);
-              return postSession(inst.branch, inst.type, res.sessionId);
+              return postSession(inst.branch, inst.type, res.sessionId)
+                .then(function (saved) { refreshHistory(inst, saved); });
             });
           });
         }
         return inst.client.newSession(inst.cwd).then(function (res) {
           inst.sessionId = res.sessionId;
+          inst.titled = false;
           applyModels(inst, res.models);
-          return postSession(inst.branch, inst.type, res.sessionId);
+          return postSession(inst.branch, inst.type, res.sessionId)
+            .then(function (saved) { refreshHistory(inst, saved); });
         });
       });
     }).then(function () {
@@ -476,7 +637,8 @@
       key: key, branch: branch, type: type, status: 'connecting', busy: false,
       client: new window.AcpClient(wsUrlFor(branch, type)),
       sessionId: null, cwd: null, agentBubble: null, agentBuffer: '',
-      thoughtBox: null, tools: {}, planBox: null, pill: null, unread: false
+      thoughtBox: null, tools: {}, planBox: null, pill: null, unread: false,
+      history: [], titled: false
     };
     buildInstanceDom(inst);
     instances[key] = inst;

@@ -32,6 +32,99 @@ def test_set_overwrites(tmp_path):
     assert agent_sessions.get_session(t, "b", "claude") == "new"
 
 
+def test_legacy_string_is_normalized_and_preserved_on_write(tmp_path):
+    t = _team(tmp_path)
+    with open(agent_sessions._path(t), "w", encoding="utf-8") as f:
+        json.dump({"b": {"claude": "sid-1"}}, f)
+
+    assert agent_sessions.get_session(t, "b", "claude") == "sid-1"
+    assert agent_sessions.get_history(t, "b", "claude") == [
+        {
+            "session_id": "sid-1",
+            "title": None,
+            "created_at": None,
+            "last_used_at": None,
+        }
+    ]
+
+    agent_sessions.set_session(t, "b", "claude", "sid-2")
+    assert agent_sessions.get_session(t, "b", "claude") == "sid-2"
+    assert [
+        entry["session_id"] for entry in agent_sessions.get_history(t, "b", "claude")
+    ] == [
+        "sid-2",
+        "sid-1",
+    ]
+
+
+def test_existing_session_moves_to_front_without_duplicates(tmp_path):
+    t = _team(tmp_path)
+    old = "2026-01-01T00:00:00+00:00"
+    stored = {
+        "current": "sid-2",
+        "history": [
+            {
+                "session_id": "sid-2",
+                "title": "Second",
+                "created_at": old,
+                "last_used_at": old,
+            },
+            {
+                "session_id": "sid-1",
+                "title": "First",
+                "created_at": old,
+                "last_used_at": old,
+            },
+        ],
+    }
+    with open(agent_sessions._path(t), "w", encoding="utf-8") as f:
+        json.dump({"b": {"claude": stored}}, f)
+
+    agent_sessions.set_session(t, "b", "claude", "sid-1")
+
+    history = agent_sessions.get_history(t, "b", "claude")
+    assert [entry["session_id"] for entry in history] == ["sid-1", "sid-2"]
+    assert history[0]["created_at"] == old
+    assert history[0]["last_used_at"] != old
+
+
+def test_title_is_first_write_wins_and_truncated(tmp_path):
+    t = _team(tmp_path)
+    title = "x" * 100
+    agent_sessions.set_session(t, "b", "claude", "sid-1")
+    agent_sessions.set_session(t, "b", "claude", "sid-1", title=title)
+    agent_sessions.set_session(t, "b", "claude", "sid-1", title="replacement")
+
+    history = agent_sessions.get_history(t, "b", "claude")
+    assert history[0]["title"] == "x" * 80
+
+
+def test_history_is_capped_with_current_at_front(tmp_path):
+    t = _team(tmp_path)
+    for index in range(21):
+        agent_sessions.set_session(t, "b", "claude", f"sid-{index}")
+
+    history = agent_sessions.get_history(t, "b", "claude")
+    assert len(history) == 20
+    assert history[0]["session_id"] == "sid-20"
+    assert agent_sessions.get_session(t, "b", "claude") == "sid-20"
+    assert "sid-0" not in {entry["session_id"] for entry in history}
+
+
+def test_clear_current_preserves_history_and_clear_session_removes_it(tmp_path):
+    t = _team(tmp_path)
+    agent_sessions.set_session(t, "b", "claude", "sid-1")
+    agent_sessions.clear_current(t, "b", "claude")
+
+    assert agent_sessions.get_session(t, "b", "claude") is None
+    assert [
+        entry["session_id"] for entry in agent_sessions.get_history(t, "b", "claude")
+    ] == ["sid-1"]
+
+    agent_sessions.clear_session(t, "b", "claude")
+    assert agent_sessions.get_history(t, "b", "claude") == []
+
+
 def test_clear_one_agent_keeps_the_other(tmp_path):
     t = _team(tmp_path)
     agent_sessions.set_session(t, "b", "claude", "c1")

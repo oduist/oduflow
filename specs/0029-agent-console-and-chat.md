@@ -3,7 +3,7 @@
 **Status:** Adopted (MVP), ported from odusphere-cli (its ADRs 0005 + 0008)
 **Type:** Architecture — new capability
 **First introduced:** this change (2026-07-03), branch `litnimax/port-env-chat-agent`
-**Key code today:** `docker/agent/` (Dockerfile + `entrypoint.sh` + `clone-env.sh`, image `oduist/oduflow-coder`); `[agent]` + per-team `agent_*` config in `settings.py`; `agent_config.py` (type validation) + `agent_sessions.py` (durable chat sessions); `_ensure_agent_container` / `_agent_add_env` / `ensure_agent_env_checkout` / `_agent_remove_env` in `docker_ops/env_ops.py`; `ws_agent_console` + `ws_agent_acp` + `api_agent_acp_*` + `api_agent_info` in `web_ui.py`; vendored `templates/static/acp-client.js` + `chat.js` + `marked.min.js`; `#agent-modal` / `#chat-modal` / `#chat-dock` and the card **Agent Chat** button in `templates/dashboard.html`
+**Key code today:** `docker/agent/` (Dockerfile + `entrypoint.sh` + `clone-env.sh`, image `oduist/oduflow-coder`); `[agent]` + per-team `agent_*` config in `settings.py`; `agent_config.py` (type validation) + `agent_sessions.py` (bounded chat history); `_ensure_agent_container` / `_agent_add_env` / `ensure_agent_env_checkout` / `_agent_remove_env` in `docker_ops/env_ops.py`; `ws_agent_console` + `ws_agent_acp` + `api_agent_acp_*` + `api_agent_info` in `web_ui.py`; vendored `templates/static/acp-client.js` + `chat.js` + `marked.min.js`; `#agent-modal` / `#chat-modal` / `#chat-dock` and the card **Agent Chat** button in `templates/dashboard.html`
 
 ## Context
 
@@ -39,9 +39,10 @@ WebSocket↔`docker exec` bridge:
   with a PTY at the environment's checkout.
 - **Agent Chat** (`ws_agent_acp`): a TTY-less, line-framed relay to the agent's
   ACP adapter (`claude-code-acp` / `codex-acp`), rendered by a vendored,
-  framework-free browser client (`acp-client.js` + `chat.js`). One durable
-  session per (environment, agent) is persisted and resumed via ACP
-`session/load`; chats minimize to a dock so several run in parallel.
+  framework-free browser client (`acp-client.js` + `chat.js`). A current
+  session and bounded recent history per (environment, agent) are persisted;
+  any selected conversation resumes via ACP `session/load`. Chats minimize to
+  a dock so several run in parallel.
 
 The coder also ships a local Agent Browser MCP backed by Debian Chromium. Both
 agents receive it automatically; browser profiles are separated by environment
@@ -73,7 +74,7 @@ tab: config is the source of truth — the container carries a hash of its
 injected config as a label and is recreated automatically on the next ensure
 (server start, environment create, console open) when the config changed;
 disabling the agent removes the container on the next server start. The only
-runtime state is `agent_sessions.json` (durable ACP session ids) in
+runtime state is `agent_sessions.json` (current and recent ACP session ids) in
 `<team.data_dir>`.
 
 ## How it works (macro)
@@ -86,7 +87,7 @@ runtime state is `agent_sessions.json` (durable ACP session ids) in
   volumes (they would otherwise pin the team networks). Opening a console/chat
   heals a missing checkout on demand from the Odoo container labels.
 - **Chat open:** the card's **Agent Chat** button lazy-loads the vendored
-  assets, fetches `agent-acp/info` (cwd + stored session id), connects the
+  assets, fetches `agent-acp/info` (cwd + current session + history), connects the
   WebSocket, `initialize`s, then `session/load` (resume) or `session/new`
   (persisted back). `session/update` notifications render as markdown,
   collapsible reasoning, tool-call cards and plans; `session/request_permission`
@@ -131,8 +132,26 @@ runtime state is `agent_sessions.json` (durable ACP session ids) in
 - The browser client self-heals an adapter's failed session resume by starting
   a fresh chat.
 
+## Evolution
+
+Agent Chat initially kept one effectively permanent session id per
+(environment, agent), so **New conversation** overwrote the only pointer even
+though the old transcript still existed on the agent HOME volume. It now keeps
+`current` plus an MRU history of at most 20 session ids, titled from the first
+user prompt. Legacy string values are coerced when read and rewritten on the
+next mutation, avoiding a startup migration and tolerating mixed state files.
+
+Resume remains an ACP boundary: Oduflow calls `session/load` for the selected
+id and does not inspect Claude Code or Codex transcript files. This keeps the
+integration independent of private CLI storage formats; it also means Codex
+history loading remains best-effort while its adapter matures.
+
 ## History
 
+- 2026-07-21 — evolved durable chat state from one session id to a bounded MRU
+  conversation history with first-prompt titles and dashboard switching;
+  legacy values normalize on read and resume still goes exclusively through
+  ACP `session/load`.
 - 2026-07-03 — ported from odusphere-cli ADRs 0005 (agent console; including
   its evolution to a single persistent container with HOME/workspace volumes)
   and 0008 (ACP chat UI), reshaped for multi-team Oduflow: per-team container/

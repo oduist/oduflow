@@ -23,10 +23,11 @@ WebSocket ↔ `docker exec` bridge:
   agent's native command-line experience.
 - **Agent Chat** — a structured, framework-free browser chat that speaks the
   **Agent Client Protocol (ACP)** to the agent's adapter. Each environment has
-  a **durable session** that resumes across reloads; chats minimize to a dock,
-  so several can run in parallel. Assistant messages render as markdown, with
-  collapsible reasoning, tool-call cards, plans, and inline approve/deny
-  prompts for permission requests.
+  a durable, bounded **conversation history**: use **History** to resume one of
+  the 20 most recent conversations, titled from its first prompt. Chats also
+  minimize to a dock, so several can run in parallel. Assistant messages render
+  as markdown, with collapsible reasoning, tool-call cards, plans, and inline
+  approve/deny prompts for permission requests.
 
 ## How it works
 
@@ -45,8 +46,8 @@ Lifecycle is automatic: the container is created on startup for each enabled
 team and removed for disabled ones; `create_environment` adds the environment's
 checkout, `delete_environment` removes it. The container carries a hash of its
 injected config as a label and is **recreated automatically** when the config
-changes. The only runtime state is a durable ACP-session file in the team's
-data directory.
+changes. The only runtime state is a durable ACP conversation-history file in
+the team's data directory; transcripts remain owned by the agent adapters.
 
 ## Enabling it
 
@@ -110,6 +111,10 @@ reference.
 - Environments created before per-environment tokens existed have no scoped
   token; their consoles warn and the agent works without MCP until the
   environment is updated/recreated.
+- Opening a previous Codex conversation is best-effort because its ACP
+  `session/load` support is still maturing. A failed switch restores the current
+  conversation when possible, otherwise it starts a new one without deleting
+  the history entry.
 
 The published image contains redistributable open-source software: Codex CLI,
 Codex ACP and Agent Browser are Apache-2.0, and Debian Chromium includes its

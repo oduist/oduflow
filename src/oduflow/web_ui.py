@@ -2256,6 +2256,7 @@ def _build_routes(
                     "cwd": get_agent_checkout_dir(branch),
                     "type": agent_type,
                     "session_id": agent_sessions.get_session(team, branch, agent_type),
+                    "history": agent_sessions.get_history(team, branch, agent_type),
                 }
             )
         except Exception:
@@ -2265,9 +2266,12 @@ def _build_routes(
             )
 
     async def api_agent_acp_session(request: Request) -> JSONResponse:
-        """Persist (or clear) the durable session id for this environment+agent.
-        The chat POSTs here after a ``session/new`` so the next open resumes it;
-        an empty session_id clears it (Codex on a brand-new conversation)."""
+        """Persist or select a chat session for this environment and agent.
+
+        An empty session id clears only the current selection, preserving the
+        recent history for later recovery (including degenerate Codex
+        ``session/new`` responses).
+        """
         try:
             from oduflow import agent_sessions
 
@@ -2277,10 +2281,19 @@ def _build_routes(
             agent_type = agent_config.resolve_agent_type(body.get("type"), team)
             session_id = body.get("session_id")
             if session_id:
-                agent_sessions.set_session(team, branch, agent_type, str(session_id))
+                title = str(body.get("title") or "").strip() or None
+                agent_sessions.set_session(
+                    team, branch, agent_type, str(session_id), title=title
+                )
             else:
-                agent_sessions.clear_session(team, branch, agent_type)
-            return JSONResponse({"ok": True})
+                agent_sessions.clear_current(team, branch, agent_type)
+            return JSONResponse(
+                {
+                    "ok": True,
+                    "session_id": agent_sessions.get_session(team, branch, agent_type),
+                    "history": agent_sessions.get_history(team, branch, agent_type),
+                }
+            )
         except Exception:
             logger.exception("Unexpected error in api_agent_acp_session")
             return JSONResponse(
