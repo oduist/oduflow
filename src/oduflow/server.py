@@ -4126,6 +4126,7 @@ def _run_cli() -> None:
         "--version", action="version", version=f"oduflow {_get_version()}"
     )
     parser.add_argument(
+        "-t",
         "--transport",
         choices=["stdio", "http"],
         default="stdio",

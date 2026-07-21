@@ -45,6 +45,7 @@ With [uv](https://docs.astral.sh/uv/) you can run Oduflow directly — no instal
 ```bash
 uvx oduflow                      # stdio mode (default)
 uvx oduflow --transport http     # HTTP server mode
+uvx oduflow -t http              # HTTP server mode (short form)
 ```
 
 This is the quickest way to try Oduflow or use it in CI pipelines.

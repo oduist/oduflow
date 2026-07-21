@@ -73,6 +73,7 @@ By default, the server starts in **stdio** mode (for local MCP clients). For rem
 
 ```bash
 oduflow --transport http
+oduflow -t http
 ```
 
 ### 3. Connect an MCP client

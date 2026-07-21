@@ -1,5 +1,7 @@
-import pytest
+import sys
 from unittest.mock import patch
+
+import pytest
 
 from fastmcp.exceptions import ToolError
 from oduflow.settings import Settings, TeamSettings
@@ -51,6 +53,23 @@ class TestMCPBootstrapInstructions:
 
 
 class TestCLIInitDestroy:
+    def test_cli_transport_short_flag_starts_http(self):
+        from oduflow import server
+
+        with (
+            patch.object(sys, "argv", ["oduflow", "-t", "http"]),
+            patch.object(server.migrations, "run_pending"),
+            patch.object(server, "_ensure_initialized"),
+            patch.object(server.quotas, "apply_all"),
+            patch.object(server, "_start_stdio") as mock_stdio,
+            patch.object(server, "_start_http") as mock_http,
+        ):
+            server._run_cli()
+
+        mock_stdio.assert_not_called()
+        mock_http.assert_called_once_with()
+        assert server.settings_module.TRANSPORT == "http"
+
     @patch("oduflow.docker_ops.system_ops.destroy_system")
     def test_cli_destroy(self, mock_destroy):
         from oduflow.server import _run_destroy
