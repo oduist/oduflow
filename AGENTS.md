@@ -15,6 +15,12 @@ Any change to the web dashboard (`src/oduflow/templates/dashboard.html`, served 
 
 Read both before touching dashboard UI. Key hard rules: no external CDNs (all assets ship with the package), every `var(--*)` must be declared in `:root`, status is never conveyed by color alone, no emoji as UI affordances.
 
+The dashboard loads `/static/chat.js` with its own positive integer cache
+version in the query string. Whenever
+`src/oduflow/templates/static/chat.js` changes, increment that `v` value in
+`src/oduflow/templates/dashboard.html`. This cache version is independent of
+the Oduflow product version.
+
 ## Commands
 
 ```bash
