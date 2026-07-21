@@ -131,10 +131,69 @@ done
 shopt -u nullglob
 log "existing Claude checkout MCP configs refreshed"
 
-# --- 4a. Claude auth ---------------------------------------------------------
+# --- 4a. Claude auth + onboarding --------------------------------------------
+# An environment credential authenticates Claude Code but does not complete its
+# first-run wizard. Pre-seed that persistent state when either credential is
+# configured; without one, leave the normal interactive login path untouched.
+seed_claude_onboarding() {
+    local auth_mode="$1"
+    local api_key_suffix="${2:-}"
+    local claude_dir="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+    local claude_json="$claude_dir/.claude.json"
+    local tmp_json
+    local use_existing=false
+    local jq_failed=false
+    local jq_filter='
+        .hasCompletedOnboarding = true
+        | if $api_key_suffix != "" then
+            .customApiKeyResponses = (
+                if (.customApiKeyResponses | type) == "object"
+                then .customApiKeyResponses
+                else {}
+                end
+            )
+            | .customApiKeyResponses.approved = (
+                ((.customApiKeyResponses.approved // [])
+                    | if type == "array" then . else [] end)
+                + [$api_key_suffix]
+                | unique
+            )
+          else .
+          end
+    '
+
+    mkdir -p "$claude_dir"
+    tmp_json="$(mktemp "${claude_json}.tmp.XXXXXX")"
+
+    if [ -f "$claude_json" ] && jq -e 'type == "object"' "$claude_json" >/dev/null 2>&1; then
+        use_existing=true
+    else
+        if [ -e "$claude_json" ]; then
+            log "WARNING: replacing invalid Claude config at $claude_json"
+        fi
+    fi
+
+    if [ "$use_existing" = true ]; then
+        jq --arg api_key_suffix "$api_key_suffix" "$jq_filter" \
+            "$claude_json" > "$tmp_json" || jq_failed=true
+    else
+        jq --null-input --arg api_key_suffix "$api_key_suffix" "$jq_filter" \
+            > "$tmp_json" || jq_failed=true
+    fi
+
+    if [ "$jq_failed" = true ]; then
+        rm -f "$tmp_json"
+        log "WARNING: could not pre-seed Claude onboarding for $auth_mode auth"
+        return
+    fi
+
+    chmod 600 "$tmp_json"
+    mv -f "$tmp_json" "$claude_json"
+    log "Claude onboarding pre-seeded for $auth_mode auth"
+}
+
 # Subscription (CLAUDE_CODE_OAUTH_TOKEN) outranks a key. If the OAuth token is
-# present, ANTHROPIC_API_KEY MUST be unset or it wins by precedence. With no
-# credential at all, an interactive `claude` login persists to the home volume.
+# present, ANTHROPIC_API_KEY MUST be unset or it wins by precedence.
 if [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
     # ANTHROPIC_API_KEY is already excluded from the container env by
     # _agent_env_vars() in env_ops.py; this unset is belt-and-suspenders for
@@ -142,8 +201,15 @@ if [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
     # container-level env, which already lacks the key).
     unset ANTHROPIC_API_KEY || true
     log "Claude auth: subscription (CLAUDE_CODE_OAUTH_TOKEN)"
+    seed_claude_onboarding "subscription"
 elif [ -n "${ANTHROPIC_API_KEY:-}" ]; then
     log "Claude auth: API key (ANTHROPIC_API_KEY)"
+    claude_api_key_suffix="$ANTHROPIC_API_KEY"
+    if [ "${#claude_api_key_suffix}" -gt 20 ]; then
+        claude_api_key_suffix="${claude_api_key_suffix: -20}"
+    fi
+    seed_claude_onboarding "API key" "$claude_api_key_suffix"
+    unset claude_api_key_suffix
 else
     log "Claude auth: NONE configured (use an interactive login; it persists on the home volume)"
 fi

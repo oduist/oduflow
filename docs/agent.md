@@ -75,6 +75,10 @@ ANTHROPIC_API_KEY = ""         # Claude API key (used when no OAuth token)
 OPENAI_API_KEY = ""            # Codex API key
 ```
 
+When `CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY` is configured, the
+container automatically marks Claude Code's first-run onboarding as complete,
+so Agent CLI opens directly in the REPL without asking to select a login method.
+
 See the [`[agent]`](installation.md#agent-settings) and
 [per-team](installation.md#per-team-settings) settings tables for the full
 reference.
