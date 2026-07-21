@@ -4903,10 +4903,11 @@ function ensureChatAssets() {
       document.head.appendChild(s);
     });
   }
+  // Increment the cache version whenever chat.js changes (see AGENTS.md).
   _chatAssets = Promise.all([
     loadScript('/static/marked.min.js'),
     loadScript('/static/acp-client.js')
-  ]).then(function() { return loadScript('/static/chat.js'); });
+  ]).then(function() { return loadScript('/static/chat.js?v=1'); });
   return _chatAssets;
 }
 
