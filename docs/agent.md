@@ -110,6 +110,7 @@ reference.
 - Environments created before per-environment tokens existed have no scoped
   token; their consoles warn and the agent works without MCP until the
   environment is updated/recreated.
+
 The published image contains redistributable open-source software: Codex CLI,
 Codex ACP and Agent Browser are Apache-2.0, and Debian Chromium includes its
 upstream component license notices. Claude Code and its adapter are installed

@@ -98,6 +98,7 @@ mkdir -p "$CODEX_HOME"
     echo "[mcp_servers.agent_browser]"
     echo 'command = "agent-browser"'
     echo 'args = ["mcp", "--tools", "all"]'
+    echo 'env_vars = ["AGENT_BROWSER_SESSION", "AGENT_BROWSER_EXECUTABLE_PATH"]'
 } > "$CODEX_HOME/config.toml"
 log "base Codex config written (Agent Browser built in; Oduflow is per session)"
 

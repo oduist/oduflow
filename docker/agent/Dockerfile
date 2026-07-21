@@ -28,7 +28,7 @@
 
 FROM node:24-bookworm-slim
 
-ARG CODER_VERSION=0.1.0
+ARG CODER_VERSION=0.2.0
 LABEL org.opencontainers.image.title="oduflow-coder" \
       org.opencontainers.image.version="${CODER_VERSION}" \
       org.opencontainers.image.source="https://github.com/oduist/oduflow"

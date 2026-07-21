@@ -112,7 +112,9 @@ def test_wire_codex_acp_mcp_adds_scoped_server_and_preserves_others():
         }
     )
     wired = json.loads(
-        _wire_codex_acp_mcp(frame, "http://scoped/mcp/env", "scoped-token")
+        _wire_codex_acp_mcp(
+            frame, "http://scoped/mcp/env", "scoped-token", "environment-x"
+        )
     )
     assert wired["params"]["mcpServers"] == [
         {"name": "custom", "command": "custom-mcp", "args": [], "env": []},
@@ -120,7 +122,13 @@ def test_wire_codex_acp_mcp_adds_scoped_server_and_preserves_others():
             "name": "agent_browser",
             "command": "agent-browser",
             "args": ["mcp", "--tools", "all"],
-            "env": [],
+            "env": [
+                {"name": "AGENT_BROWSER_SESSION", "value": "environment-x"},
+                {
+                    "name": "AGENT_BROWSER_EXECUTABLE_PATH",
+                    "value": "/usr/bin/chromium",
+                },
+            ],
         },
         {
             "type": "http",
@@ -141,26 +149,28 @@ def test_wire_codex_acp_mcp_handles_load_but_not_other_frames():
         }
     )
     assert (
-        json.loads(_wire_codex_acp_mcp(load, "http://scoped", "token"))["params"][
-            "mcpServers"
-        ][0]["name"]
+        json.loads(_wire_codex_acp_mcp(load, "http://scoped", "token", "env"))[
+            "params"
+        ]["mcpServers"][0]["name"]
         == "agent_browser"
     )
-    load_servers = json.loads(_wire_codex_acp_mcp(load, "http://scoped", "token"))[
-        "params"
-    ]["mcpServers"]
+    load_servers = json.loads(
+        _wire_codex_acp_mcp(load, "http://scoped", "token", "env")
+    )["params"]["mcpServers"]
     assert [server["name"] for server in load_servers] == [
         "agent_browser",
         "oduflow",
     ]
 
     prompt = '{"jsonrpc":"2.0","method":"session/prompt","params":{}}'
-    assert _wire_codex_acp_mcp(prompt, "http://scoped", "token") == prompt
-    no_token = json.loads(_wire_codex_acp_mcp(load, "http://scoped", ""))
+    assert _wire_codex_acp_mcp(prompt, "http://scoped", "token", "env") == prompt
+    no_token = json.loads(_wire_codex_acp_mcp(load, "http://scoped", "", "env"))
     assert [server["name"] for server in no_token["params"]["mcpServers"]] == [
         "agent_browser"
     ]
-    assert _wire_codex_acp_mcp("not-json", "http://scoped", "token") == "not-json"
+    assert (
+        _wire_codex_acp_mcp("not-json", "http://scoped", "token", "env") == "not-json"
+    )
 
 
 def test_delete_environment_clears_chat_sessions(tmp_path, monkeypatch):

@@ -420,7 +420,9 @@ def _codex_cli_cmd(mcp_url: str, model: str = "") -> list[str]:
     return cmd
 
 
-def _wire_codex_acp_mcp(frame: str, mcp_url: str, mcp_token: str) -> str:
+def _wire_codex_acp_mcp(
+    frame: str, mcp_url: str, mcp_token: str, browser_session: str
+) -> str:
     """Inject built-in MCP servers into Codex ACP session-open requests.
 
     The browser intentionally knows neither URL nor token. The WebSocket relay
@@ -456,7 +458,13 @@ def _wire_codex_acp_mcp(frame: str, mcp_url: str, mcp_token: str) -> str:
             "name": "agent_browser",
             "command": "agent-browser",
             "args": ["mcp", "--tools", "all"],
-            "env": [],
+            "env": [
+                {"name": "AGENT_BROWSER_SESSION", "value": browser_session},
+                {
+                    "name": "AGENT_BROWSER_EXECUTABLE_PATH",
+                    "value": "/usr/bin/chromium",
+                },
+            ],
         }
     )
     if mcp_token:
@@ -3374,7 +3382,12 @@ def _build_routes(
                         if not text:
                             continue
                         if agent_type == "codex":
-                            text = _wire_codex_acp_mcp(text, mcp_url, mcp_token or "")
+                            text = _wire_codex_acp_mcp(
+                                text,
+                                mcp_url,
+                                mcp_token or "",
+                                os.path.basename(checkout),
+                            )
                         frame = text if text.endswith("\n") else text + "\n"
                         await loop.run_in_executor(
                             None, raw_sock.sendall, frame.encode("utf-8")
