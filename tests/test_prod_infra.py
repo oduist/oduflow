@@ -67,7 +67,7 @@ class TestProductionWorkloadReconciliation:
 
         app.stop.assert_not_called()
 
-    def test_enabled_ensures_postgres_before_starting_all_odoo(self, settings):
+    def test_reenable_ensures_postgres_before_starting_all_odoo(self, settings):
         settings = Settings(
             base_data_dir=settings.base_data_dir,
             etc_dir=settings.etc_dir,
@@ -81,6 +81,11 @@ class TestProductionWorkloadReconciliation:
         app_a.start.side_effect = lambda: events.append(app_a.name)
         app_b.start.side_effect = lambda: events.append(app_b.name)
         client = MagicMock()
+        # PG stopped before ensure_prod_infra is the disable fingerprint that
+        # marks this as a genuine re-enable transition.
+        client.containers.get.return_value = _container(
+            settings.prod_db_container, status="exited"
+        )
         client.containers.list.return_value = [app_b, postgres, app_a]
 
         with patch.object(
@@ -92,6 +97,26 @@ class TestProductionWorkloadReconciliation:
 
         assert events == ["postgres", app_a.name, app_b.name]
         postgres.start.assert_not_called()
+
+    def test_steady_restart_preserves_manual_stops(self, settings):
+        settings = Settings(
+            base_data_dir=settings.base_data_dir,
+            etc_dir=settings.etc_dir,
+            prod_enabled=True,
+            teams=settings.teams,
+        )
+        client = MagicMock()
+        # PG already running => ordinary restart, not a re-enable: a production
+        # stopped via stop_production must stay stopped.
+        client.containers.get.return_value = _container(
+            settings.prod_db_container, status="running"
+        )
+
+        with patch.object(system_ops, "ensure_prod_infra") as ensure:
+            system_ops.reconcile_prod_workloads(client, settings)
+
+        ensure.assert_called_once()
+        client.containers.list.assert_not_called()
 
 
 class TestLazyProvisioning:
