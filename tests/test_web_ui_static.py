@@ -22,18 +22,28 @@ def _client(tmp_path) -> TestClient:
     return TestClient(app)
 
 
-def test_chat_script_uses_positive_integer_cache_version(tmp_path):
+def test_chat_assets_share_one_positive_integer_cache_version(tmp_path):
     client = _client(tmp_path)
     dashboard = client.get("/")
-
     assert dashboard.status_code == 200
-    match = re.search(r"/static/chat\.js\?v=([1-9][0-9]*)", dashboard.text)
-    assert match is not None
 
-    versioned = client.get(match.group(0))
-    unversioned = client.get("/static/chat.js")
+    # chat.js and acp-client.js are an interdependent pair; the dashboard holds
+    # ONE shared cache version (CHAT_V) so a single bump busts both at once.
+    match = re.search(r"var CHAT_V = '([1-9][0-9]*)'", dashboard.text)
+    assert match is not None, "CHAT_V positive integer cache version not found"
+    version = match.group(1)
 
-    assert versioned.status_code == 200
-    assert versioned.headers["content-type"].startswith("application/javascript")
-    assert versioned.headers["cache-control"] == "public, max-age=86400"
-    assert versioned.content == unversioned.content
+    for filename in ("chat.js", "acp-client.js"):
+        # Both assets must reference the shared CHAT_V, not a hardcoded number,
+        # so they can never drift out of sync.
+        assert re.search(
+            rf"/static/{re.escape(filename)}\?v='\s*\+\s*CHAT_V", dashboard.text
+        ), f"{filename} does not use the shared CHAT_V cache version"
+
+        versioned = client.get(f"/static/{filename}?v={version}")
+        unversioned = client.get(f"/static/{filename}")
+
+        assert versioned.status_code == 200
+        assert versioned.headers["content-type"].startswith("application/javascript")
+        assert versioned.headers["cache-control"] == "public, max-age=86400"
+        assert versioned.content == unversioned.content

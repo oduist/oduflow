@@ -4903,11 +4903,14 @@ function ensureChatAssets() {
       document.head.appendChild(s);
     });
   }
-  // Increment the cache version whenever chat.js changes (see AGENTS.md).
+  // chat.js and acp-client.js are an interdependent pair of our own code; bump
+  // this shared CHAT_V whenever either one changes (see AGENTS.md). One version
+  // busts both at once, preventing a stale chat.js/acp-client.js mismatch.
+  var CHAT_V = '1';
   _chatAssets = Promise.all([
     loadScript('/static/marked.min.js'),
-    loadScript('/static/acp-client.js')
-  ]).then(function() { return loadScript('/static/chat.js?v=1'); });
+    loadScript('/static/acp-client.js?v=' + CHAT_V)
+  ]).then(function() { return loadScript('/static/chat.js?v=' + CHAT_V); });
   return _chatAssets;
 }
 
