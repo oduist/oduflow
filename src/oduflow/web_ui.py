@@ -21,7 +21,7 @@ from urllib.parse import quote, urlsplit
 from itsdangerous import BadData, URLSafeTimedSerializer
 from starlette.datastructures import Headers
 from starlette.exceptions import HTTPException
-from starlette.requests import HTTPConnection, Request
+from starlette.requests import ClientDisconnect, HTTPConnection, Request
 from starlette.responses import (
     HTMLResponse,
     JSONResponse,
@@ -2414,12 +2414,19 @@ def _build_routes(
         size = 0
         too_large = False
         with tempfile.TemporaryFile() as source:
-            async for chunk in request.stream():
-                size += len(chunk)
-                if size > agent_uploads.MAX_FILE_BYTES:
-                    too_large = True
-                    continue
-                source.write(chunk)
+            try:
+                async for chunk in request.stream():
+                    size += len(chunk)
+                    if size > agent_uploads.MAX_FILE_BYTES:
+                        too_large = True
+                        continue
+                    source.write(chunk)
+            except ClientDisconnect:
+                # Normal outcome, not an error: the browser aborts the XHR when
+                # the user removes an in-flight attachment or closes the tab.
+                return JSONResponse(
+                    {"ok": False, "error": "Upload cancelled."}, status_code=400
+                )
             if too_large:
                 return JSONResponse(
                     {
