@@ -64,6 +64,8 @@ def _check_traefik(client: Any, settings: Settings) -> dict[str, Any]:
 
 
 def _check_s3(settings: Settings) -> dict[str, Any]:
+    if not settings.prod_enabled:
+        return {"status": "off", "detail": "production hosting disabled"}
     if settings.backup is None:
         return {"status": "off", "detail": "backups not configured"}
     from oduflow.s3_client import check_s3
@@ -103,6 +105,35 @@ def _unhealthy_productions(settings: Settings) -> list[str]:
     return names
 
 
+def _disabled_production_status(client: Any, settings: Settings) -> dict[str, Any]:
+    """Confirm disabled production workloads are actually stopped."""
+    try:
+        containers = client.containers.list(
+            all=True,
+            filters={
+                "label": [
+                    f"{settings.managed_label}=true",
+                    "oduflow.prod=true",
+                ]
+            },
+        )
+    except Exception as exc:
+        return {"status": "error", "detail": str(exc)[:200], "running": []}
+    running = sorted(c.name for c in containers if c.status == "running")
+    if running:
+        return {
+            "status": "error",
+            "detail": "production disabled but containers still running: "
+            + ", ".join(running),
+            "running": running,
+        }
+    return {
+        "status": "off",
+        "detail": "production hosting disabled",
+        "running": [],
+    }
+
+
 def collect_health(settings: Settings, *, force: bool = False) -> dict[str, Any]:
     """All checks with a short cache. ``ok`` is the /healthz verdict."""
     now = time.monotonic()
@@ -122,17 +153,24 @@ def collect_health(settings: Settings, *, force: bool = False) -> dict[str, Any]
 
     if client is not None:
         checks["dev_pg"] = _check_pg(client, settings, settings.shared_db_container)
-        checks["prod_pg"] = _check_pg(client, settings, settings.prod_db_container)
+        checks["prod_pg"] = (
+            _check_pg(client, settings, settings.prod_db_container)
+            if settings.prod_enabled
+            else {"status": "off", "detail": "production hosting disabled"}
+        )
         checks["traefik"] = _check_traefik(client, settings)
     checks["s3"] = _check_s3(settings)
     checks["disk"] = _check_disk(settings)
 
-    unhealthy = _unhealthy_productions(settings)
-    checks["productions"] = {
-        "status": "error" if unhealthy else "ok",
-        "detail": ", ".join(unhealthy),
-        "unhealthy": unhealthy,
-    }
+    if not settings.prod_enabled and client is not None:
+        checks["productions"] = _disabled_production_status(client, settings)
+    else:
+        unhealthy = _unhealthy_productions(settings) if settings.prod_enabled else []
+        checks["productions"] = {
+            "status": "error" if unhealthy else "ok",
+            "detail": ", ".join(unhealthy),
+            "unhealthy": unhealthy,
+        }
 
     # Critical checks: dev PG always; prod PG only when provisioned; traefik
     # when in traefik mode; S3 when configured; unhealthy productions.

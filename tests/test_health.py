@@ -21,6 +21,7 @@ def settings(tmp_path):
     team_dir.mkdir()
     return Settings(
         base_data_dir=str(tmp_path),
+        prod_enabled=True,
         routing_mode="traefik",
         acme_email="a@b.co",
         teams={"1": TeamSettings(team_id="1", data_dir=str(team_dir))},
@@ -40,6 +41,7 @@ def _client(running: dict[str, bool]):
         return container
 
     client.containers.get.side_effect = _get
+    client.containers.list.return_value = []
     return client
 
 
@@ -88,6 +90,7 @@ class TestCollectHealth:
     def test_s3_error_degrades(self, settings, tmp_path):
         settings = Settings(
             base_data_dir=settings.base_data_dir,
+            prod_enabled=True,
             routing_mode="traefik",
             acme_email="a@b.co",
             backup=BackupSettings(bucket="b", access_key="a", secret_key="s"),
@@ -106,6 +109,37 @@ class TestCollectHealth:
             result = health.collect_health(settings, force=True)
         assert result["checks"]["s3"]["status"] == "error"
         assert result["ok"] is False
+
+    def test_disabled_production_checks_are_off(self, settings):
+        settings = Settings(
+            base_data_dir=settings.base_data_dir,
+            routing_mode=settings.routing_mode,
+            teams=settings.teams,
+        )
+        client = _client({"oduflow-db": True, "oduflow-traefik": True})
+        with patch("oduflow.docker_ops.client.get_client", return_value=client):
+            result = health.collect_health(settings, force=True)
+        assert result["ok"] is True
+        assert result["checks"]["prod_pg"]["status"] == "off"
+        assert result["checks"]["s3"]["status"] == "off"
+        assert result["checks"]["productions"]["status"] == "off"
+
+    def test_disabled_but_running_production_degrades(self, settings):
+        settings = Settings(
+            base_data_dir=settings.base_data_dir,
+            routing_mode=settings.routing_mode,
+            teams=settings.teams,
+        )
+        client = _client({"oduflow-db": True, "oduflow-traefik": True})
+        running = MagicMock(name="production")
+        running.name = "oduflow-1-prod-erp-odoo"
+        running.status = "running"
+        client.containers.list.return_value = [running]
+        with patch("oduflow.docker_ops.client.get_client", return_value=client):
+            result = health.collect_health(settings, force=True)
+        assert result["ok"] is False
+        assert result["checks"]["productions"]["status"] == "error"
+        assert result["checks"]["productions"]["running"] == [running.name]
 
     def test_disk_warn_does_not_degrade(self, settings):
         client = _client(

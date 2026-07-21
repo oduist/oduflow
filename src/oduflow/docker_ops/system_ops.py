@@ -1356,6 +1356,55 @@ def ensure_prod_infra(
     return True
 
 
+def reconcile_prod_workloads(client: DockerClient, settings: Settings) -> None:
+    """Apply the global production-hosting switch to managed containers.
+
+    Disabling production is an active shutdown: stop production Odoo
+    containers before the dedicated PostgreSQL container, preserving every
+    container and volume.  Enabling does the inverse: ensure PostgreSQL first,
+    then start every managed production Odoo container.  Individual container
+    failures are logged so production drift never prevents the development
+    tier from starting.
+    """
+
+    label_filters = [
+        f"{settings.managed_label}=true",
+        "oduflow.prod=true",
+    ]
+
+    if settings.prod_enabled:
+        ensure_prod_infra(client, settings)
+        containers = client.containers.list(all=True, filters={"label": label_filters})
+        for container in sorted(containers, key=lambda item: item.name):
+            if container.name == settings.prod_db_container:
+                continue
+            if container.status == "running":
+                continue
+            try:
+                container.start()
+                logger.info("Started production container %s", container.name)
+            except Exception:
+                logger.exception(
+                    "Could not start production container %s", container.name
+                )
+        return
+
+    containers = client.containers.list(all=True, filters={"label": label_filters})
+    # PostgreSQL is deliberately last so applications cannot keep writing while
+    # the shared production database is being stopped.
+    containers.sort(key=lambda item: item.name == settings.prod_db_container)
+    for container in containers:
+        if container.status != "running":
+            continue
+        try:
+            container.stop()
+            logger.info("Stopped disabled production container %s", container.name)
+        except Exception:
+            logger.exception(
+                "Could not stop disabled production container %s", container.name
+            )
+
+
 def ensure_team_tablespace(
     client: DockerClient, settings: Settings, team: TeamSettings
 ) -> str:
@@ -1501,13 +1550,14 @@ def init_system(
     for team in settings.teams.values():
         ensure_team_network(client, settings, team)
 
-    # Production tier (second PG cluster + WAL-G): lazily provisioned — a
-    # no-op until the first production exists. Best-effort so a production
-    # infra hiccup never blocks dev environments from starting.
+    # Production hosting is a strict opt-in. Disabled installations stop all
+    # managed production workloads without deleting them; enabled installations
+    # ensure PostgreSQL first and then start every production Odoo container.
+    # Best-effort so production drift never blocks dev environments from starting.
     try:
-        ensure_prod_infra(client, settings)
+        reconcile_prod_workloads(client, settings)
     except Exception:
-        logger.exception("Production infra initialization failed")
+        logger.exception("Production workload reconciliation failed")
 
     # Per-team coding-agent containers. init_system runs on every server
     # start, so oduflow.toml is applied here: enabled teams get their container

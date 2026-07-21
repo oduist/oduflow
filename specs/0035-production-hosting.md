@@ -50,6 +50,13 @@ dev quotas/reaper. Multi-production hosting on one instance works but is
 deliberately not optimized for ("90% of production installs host one
 production").
 
+Production hosting is a **strict global opt-in**: `[production].enabled =
+true` is required. When disabled, Oduflow removes the dashboard and HTTP
+entry points, rejects production MCP tools, suspends webhooks and backups,
+and stops managed production Odoo containers before the dedicated PostgreSQL
+container without deleting data. Re-enabling starts PostgreSQL first and then
+all managed production Odoo containers.
+
 **Deploys reuse the pull→classify→apply engine with code-only auto-rollback.**
 `update_production` records the pre-pull commits (full clone — history is the
 point), runs the shared engine (a "refresh" outcome is promoted to restart:
@@ -109,8 +116,8 @@ plain filestore dir (no overlay) → container with a custom-domain Traefik
 `Host()` rule, production odoo.conf chain (`.oduflow/odoo.prod.conf` > team >
 bundled) with auto-tuned workers, no `--dev=xml`, no sanitize. Failure rolls
 everything back including the registry record. `[backup]` in `oduflow.toml`
-(bucket + keys; everything else defaulted) enables the whole backup
-subsystem; `[production]` is optional entirely.
+(bucket + keys; everything else defaulted) configures the backup subsystem;
+scheduled backup work runs only while `[production].enabled = true`.
 
 ## Consequences
 
@@ -131,6 +138,9 @@ subsystem; `[production]` is optional entirely.
 
 ## History
 
+- 2026-07-21 — production hosting became an explicit global opt-in; disabling
+  it gates every entry point and stops the managed production workload stack
+  without deleting state.
 - 2026-07-11 — v1 landed as a staged series on `litnimax/production-hosting`:
   foundation (settings/naming/registry/tuning) → prod PG infra + WAL-G →
   lifecycle + MCP stack → update engine with rollback → chunkstore →

@@ -1214,7 +1214,7 @@
 
 <div class="tabs">
   <button class="tab-btn active" data-tab="environments" onclick="switchTab('environments')">Environments</button>
-  <button class="tab-btn" data-tab="production" onclick="switchTab('production')">Production</button>
+  <button class="tab-btn" data-tab="production" onclick="switchTab('production')" __PRODUCTION_TAB_HIDDEN__>Production</button>
   <button class="tab-btn" data-tab="services" onclick="switchTab('services')">Services</button>
   <button class="tab-btn" data-tab="volumes" onclick="switchTab('volumes')">Volumes</button>
   <button class="tab-btn" data-tab="extra-addons" onclick="switchTab('extra-addons')">Extra Addons</button>
@@ -2109,7 +2109,7 @@ function acceptConfirm() { _settleConfirm(true); }
   });
   tablist.addEventListener('keydown', function(e) {
     if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
-    var tabs = Array.from(document.querySelectorAll('.tab-btn'));
+    var tabs = Array.from(document.querySelectorAll('.tab-btn:not([hidden])'));
     var i = tabs.indexOf(document.activeElement);
     if (i === -1) return;
     e.preventDefault();
@@ -3111,6 +3111,10 @@ function closeLogsModal(event) {
 
 
 function switchTab(name) {
+  var targetTab = Array.from(document.querySelectorAll('.tab-btn')).find(function(b) {
+    return b.getAttribute('data-tab') === name;
+  });
+  if (!targetTab || targetTab.hidden) return;
   document.querySelectorAll('.tab-btn').forEach(function(b) {
     var active = b.getAttribute('data-tab') === name;
     b.classList.toggle('active', active);

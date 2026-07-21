@@ -26,6 +26,74 @@ def _client_without_prod():
     return client
 
 
+def _container(name, status="running"):
+    container = MagicMock()
+    container.name = name
+    container.status = status
+    return container
+
+
+class TestProductionWorkloadReconciliation:
+    def test_disabled_stops_odoo_before_postgres_without_removing(self, settings):
+        app = _container("oduflow-1-prod-erp-odoo")
+        postgres = _container(settings.prod_db_container)
+        stopped = []
+        app.stop.side_effect = lambda: stopped.append(app.name)
+        postgres.stop.side_effect = lambda: stopped.append(postgres.name)
+        client = MagicMock()
+        client.containers.list.return_value = [postgres, app]
+
+        system_ops.reconcile_prod_workloads(client, settings)
+
+        assert stopped == [app.name, postgres.name]
+        client.containers.list.assert_called_once_with(
+            all=True,
+            filters={
+                "label": [
+                    f"{settings.managed_label}=true",
+                    "oduflow.prod=true",
+                ]
+            },
+        )
+        app.remove.assert_not_called()
+        postgres.remove.assert_not_called()
+
+    def test_disabled_ignores_already_stopped_containers(self, settings):
+        app = _container("oduflow-1-prod-erp-odoo", status="exited")
+        client = MagicMock()
+        client.containers.list.return_value = [app]
+
+        system_ops.reconcile_prod_workloads(client, settings)
+
+        app.stop.assert_not_called()
+
+    def test_enabled_ensures_postgres_before_starting_all_odoo(self, settings):
+        settings = Settings(
+            base_data_dir=settings.base_data_dir,
+            etc_dir=settings.etc_dir,
+            prod_enabled=True,
+            teams=settings.teams,
+        )
+        app_a = _container("oduflow-1-prod-a-odoo", status="exited")
+        app_b = _container("oduflow-1-prod-b-odoo", status="exited")
+        postgres = _container(settings.prod_db_container, status="running")
+        events = []
+        app_a.start.side_effect = lambda: events.append(app_a.name)
+        app_b.start.side_effect = lambda: events.append(app_b.name)
+        client = MagicMock()
+        client.containers.list.return_value = [app_b, postgres, app_a]
+
+        with patch.object(
+            system_ops,
+            "ensure_prod_infra",
+            side_effect=lambda *_args, **_kwargs: events.append("postgres"),
+        ):
+            system_ops.reconcile_prod_workloads(client, settings)
+
+        assert events == ["postgres", app_a.name, app_b.name]
+        postgres.start.assert_not_called()
+
+
 class TestLazyProvisioning:
     def test_noop_without_productions(self, settings):
         client = _client_without_prod()

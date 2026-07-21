@@ -28,15 +28,16 @@ they never mix with dev environment tooling.
 
 ## Configuration
 
-Everything is optional; productions themselves are created at runtime, not in
-TOML:
+Production hosting is disabled by default. Enable it globally in TOML and
+restart Oduflow; productions themselves are then created at runtime:
 
 ```toml
-[production]            # all keys optional
+[production]
+enabled = true          # required; restart Oduflow after changing
 postgres_image = ""     # default: [database].image
 workers_cap = 8         # upper bound for auto-tuned Odoo workers
 
-[backup]                # presence enables the backup subsystem
+[backup]                # configures backups; production must also be enabled
 bucket = "acme-backups"
 access_key = "AKIA..."
 secret_key = "..."
@@ -50,8 +51,15 @@ region = "eu-central-1"
 # walg_keep_full = 7           (base backups retained)
 ```
 
-The production PostgreSQL cluster is provisioned lazily and idempotently: a
-dev-only install never grows a second database container.
+While disabled, the dashboard tab and production HTTP/webhook routes are not
+registered, production MCP tools return an enablement error, and scheduled
+backup work does not run.
+
+The production PostgreSQL cluster is provisioned lazily and idempotently. If
+production hosting is disabled, Oduflow stops every managed production Odoo
+container and then its dedicated PostgreSQL container without deleting any
+container, volume, database, filestore, or registry data. Re-enabling starts
+PostgreSQL first and then starts all managed production Odoo containers.
 
 ## Creating a production
 

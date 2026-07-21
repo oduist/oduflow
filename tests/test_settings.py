@@ -1,4 +1,5 @@
 import pytest
+from pathlib import Path
 from oduflow.settings import Settings, TeamSettings
 
 
@@ -402,6 +403,7 @@ class TestExtraRoutes:
 class TestProductionSettings:
     def test_defaults(self):
         s = Settings()
+        assert s.prod_enabled is False
         assert s.prod_db_container == "oduflow-prod-db"
         assert s.prod_db_volume == "oduflow-prod-db-data"
         assert s.prod_postgres_image == ""
@@ -412,13 +414,32 @@ class TestProductionSettings:
         toml = tmp_path / "oduflow.toml"
         toml.write_text(
             "[production]\n"
+            "enabled = true\n"
             'postgres_image = "postgres:17"\n'
             "workers_cap = 12\n"
             '[team.1]\nhostname = "localhost"\n'
         )
         s = Settings.from_toml(str(toml))
+        assert s.prod_enabled is True
         assert s.prod_postgres_image == "postgres:17"
         assert s.prod_workers_cap == 12
+
+    def test_production_section_without_enabled_stays_disabled(self, tmp_path):
+        toml = tmp_path / "oduflow.toml"
+        toml.write_text("[production]\nworkers_cap = 12\n[team.1]\n")
+        assert Settings.from_toml(str(toml)).prod_enabled is False
+
+    def test_production_enabled_must_be_boolean(self, tmp_path):
+        toml = tmp_path / "oduflow.toml"
+        toml.write_text('[production]\nenabled = "true"\n[team.1]\n')
+        with pytest.raises(ValueError, match="enabled must be true or false"):
+            Settings.from_toml(str(toml))
+
+    def test_bundled_template_has_commented_opt_in(self):
+        template = (
+            Path(__file__).parents[1] / "src" / "oduflow" / "templates" / "oduflow.toml"
+        ).read_text()
+        assert "# [production]\n# enabled = true\n" in template
 
 
 class TestBackupSettings:

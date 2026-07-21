@@ -42,9 +42,12 @@ _PW = "s3cret"
 _DATA_DIR = tempfile.mkdtemp(prefix="oduflow-uiauth-test-")
 
 
-def _settings(routing_mode: str = "port", etc_dir: str = "") -> Settings:
+def _settings(
+    routing_mode: str = "port", etc_dir: str = "", *, prod_enabled: bool = False
+) -> Settings:
     return Settings(
         routing_mode=routing_mode,
+        prod_enabled=prod_enabled,
         base_data_dir=_DATA_DIR,
         etc_dir=etc_dir,
         teams={
@@ -418,7 +421,7 @@ def test_healthz_degraded_is_503():
 
 def test_github_webhook_is_public_but_verifies_hmac():
     # No UI session: the route is reachable, but a bad signature is 401.
-    client = TestClient(_full_app(_settings()))
+    client = TestClient(_full_app(_settings(prod_enabled=True)))
     resp = client.post(
         "/api/webhooks/github",
         content=b"{}",
