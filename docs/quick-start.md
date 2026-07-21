@@ -62,8 +62,10 @@ HTTP transport starts a persistent server with Streamable HTTP, a Web Dashboard,
 ```bash
 # Start the HTTP server:
 uvx oduflow --transport http
+uvx oduflow -t http
 # or, if installed:
 oduflow --transport http
+oduflow -t http
 ```
 
 The server starts on `http://0.0.0.0:8000` by default (configurable via `[server]` section in `oduflow.toml`). The MCP endpoint is at `/mcp`.

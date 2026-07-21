@@ -16,7 +16,9 @@ uvx oduflow
 
 # Server / HTTP mode (for remote and multi-user deployments)
 oduflow --transport http
+oduflow -t http
 uvx oduflow --transport http
+uvx oduflow -t http
 ```
 
 Shared infrastructure (Docker network, PostgreSQL, team directories) is initialized automatically on startup.

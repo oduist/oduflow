@@ -1,9 +1,10 @@
+import json
 import os
 import stat
 
 from oduflow import agent_sessions
 from oduflow.settings import Settings, TeamSettings
-from oduflow.web_ui import _acp_adapter_cmd
+from oduflow.web_ui import _acp_adapter_cmd, _codex_cli_cmd, _wire_codex_acp_mcp
 
 
 def _team(tmp_path) -> TeamSettings:
@@ -74,6 +75,102 @@ def test_acp_adapter_cmd():
     assert _acp_adapter_cmd("codex") == ["codex-acp"]
     # Unknown agent falls back to Claude (the configured default agent).
     assert _acp_adapter_cmd("something-else") == ["claude-code-acp"]
+
+
+def test_codex_cli_cmd_uses_docker_as_the_sandbox():
+    assert _codex_cli_cmd("http://scoped/mcp/env", "gpt-test") == [
+        "codex",
+        "--dangerously-bypass-approvals-and-sandbox",
+        "-c",
+        'mcp_servers.oduflow.url="http://scoped/mcp/env"',
+        "-c",
+        'mcp_servers.oduflow.bearer_token_env_var="ODUFLOW_MCP_TOKEN"',
+        "--model",
+        "gpt-test",
+    ]
+
+
+def test_wire_codex_acp_mcp_adds_scoped_server_and_preserves_others():
+    frame = json.dumps(
+        {
+            "jsonrpc": "2.0",
+            "id": 7,
+            "method": "session/new",
+            "params": {
+                "cwd": "/workspace/x",
+                "mcpServers": [
+                    {"name": "custom", "command": "custom-mcp", "args": [], "env": []},
+                    {"name": "agent_browser", "command": "wrong-browser"},
+                    {
+                        "type": "http",
+                        "name": "oduflow",
+                        "url": "http://wrong",
+                        "headers": [],
+                    },
+                ],
+            },
+        }
+    )
+    wired = json.loads(
+        _wire_codex_acp_mcp(
+            frame, "http://scoped/mcp/env", "scoped-token", "environment-x"
+        )
+    )
+    assert wired["params"]["mcpServers"] == [
+        {"name": "custom", "command": "custom-mcp", "args": [], "env": []},
+        {
+            "name": "agent_browser",
+            "command": "agent-browser",
+            "args": ["mcp", "--tools", "all"],
+            "env": [
+                {"name": "AGENT_BROWSER_SESSION", "value": "environment-x"},
+                {
+                    "name": "AGENT_BROWSER_EXECUTABLE_PATH",
+                    "value": "/usr/bin/chromium",
+                },
+            ],
+        },
+        {
+            "type": "http",
+            "name": "oduflow",
+            "url": "http://scoped/mcp/env",
+            "headers": [{"name": "Authorization", "value": "Bearer scoped-token"}],
+        },
+    ]
+
+
+def test_wire_codex_acp_mcp_handles_load_but_not_other_frames():
+    load = json.dumps(
+        {
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "session/load",
+            "params": {"sessionId": "sid", "cwd": "/workspace", "mcpServers": []},
+        }
+    )
+    assert (
+        json.loads(_wire_codex_acp_mcp(load, "http://scoped", "token", "env"))[
+            "params"
+        ]["mcpServers"][0]["name"]
+        == "agent_browser"
+    )
+    load_servers = json.loads(
+        _wire_codex_acp_mcp(load, "http://scoped", "token", "env")
+    )["params"]["mcpServers"]
+    assert [server["name"] for server in load_servers] == [
+        "agent_browser",
+        "oduflow",
+    ]
+
+    prompt = '{"jsonrpc":"2.0","method":"session/prompt","params":{}}'
+    assert _wire_codex_acp_mcp(prompt, "http://scoped", "token", "env") == prompt
+    no_token = json.loads(_wire_codex_acp_mcp(load, "http://scoped", "", "env"))
+    assert [server["name"] for server in no_token["params"]["mcpServers"]] == [
+        "agent_browser"
+    ]
+    assert (
+        _wire_codex_acp_mcp("not-json", "http://scoped", "token", "env") == "not-json"
+    )
 
 
 def test_delete_environment_clears_chat_sessions(tmp_path, monkeypatch):

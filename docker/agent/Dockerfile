@@ -11,8 +11,10 @@
 # the structured browser chat over the same bridge. The container just stays
 # alive.
 #
-# LICENSING: this image bakes in only Apache-2.0 components (OpenAI Codex CLI
-# and the ACP adapters' Codex side), which we may redistribute. Claude Code
+# LICENSING: the published image contains redistributable open-source software.
+# Codex CLI, codex-acp and agent-browser are Apache-2.0; Debian's Chromium
+# package carries its upstream BSD-style/component licenses and preserves the
+# corresponding notices under /usr/share/doc. Claude Code
 # (@anthropic-ai/claude-code) and its ACP adapter are PROPRIETARY-adjacent
 # (Anthropic Commercial Terms; the adapter pulls Anthropic's closed SDK), so
 # they are NOT part of the published image: entrypoint.sh npm-installs them at
@@ -24,9 +26,9 @@
 # (see AGENTS.md "Publishing the Coder Image").
 # See specs/0029-agent-console-and-chat.md.
 
-FROM node:22-bookworm-slim
+FROM node:24-bookworm-slim
 
-ARG CODER_VERSION=0.1.0
+ARG CODER_VERSION=0.2.0
 LABEL org.opencontainers.image.title="oduflow-coder" \
       org.opencontainers.image.version="${CODER_VERSION}" \
       org.opencontainers.image.source="https://github.com/oduist/oduflow"
@@ -36,16 +38,28 @@ RUN apt-get update \
         git \
         ca-certificates \
         jq \
+        chromium \
     && rm -rf /var/lib/apt/lists/*
 
-# Apache-2.0 components only (redistribution OK):
-#   - OpenAI Codex CLI + its ACP (Agent Client Protocol) adapter.
+# The upstream Node image already reserves uid/gid 1000 for its `node` user.
+# Rename that account instead of inventing another numeric identity: files in
+# the persistent HOME/workspace volumes have one stable owner on every host.
+RUN usermod --login agent --home /home/agent --move-home --shell /bin/bash node \
+    && groupmod --new-name agent node \
+    && mkdir -p /workspace \
+    && chown agent:agent /workspace
+
+# Apache-2.0 npm components (redistribution OK):
+#   - OpenAI Codex CLI + its ACP (Agent Client Protocol) adapter;
+#   - agent-browser, including its stdio MCP server. Pin the browser package so
+#     its MCP surface is deterministic; current releases require Node >= 24.
 # NOTE: the Codex ACP bridge package is still settling (published
 # `@agentclientprotocol/codex-acp`, `@zed-industries/codex-acp` on GitHub, and an
 # emerging native `codex --acp`). Confirm the working one at build time.
 RUN npm install -g \
         @openai/codex \
         @agentclientprotocol/codex-acp \
+        agent-browser@0.32.3 \
     && npm cache clean --force
 
 # Agent auth + sessions live under HOME (mounted from the persistent home
@@ -56,11 +70,12 @@ RUN npm install -g \
 # for the runtime-installed Claude packages also sits on the HOME volume
 # (one-time download, survives recreation); its bin dir is on PATH for both
 # the entrypoint and `docker exec` sessions.
-ENV HOME=/root \
-    CLAUDE_CONFIG_DIR=/root/.claude \
-    CODEX_HOME=/root/.codex \
-    NPM_CONFIG_PREFIX=/root/.npm-global \
-    PATH=/root/.npm-global/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ENV HOME=/home/agent \
+    CLAUDE_CONFIG_DIR=/home/agent/.claude \
+    CODEX_HOME=/home/agent/.codex \
+    AGENT_BROWSER_EXECUTABLE_PATH=/usr/bin/chromium \
+    NPM_CONFIG_PREFIX=/home/agent/.npm-global \
+    PATH=/home/agent/.npm-global/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 WORKDIR /workspace
 
@@ -68,4 +83,5 @@ COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 COPY clone-env.sh /usr/local/bin/clone-env.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/clone-env.sh
 
+USER agent
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
