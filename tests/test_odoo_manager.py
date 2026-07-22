@@ -1,5 +1,6 @@
 import json
 import os
+import tarfile
 
 import pytest
 import docker
@@ -1510,6 +1511,89 @@ class TestConnectAsUserScript:
         assert "user_context['uid'] = user.id" in script
         assert "'context': user_context" in script
         assert "'context': dict(u.context_get())" not in script
+
+
+class TestConnectAsUser:
+    _SHELL_OUTPUT = (
+        b"__ODUFLOW_SID__session-id__END__\n"
+        b"__ODUFLOW_LOGIN__jane@acme.com__END__\n"
+        b"__ODUFLOW_UID__7__END__\n"
+    )
+
+    @patch(
+        "oduflow.docker_ops.odoo_ops.load_credentials",
+        return_value={"pg_user": "u_1_main", "pg_password": "test-pw"},
+    )
+    @patch(
+        "oduflow.docker_ops.env_ops.get_env_base_url",
+        return_value=("https://main.example.com", "main.example.com"),
+    )
+    def test_each_invocation_uses_one_distinct_path_everywhere(
+        self, mock_base_url, mock_load_creds, mock_docker_client
+    ):
+        container = MagicMock()
+        container.exec_run.return_value = (0, self._SHELL_OUTPUT)
+        mock_docker_client.containers.get.return_value = container
+
+        archive_members = []
+
+        def capture_archive(_path, stream):
+            with tarfile.open(fileobj=stream, mode="r") as archive:
+                archive_members.append(archive.getnames())
+
+        container.put_archive.side_effect = capture_archive
+
+        odoo_ops.connect_as_user(
+            TEST_SETTINGS, TEST_TEAM, "main", "jane@acme.com"
+        )
+        odoo_ops.connect_as_user(
+            TEST_SETTINGS, TEST_TEAM, "main", "jane@acme.com"
+        )
+
+        shell_calls = [
+            call
+            for call in container.exec_run.call_args_list
+            if call.args[0][:2] == ["sh", "-c"]
+        ]
+        shell_paths = [call.args[0][2].rsplit("< ", 1)[1] for call in shell_calls]
+        cleanup_paths = [
+            call.args[0][2]
+            for call in container.exec_run.call_args_list
+            if call.args[0][:2] == ["rm", "-f"]
+        ]
+
+        assert len(set(shell_paths)) == 2
+        assert archive_members == [
+            [shell_paths[0].removeprefix("/tmp/")],
+            [shell_paths[1].removeprefix("/tmp/")],
+        ]
+        assert cleanup_paths == shell_paths
+        assert all(call.kwargs["user"] == "odoo" for call in shell_calls)
+
+    @patch("oduflow.docker_ops.odoo_ops.secrets.token_hex", return_value="a1b2c3")
+    @patch(
+        "oduflow.docker_ops.odoo_ops.load_credentials",
+        return_value={"pg_user": "u_1_main", "pg_password": "test-pw"},
+    )
+    def test_cleanup_targets_invocation_file_after_exec_raises(
+        self, mock_load_creds, mock_token_hex, mock_docker_client
+    ):
+        container = MagicMock()
+        container.exec_run.side_effect = [RuntimeError("exec failed"), (0, b"")]
+        mock_docker_client.containers.get.return_value = container
+
+        with pytest.raises(RuntimeError, match="exec failed"):
+            odoo_ops.connect_as_user(
+                TEST_SETTINGS, TEST_TEAM, "main", "jane@acme.com"
+            )
+
+        assert container.exec_run.call_args_list[0].args[0][0:2] == ["sh", "-c"]
+        assert container.exec_run.call_args_list[1].args[0] == [
+            "rm",
+            "-f",
+            "/tmp/_oduflow_connect_script_a1b2c3.py",
+        ]
+        assert container.exec_run.call_count == 2
 
 
 class TestGetLogs:

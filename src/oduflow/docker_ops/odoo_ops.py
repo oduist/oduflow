@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import re
+import secrets
 from typing import Any
 
 import docker
@@ -745,69 +746,81 @@ def connect_as_user(
     # sentinel-framed so they survive the merged banner/log stream.
     mint_script = _build_connect_as_user_script(user)
 
-    script_path = "/tmp/_oduflow_connect_script.py"
+    script_basename = f"_oduflow_connect_script_{secrets.token_hex(16)}.py"
+    script_path = f"/tmp/{script_basename}"
     data = mint_script.encode("utf-8")
     tar_stream = io.BytesIO()
     with tarfile.open(fileobj=tar_stream, mode="w") as tar:
-        info = tarfile.TarInfo(name="_oduflow_connect_script.py")
+        info = tarfile.TarInfo(name=script_basename)
         info.size = len(data)
         tar.addfile(info, io.BytesIO(data))
     tar_stream.seek(0)
-    container.put_archive("/tmp", tar_stream)
+    try:
+        container.put_archive("/tmp", tar_stream)
 
-    cmd = (
-        f"odoo shell --no-http --stop-after-init "
-        f"--db_host={settings.shared_db_container} "
-        f"-r {creds['pg_user']} -w {creds['pg_password']} "
-        f"--database={env_db} "
-        f"< {script_path}"
-    )
-    logger.info("Minting session", extra={"env_name": env_name})
-    exit_code, output = container.exec_run(["sh", "-c", cmd], user="odoo")
-    output_str = output.decode("utf-8") if isinstance(output, bytes) else str(output)
-    container.exec_run(["rm", "-f", script_path])
-
-    err = _extract_sentinel(output_str, "ERR")
-    if err is not None:
-        if err.startswith("NOTFOUND:"):
-            raise NotFoundError(
-                f"User '{err[len('NOTFOUND:') :]}' not found in environment "
-                f"'{env_name}'. Pass an existing login or numeric user id."
-            )
-        raise ExternalCommandError("odoo shell (connect_as_user)", exit_code, err)
-
-    sid = _extract_sentinel(output_str, "SID")
-    if not sid:
-        # No sid and no framed error → surface the raw shell output for debugging.
-        raise ExternalCommandError(
-            "odoo shell (connect_as_user)", exit_code, output_str
+        cmd = (
+            f"odoo shell --no-http --stop-after-init "
+            f"--db_host={settings.shared_db_container} "
+            f"-r {creds['pg_user']} -w {creds['pg_password']} "
+            f"--database={env_db} "
+            f"< {script_path}"
+        )
+        logger.info("Minting session", extra={"env_name": env_name})
+        exit_code, output = container.exec_run(["sh", "-c", cmd], user="odoo")
+        output_str = (
+            output.decode("utf-8") if isinstance(output, bytes) else str(output)
         )
 
-    login = _extract_sentinel(output_str, "LOGIN") or user
-    uid = _extract_sentinel(output_str, "UID") or ""
-    ttl_raw = _extract_sentinel(output_str, "TTL")
-    try:
-        ttl = int(ttl_raw) if ttl_raw else _DEFAULT_SESSION_LIFETIME
-    except ValueError:
-        ttl = _DEFAULT_SESSION_LIFETIME
+        err = _extract_sentinel(output_str, "ERR")
+        if err is not None:
+            if err.startswith("NOTFOUND:"):
+                raise NotFoundError(
+                    f"User '{err[len('NOTFOUND:') :]}' not found in environment "
+                    f"'{env_name}'. Pass an existing login or numeric user id."
+                )
+            raise ExternalCommandError(
+                "odoo shell (connect_as_user)", exit_code, err
+            )
 
-    from oduflow.docker_ops.env_ops import get_env_base_url
+        sid = _extract_sentinel(output_str, "SID")
+        if not sid:
+            # No sid and no framed error → surface the raw shell output for debugging.
+            raise ExternalCommandError(
+                "odoo shell (connect_as_user)", exit_code, output_str
+            )
 
-    base_url, cookie_domain = get_env_base_url(settings, team, env_name, container)
-    expires_at = (
-        datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(seconds=ttl)
-    ).strftime("%Y-%m-%dT%H:%M:%SZ")
+        login = _extract_sentinel(output_str, "LOGIN") or user
+        uid = _extract_sentinel(output_str, "UID") or ""
+        ttl_raw = _extract_sentinel(output_str, "TTL")
+        try:
+            ttl = int(ttl_raw) if ttl_raw else _DEFAULT_SESSION_LIFETIME
+        except ValueError:
+            ttl = _DEFAULT_SESSION_LIFETIME
 
-    logger.info("Connected as user", extra={"env_name": env_name, "login": login})
-    return {
-        "sid": sid,
-        "login": login,
-        "uid": uid,
-        "base_url": base_url,
-        "cookie_domain": cookie_domain,
-        "url": f"{base_url}/web",
-        "expires_at": expires_at,
-    }
+        from oduflow.docker_ops.env_ops import get_env_base_url
+
+        base_url, cookie_domain = get_env_base_url(
+            settings, team, env_name, container
+        )
+        expires_at = (
+            datetime.datetime.now(datetime.timezone.utc)
+            + datetime.timedelta(seconds=ttl)
+        ).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+        logger.info(
+            "Connected as user", extra={"env_name": env_name, "login": login}
+        )
+        return {
+            "sid": sid,
+            "login": login,
+            "uid": uid,
+            "base_url": base_url,
+            "cookie_domain": cookie_domain,
+            "url": f"{base_url}/web",
+            "expires_at": expires_at,
+        }
+    finally:
+        container.exec_run(["rm", "-f", script_path])
 
 
 def list_env_users(
