@@ -12,9 +12,9 @@
 # alive.
 #
 # LICENSING: the published image contains redistributable open-source software.
-# Codex CLI, codex-acp and agent-browser are Apache-2.0; Debian's Chromium
-# package carries its upstream BSD-style/component licenses and preserves the
-# corresponding notices under /usr/share/doc. Claude Code
+# Codex CLI, codex-acp and agent-browser are Apache-2.0; ruff is MIT/Apache-2.0;
+# Debian's Chromium package carries its upstream BSD-style/component licenses and
+# preserves the corresponding notices under /usr/share/doc. Claude Code
 # (@anthropic-ai/claude-code) and its ACP adapter are PROPRIETARY-adjacent
 # (Anthropic Commercial Terms; the adapter pulls Anthropic's closed SDK), so
 # they are NOT part of the published image: entrypoint.sh npm-installs them at
@@ -28,18 +28,36 @@
 
 FROM node:24-bookworm-slim
 
-ARG CODER_VERSION=0.2.1
+ARG CODER_VERSION=0.2.2
 LABEL org.opencontainers.image.title="oduflow-coder" \
       org.opencontainers.image.version="${CODER_VERSION}" \
       org.opencontainers.image.source="https://github.com/oduist/oduflow"
 
+# Shell tools the coding agent reaches for from Bash: curl (ad-hoc HTTP), less
+# (pager other CLIs shell out to), ripgrep (rg; fast code search), fd-find +
+# tree (file find + dir overview), and python3/pip (host for ruff, below).
+# fd-find installs its binary as `fdfind` on Debian to avoid a name clash, so
+# symlink `fd` onto PATH for the command name agents expect.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         git \
         ca-certificates \
+        curl \
+        fd-find \
         jq \
+        less \
+        python3 \
+        python3-pip \
+        ripgrep \
+        tree \
         chromium \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && ln -s "$(command -v fdfind)" /usr/local/bin/fd
+
+# Ruff: fast lint + format for Odoo Python, so the agent can validate a change
+# locally before git push + pull_and_apply. Self-contained binary; Debian marks
+# the system env externally-managed (PEP 668), hence --break-system-packages.
+RUN python3 -m pip install --no-cache-dir --break-system-packages ruff
 
 # The upstream Node image already reserves uid/gid 1000 for its `node` user.
 # Rename that account instead of inventing another numeric identity: files in
