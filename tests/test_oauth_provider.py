@@ -205,17 +205,36 @@ class TestOduflowOAuthProvider:
         # A non-issued value is not a valid refresh token.
         assert _run(provider.load_refresh_token(client, "team_1")) is None
 
-    def test_minted_access_token_expires(self, monkeypatch):
+    def test_expired_access_token_keeps_refresh_token_across_restart(
+        self, monkeypatch
+    ):
         from oduflow import oauth_token_store as store_mod
+        from mcp.server.auth.provider import TokenError
 
-        provider = OduflowOAuthProvider(_settings())
+        data_dir = tempfile.mkdtemp()
+        provider = OduflowOAuthProvider(_settings(base_data_dir=data_dir))
         clock = {"t": 1000.0}
         monkeypatch.setattr(store_mod.time, "time", lambda: clock["t"])
         token = _mint(provider)
         assert _run(provider.load_access_token(token.access_token)) is not None
-        # Advance past the TTL: the token is rejected and purged.
+
+        # A restart after the TTL prunes only the expired access record. The
+        # refresh record remains available to rotate into a new pair.
         clock["t"] = 1000.0 + 3600 + 1
-        assert _run(provider.load_access_token(token.access_token)) is None
+        restarted = OduflowOAuthProvider(_settings(base_data_dir=data_dir))
+        assert _run(restarted.load_access_token(token.access_token)) is None
+
+        client = _run(restarted.get_client("team_1"))
+        refresh = _run(restarted.load_refresh_token(client, token.refresh_token))
+        assert refresh is not None
+        rotated = _run(restarted.exchange_refresh_token(client, refresh, []))
+        assert _run(restarted.load_access_token(rotated.access_token)) is not None
+
+        # Rotation consumes the old refresh token; it cannot be replayed.
+        assert _run(restarted.load_refresh_token(client, token.refresh_token)) is None
+        with pytest.raises(TokenError, match="Unknown or already-used") as exc_info:
+            _run(restarted.exchange_refresh_token(client, refresh, []))
+        assert exc_info.value.error == "invalid_grant"
 
     def test_revoke_deletes_minted_token(self):
         provider = OduflowOAuthProvider(_settings())
@@ -228,6 +247,14 @@ class TestOduflowOAuthProvider:
         assert _run(provider.load_access_token(token.access_token)) is None
         client = _run(provider.get_client("team_1"))
         assert _run(provider.load_refresh_token(client, token.refresh_token)) is None
+
+        # Explicitly revoking the refresh side also removes its access partner.
+        token = _mint(provider)
+        refresh = _run(provider.load_refresh_token(client, token.refresh_token))
+        assert refresh is not None
+        _run(provider.revoke_token(refresh))
+        assert _run(provider.load_refresh_token(client, token.refresh_token)) is None
+        assert _run(provider.load_access_token(token.access_token)) is None
 
         # The preseeded auth_token is NOT revocable at runtime (config-bound).
         preseeded = _run(provider.load_access_token("tok-a"))
