@@ -12,7 +12,7 @@ import docker
 from oduflow.docker_ops.client import get_client
 from oduflow.docker_ops import service_presets
 from oduflow.docker_ops import volume_ops
-from oduflow.errors import ConflictError, NotFoundError
+from oduflow.errors import ConflictError, NotFoundError, PrerequisiteNotMetError
 from oduflow.naming import get_service_container_name
 from oduflow.settings import Settings, TeamSettings
 
@@ -54,6 +54,22 @@ _SYSTEM_ENV_KEYS = {
     "SSH_AGENT_PID",
     "DBUS_SESSION_BUS_ADDRESS",
 }
+
+
+def _pull_service_image(client: Any, image: str) -> Any:
+    """Pull a service image and expose only safe, actionable failures."""
+    try:
+        return client.images.pull(image)
+    except docker.errors.NotFound as exc:
+        raise NotFoundError(
+            f"Docker image '{image}' was not found or is not accessible. "
+            "Check the image name, tag, and registry permissions."
+        ) from exc
+    except docker.errors.DockerException as exc:
+        raise PrerequisiteNotMetError(
+            f"Could not pull Docker image '{image}'. Check Docker connectivity, "
+            "registry availability, and registry credentials."
+        ) from exc
 
 
 def normalize_http_routes(
@@ -371,7 +387,7 @@ def create_service(
         run_kwargs["cap_add"] = list(cap_add)
 
     logger.info("Pulling image %s for service %s", image, name)
-    client.images.pull(image)
+    _pull_service_image(client, image)
 
     client.containers.run(**run_kwargs)
     logger.info("Created service container %s from image %s", container_name, image)
@@ -844,7 +860,7 @@ def update_service(
 
     # Pull the latest image
     logger.info("Pulling latest image %s for service %s", target_image, name)
-    new_image_obj = client.images.pull(target_image)
+    new_image_obj = _pull_service_image(client, target_image)
     new_digest = new_image_obj.id
     image_updated = old_digest != new_digest
 

@@ -3,7 +3,11 @@ import docker
 from unittest.mock import MagicMock, patch
 
 from oduflow.docker_ops import service_ops, system_ops
-from oduflow.errors import ConflictError, NotFoundError
+from oduflow.errors import (
+    ConflictError,
+    NotFoundError,
+    PrerequisiteNotMetError,
+)
 from oduflow.settings import Settings, TeamSettings
 
 TEST_TEAM = TeamSettings(
@@ -66,6 +70,51 @@ def mock_docker_client():
 
 
 class TestCreateService:
+    def test_missing_image_returns_safe_not_found(self, mock_docker_client):
+        mock_docker_client.containers.get.side_effect = docker.errors.NotFound("nf")
+        mock_docker_client.images.pull.side_effect = docker.errors.NotFound(
+            "404 for http+docker://localhost/v1.53/images/create?secret=token"
+        )
+
+        with pytest.raises(NotFoundError) as exc_info:
+            service_ops.create_service(
+                TEST_SETTINGS,
+                TEST_TEAM,
+                "missing",
+                "example/missing:0.7.2",
+                8080,
+            )
+
+        assert str(exc_info.value) == (
+            "Docker image 'example/missing:0.7.2' was not found or is not "
+            "accessible. Check the image name, tag, and registry permissions."
+        )
+        assert "http+docker" not in str(exc_info.value)
+        assert "secret" not in str(exc_info.value)
+        mock_docker_client.containers.run.assert_not_called()
+
+    def test_other_pull_error_returns_safe_prerequisite_error(self, mock_docker_client):
+        mock_docker_client.containers.get.side_effect = docker.errors.NotFound("nf")
+        mock_docker_client.images.pull.side_effect = docker.errors.APIError(
+            "registry failure with secret credentials"
+        )
+
+        with pytest.raises(PrerequisiteNotMetError) as exc_info:
+            service_ops.create_service(
+                TEST_SETTINGS,
+                TEST_TEAM,
+                "redis",
+                "registry.example.com/redis:7",
+                6379,
+            )
+
+        assert str(exc_info.value) == (
+            "Could not pull Docker image 'registry.example.com/redis:7'. Check "
+            "Docker connectivity, registry availability, and registry credentials."
+        )
+        assert "secret" not in str(exc_info.value)
+        mock_docker_client.containers.run.assert_not_called()
+
     def test_create_port_mode(self, mock_docker_client):
         # Network exists
         mock_docker_client.networks.get.return_value = MagicMock()
@@ -573,6 +622,38 @@ class TestUpdateService:
         container.labels = labels
         container.attrs = attrs
         return container
+
+    def test_pull_failure_keeps_existing_container(self, mock_docker_client):
+        container = self._make_container(
+            image_tags=["redis:7"],
+            labels={"oduflow.managed": "true", "oduflow.service": "redis"},
+            attrs={"Config": {"Env": []}},
+        )
+        container.image.id = "sha256:old"
+        mock_docker_client.containers.get.return_value = container
+        mock_docker_client.images.pull.side_effect = docker.errors.APIError(
+            "registry unavailable"
+        )
+        preset = {
+            "name": "redis",
+            "image": "redis:7",
+            "port": 6379,
+            "hostname": "",
+            "env_vars": {},
+        }
+
+        with (
+            patch(
+                "oduflow.docker_ops.service_ops.service_presets.get_preset",
+                return_value=preset,
+            ),
+            pytest.raises(PrerequisiteNotMetError),
+        ):
+            service_ops.update_service(TEST_SETTINGS, TEST_TEAM, "redis")
+
+        container.stop.assert_not_called()
+        container.remove.assert_not_called()
+        mock_docker_client.containers.run.assert_not_called()
 
     def test_update_uses_preset(self, mock_docker_client):
         """When a preset exists, update_service reads options from it (not the container)."""
