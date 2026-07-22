@@ -27,7 +27,7 @@ pip install oduflow
 
 ### Configure
 
-All settings are configured via `oduflow.toml` (searched in `/etc/oduflow/` then `~/.oduflow/`, or set `ODUFLOW_TOML`).
+All settings are configured via `oduflow.toml`. Oduflow searches `ODUFLOW_TOML`, then `/etc/oduflow/oduflow.toml`, then `~/.oduflow/conf/oduflow.toml`.
 
 Minimal configuration:
 
@@ -49,7 +49,7 @@ mode = "port"                         # "port" | "traefik" (auto-HTTPS)
 
 [database]
 user = "odoo"
-password = "odoo"                     # auto-generated on first init; set to override
+# password = "..."                    # auto-generated on first init; set to override
 image = "postgres:15"
 
 [storage]
@@ -66,8 +66,8 @@ auto_delete_hours = 0                 # auto-delete N hours after stop; 0 disabl
 
 [team.1]
 hostname = "localhost"
-auth_token = ""                       # MCP bearer token (empty = auth disabled)
-ui_password = ""                      # Web UI password (empty = UI open)
+auth_token = ""                       # auto-filled in fresh configs; HTTP MCP Bearer token / OAuth client_secret
+ui_password = ""                      # auto-filled in fresh configs; Web UI password for admin
 port_range = [50000, 50100]           # port range for Odoo containers
 # agent_enabled = false               # enable the per-team coding agent (Agent Chat / Agent CLI)
 # agent_default = "claude"            # "claude" | "codex" — default agent for consoles/chats
@@ -78,7 +78,7 @@ port_range = [50000, 50100]           # port range for Odoo containers
 
 ### Initialize
 
-No separate init step is needed. On first launch Oduflow automatically creates a default `oduflow.toml` (if none exists) and initializes shared infrastructure (Docker network, PostgreSQL, team directories). Just start the server (below).
+No separate init step is needed. On first launch Oduflow automatically creates a default `oduflow.toml` at `/etc/oduflow/oduflow.toml` when writable, otherwise at `~/.oduflow/conf/oduflow.toml`, and initializes shared infrastructure (Docker network, PostgreSQL, team directories). Fresh configs include generated `[database].password`, `[team.1].auth_token`, and `[team.1].ui_password`; the MCP token and Web Dashboard password are also printed in the startup log.
 
 ### Set up a template
 
@@ -94,10 +94,11 @@ oduflow reload-template default
 ### Start the MCP server
 
 ```bash
-oduflow
+oduflow --transport http
+# or: oduflow -t http
 ```
 
-The server starts on `http://0.0.0.0:8000`. MCP endpoint: `http://<host>:8000/mcp`.
+For HTTP mode, the server starts on `http://0.0.0.0:8000`. MCP endpoint: `http://<host>:8000/mcp`; send `Authorization: Bearer <auth_token>` using the value from `oduflow.toml`. The Web Dashboard is at `http://<host>:8000/`; sign in as `admin` with `ui_password`.
 
 ## MCP Client Configuration
 
@@ -266,7 +267,7 @@ The agent writes code, installs the module, reads the traceback, fixes the error
 
 ## 1. Configure
 
-Create `oduflow.toml` (searched in `/etc/oduflow/` then `~/.oduflow/`, or set `ODUFLOW_TOML`):
+Create `oduflow.toml` if you want to customize before first launch. Oduflow searches `ODUFLOW_TOML`, then `/etc/oduflow/oduflow.toml`, then `~/.oduflow/conf/oduflow.toml`:
 
 ```toml
 [team.1]
@@ -275,21 +276,22 @@ hostname = "localhost"
 
 ## 2. Initialize the system
 
-No separate step is needed — on first launch Oduflow automatically creates a default `oduflow.toml` (if none exists) and initializes shared infrastructure (Docker network, PostgreSQL container, team directories).
+No separate step is needed — on first launch Oduflow automatically creates a default `oduflow.toml` at `/etc/oduflow/oduflow.toml` when writable, otherwise at `~/.oduflow/conf/oduflow.toml`, and initializes shared infrastructure (Docker network, PostgreSQL container, team directories). Fresh configs include generated `[database].password`, `[team.1].auth_token`, and `[team.1].ui_password`.
 
 To set up a template database, use `oduflow init-template` (see [Template Management](templates.md)).
 
 ## 3. Start the MCP server
 
 ```bash
-oduflow
+oduflow --transport http
+# or: oduflow -t http
 ```
 
-The server starts on `http://0.0.0.0:8000` by default (configurable via `[server]` section in `oduflow.toml`).
+In HTTP mode, the server starts on `http://0.0.0.0:8000` by default (configurable via `[server]` section in `oduflow.toml`).
 
 ## 4. Connect an MCP client
 
-Point your MCP client (Cursor, Cline, Amp, etc.) to `http://<host>:8000/mcp`.
+Point your MCP client (Cursor, Cline, Amp, etc.) to `http://<host>:8000/mcp` and send `Authorization: Bearer <auth_token>` using the value from `oduflow.toml`. The Web Dashboard is at `http://<host>:8000/`; sign in as `admin` with `ui_password`.
 
 ---
 
@@ -363,9 +365,9 @@ All settings are configured via a TOML file. Oduflow searches for `oduflow.toml`
 
 1. `ODUFLOW_TOML` environment variable (explicit path)
 2. `/etc/oduflow/oduflow.toml`
-3. `~/.oduflow/oduflow.toml`
+3. `~/.oduflow/conf/oduflow.toml`
 
-If no config file exists, the bundled default is automatically copied to the appropriate location on first startup.
+If no config file exists, the bundled default is copied to `/etc/oduflow/oduflow.toml` when writable, otherwise to `~/.oduflow/conf/oduflow.toml`. The copied file is populated with generated values for `[database].password`, `[team.1].auth_token`, and `[team.1].ui_password`; the generated MCP token and Web Dashboard password are also printed in the startup log.
 
 ### Minimal configuration
 
@@ -397,14 +399,15 @@ mode = "port"               # "port" (direct host port) | "traefik" (reverse pro
 # automatically and runs on each team's own hostname (issuer derived per-request),
 # so oauth_base_url is NOT needed. Set it only to pin a fixed issuer, or in port
 # mode: the public URL of this instance (for Claude.ai and other OAuth MCP
-# clients). OAuth client_id = team_<id> (non-secret); auth_token = client_secret = token.
+# clients). OAuth client_id = team_<id> (non-secret); auth_token = client_secret.
+# OAuth mints independent expiring access tokens; auth_token also works as Bearer.
 [oauth]
 # oauth_base_url = "https://oduflow.example.com"
 
 # ── Database ──────────────────────────────────────────
 [database]
 user = "odoo"               # PostgreSQL user for the shared database container
-password = "odoo"           # PostgreSQL password (auto-generated on first init; set to override)
+# password = "..."          # auto-generated on first init; set explicitly to override
 image = "postgres:15"       # PostgreSQL Docker image
 
 # ── Storage ───────────────────────────────────────────
@@ -431,8 +434,8 @@ auto_delete_hours = 0                # auto-delete stopped environments after N 
 
 [team.1]
 hostname = "localhost"               # port mode: http://{hostname}:{port}, traefik mode: https://{slug}.{hostname}
-auth_token = ""                      # MCP bearer token (empty = MCP auth disabled)
-ui_password = ""                     # Web UI password (empty = UI auth disabled)
+auth_token = ""                      # auto-filled in fresh configs; HTTP MCP Bearer token
+ui_password = ""                     # auto-filled in fresh configs; Web UI password for admin
 port_range = [50000, 50100]          # port range for Odoo containers [start, end)
 # agent_enabled = false              # enable the per-team coding agent (Agent Chat / Agent CLI)
 # agent_default = "claude"           # "claude" | "codex" — default agent for consoles/chats
@@ -464,7 +467,7 @@ port_range = [50000, 50100]          # port range for Odoo containers [start, en
 
 | Key | Default | Description |
 |---|---|---|
-| `[oauth].oauth_base_url` | *(empty)* | Public URL of this Oduflow instance used as the OAuth issuer. Oduflow runs a self-hosted OAuth 2.1 Authorization Server (exposes `/.well-known/oauth-authorization-server`, `/authorize`, `/token`) so OAuth-based MCP clients like Claude.ai can connect; the OAuth `client_id` is the non-secret `team_<id>` (e.g. `team_1`) and each team's `auth_token` is the `client_secret` and the issued access token. **In traefik mode this is enabled automatically and the issuer is derived per-request from each team's own hostname — leave empty.** Set it to pin a fixed issuer, or in port mode. Empty + port mode = plain Bearer-token auth only |
+| `[oauth].oauth_base_url` | *(empty)* | Public URL of this Oduflow instance used as the OAuth issuer. Oduflow runs a self-hosted OAuth 2.1 Authorization Server (exposes `/.well-known/oauth-authorization-server`, `/authorize`, `/token`) so OAuth-based MCP clients like Claude.ai can connect; the OAuth `client_id` is the non-secret `team_<id>` (e.g. `team_1`) and each team's `auth_token` is the `client_secret`. OAuth mints independent expiring access tokens; `auth_token` also works directly as a Bearer token. **In traefik mode this is enabled automatically and the issuer is derived per-request from each team's own hostname — leave empty.** Set it to pin a fixed issuer, or in port mode. Empty + port mode = plain Bearer-token auth only |
 
 ### Database settings
 
@@ -500,8 +503,8 @@ Each `[team.*]` section defines an isolated team with its own workspaces, templa
 | Key | Default | Description |
 |---|---|---|
 | `hostname` | `localhost` | Team hostname. In port mode: `http://{hostname}:{port}`. In traefik mode: `https://{slug}.{hostname}` |
-| `auth_token` | *(empty)* | Bearer token for MCP HTTP auth. Empty = MCP auth disabled for this team |
-| `ui_password` | *(empty)* | Password for Web UI Basic auth (user: `admin`). Separate from MCP auth token. Empty = UI auth disabled |
+| `auth_token` | *(generated in fresh config)* | Bearer token for MCP HTTP auth and OAuth client secret. Empty disables MCP auth only when explicitly allowed with `[server].allow_insecure_http = true`; otherwise HTTP startup refuses it |
+| `ui_password` | *(generated in fresh config)* | Password for Web UI login (user: `admin`). Separate from MCP auth token. Empty disables UI auth only when explicitly allowed with `[server].allow_insecure_http = true`; otherwise HTTP startup refuses it |
 | `port_range` | `[50000, 50100]` | Port range for Odoo containers `[start, end)` — supports up to 100 concurrent environments |
 | `agent_enabled` | `false` | Enable the per-team coding agent (dashboard Agent Chat / Agent CLI). Off by default |
 | `agent_default` | `claude` | Which agent consoles/chats open by default: `claude` or `codex` |
@@ -2272,17 +2275,26 @@ The web dashboard and REST API use HTTP Basic authentication with a **separate**
 
 This is independent from the MCP Bearer token (`auth_token`). Credentials are compared using `hmac.compare_digest` to prevent timing attacks.
 
+Fresh configs get a generated `ui_password` for `[team.1]` on first startup. Older HTTP configs with an empty `ui_password` are also auto-filled on startup and written back to `oduflow.toml`, so an upgrade does not expose the dashboard.
+
 ## When auth is disabled
 
 MCP auth and Web UI auth are configured independently per team:
 
-- If `auth_token` is empty, the MCP endpoint runs without authentication
-- If `ui_password` is empty, the web dashboard runs without authentication
+- If `auth_token` is empty, the MCP endpoint has no team Bearer token
+- If `ui_password` is empty, the web dashboard has no login password
 
-Warnings are logged on startup for each team:
+In HTTP mode, Oduflow refuses to start with an unauthenticated MCP endpoint or dashboard unless the operator explicitly sets:
+
+```toml
+[server]
+allow_insecure_http = true
+```
+
+Use that only behind your own authenticating proxy. In normal fresh HTTP deployments, `auth_token` and `ui_password` are generated automatically and startup logs show auth as enabled:
 
 ```
-INFO  [team.1] http://localhost:8000/ (MCP token OFF, OAuth OFF, UI auth OFF)
+INFO  [team.1] http://localhost:8000/ (MCP token ON, OAuth OFF, UI auth ON)
 ```
 
 When OAuth is enabled the status reads `OAuth ON (self-hosted)`.

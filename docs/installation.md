@@ -98,9 +98,13 @@ All settings are configured via a TOML file. Oduflow searches for `oduflow.toml`
 1. `ODUFLOW_TOML` environment variable (explicit path)
 2. `/etc/oduflow/oduflow.toml`
 3. `~/.oduflow/conf/oduflow.toml`
-4. `~/.oduflow/oduflow.toml`
 
-If no config file exists when Oduflow starts, the bundled default is automatically copied to the appropriate location.
+If no config file exists when Oduflow starts, the bundled default is copied to
+`/etc/oduflow/oduflow.toml` when that directory is writable, otherwise to
+`~/.oduflow/conf/oduflow.toml`. The copied file is populated with generated
+values for `[database].password`, `[team.1].auth_token`, and
+`[team.1].ui_password`; the generated MCP token and Web Dashboard password are
+also printed in the startup log.
 
 ### Minimal configuration
 
@@ -133,14 +137,15 @@ mode = "port"               # "port" (direct host port) | "traefik" (reverse pro
 # automatically and runs on each team's own hostname (issuer derived per-request),
 # so oauth_base_url is NOT needed. Set it only to pin a fixed issuer, or in port
 # mode: the public URL of this instance (for Claude.ai and other OAuth MCP
-# clients). OAuth client_id = team_<id> (non-secret); auth_token = client_secret = token.
+# clients). OAuth client_id = team_<id> (non-secret); auth_token = client_secret.
+# OAuth mints independent expiring access tokens; auth_token also works as Bearer.
 [oauth]
 # oauth_base_url = "https://oduflow.example.com"
 
 # ── Database ──────────────────────────────────────────
 [database]
 user = "odoo"               # PostgreSQL user for the shared database container
-password = "odoo"           # PostgreSQL password (auto-generated on first init; set to override)
+# password = "..."          # auto-generated on first init; set explicitly to override
 image = "postgres:15"       # PostgreSQL Docker image
 
 # ── Storage ───────────────────────────────────────────
@@ -167,8 +172,8 @@ auto_delete_hours = 0       # auto-delete environments stopped for N hours; 0 di
 
 [team.1]
 hostname = "localhost"               # port mode: http://{hostname}:{port}, traefik mode: https://{slug}.{hostname}
-auth_token = ""                      # MCP bearer token (empty = MCP auth disabled)
-ui_password = ""                     # Web UI password (empty = UI auth disabled)
+auth_token = ""                      # auto-filled in fresh configs; HTTP MCP Bearer token
+ui_password = ""                     # auto-filled in fresh configs; Web UI password for admin
 port_range = [50000, 50100]          # port range for Odoo containers [start, end)
 # agent_enabled = false              # enable the per-team coding agent (Agent Chat / Agent CLI)
 # agent_default = "claude"           # "claude" | "codex" — default agent for consoles/chats
@@ -202,14 +207,14 @@ port_range = [50000, 50100]          # port range for Odoo containers [start, en
 
 | Key | Default | Description |
 |---|---|---|
-| `[oauth].oauth_base_url` | *(empty)* | Public URL of this Oduflow instance used as the OAuth issuer. Oduflow runs a self-hosted OAuth 2.1 Authorization Server (exposes `/.well-known/oauth-authorization-server`, `/authorize`, `/token`) so OAuth-based MCP clients like Claude.ai can connect; the OAuth `client_id` is the non-secret `team_<id>` (e.g. `team_1`) and each team's `auth_token` is the `client_secret` and the issued access token. **In traefik mode this is enabled automatically and the issuer is derived per-request from each team's own hostname — leave empty.** Set it to pin a fixed issuer, or in port mode. Empty + port mode = plain Bearer-token auth only. See [Authentication & Security](security.md) |
+| `[oauth].oauth_base_url` | *(empty)* | Public URL of this Oduflow instance used as the OAuth issuer. Oduflow runs a self-hosted OAuth 2.1 Authorization Server (exposes `/.well-known/oauth-authorization-server`, `/authorize`, `/token`) so OAuth-based MCP clients like Claude.ai can connect; the OAuth `client_id` is the non-secret `team_<id>` (e.g. `team_1`) and each team's `auth_token` is the `client_secret`. OAuth mints independent expiring access tokens; `auth_token` also works directly as a Bearer token. **In traefik mode this is enabled automatically and the issuer is derived per-request from each team's own hostname — leave empty.** Set it to pin a fixed issuer, or in port mode. Empty + port mode = plain Bearer-token auth only. See [Authentication & Security](security.md) |
 
 ### Database settings
 
 | Key | Default | Description |
 |---|---|---|
 | `[database].user` | `odoo` | PostgreSQL user for the shared database container |
-| `[database].password` | `odoo` | PostgreSQL password. The bundled config omits it and one is auto-generated on first init; set explicitly to override |
+| `[database].password` | *(generated)* | PostgreSQL password. The bundled config omits it and one is auto-generated on first init; set explicitly to override |
 | `[database].image` | `postgres:15` | PostgreSQL Docker image |
 
 ### Storage settings
@@ -238,8 +243,8 @@ Each `[team.*]` section defines an isolated team with its own workspaces, templa
 | Key | Default | Description |
 |---|---|---|
 | `hostname` | `localhost` | Team hostname. In port mode: `http://{hostname}:{port}`. In traefik mode: `https://{slug}.{hostname}` |
-| `auth_token` | *(empty)* | Bearer token for MCP HTTP auth. Empty = MCP auth disabled for this team |
-| `ui_password` | *(empty)* | Password for Web UI Basic auth (user: `admin`). Separate from MCP auth token. Empty = UI auth disabled |
+| `auth_token` | *(generated in fresh config)* | Bearer token for MCP HTTP auth and OAuth client secret. Empty disables MCP auth only when explicitly allowed with `[server].allow_insecure_http = true`; otherwise HTTP startup refuses it |
+| `ui_password` | *(generated in fresh config)* | Password for Web UI login (user: `admin`). Separate from MCP auth token. Empty disables UI auth only when explicitly allowed with `[server].allow_insecure_http = true`; otherwise HTTP startup refuses it |
 | `port_range` | `[50000, 50100]` | Port range for Odoo containers `[start, end)` — supports up to 100 concurrent environments |
 | `agent_enabled` | `false` | Enable the per-team coding agent (dashboard Agent Chat / Agent CLI). Off by default |
 | `agent_default` | `claude` | Which agent consoles/chats open by default: `claude` or `codex` |

@@ -69,6 +69,12 @@ oduflow
 
 That's it. On first launch, Oduflow automatically creates a default config and initializes shared infrastructure (Docker network, PostgreSQL, team directories).
 
+The generated config is written to `/etc/oduflow/oduflow.toml` when writable,
+otherwise to `~/.oduflow/conf/oduflow.toml`. Fresh configs include generated
+secrets for HTTP access: `[team.1].auth_token` for MCP clients and
+`[team.1].ui_password` for the Web Dashboard. Both values are also printed in
+the startup log.
+
 By default, the server starts in **stdio** mode (for local MCP clients). For remote/multi-user deployments:
 
 ```bash
@@ -90,7 +96,12 @@ oduflow -t http
 }
 ```
 
-**HTTP (remote)** — point your MCP client to `http://<host>:8000/mcp`.
+**HTTP (remote)** — point your MCP client to `http://<host>:8000/mcp` and send
+`Authorization: Bearer <auth_token>` using the token from `oduflow.toml`.
+
+The Web Dashboard is available at `http://<host>:8000/`. Sign in as `admin`
+with the `ui_password` from `oduflow.toml`; this is separate from the MCP Bearer
+token.
 
 ---
 
