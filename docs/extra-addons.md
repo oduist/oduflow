@@ -2,7 +2,9 @@
 
 ![Extra Addons Dashboard](img/extra_addons.png)
 
-Oduflow supports mounting **extra addon repositories** (e.g. Odoo Enterprise, third-party themes) into environments. Extra repos are cloned once at the instance level and shared across environments via git worktrees.
+Oduflow supports mounting **extra addon repositories** (e.g. Odoo Enterprise,
+third-party themes) into environments. Git objects and immutable checkouts are
+shared by all development environments in a team.
 
 ## Architecture
 
@@ -11,13 +13,24 @@ Oduflow supports mounting **extra addon repositories** (e.g. Odoo Enterprise, th
   shared_repos/
     enterprise/          ← bare git clone (shared)
     custom-themes/       ← bare git clone (shared)
+  shared_extra_checkouts/
+    enterprise/
+      a1b2c3.../          ← immutable checkout of one commit (shared)
+    custom-themes/
+      d4e5f6.../          ← immutable checkout of one commit (shared)
   workspaces/
     feature-x/
       repo/              ← main project repo (existing)
-      extra/
-        enterprise/      ← git worktree (branch 19.0)
-        custom-themes/   ← git worktree (branch main)
 ```
+
+The requested branch selects a commit when an environment is created. Several
+environments on the same commit mount the same checkout read-only, without
+duplicating its files. Checkouts are keyed by commit rather than branch because
+branches move; an environment stays isolated on its current revision until it
+is explicitly synced.
+
+Production deployments retain private worktrees because their deploy engine
+records and resets each worktree HEAD during rollback.
 
 ## Setting Up Extra Repos
 
@@ -44,11 +57,12 @@ oduflow call create_environment feature-x "" default https://github.com/company/
 oduflow call create_environment feature-x "" default https://github.com/company/addons.git odoo:19.0 "enterprise:19.0,custom-themes:main"
 ```
 
-Oduflow automatically:
+For each development environment Oduflow automatically:
 
-1. Creates a git worktree for each extra repo at the specified branch
-2. Mounts the worktree **read-only** into the container as `/mnt/extra-addons-{name}`
-3. Generates a merged `odoo.conf` with all extra paths added to `addons_path`
+1. Fetches the specified branch and resolves its current commit SHA
+2. Creates or reuses the team's immutable checkout for that SHA
+3. Mounts the checkout **read-only** as `/mnt/extra-addons-{name}`
+4. Generates a merged `odoo.conf` with all extra paths added to `addons_path`
 
 ## Managing Extra Repos
 
@@ -93,24 +107,23 @@ Use `update_extra_repo` to fetch the latest changes from the remote:
 oduflow call update_extra_repo enterprise
 ```
 
-This runs `git fetch --all --prune` on the **shared bare repository** only. It does **not** affect any running environments.
+This runs `git fetch --all --prune` on the **shared bare repository** only. It
+does **not** change the checkout mounted by any running environment.
 
-### Why environments are not updated automatically
+### Updating an environment
 
-Each environment gets a **detached git worktree** pinned to a specific commit at creation time. This is by design:
-
-- **Stability** — the environment keeps working with the exact version of extra addons it was deployed with, regardless of upstream changes.
-- **Isolation** — updating one environment's dependencies cannot break another.
-- **Predictability** — `pull_and_apply` handles only the main project repository; extra addons remain unchanged.
-
-### How to update extra addons in an environment
-
-Delete and recreate the environment. The new environment will get a fresh worktree pointing to the latest commit on the specified branch:
+Run the normal sync operation:
 
 ```bash
-oduflow call delete_environment feature-x
-oduflow call create_environment feature-x "" default https://github.com/company/addons.git odoo:19.0 "enterprise:19.0"
+oduflow call pull_and_apply feature-x
 ```
 
-!!! tip
-    Run `update_extra_repo` **before** recreating the environment to ensure the bare repo has the latest commits.
+`pull_and_apply` fetches every configured extra-addons branch, creates or reuses
+the new SHA checkout, classifies its changed files, switches only that
+environment's read-only mount, and performs the required install, upgrade, or
+restart. Other environments continue using their previous checkout.
+
+Cached checkouts are deliberately not reference-counted or removed with an
+environment. Deleting the extra repository removes its bare clone and every
+cached revision after Oduflow verifies that no environment or production still
+depends on it.

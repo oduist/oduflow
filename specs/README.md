@@ -57,6 +57,7 @@ precursors).
 | [0036](0036-cross-subdomain-connect-as-landing.md) | 2026-07-19 | Cross-subdomain "Connect as user" landing: one-time token → env-host `/oduflow-connect` sets the session cookie host-only |
 | [0037](0037-built-in-agent-browser-and-noninteractive-codex.md) | 2026-07-21 | Built-in Agent Browser MCP and non-interactive Codex trust model |
 | [0038](0038-agent-chat-file-attachments.md) | 2026-07-22 | Agent Chat file attachments through persistent workspace resources |
+| [0039](0039-shared-immutable-extra-addons-checkouts.md) | 2026-07-22 | Shared immutable extra-addons checkouts for development environments |
 
 ## Design docs
 

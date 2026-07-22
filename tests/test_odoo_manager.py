@@ -719,7 +719,7 @@ class TestReloadTemplate:
         assert cleanup_paths == {f"/tmp/{name}" for name in archive_names}
 
 
-class TestPullEnvironmentLocal:
+class TestLocalSnapshotBasics:
     def test_local_snapshot_detects_added_modified_deleted(self, tmp_path):
         repo = tmp_path / "repo"
         repo.mkdir()
@@ -773,6 +773,147 @@ class TestPullEnvironmentLocal:
         ]
         env_ops._write_local_snapshot(str(repo), "env", team)
         assert env_ops._detect_local_changes(str(repo), "env", team)[1] == []
+
+
+class TestPullEnvironmentLocalAndSharedExtraCheckouts:
+    def test_replace_mount_sources_and_persist_revisions(self):
+        volumes = {
+            "/workspace/repo": {"bind": "/mnt/extra-addons", "mode": "rw"},
+            "/workspace/extra/enterprise": {
+                "bind": "/mnt/extra-addons-enterprise",
+                "mode": "ro",
+            },
+        }
+        labels = {"oduflow.extra_addons": '{"enterprise": "18.0"}'}
+
+        env_ops._replace_extra_checkout_mounts(
+            volumes,
+            labels,
+            {"enterprise": "/cache/enterprise/newsha"},
+            {"enterprise": "newsha"},
+        )
+
+        assert "/workspace/extra/enterprise" not in volumes
+        assert volumes["/cache/enterprise/newsha"] == {
+            "bind": "/mnt/extra-addons-enterprise",
+            "mode": "ro",
+        }
+        assert json.loads(labels["oduflow.extra_addons_revisions"]) == {
+            "enterprise": "newsha"
+        }
+
+    def test_pull_lazily_migrates_legacy_mount_without_code_change(
+        self, mock_docker_client, tmp_path
+    ):
+        team = TeamSettings(team_id="1", data_dir=str(tmp_path / "team"))
+        settings = Settings(teams={"1": team})
+        repo = tmp_path / "team" / "workspaces" / "env" / "repo"
+        repo.mkdir(parents=True)
+        legacy = tmp_path / "team" / "workspaces" / "env" / "extra" / "enterprise"
+        legacy.mkdir(parents=True)
+        shared = tmp_path / "team" / "shared_extra_checkouts" / "enterprise" / "a"
+        shared.mkdir(parents=True)
+
+        container = MagicMock()
+        container.labels = {
+            "oduflow.git_branch": "main",
+            "oduflow.extra_addons": json.dumps({"enterprise": "18.0"}),
+        }
+        container.attrs = {
+            "HostConfig": {
+                "Binds": [
+                    f"{repo}:/mnt/extra-addons:rw",
+                    f"{legacy}:/mnt/extra-addons-enterprise:ro",
+                ]
+            }
+        }
+        mock_docker_client.containers.get.return_value = container
+
+        with (
+            patch("oduflow.git_ops.pull_repo", return_value=("main-old", [])),
+            patch("oduflow.extra_addons.checkout_revision", return_value="a" * 40),
+            patch(
+                "oduflow.extra_addons.ensure_shared_checkout",
+                return_value={
+                    "path": str(shared),
+                    "revision": "a" * 40,
+                    "changed_files": [],
+                },
+            ),
+            patch("oduflow.docker_ops.env_ops.update_environment") as update,
+            patch("oduflow.docker_ops.env_ops._cleanup_legacy_extra_worktrees"),
+        ):
+            result = env_ops.pull_environment(settings, team, "env")
+
+        assert result["extra_addons_cache_migrated"] is True
+        update.assert_called_once_with(
+            settings,
+            team,
+            "env",
+            extra_checkout_overrides={"enterprise": str(shared)},
+            extra_revision_overrides={"enterprise": "a" * 40},
+            pull_image=False,
+            install_dependencies=False,
+        )
+
+    def test_strict_guardrail_does_not_switch_running_mount(
+        self, mock_docker_client, tmp_path
+    ):
+        team = TeamSettings(team_id="1", data_dir=str(tmp_path / "team"))
+        settings = Settings(teams={"1": team})
+        repo = tmp_path / "team" / "workspaces" / "env" / "repo"
+        repo.mkdir(parents=True)
+        shared = tmp_path / "team" / "shared_extra_checkouts" / "enterprise" / "b"
+        shared.mkdir(parents=True)
+
+        container = MagicMock()
+        container.labels = {
+            "oduflow.git_branch": "main",
+            "oduflow.extra_addons": json.dumps({"enterprise": "18.0"}),
+            "oduflow.extra_addons_revisions": json.dumps({"enterprise": "a" * 40}),
+        }
+        container.attrs = {
+            "HostConfig": {
+                "Binds": [
+                    f"{repo}:/mnt/extra-addons:rw",
+                    f"/cache/enterprise/{'a' * 40}:/mnt/extra-addons-enterprise:ro",
+                ]
+            }
+        }
+        mock_docker_client.containers.get.return_value = container
+
+        with (
+            patch("oduflow.git_ops.pull_repo", return_value=("main-old", [])),
+            patch(
+                "oduflow.extra_addons.ensure_shared_checkout",
+                return_value={
+                    "path": str(shared),
+                    "revision": "b" * 40,
+                    "changed_files": ["sale/security/rules.xml"],
+                },
+            ),
+            patch(
+                "oduflow.git_analysis.merge_recommendations",
+                return_value={
+                    "action": "upgrade",
+                    "modules_to_install": [],
+                    "modules_to_upgrade": ["sale"],
+                },
+            ),
+            patch(
+                "oduflow.git_analysis.guardrail_warnings",
+                return_value=["upgrade sale is required"],
+            ),
+            patch("oduflow.docker_ops.env_ops.update_environment") as update,
+            patch("oduflow.docker_ops.env_ops._apply_actions") as apply,
+        ):
+            result = env_ops.pull_environment(
+                settings, team, "env", restart=True, strict=True
+            )
+
+        assert result["action"] == "blocked"
+        update.assert_not_called()
+        apply.assert_not_called()
 
     @patch("oduflow.docker_ops.env_ops._apply_actions")
     def test_local_auto_uses_path_only_classification(
@@ -1154,7 +1295,7 @@ class TestUpdateEnvironment:
         "oduflow.docker_ops.env_ops.load_credentials",
         return_value={"pg_user": "u_1_main", "pg_password": "pw"},
     )
-    def test_update_no_overrides_keeps_label_env(
+    def test_update_no_overrides_keeps_persisted_image_tag_and_env(
         self,
         mock_creds,
         mock_role,
@@ -1167,6 +1308,11 @@ class TestUpdateEnvironment:
     ):
         mock_resolve_conf.return_value.exists.return_value = False
         container = self._make_container()
+        # A previous digest-pinned recreation can leave the container without
+        # image tags and with Config.Image set to the digest. The persisted
+        # Oduflow label must remain the source for future image pulls.
+        container.image.tags = []
+        container.attrs["Config"]["Image"] = "sha256:old"
         mock_docker_client.containers.get.return_value = container
         same_image = MagicMock()
         same_image.id = "sha256:old"
@@ -1179,10 +1325,62 @@ class TestUpdateEnvironment:
         # No image override → current image is reused and re-pulled
         assert run_kwargs["image"] == "odoo:15.0"
         mock_docker_client.images.pull.assert_called_once_with("odoo:15.0")
+        assert run_kwargs["labels"][TEST_SETTINGS.image_label] == "odoo:15.0"
         # No env override → env restored from the persisted label
         assert run_kwargs["environment"]["OLD"] == "1"
+        assert result["image"] == "odoo:15.0"
         assert result["env_vars"] == {"OLD": "1"}
         assert result["image_updated"] is False
+
+    def test_extra_checkout_switch_reuses_exact_image_and_skips_dependencies(
+        self, mock_docker_client
+    ):
+        container = self._make_container()
+        container.labels.update(
+            {
+                "oduflow.extra_addons": json.dumps({"enterprise": "18.0"}),
+                "oduflow.extra_addons_revisions": json.dumps({"enterprise": "a" * 40}),
+            }
+        )
+        container.attrs["HostConfig"]["Binds"].append(
+            "/old/enterprise:/mnt/extra-addons-enterprise:ro"
+        )
+        mock_docker_client.containers.get.return_value = container
+        mock_docker_client.containers.run.return_value = MagicMock()
+
+        with (
+            patch(
+                "oduflow.docker_ops.env_ops.load_credentials",
+                return_value={"pg_user": "u_1_main", "pg_password": "pw"},
+            ),
+            patch("oduflow.docker_ops.env_ops._create_pg_role"),
+            patch("oduflow.docker_ops.env_ops._reapply_odoo_conf"),
+            patch("oduflow.docker_ops.env_ops._install_apt_packages") as apt,
+            patch("oduflow.docker_ops.env_ops._install_pip_requirements") as pip,
+        ):
+            env_ops.update_environment(
+                TEST_SETTINGS,
+                TEST_TEAM,
+                "main",
+                extra_checkout_overrides={"enterprise": "/cache/enterprise/new"},
+                extra_revision_overrides={"enterprise": "b" * 40},
+                pull_image=False,
+                install_dependencies=False,
+            )
+
+        run_kwargs = mock_docker_client.containers.run.call_args.kwargs
+        assert run_kwargs["image"] == "sha256:old"
+        assert "/old/enterprise" not in run_kwargs["volumes"]
+        assert run_kwargs["volumes"]["/cache/enterprise/new"] == {
+            "bind": "/mnt/extra-addons-enterprise",
+            "mode": "ro",
+        }
+        assert json.loads(run_kwargs["labels"]["oduflow.extra_addons_revisions"]) == {
+            "enterprise": "b" * 40
+        }
+        mock_docker_client.images.pull.assert_not_called()
+        apt.assert_not_called()
+        pip.assert_not_called()
 
     @patch(
         "oduflow.docker_ops.env_ops.load_credentials",
@@ -1543,12 +1741,8 @@ class TestConnectAsUser:
 
         container.put_archive.side_effect = capture_archive
 
-        odoo_ops.connect_as_user(
-            TEST_SETTINGS, TEST_TEAM, "main", "jane@acme.com"
-        )
-        odoo_ops.connect_as_user(
-            TEST_SETTINGS, TEST_TEAM, "main", "jane@acme.com"
-        )
+        odoo_ops.connect_as_user(TEST_SETTINGS, TEST_TEAM, "main", "jane@acme.com")
+        odoo_ops.connect_as_user(TEST_SETTINGS, TEST_TEAM, "main", "jane@acme.com")
 
         shell_calls = [
             call
@@ -1583,9 +1777,7 @@ class TestConnectAsUser:
         mock_docker_client.containers.get.return_value = container
 
         with pytest.raises(RuntimeError, match="exec failed"):
-            odoo_ops.connect_as_user(
-                TEST_SETTINGS, TEST_TEAM, "main", "jane@acme.com"
-            )
+            odoo_ops.connect_as_user(TEST_SETTINGS, TEST_TEAM, "main", "jane@acme.com")
 
         assert container.exec_run.call_args_list[0].args[0][0:2] == ["sh", "-c"]
         assert container.exec_run.call_args_list[1].args[0] == [

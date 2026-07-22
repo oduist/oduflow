@@ -6,12 +6,22 @@ keeps every branch (--depth 1 --no-single-branch), so one bare repo still serves
 worktrees for any Odoo version.
 """
 
+import os
 import subprocess
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import pytest
 
-from oduflow.extra_addons import clone_extra_repo, create_worktree, list_extra_repos
-from oduflow.settings import TeamSettings
+from oduflow.extra_addons import (
+    clone_extra_repo,
+    create_worktree,
+    delete_extra_repo,
+    ensure_shared_checkout,
+    list_extra_repos,
+)
+from oduflow.settings import Settings, TeamSettings
 
 _GIT_ID = [
     "-c",
@@ -126,3 +136,84 @@ class TestCloneExtraRepoShallow:
 
         # new.xml was committed after the clone → only present if fetched.
         assert (wt / "sale_enterprise" / "new.xml").is_file()
+
+
+class TestSharedCheckoutCache:
+    def test_same_revision_reuses_one_checkout(self, team, tmp_path):
+        url = _make_git_source(tmp_path)
+        clone_extra_repo(team, "enterprise", url)
+
+        first = ensure_shared_checkout(team, "enterprise", "18.0")
+        second = ensure_shared_checkout(team, "enterprise", "18.0")
+
+        assert first["path"] == second["path"]
+        assert first["revision"] == second["revision"]
+        assert first["path"].endswith(first["revision"])
+        assert (tmp_path / "data" / "shared_extra_checkouts").is_dir()
+
+    def test_branch_update_creates_new_checkout_and_keeps_old_immutable(
+        self, team, tmp_path
+    ):
+        url = _make_git_source(tmp_path)
+        clone_extra_repo(team, "enterprise", url)
+        first = ensure_shared_checkout(team, "enterprise", "18.0")
+
+        src = tmp_path / "source"
+        subprocess.run(
+            ["git", "-C", str(src), "checkout", "18.0"],
+            check=True,
+            capture_output=True,
+        )
+        new_file = src / "sale_enterprise" / "new.xml"
+        new_file.write_text("<odoo/>")
+        subprocess.run(
+            ["git", "-C", str(src), "add", "-A"], check=True, capture_output=True
+        )
+        subprocess.run(
+            ["git", "-C", str(src), *_GIT_ID, "commit", "-m", "update"],
+            check=True,
+            capture_output=True,
+        )
+
+        second = ensure_shared_checkout(
+            team,
+            "enterprise",
+            "18.0",
+            current_revision=first["revision"],
+        )
+
+        assert second["path"] != first["path"]
+        assert second["revision"] != first["revision"]
+        assert "sale_enterprise/new.xml" in second["changed_files"]
+        assert not (Path(first["path"]) / "sale_enterprise" / "new.xml").exists()
+        assert (Path(second["path"]) / "sale_enterprise" / "new.xml").is_file()
+
+    def test_concurrent_requests_share_checkout(self, team, tmp_path):
+        url = _make_git_source(tmp_path)
+        clone_extra_repo(team, "enterprise", url)
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            results = list(
+                pool.map(
+                    lambda _index: ensure_shared_checkout(team, "enterprise", "18.0"),
+                    range(2),
+                )
+            )
+
+        assert results[0]["path"] == results[1]["path"]
+
+    def test_delete_repo_removes_all_cached_revisions(self, team, tmp_path):
+        url = _make_git_source(tmp_path)
+        clone_extra_repo(team, "enterprise", url)
+        checkout = ensure_shared_checkout(team, "enterprise", "18.0")
+        cache_root = tmp_path / "data" / "shared_extra_checkouts" / "enterprise"
+        assert cache_root.is_dir()
+
+        client = MagicMock()
+        client.containers.list.return_value = []
+        with patch("oduflow.extra_addons.get_client", return_value=client):
+            delete_extra_repo(Settings(), team, "enterprise")
+
+        assert not cache_root.exists()
+        assert not (tmp_path / "data" / "shared_repos" / "enterprise").exists()
+        assert not os.path.exists(checkout["path"])

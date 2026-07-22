@@ -1,6 +1,6 @@
 # 0010 — Extra addons repositories (bare clones + per-environment worktrees)
 
-**Status:** Adopted (still in force)
+**Status:** Adopted (development checkout lifecycle partially superseded by [[0039-shared-immutable-extra-addons-checkouts]])
 **Type:** Architecture
 **First introduced:** `d495dd8` "extra addons repos support" (2026-02-13)
 **Key code today:** `extra_addons.py` (bare clone / worktree lifecycle, fetch summaries), `docker_ops/env_ops.py` (worktree creation + read-only mount, addons_path generation), `server.py` (`add_extra_repo` / `list_extra_repos` / `update_extra_repo` / `delete_extra_repo`)
@@ -93,6 +93,10 @@ bind-mounted **read-only** into the container.
   fallback branch when none was given (`ea297fd`), since `default_branch`
   (`prod`) rarely exists in addon repos. That fallback was later removed in
   favour of **requiring an explicit branch** (`9254169`) — the current behaviour.
+- Development environments originally received one worktree each. On 2026-07-22,
+  [[0039-shared-immutable-extra-addons-checkouts]] replaced those duplicate
+  worktrees with persistent team-shared SHA checkouts. Production retains the
+  original per-deployment worktree model for independent rollback.
 
 ## History
 

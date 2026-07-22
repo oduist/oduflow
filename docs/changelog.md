@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Features
+
+- **Shared immutable extra-addons checkouts** — development environments using the same extra-addons commit now mount one persistent team-level checkout instead of materialising identical per-environment worktrees. Branch updates create a new SHA-keyed checkout and `pull_and_apply` switches only the requested environment, preserving independent database state; production keeps private worktrees for rollback. Existing environments migrate lazily on their next sync, and cached revisions remain until the extra repository is deleted.
+
 ### Dashboard
 
 - **Agent Chat conversation history** — each environment and agent now keeps up to 20 recent conversations in MRU order, titled from the first user prompt. The new **History** menu resumes a selected conversation through ACP `session/load`, preserves legacy sessions without a migration, and recovers safely when an adapter cannot load an older session.
@@ -20,6 +24,7 @@
 ### Documentation
 
 - **Document the short transport flag** — HTTP server startup examples now show `oduflow -t http` / `uvx oduflow -t http` as the short form of `--transport http`.
+- **Record the shared extra-addons cache decision** — specs/0039 documents SHA-keyed checkout sharing, isolation from moving branches, persistent cache lifecycle, and why production remains on private worktrees.
 
 ## v1.67.0
 
