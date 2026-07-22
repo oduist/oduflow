@@ -23,6 +23,11 @@
 
   var instances = {};      // key -> instance
   var activeKey = null;
+  var nextDomId = 0;
+  var FOLLOW_BOTTOM_THRESHOLD = 48;
+  var DEFAULT_MAX_FILE_BYTES = 25 * 1024 * 1024;
+  var DEFAULT_MAX_FILES = 5;
+  var INLINE_IMAGE_MAX_BYTES = 5 * 1024 * 1024;
 
   function keyOf(branch, type) { return branch + ' ' + type; }
   function labelOf(type) { return AGENT_LABELS[type] || type; }
@@ -84,51 +89,293 @@
     return '';
   }
 
+  function fileNameFromUri(uri) {
+    var tail = String(uri || '').split('/').pop() || 'Attachment';
+    try { return decodeURIComponent(tail); } catch (e) { return tail; }
+  }
+
+  function attachmentFromContent(content) {
+    if (!content || typeof content !== 'object') return null;
+    var meta = content._meta && content._meta.oduflow;
+    if (content.type === 'resource_link') {
+      return {
+        name: content.name || fileNameFromUri(content.uri),
+        uri: content.uri || '',
+        path: (meta && meta.path) || '',
+        mimeType: content.mimeType || '',
+        size: content.size
+      };
+    }
+    if (content.type === 'image' || content.type === 'audio') {
+      return {
+        name: (meta && meta.name) || fileNameFromUri(content.uri),
+        uri: content.uri || '',
+        path: (meta && meta.path) || '',
+        mimeType: content.mimeType || '',
+        size: meta && meta.size
+      };
+    }
+    if (content.type === 'resource' && content.resource) {
+      return {
+        name: (meta && meta.name) || fileNameFromUri(content.resource.uri),
+        uri: content.resource.uri || '',
+        path: (meta && meta.path) || '',
+        mimeType: content.resource.mimeType || '',
+        size: meta && meta.size
+      };
+    }
+    return null;
+  }
+
+  function formatBytes(size) {
+    if (typeof size !== 'number' || !isFinite(size) || size < 0) return '';
+    if (size < 1024) return size + ' B';
+    if (size < 1024 * 1024) return Math.round(size / 1024) + ' KiB';
+    return (size / (1024 * 1024)).toFixed(size < 10 * 1024 * 1024 ? 1 : 0) + ' MiB';
+  }
+
   // -- DOM helpers scoped to an instance -------------------------------------
   function q(inst, sel) { return inst.el.querySelector(sel); }
 
-  function scrollToBottom(inst) {
+  function updateFollowOutput(inst) {
     var m = q(inst, '.chat-messages');
-    if (m) m.scrollTop = m.scrollHeight;
+    if (!m) return;
+    var distance = m.scrollHeight - m.scrollTop - m.clientHeight;
+    inst.followOutput = distance <= FOLLOW_BOTTOM_THRESHOLD;
   }
 
-  function addUser(inst, text) {
-    var wrap = el('div', 'chat-msg chat-msg-user');
-    wrap.appendChild(el('div', 'chat-bubble', text));
-    q(inst, '.chat-messages').appendChild(wrap);
-    inst.agentBubble = null;
+  function scrollToBottom(inst, force) {
+    var m = q(inst, '.chat-messages');
+    if (!m) return;
+    if (force) inst.followOutput = true;
+    if (inst.followOutput) m.scrollTop = m.scrollHeight;
+  }
+
+  function newTurn() {
+    return {
+      activity: null,
+      candidateWrap: null,
+      candidateBubble: null,
+      candidateBuffer: '',
+      streamType: null,
+      thoughtBox: null,
+      thoughtBuffer: '',
+      planBox: null
+    };
+  }
+
+  function currentTurn(inst) {
+    if (!inst.turn) inst.turn = newTurn();
+    return inst.turn;
+  }
+
+  function finishUserChunks(inst) {
+    inst.userChunkBubble = null;
+    inst.userChunkBuffer = '';
+    inst.userChunkText = null;
+    inst.userChunkAttachments = null;
+    inst.userChunkAttachmentKeys = Object.create(null);
+  }
+
+  function pluralCount(count, singular, plural) {
+    return count + ' ' + (count === 1 ? singular : plural);
+  }
+
+  function updateActivitySummary(activity) {
+    var parts = [];
+    if (activity.toolCount) parts.push(pluralCount(activity.toolCount, 'tool call', 'tool calls'));
+    if (activity.messageCount) parts.push(pluralCount(activity.messageCount, 'message', 'messages'));
+    activity.label.textContent = parts.length ? parts.join(', ') : 'Details';
+
+    var failed = false;
+    var running = false;
+    for (var i = 0; i < activity.tools.length; i++) {
+      var status = activity.tools[i].status;
+      if (status === 'failed') failed = true;
+      if (status === 'pending' || status === 'in_progress' || !status) running = true;
+    }
+    var statusText = failed ? 'failed' : (running ? 'running' : '');
+    activity.status.textContent = statusText ? ' · ' + statusText : '';
+    activity.status.setAttribute('data-status', statusText || 'completed');
+  }
+
+  function ensureActivity(inst) {
+    var turn = currentTurn(inst);
+    if (turn.activity) return turn.activity;
+
+    var details = el('details', 'chat-activity');
+    var summary = el('summary', 'chat-activity-summary');
+    var label = el('span', 'chat-activity-label', 'Details');
+    var status = el('span', 'chat-activity-state');
+    summary.appendChild(label);
+    summary.appendChild(status);
+    details.appendChild(summary);
+    var body = el('div', 'chat-activity-body');
+    details.appendChild(body);
+
+    var messages = q(inst, '.chat-messages');
+    if (turn.candidateWrap && turn.candidateWrap.parentNode === messages) {
+      messages.insertBefore(details, turn.candidateWrap);
+    } else {
+      messages.appendChild(details);
+    }
+    turn.activity = {
+      el: details,
+      label: label,
+      status: status,
+      body: body,
+      toolCount: 0,
+      messageCount: 0,
+      messages: [],
+      tools: []
+    };
+    return turn.activity;
+  }
+
+  function archiveCandidate(inst) {
+    var turn = currentTurn(inst);
+    if (!turn.candidateWrap) return;
+    var activity = ensureActivity(inst);
+    activity.body.appendChild(turn.candidateWrap);
+    activity.messages.push(turn.candidateWrap);
+    activity.messageCount += 1;
+    updateActivitySummary(activity);
+    turn.candidateWrap = null;
+    turn.candidateBubble = null;
+    turn.candidateBuffer = '';
+  }
+
+  function finalizeTurn(inst) {
+    if (!inst.turn) return;
+    var turn = inst.turn;
+    var activity = turn.activity;
+    if (activity && !turn.candidateWrap && activity.messages.length) {
+      var finalWrap = activity.messages.pop();
+      var messages = q(inst, '.chat-messages');
+      messages.insertBefore(finalWrap, activity.el.nextSibling);
+      activity.messageCount -= 1;
+    }
+    if (activity) updateActivitySummary(activity);
+    inst.turn = null;
+    finishUserChunks(inst);
     scrollToBottom(inst);
+  }
+
+  function renderAttachmentRow(attachment) {
+    var row = el('div', 'chat-attachment');
+    row.appendChild(el('span', 'chat-attachment-name', attachment.name || 'Attachment'));
+    var meta = [];
+    var size = formatBytes(attachment.size);
+    if (size) meta.push(size);
+    if (attachment.mimeType) meta.push(attachment.mimeType);
+    if (meta.length) row.appendChild(el('span', 'chat-attachment-meta', meta.join(' · ')));
+    return row;
+  }
+
+  function appendAttachments(container, attachments) {
+    if (!attachments || !attachments.length) return;
+    var list = el('div', 'chat-attachments');
+    for (var i = 0; i < attachments.length; i++) {
+      list.appendChild(renderAttachmentRow(attachments[i]));
+    }
+    container.appendChild(list);
+  }
+
+  function addUser(inst, text, attachments) {
+    finalizeTurn(inst);
+    var wrap = el('div', 'chat-msg chat-msg-user');
+    var bubble = el('div', 'chat-bubble');
+    bubble.appendChild(el('div', 'chat-user-text', text));
+    appendAttachments(bubble, attachments);
+    wrap.appendChild(bubble);
+    q(inst, '.chat-messages').appendChild(wrap);
+    finishUserChunks(inst);
+    scrollToBottom(inst, true);
+  }
+
+  function ensureUserChunk(inst) {
+    if (!inst.userChunkBubble) {
+      finalizeTurn(inst);
+      var wrap = el('div', 'chat-msg chat-msg-user');
+      inst.userChunkBubble = el('div', 'chat-bubble');
+      inst.userChunkBuffer = '';
+      inst.userChunkText = null;
+      inst.userChunkAttachments = null;
+      inst.userChunkAttachmentKeys = Object.create(null);
+      wrap.appendChild(inst.userChunkBubble);
+      q(inst, '.chat-messages').appendChild(wrap);
+    }
+  }
+
+  function appendUserText(inst, text) {
+    if (!text) return;
+    ensureUserChunk(inst);
+    if (!inst.userChunkText) {
+      inst.userChunkText = el('div', 'chat-user-text');
+      inst.userChunkBubble.insertBefore(inst.userChunkText, inst.userChunkBubble.firstChild);
+    }
+    inst.userChunkBuffer += text;
+    inst.userChunkText.textContent = inst.userChunkBuffer;
+    scrollToBottom(inst);
+  }
+
+  function appendUserAttachment(inst, attachment) {
+    if (!attachment) return;
+    ensureUserChunk(inst);
+    var key = attachment.uri || (attachment.name + ' ' + attachment.mimeType);
+    if (inst.userChunkAttachmentKeys[key]) return;
+    inst.userChunkAttachmentKeys[key] = true;
+    if (!inst.userChunkAttachments) {
+      inst.userChunkAttachments = el('div', 'chat-attachments');
+      inst.userChunkBubble.appendChild(inst.userChunkAttachments);
+    }
+    inst.userChunkAttachments.appendChild(renderAttachmentRow(attachment));
+    scrollToBottom(inst);
+  }
+
+  function appendUserContent(inst, content) {
+    var text = contentText(content);
+    if (text) appendUserText(inst, text);
+    else appendUserAttachment(inst, attachmentFromContent(content));
   }
 
   function appendAgent(inst, text) {
     if (!text) return;
-    if (!inst.agentBubble) {
+    finishUserChunks(inst);
+    var turn = currentTurn(inst);
+    if (turn.streamType !== 'agent' || !turn.candidateBubble) {
       var wrap = el('div', 'chat-msg chat-msg-agent');
       var bubble = el('div', 'chat-bubble chat-md');
       wrap.appendChild(bubble);
       q(inst, '.chat-messages').appendChild(wrap);
-      inst.agentBubble = bubble;
-      inst.agentBuffer = '';
+      turn.candidateWrap = wrap;
+      turn.candidateBubble = bubble;
+      turn.candidateBuffer = '';
     }
-    inst.agentBuffer += text;
-    inst.agentBubble.innerHTML = renderMarkdown(inst.agentBuffer);
+    turn.streamType = 'agent';
+    turn.candidateBuffer += text;
+    turn.candidateBubble.innerHTML = renderMarkdown(turn.candidateBuffer);
     scrollToBottom(inst);
   }
 
   function appendThought(inst, text) {
     if (!text) return;
-    if (!inst.thoughtBox) {
+    finishUserChunks(inst);
+    var turn = currentTurn(inst);
+    archiveCandidate(inst);
+    if (turn.streamType !== 'thought' || !turn.thoughtBox) {
+      var activity = ensureActivity(inst);
       var det = el('details', 'chat-thinking');
       det.appendChild(el('summary', null, 'Reasoning'));
       var body = el('div', 'chat-thinking-body');
       det.appendChild(body);
-      q(inst, '.chat-messages').appendChild(det);
-      inst.thoughtBox = body;
-      inst.thoughtBuffer = '';
+      activity.body.appendChild(det);
+      turn.thoughtBox = body;
+      turn.thoughtBuffer = '';
     }
-    inst.thoughtBuffer += text;
-    inst.thoughtBox.textContent = inst.thoughtBuffer;
-    inst.agentBubble = null;
+    turn.streamType = 'thought';
+    turn.thoughtBuffer += text;
+    turn.thoughtBox.textContent = turn.thoughtBuffer;
     scrollToBottom(inst);
   }
 
@@ -139,39 +386,156 @@
     return 'pending';
   }
 
-  function renderToolCall(inst, u) {
-    var card = el('div', 'chat-tool');
-    var head = el('div', 'chat-tool-head');
-    head.appendChild(el('span', 'chat-tool-title', u.title || u.kind || 'Tool'));
-    var st = el('span', 'chat-tool-status', toolStatusText(u.status));
-    st.setAttribute('data-status', u.status || 'pending');
-    head.appendChild(st);
-    card.appendChild(head);
-    q(inst, '.chat-messages').appendChild(card);
-    inst.tools[u.toolCallId] = card;
-    inst.agentBubble = null;
+  function hasOwn(obj, name) {
+    return Object.prototype.hasOwnProperty.call(obj, name);
+  }
+
+  function formatToolValue(value) {
+    if (typeof value === 'string') return value;
+    try {
+      var json = JSON.stringify(value, null, 2);
+      return json === undefined ? String(value) : json;
+    } catch (e) {
+      return String(value);
+    }
+  }
+
+  function toolOutputValue(tool) {
+    if (tool.hasRawOutput) return tool.rawOutput;
+    if (!tool.hasContent) return undefined;
+    if (Array.isArray(tool.content) && tool.content.length === 1) {
+      var item = tool.content[0];
+      if (item && item.type === 'content' && item.content && item.content.type === 'text') {
+        return item.content.text || '';
+      }
+    }
+    return tool.content;
+  }
+
+  function renderToolPayload(tool) {
+    tool.input.textContent = tool.hasRawInput
+      ? formatToolValue(tool.rawInput)
+      : 'Not provided by agent';
+    var output = toolOutputValue(tool);
+    tool.output.textContent = output === undefined
+      ? 'Not provided by agent'
+      : formatToolValue(output);
+  }
+
+  function patchTool(tool, u) {
+    var wasFailed = tool.status === 'failed';
+    if (hasOwn(u, 'title') && u.title != null) tool.title = u.title;
+    if (hasOwn(u, 'kind') && u.kind != null) tool.kind = u.kind;
+    if (hasOwn(u, 'status') && u.status != null) tool.status = u.status;
+    if (hasOwn(u, 'rawInput')) {
+      tool.hasRawInput = true;
+      tool.rawInput = u.rawInput;
+    }
+    if (hasOwn(u, 'rawOutput')) {
+      tool.hasRawOutput = true;
+      tool.rawOutput = u.rawOutput;
+    }
+    if (hasOwn(u, 'content')) {
+      tool.hasContent = true;
+      tool.content = u.content;
+    }
+
+    tool.titleEl.textContent = tool.title || tool.kind || 'Tool';
+    tool.statusEl.textContent = toolStatusText(tool.status);
+    tool.statusEl.setAttribute('data-status', tool.status || 'pending');
+    renderToolPayload(tool);
+    updateActivitySummary(tool.activity);
+    if (tool.status === 'failed' && !wasFailed) {
+      tool.activity.el.open = true;
+      tool.el.open = true;
+    }
+  }
+
+  function createTool(inst, u) {
+    finishUserChunks(inst);
+    var turn = currentTurn(inst);
+    archiveCandidate(inst);
+    turn.streamType = 'tool';
+    turn.thoughtBox = null;
+    turn.thoughtBuffer = '';
+    var activity = ensureActivity(inst);
+
+    var details = el('details', 'chat-tool');
+    var head = el('summary', 'chat-tool-head');
+    var title = el('span', 'chat-tool-title');
+    var status = el('span', 'chat-tool-status');
+    head.appendChild(title);
+    head.appendChild(status);
+    details.appendChild(head);
+
+    var payload = el('div', 'chat-tool-payload');
+    var inputSection = el('div', 'chat-tool-payload-section');
+    inputSection.appendChild(el('div', 'chat-tool-payload-label', 'Input'));
+    var input = el('pre', 'chat-tool-payload-value');
+    inputSection.appendChild(input);
+    payload.appendChild(inputSection);
+    var outputSection = el('div', 'chat-tool-payload-section');
+    outputSection.appendChild(el('div', 'chat-tool-payload-label', 'Output'));
+    var output = el('pre', 'chat-tool-payload-value');
+    outputSection.appendChild(output);
+    payload.appendChild(outputSection);
+    details.appendChild(payload);
+    activity.body.appendChild(details);
+
+    var tool = {
+      el: details,
+      titleEl: title,
+      statusEl: status,
+      input: input,
+      output: output,
+      activity: activity,
+      title: null,
+      kind: null,
+      status: null,
+      hasRawInput: false,
+      rawInput: undefined,
+      hasRawOutput: false,
+      rawOutput: undefined,
+      hasContent: false,
+      content: undefined
+    };
+    activity.tools.push(tool);
+    activity.toolCount += 1;
+    inst.tools[u.toolCallId] = tool;
+    patchTool(tool, u);
     scrollToBottom(inst);
+    return tool;
+  }
+
+  function renderToolCall(inst, u) {
+    var tool = inst.tools[u.toolCallId];
+    if (tool) {
+      patchTool(tool, u);
+      scrollToBottom(inst);
+    } else {
+      createTool(inst, u);
+    }
   }
 
   function updateToolCall(inst, u) {
-    var card = inst.tools[u.toolCallId];
-    if (!card) { renderToolCall(inst, u); return; }
-    if (u.status) {
-      var st = card.querySelector('.chat-tool-status');
-      st.textContent = toolStatusText(u.status);
-      st.setAttribute('data-status', u.status);
-    }
-    if (u.title) {
-      card.querySelector('.chat-tool-title').textContent = u.title;
-    }
+    var tool = inst.tools[u.toolCallId];
+    if (!tool) { createTool(inst, u); return; }
+    patchTool(tool, u);
+    scrollToBottom(inst);
   }
 
   function renderPlan(inst, u) {
+    finishUserChunks(inst);
+    var turn = currentTurn(inst);
+    archiveCandidate(inst);
     var entries = u.entries || u.plan || [];
-    if (inst.planBox && inst.planBox.parentNode) {
-      inst.planBox.parentNode.removeChild(inst.planBox);
+    var box = turn.planBox;
+    if (!box) {
+      box = el('div', 'chat-plan');
+      ensureActivity(inst).body.appendChild(box);
+      turn.planBox = box;
     }
-    var box = el('div', 'chat-plan');
+    box.innerHTML = '';
     box.appendChild(el('div', 'chat-plan-title', 'Plan'));
     var list = el('ul', 'chat-plan-list');
     for (var i = 0; i < entries.length; i++) {
@@ -181,9 +545,9 @@
       list.appendChild(li);
     }
     box.appendChild(list);
-    q(inst, '.chat-messages').appendChild(box);
-    inst.planBox = box;
-    inst.agentBubble = null;
+    turn.streamType = 'plan';
+    turn.thoughtBox = null;
+    turn.thoughtBuffer = '';
     scrollToBottom(inst);
   }
 
@@ -207,14 +571,14 @@
       badge.className = 'chat-status ' + meta.cls;
     }
     updatePill(inst);
+    updateComposerState(inst);
   }
 
   function setBusy(inst, busy) {
     inst.busy = busy;
-    var send = q(inst, '.chat-send');
     var stop = q(inst, '.chat-stop');
-    if (send) send.disabled = busy;
     if (stop) stop.hidden = !busy;
+    updateComposerState(inst);
   }
 
   function updatePill(inst) {
@@ -289,7 +653,7 @@
     var u = params && params.update;
     if (!u) return;
     switch (u.sessionUpdate) {
-      case 'user_message_chunk': addUser(inst, contentText(u.content)); break;
+      case 'user_message_chunk': appendUserContent(inst, u.content); break;
       case 'agent_message_chunk': appendAgent(inst, contentText(u.content)); break;
       case 'agent_thought_chunk': appendThought(inst, contentText(u.content)); break;
       case 'tool_call': renderToolCall(inst, u); break;
@@ -317,6 +681,11 @@
     };
   }
 
+  function applyPromptCapabilities(inst, initializeResult) {
+    var capabilities = initializeResult && initializeResult.agentCapabilities;
+    inst.promptCapabilities = (capabilities && capabilities.promptCapabilities) || {};
+  }
+
   // -- REST helpers -----------------------------------------------------------
   function apiBase(branch) {
     return '/api/environments/' + encodeURIComponent(branch) + '/agent-acp';
@@ -339,6 +708,244 @@
       body: JSON.stringify(body)
     }).then(function (r) { return r.json(); })
       .catch(function () { return null; });
+  }
+
+  function setComposerError(inst, message) {
+    var error = q(inst, '.chat-composer-error');
+    var ta = q(inst, '.chat-input');
+    if (error) {
+      error.textContent = message || '';
+      error.hidden = !message;
+    }
+    if (ta) ta.setAttribute('aria-invalid', message ? 'true' : 'false');
+  }
+
+  function attachmentStateText(attachment) {
+    if (attachment.state === 'queued') return 'queued';
+    if (attachment.state === 'uploading') return 'uploading ' + (attachment.progress || 0) + '%';
+    if (attachment.state === 'ready') return 'ready';
+    return 'failed' + (attachment.error ? ': ' + attachment.error : '');
+  }
+
+  function renderPendingAttachments(inst) {
+    var list = q(inst, '.chat-composer-attachments');
+    if (!list) return;
+    list.innerHTML = '';
+    list.hidden = !inst.attachments.length;
+    for (var i = 0; i < inst.attachments.length; i++) {
+      (function (attachment) {
+        var row = el('div', 'chat-pending-attachment');
+        row.setAttribute('data-status', attachment.state);
+        var body = el('div', 'chat-pending-body');
+        body.appendChild(el('span', 'chat-attachment-name', attachment.name));
+        var details = [];
+        var size = formatBytes(attachment.size);
+        if (size) details.push(size);
+        details.push(attachmentStateText(attachment));
+        body.appendChild(el('span', 'chat-pending-meta', details.join(' · ')));
+        row.appendChild(body);
+        var remove = el('button', 'chat-attachment-remove', 'Remove');
+        remove.type = 'button';
+        remove.onclick = function () { removePendingAttachment(inst, attachment); };
+        row.appendChild(remove);
+        list.appendChild(row);
+      })(inst.attachments[i]);
+    }
+    updateComposerState(inst);
+  }
+
+  function updateComposerState(inst) {
+    if (!inst.el) return;
+    var ta = q(inst, '.chat-input');
+    var send = q(inst, '.chat-send');
+    var attach = q(inst, '.chat-attach');
+    var hasText = !!(ta && (ta.value || '').trim());
+    var blocked = false;
+    for (var i = 0; i < inst.attachments.length; i++) {
+      if (inst.attachments[i].state !== 'ready') blocked = true;
+    }
+    if (send) send.disabled = inst.busy || !inst.sessionId || !hasText || blocked;
+    if (attach) attach.disabled = !inst.cwd || !inst.sessionId ||
+      inst.status === 'connecting' || inst.status === 'closed' ||
+      inst.attachments.length >= inst.maxFiles;
+  }
+
+  function deletePendingUpload(inst, attachment) {
+    if (!attachment.id) return;
+    fetch(apiBase(inst.branch) + '/attachments/' + encodeURIComponent(attachment.id), {
+      method: 'DELETE',
+      credentials: 'same-origin'
+    }).catch(function () {});
+  }
+
+  function removePendingAttachment(inst, attachment) {
+    attachment.removed = true;
+    var idx = inst.attachments.indexOf(attachment);
+    if (idx !== -1) inst.attachments.splice(idx, 1);
+    if (attachment.xhr) {
+      try { attachment.xhr.abort(); } catch (e) { /* already complete */ }
+    }
+    if (attachment.state === 'ready') deletePendingUpload(inst, attachment);
+    setComposerError(inst, '');
+    renderPendingAttachments(inst);
+    processUploadQueue(inst);
+  }
+
+  function clearPendingAttachments(inst, removeRemote) {
+    var pending = inst.attachments.slice();
+    inst.attachments = [];
+    for (var i = 0; i < pending.length; i++) {
+      pending[i].removed = true;
+      if (pending[i].xhr) {
+        try { pending[i].xhr.abort(); } catch (e) { /* already complete */ }
+      }
+      if (removeRemote && pending[i].state === 'ready') deletePendingUpload(inst, pending[i]);
+    }
+    inst.uploadActive = null;
+    setComposerError(inst, '');
+    renderPendingAttachments(inst);
+  }
+
+  function finishUpload(inst, attachment) {
+    attachment.xhr = null;
+    if (inst.uploadActive === attachment) inst.uploadActive = null;
+    renderPendingAttachments(inst);
+    processUploadQueue(inst);
+  }
+
+  function processUploadQueue(inst) {
+    if (inst.uploadActive) return;
+    var attachment = null;
+    for (var i = 0; i < inst.attachments.length; i++) {
+      if (inst.attachments[i].state === 'queued') {
+        attachment = inst.attachments[i];
+        break;
+      }
+    }
+    if (!attachment) { updateComposerState(inst); return; }
+
+    inst.uploadActive = attachment;
+    attachment.state = 'uploading';
+    attachment.progress = 0;
+    var xhr = new XMLHttpRequest();
+    attachment.xhr = xhr;
+    xhr.open('POST', apiBase(inst.branch) + '/attachments?name=' + encodeURIComponent(attachment.name));
+    xhr.setRequestHeader('Content-Type', attachment.mimeType || 'application/octet-stream');
+    xhr.upload.onprogress = function (event) {
+      if (!event.lengthComputable || attachment.removed) return;
+      attachment.progress = Math.min(99, Math.round(event.loaded * 100 / event.total));
+      renderPendingAttachments(inst);
+    };
+    xhr.onload = function () {
+      var payload = null;
+      try { payload = JSON.parse(xhr.responseText || '{}'); } catch (e) { /* invalid response */ }
+      if (xhr.status >= 200 && xhr.status < 300 && payload && payload.attachment) {
+        var uploaded = payload.attachment;
+        attachment.id = uploaded.id;
+        attachment.path = uploaded.path;
+        attachment.uri = uploaded.uri;
+        attachment.mimeType = uploaded.mimeType || attachment.mimeType;
+        attachment.size = uploaded.size;
+        attachment.state = 'ready';
+        attachment.progress = 100;
+        if (attachment.removed) deletePendingUpload(inst, attachment);
+      } else {
+        attachment.state = 'failed';
+        attachment.error = (payload && payload.error) || 'Upload failed';
+      }
+      finishUpload(inst, attachment);
+    };
+    xhr.onerror = function () {
+      attachment.state = 'failed';
+      attachment.error = 'Network error';
+      finishUpload(inst, attachment);
+    };
+    xhr.onabort = function () { finishUpload(inst, attachment); };
+    renderPendingAttachments(inst);
+    xhr.send(attachment.file);
+  }
+
+  function addFiles(inst, files) {
+    var available = inst.maxFiles - inst.attachments.length;
+    if (available <= 0) {
+      setComposerError(inst, 'You can attach up to ' + inst.maxFiles + ' files.');
+      return;
+    }
+    var count = Math.min(files.length, available);
+    for (var i = 0; i < count; i++) {
+      var file = files[i];
+      var attachment = {
+        name: file.name || 'attachment',
+        mimeType: file.type || 'application/octet-stream',
+        size: file.size,
+        file: file,
+        state: file.size > inst.maxFileBytes ? 'failed' : 'queued',
+        error: file.size > inst.maxFileBytes
+          ? 'Larger than ' + formatBytes(inst.maxFileBytes) + ' limit'
+          : ''
+      };
+      inst.attachments.push(attachment);
+    }
+    if (files.length > count) {
+      setComposerError(inst, 'You can attach up to ' + inst.maxFiles + ' files.');
+    } else {
+      setComposerError(inst, '');
+    }
+    renderPendingAttachments(inst);
+    processUploadQueue(inst);
+  }
+
+  function resourceLinkBlock(attachment) {
+    return {
+      type: 'resource_link',
+      name: attachment.name,
+      uri: attachment.uri,
+      mimeType: attachment.mimeType,
+      size: attachment.size,
+      _meta: { oduflow: { id: attachment.id, path: attachment.path } }
+    };
+  }
+
+  function attachmentPromptBlock(attachment, canInlineImage) {
+    if (!canInlineImage) return Promise.resolve(resourceLinkBlock(attachment));
+    return new Promise(function (resolve) {
+      var reader = new FileReader();
+      reader.onload = function () {
+        var dataUrl = String(reader.result || '');
+        var comma = dataUrl.indexOf(',');
+        if (comma === -1) { resolve(resourceLinkBlock(attachment)); return; }
+        resolve({
+          type: 'image',
+          data: dataUrl.slice(comma + 1),
+          mimeType: attachment.mimeType,
+          uri: attachment.uri,
+          _meta: {
+            oduflow: {
+              id: attachment.id,
+              name: attachment.name,
+              path: attachment.path,
+              size: attachment.size
+            }
+          }
+        });
+      };
+      reader.onerror = function () { resolve(resourceLinkBlock(attachment)); };
+      reader.readAsDataURL(attachment.file);
+    });
+  }
+
+  function buildPromptBlocks(inst, text, attachments) {
+    var blocks = [Promise.resolve({ type: 'text', text: text })];
+    var inlineImageBytes = 0;
+    for (var i = 0; i < attachments.length; i++) {
+      var attachment = attachments[i];
+      var canInlineImage = inst.promptCapabilities.image &&
+        attachment.mimeType.indexOf('image/') === 0 && attachment.file &&
+        inlineImageBytes + attachment.size <= INLINE_IMAGE_MAX_BYTES;
+      if (canInlineImage) inlineImageBytes += attachment.size;
+      blocks.push(attachmentPromptBlock(attachment, canInlineImage));
+    }
+    return Promise.all(blocks);
   }
 
   function refreshHistory(inst, res) {
@@ -394,6 +1001,7 @@
     var messages = el('div', 'chat-messages');
     messages.setAttribute('role', 'log');
     messages.setAttribute('aria-live', 'polite');
+    messages.addEventListener('scroll', function () { updateFollowOutput(inst); }, { passive: true });
     root.appendChild(messages);
 
     var perm = el('div', 'chat-permission');
@@ -401,11 +1009,27 @@
     root.appendChild(perm);
 
     var form = el('form', 'chat-composer');
+    var pending = el('div', 'chat-composer-attachments');
+    pending.hidden = true;
+    pending.setAttribute('aria-live', 'polite');
+    form.appendChild(pending);
+    var composerMain = el('div', 'chat-composer-main');
     var ta = el('textarea', 'chat-input');
     ta.rows = 2;
     ta.placeholder = 'Message the agent…  (Enter to send, Shift+Enter for a new line)';
-    form.appendChild(ta);
+    ta.setAttribute('aria-describedby', 'chat-composer-help-' + inst.domId);
+    composerMain.appendChild(ta);
     var actions = el('div', 'chat-composer-actions');
+    var fileInput = el('input', 'chat-file-input');
+    fileInput.type = 'file';
+    fileInput.multiple = true;
+    fileInput.hidden = true;
+    fileInput.setAttribute('aria-label', 'Choose files to attach');
+    actions.appendChild(fileInput);
+    var attach = el('button', 'btn chat-attach', 'Attach');
+    attach.type = 'button';
+    attach.onclick = function () { fileInput.click(); };
+    actions.appendChild(attach);
     var send = el('button', 'btn chat-send', 'Send');
     send.type = 'submit';
     var stop = el('button', 'btn chat-stop', 'Stop');
@@ -414,15 +1038,47 @@
     stop.onclick = function () { if (inst.sessionId) inst.client.cancel(inst.sessionId); setBusy(inst, false); setStatus(inst, 'ready'); };
     actions.appendChild(stop);
     actions.appendChild(send);
-    form.appendChild(actions);
+    composerMain.appendChild(actions);
+    form.appendChild(composerMain);
+    var error = el('div', 'chat-composer-error');
+    error.id = 'chat-composer-help-' + inst.domId;
+    error.hidden = true;
+    error.setAttribute('aria-live', 'polite');
+    form.appendChild(error);
     form.onsubmit = function (e) { e.preventDefault(); sendPrompt(inst); };
+    fileInput.onchange = function () {
+      addFiles(inst, fileInput.files || []);
+      fileInput.value = '';
+    };
+    ta.addEventListener('input', function () {
+      if ((ta.value || '').trim()) setComposerError(inst, '');
+      updateComposerState(inst);
+    });
+    ta.addEventListener('paste', function (event) {
+      var files = event.clipboardData && event.clipboardData.files;
+      if (files && files.length) addFiles(inst, files);
+    });
     ta.addEventListener('keydown', function (e) {
       if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendPrompt(inst); }
+    });
+    form.addEventListener('dragover', function (event) {
+      event.preventDefault();
+      form.classList.add('is-dragover');
+    });
+    form.addEventListener('dragleave', function (event) {
+      if (!form.contains(event.relatedTarget)) form.classList.remove('is-dragover');
+    });
+    form.addEventListener('drop', function (event) {
+      event.preventDefault();
+      form.classList.remove('is-dragover');
+      var files = event.dataTransfer && event.dataTransfer.files;
+      if (files && files.length) addFiles(inst, files);
     });
     root.appendChild(form);
 
     inst.el = root;
     renderHistoryMenu(inst);
+    updateComposerState(inst);
   }
 
   function renderHistoryMenu(inst) {
@@ -461,24 +1117,47 @@
   }
 
   function resetTranscript(inst) {
-    inst.agentBubble = null;
-    inst.agentBuffer = '';
-    inst.thoughtBox = null;
-    inst.thoughtBuffer = '';
-    inst.planBox = null;
-    inst.tools = {};
+    clearPendingAttachments(inst, true);
+    inst.turn = null;
+    finishUserChunks(inst);
+    inst.tools = Object.create(null);
+    inst.followOutput = true;
     q(inst, '.chat-messages').innerHTML = '';
   }
 
   function sendPrompt(inst) {
     var ta = q(inst, '.chat-input');
     var text = (ta.value || '').trim();
-    if (!text || inst.busy || !inst.sessionId) return;
-    addUser(inst, text);
+    if (inst.busy || !inst.sessionId) return;
+    if (!text) {
+      setComposerError(inst, inst.attachments.length
+        ? 'Describe what the agent should do with the attached files.'
+        : 'Enter a message for the agent.');
+      ta.focus();
+      return;
+    }
+    for (var i = 0; i < inst.attachments.length; i++) {
+      if (inst.attachments[i].state === 'failed') {
+        setComposerError(inst, 'Remove failed attachments before sending.');
+        return;
+      }
+      if (inst.attachments[i].state !== 'ready') {
+        setComposerError(inst, 'Wait for attachments to finish uploading.');
+        return;
+      }
+    }
+
+    var attachments = inst.attachments.slice();
+    addUser(inst, text, attachments);
     ta.value = '';
+    inst.attachments = [];
+    renderPendingAttachments(inst);
+    setComposerError(inst, '');
     setBusy(inst, true);
     setStatus(inst, 'thinking');
-    var prompt = inst.client.prompt(inst.sessionId, text);
+    var prompt = buildPromptBlocks(inst, text, attachments).then(function (blocks) {
+      return inst.client.prompt(inst.sessionId, blocks);
+    });
     if (!inst.titled && inst.sessionId) {
       inst.titled = true;
       postSession(inst.branch, inst.type, inst.sessionId, titleFrom(text))
@@ -487,9 +1166,8 @@
     prompt
       .catch(function (e) { addErrorLine(inst, e.message || String(e)); })
       .then(function () {
+        finalizeTurn(inst);
         setBusy(inst, false);
-        inst.agentBubble = null;
-        inst.thoughtBox = null;
         if (inst.status !== 'closed') setStatus(inst, 'ready');
       });
     q(inst, '.chat-input').focus();
@@ -532,6 +1210,7 @@
     setStatus(inst, 'connecting');
     resetTranscript(inst);
     inst.client.loadSession(sid, inst.cwd).then(function (res) {
+      finalizeTurn(inst);
       inst.sessionId = sid;
       if (res && res.models) applyModels(inst, res.models);
       addSystemLine(inst, 'Switched to a previous conversation.');
@@ -542,6 +1221,7 @@
       if (!previousId) return startFallbackSession(inst);
       resetTranscript(inst);
       return inst.client.loadSession(previousId, inst.cwd).then(function (res) {
+        finalizeTurn(inst);
         inst.sessionId = previousId;
         if (res && res.models) applyModels(inst, res.models);
         addSystemLine(inst, 'Could not open that conversation. Restored the current conversation.');
@@ -575,6 +1255,9 @@
     fetchInfo(inst.branch, inst.type).then(function (info) {
       if (!info || !info.ok) throw new Error((info && info.error) || 'Failed to load chat info');
       inst.cwd = info.cwd;
+      var limits = info.attachment_limits || {};
+      inst.maxFileBytes = limits.max_file_bytes || DEFAULT_MAX_FILE_BYTES;
+      inst.maxFiles = limits.max_files || DEFAULT_MAX_FILES;
       inst.history = Array.isArray(info.history) ? info.history : [];
       inst.titled = false;
       for (var i = 0; i < inst.history.length; i++) {
@@ -591,9 +1274,11 @@
       inst.client.on('close', function () { setStatus(inst, 'closed'); setBusy(inst, false); });
       return inst.client.connect().then(function () {
         return inst.client.initialize();
-      }).then(function () {
+      }).then(function (initializeResult) {
+        applyPromptCapabilities(inst, initializeResult);
         if (info.session_id) {
           return inst.client.loadSession(info.session_id, inst.cwd).then(function (res) {
+            finalizeTurn(inst);
             inst.sessionId = info.session_id;
             if (res && res.models) applyModels(inst, res.models);
             renderHistoryMenu(inst);
@@ -634,11 +1319,15 @@
     var key = keyOf(branch, type);
     if (instances[key]) { activate(instances[key]); return; }
     var inst = {
-      key: key, branch: branch, type: type, status: 'connecting', busy: false,
+      key: key, domId: ++nextDomId, branch: branch, type: type, status: 'connecting', busy: false,
       client: new window.AcpClient(wsUrlFor(branch, type)),
-      sessionId: null, cwd: null, agentBubble: null, agentBuffer: '',
-      thoughtBox: null, tools: {}, planBox: null, pill: null, unread: false,
-      history: [], titled: false
+      sessionId: null, cwd: null, turn: null, tools: Object.create(null), pill: null, unread: false,
+      userChunkBubble: null, userChunkBuffer: '', followOutput: true,
+      userChunkText: null, userChunkAttachments: null,
+      userChunkAttachmentKeys: Object.create(null),
+      history: [], titled: false, attachments: [], uploadActive: null,
+      maxFileBytes: DEFAULT_MAX_FILE_BYTES, maxFiles: DEFAULT_MAX_FILES,
+      promptCapabilities: {}
     };
     buildInstanceDom(inst);
     instances[key] = inst;
@@ -676,6 +1365,7 @@
   function closeChat(key) {
     var inst = instances[key];
     if (!inst) return;
+    clearPendingAttachments(inst, true);
     try { inst.client.close(); } catch (e) { /* ignore */ }
     removePill(inst);
     if (inst.el && inst.el.parentNode) inst.el.parentNode.removeChild(inst.el);

@@ -13,6 +13,7 @@ import pathlib
 import re
 import secrets
 import socket
+import tempfile
 import threading
 import time
 from urllib.parse import quote, urlsplit
@@ -20,7 +21,7 @@ from urllib.parse import quote, urlsplit
 from itsdangerous import BadData, URLSafeTimedSerializer
 from starlette.datastructures import Headers
 from starlette.exceptions import HTTPException
-from starlette.requests import HTTPConnection, Request
+from starlette.requests import ClientDisconnect, HTTPConnection, Request
 from starlette.responses import (
     HTMLResponse,
     JSONResponse,
@@ -45,6 +46,7 @@ from oduflow.docker_ops import (
 )
 from oduflow import activity
 from oduflow import agent_config
+from oduflow import agent_uploads
 from oduflow import connect_tokens
 from oduflow import git_ops
 from oduflow import import_tokens
@@ -2330,6 +2332,10 @@ def _build_routes(
                     "type": agent_type,
                     "session_id": agent_sessions.get_session(team, branch, agent_type),
                     "history": agent_sessions.get_history(team, branch, agent_type),
+                    "attachment_limits": {
+                        "max_file_bytes": agent_uploads.MAX_FILE_BYTES,
+                        "max_files": agent_uploads.MAX_FILES_PER_PROMPT,
+                    },
                 }
             )
         except Exception:
@@ -2372,6 +2378,131 @@ def _build_routes(
             return JSONResponse(
                 {"ok": False, "error": "Internal server error."}, status_code=500
             )
+
+    async def api_agent_acp_attachment_upload(request: Request) -> JSONResponse:
+        """Stream one chat attachment, then copy it into the agent workspace."""
+        branch = request.path_params["branch"]
+        team = _get_ui_team(request)
+        filename = request.query_params.get("name", "")
+        try:
+            agent_uploads.normalize_filename(filename)
+        except agent_uploads.AttachmentError as e:
+            return JSONResponse(
+                {"ok": False, "error": str(e)}, status_code=e.status_code
+            )
+
+        content_length = request.headers.get("content-length")
+        if content_length:
+            try:
+                if int(content_length) > agent_uploads.MAX_FILE_BYTES:
+                    return JSONResponse(
+                        {
+                            "ok": False,
+                            "error": (
+                                "Files must be no larger than "
+                                f"{agent_uploads.MAX_FILE_BYTES // (1024 * 1024)} MiB."
+                            ),
+                        },
+                        status_code=413,
+                    )
+            except ValueError:
+                return JSONResponse(
+                    {"ok": False, "error": "Invalid Content-Length header."},
+                    status_code=400,
+                )
+
+        size = 0
+        too_large = False
+        with tempfile.TemporaryFile() as source:
+            try:
+                async for chunk in request.stream():
+                    size += len(chunk)
+                    if size > agent_uploads.MAX_FILE_BYTES:
+                        too_large = True
+                        continue
+                    source.write(chunk)
+            except ClientDisconnect:
+                # Normal outcome, not an error: the browser aborts the XHR when
+                # the user removes an in-flight attachment or closes the tab.
+                return JSONResponse(
+                    {"ok": False, "error": "Upload cancelled."}, status_code=400
+                )
+            if too_large:
+                return JSONResponse(
+                    {
+                        "ok": False,
+                        "error": (
+                            "Files must be no larger than "
+                            f"{agent_uploads.MAX_FILE_BYTES // (1024 * 1024)} MiB."
+                        ),
+                    },
+                    status_code=413,
+                )
+
+            try:
+                locks.acquire_env(branch, team.team_id)
+            except BusyError as e:
+                return _error_response(e)
+            try:
+                source.seek(0)
+                attachment = await asyncio.get_running_loop().run_in_executor(
+                    None,
+                    lambda: agent_uploads.store_attachment(
+                        get_settings(),
+                        team,
+                        branch,
+                        filename,
+                        request.headers.get("content-type"),
+                        source,
+                        size,
+                    ),
+                )
+                return JSONResponse({"ok": True, "attachment": attachment})
+            except agent_uploads.AttachmentError as e:
+                return JSONResponse(
+                    {"ok": False, "error": str(e)}, status_code=e.status_code
+                )
+            except FlowError as e:
+                return _error_response(e)
+            except Exception:
+                logger.exception("Unexpected Agent Chat attachment upload error")
+                return JSONResponse(
+                    {"ok": False, "error": "Internal server error."},
+                    status_code=500,
+                )
+            finally:
+                locks.release_env(branch)
+
+    async def api_agent_acp_attachment_delete(request: Request) -> JSONResponse:
+        """Remove one attachment that has not been sent in a prompt."""
+        branch = request.path_params["branch"]
+        upload_id = request.path_params["upload_id"]
+        team = _get_ui_team(request)
+        try:
+            locks.acquire_env(branch, team.team_id)
+        except BusyError as e:
+            return _error_response(e)
+        try:
+            await asyncio.get_running_loop().run_in_executor(
+                None,
+                lambda: agent_uploads.delete_attachment(
+                    get_settings(), team, branch, upload_id
+                ),
+            )
+            return JSONResponse({"ok": True})
+        except agent_uploads.AttachmentError as e:
+            return JSONResponse(
+                {"ok": False, "error": str(e)}, status_code=e.status_code
+            )
+        except FlowError as e:
+            return _error_response(e)
+        except Exception:
+            logger.exception("Unexpected Agent Chat attachment delete error")
+            return JSONResponse(
+                {"ok": False, "error": "Internal server error."}, status_code=500
+            )
+        finally:
+            locks.release_env(branch)
 
     def api_license(request: Request) -> JSONResponse:
         settings = get_settings()
@@ -4079,6 +4210,16 @@ def _build_routes(
             "/api/environments/{branch:path}/agent-acp/session",
             api_agent_acp_session,
             methods=["POST"],
+        ),
+        Route(
+            "/api/environments/{branch:path}/agent-acp/attachments",
+            api_agent_acp_attachment_upload,
+            methods=["POST"],
+        ),
+        Route(
+            "/api/environments/{branch:path}/agent-acp/attachments/{upload_id}",
+            api_agent_acp_attachment_delete,
+            methods=["DELETE"],
         ),
         Route("/api/environments/{branch:path}/start", api_start, methods=["POST"]),
         Route("/api/environments/{branch:path}/stop", api_stop, methods=["POST"]),

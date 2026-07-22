@@ -209,11 +209,14 @@
     // No timeout: replaying a long transcript legitimately takes a while.
     return this._request('session/load', { sessionId: sessionId, cwd: cwd, mcpServers: [] }, 0);
   };
-  AcpClient.prototype.prompt = function (sessionId, text) {
+  AcpClient.prototype.prompt = function (sessionId, content) {
+    var prompt = Array.isArray(content)
+      ? content
+      : [{ type: 'text', text: String(content || '') }];
     // No timeout: resolves only when the agent's whole turn ends (stopReason).
     return this._request('session/prompt', {
       sessionId: sessionId,
-      prompt: [{ type: 'text', text: text }]
+      prompt: prompt
     }, 0);
   };
   AcpClient.prototype.cancel = function (sessionId) {
