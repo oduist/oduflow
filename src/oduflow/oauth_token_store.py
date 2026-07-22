@@ -10,9 +10,10 @@ same lock + atomic-write pattern as :mod:`oduflow.port_registry`.
 ``load_access_token`` runs on every authenticated request, so reads are served
 from an in-memory cache; the JSON file is the durable source of truth, read on
 startup and re-read on a cache miss (so a token minted or revoked by another
-worker process is eventually picked up). Writes (mint / rotate / revoke / expiry
-cleanup) run under a cross-thread + cross-process lock and rewrite the file
-atomically with ``0o600`` perms (the file holds bearer secrets).
+worker process is eventually picked up). Access-token expiry removes only the
+expired access record; explicit revocation and refresh rotation invalidate both
+records in a pair. Writes run under a cross-thread + cross-process lock and
+rewrite the file atomically with ``0o600`` perms (the file holds bearer secrets).
 """
 
 from __future__ import annotations
@@ -112,16 +113,18 @@ def _save_file(path: str, data: StoreData) -> None:
 
 
 def _prune_expired(data: StoreData, now: float) -> bool:
-    """Drop expired access tokens and their refresh partners. Returns whether
-    anything was removed."""
+    """Drop expired access records, preserving their refresh-token partners.
+
+    Refresh tokens do not expire with their access partners: they remain valid
+    so they can rotate an expired (or otherwise missing) access token into a new
+    pair. Pair deletion is reserved for explicit revocation and rotation.
+    Returns whether anything was removed.
+    """
     removed = False
     for token, rec in list(data["access"].items()):
         expires_at = rec.get("expires_at")
         if expires_at is not None and expires_at < now:
             del data["access"][token]
-            partner = rec.get("refresh")
-            if partner:
-                data["refresh"].pop(partner, None)
             removed = True
     return removed
 
@@ -185,7 +188,9 @@ class OAuthTokenStore:
             return None
         expires_at = rec.get("expires_at")
         if expires_at is not None and expires_at < time.time():
-            self.revoke(token)
+            # Expiry invalidates only the access token. Reloading prunes the
+            # durable access record while preserving its refresh partner.
+            self._reload()
             return None
         return dict(rec)
 
@@ -262,7 +267,11 @@ class OAuthTokenStore:
         return access, refresh, expires_at, client_id, scopes
 
     def revoke(self, token: str) -> None:
-        """Delete ``token`` (whether access or refresh) and its partner."""
+        """Explicitly revoke ``token`` and its access/refresh partner.
+
+        Unlike access-token expiry, explicit revocation invalidates the entire
+        pair regardless of which side is presented.
+        """
         with _file_lock(self._path):
             data = _load_file(self._path)
             changed = False
