@@ -2902,9 +2902,24 @@ def _build_routes(
                 finally:
                     closed.set()
 
+            tasks = [
+                asyncio.ensure_future(docker_to_browser()),
+                asyncio.ensure_future(browser_to_docker()),
+            ]
             try:
-                await asyncio.gather(docker_to_browser(), browser_to_docker())
+                # Return as soon as EITHER side ends so a browser-closed/idle
+                # terminal never parks docker_to_browser in recv() forever,
+                # leaking the executor thread that blocks interpreter shutdown.
+                await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
             finally:
+                closed.set()
+                # shutdown() reliably wakes a thread blocked in recv (a bare
+                # close() need not) and gives the exec'd process EOF on stdin so
+                # it exits.
+                try:
+                    raw_sock.shutdown(socket.SHUT_RDWR)
+                except Exception:
+                    pass
                 try:
                     raw_sock.close()
                 except Exception:
@@ -2913,6 +2928,13 @@ def _build_routes(
                     sock.close()
                 except Exception:
                     pass
+                try:
+                    await websocket.close()
+                except Exception:
+                    pass
+                for t in tasks:
+                    t.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
 
         except Exception as e:
             logger.exception("WebSocket terminal error for branch %s", branch)
@@ -3032,9 +3054,24 @@ def _build_routes(
                 finally:
                     closed.set()
 
+            tasks = [
+                asyncio.ensure_future(docker_to_browser()),
+                asyncio.ensure_future(browser_to_docker()),
+            ]
             try:
-                await asyncio.gather(docker_to_browser(), browser_to_docker())
+                # Return as soon as EITHER side ends so a browser-closed/idle
+                # terminal never parks docker_to_browser in recv() forever,
+                # leaking the executor thread that blocks interpreter shutdown.
+                await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
             finally:
+                closed.set()
+                # shutdown() reliably wakes a thread blocked in recv (a bare
+                # close() need not) and gives the exec'd process EOF on stdin so
+                # it exits.
+                try:
+                    raw_sock.shutdown(socket.SHUT_RDWR)
+                except Exception:
+                    pass
                 try:
                     raw_sock.close()
                 except Exception:
@@ -3043,6 +3080,13 @@ def _build_routes(
                     sock.close()
                 except Exception:
                     pass
+                try:
+                    await websocket.close()
+                except Exception:
+                    pass
+                for t in tasks:
+                    t.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
 
         except Exception as e:
             logger.exception("WebSocket SQL terminal error for branch %s", branch)
