@@ -436,6 +436,25 @@ def _get_tool_fn(tool_name: str):
 
 class TestCreateServiceTool:
     @patch("oduflow.docker_ops.service_ops.create_service")
+    def test_pull_error_is_returned_as_safe_tool_error(self, mock_create):
+        from oduflow.errors import PrerequisiteNotMetError
+
+        message = (
+            "Could not pull Docker image 'registry.example.com/redis:7'. Check "
+            "Docker connectivity, registry availability, and registry credentials."
+        )
+        mock_create.side_effect = PrerequisiteNotMetError(message)
+
+        with pytest.raises(ToolError, match="Could not pull Docker image") as exc_info:
+            _get_tool_fn("create_service")(
+                name="redis",
+                image="registry.example.com/redis:7",
+                port=6379,
+            )
+
+        assert message in str(exc_info.value)
+
+    @patch("oduflow.docker_ops.service_ops.create_service")
     def test_create(self, mock_create):
         mock_create.return_value = {
             "name": "redis",
