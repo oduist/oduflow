@@ -251,7 +251,7 @@ class Settings:
     # used as the OAuth issuer and to advertise authorize/token endpoints.
     # When set, Oduflow exposes /.well-known/oauth-authorization-server,
     # /authorize, and /token. Each team's client_id is public (team_<id>), while
-    # auth_token is the client_secret and issued access token.
+    # auth_token is the client_secret and also works directly as a Bearer token.
     # In traefik mode this is optional: the issuer is derived per-request from
     # the team's own hostname (already TLS-terminated), so OAuth works without a
     # central host. Set it only to pin a fixed issuer or in port mode.
@@ -621,7 +621,7 @@ def _parse_backup_section(backup_raw: dict[str, object]) -> BackupSettings | Non
 
 
 def find_toml() -> str:
-    """Locate oduflow.toml: ODUFLOW_TOML env > /etc/oduflow > ~/.oduflow."""
+    """Locate oduflow.toml: ODUFLOW_TOML > /etc/oduflow > ~/.oduflow/conf."""
     explicit = os.getenv("ODUFLOW_TOML", "").strip()
     if explicit:
         if os.path.isfile(explicit):
@@ -631,7 +631,6 @@ def find_toml() -> str:
     candidates = [
         "/etc/oduflow/oduflow.toml",
         os.path.join(os.path.expanduser("~"), ".oduflow", "conf", "oduflow.toml"),
-        os.path.join(os.path.expanduser("~"), ".oduflow", "oduflow.toml"),
     ]
     for path in candidates:
         if os.path.isfile(path):

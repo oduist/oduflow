@@ -20,6 +20,10 @@ auth_token = "secret-token-team-2"
 
 The token is used to both authenticate and identify the team. This is implemented via FastMCP's `StaticTokenVerifier`.
 
+Fresh configs get a generated `auth_token` for `[team.1]` on first startup. The
+value is printed in the startup log and stored in `oduflow.toml`; use it as
+`Authorization: Bearer <auth_token>` when connecting HTTP MCP clients.
+
 ## Self-hosted OAuth (for Claude.ai and other MCP clients)
 
 Oduflow can act as its own OAuth 2.1 Authorization Server, so MCP clients that require an OAuth flow (e.g. Claude.ai Remote MCP, MCP Inspector) can connect without any external identity provider.
@@ -135,17 +139,31 @@ The web dashboard and REST API use HTTP Basic authentication with a **separate**
 
 This is independent from the MCP Bearer token (`auth_token`). Credentials are compared using `hmac.compare_digest` to prevent timing attacks.
 
+Fresh configs get a generated `ui_password` for `[team.1]` on first startup.
+Older HTTP configs with an empty `ui_password` are also auto-filled on startup
+and written back to `oduflow.toml`, so an upgrade does not expose the dashboard.
+
 ## When auth is disabled
 
 MCP auth and Web UI auth are configured independently per team:
 
-- If `auth_token` is empty, the MCP endpoint runs without authentication
-- If `ui_password` is empty, the web dashboard runs without authentication
+- If `auth_token` is empty, the MCP endpoint has no team Bearer token
+- If `ui_password` is empty, the web dashboard has no login password
 
-Warnings are logged on startup for each team:
+In HTTP mode, Oduflow refuses to start with an unauthenticated MCP endpoint or
+dashboard unless the operator explicitly sets:
+
+```toml
+[server]
+allow_insecure_http = true
+```
+
+Use that only behind your own authenticating proxy. In normal fresh HTTP
+deployments, `auth_token` and `ui_password` are generated automatically and
+startup logs show auth as enabled:
 
 ```
-INFO  [team.1] http://localhost:8000/ (MCP token OFF, OAuth OFF, UI auth OFF)
+INFO  [team.1] http://localhost:8000/ (MCP token ON, OAuth OFF, UI auth ON)
 ```
 
 When OAuth is enabled the status reads `OAuth ON (self-hosted)`.

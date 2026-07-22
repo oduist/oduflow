@@ -1,9 +1,56 @@
 import pytest
 from pathlib import Path
-from oduflow.settings import Settings, TeamSettings
+from oduflow.settings import Settings, TeamSettings, find_toml
 
 
 class TestSettings:
+    def test_find_toml_explicit_env_has_priority(self, monkeypatch, tmp_path):
+        explicit = tmp_path / "custom.toml"
+        monkeypatch.setenv("ODUFLOW_TOML", str(explicit))
+
+        def exists(path):
+            return path in {str(explicit), "/etc/oduflow/oduflow.toml"}
+
+        monkeypatch.setattr("oduflow.settings.os.path.isfile", exists)
+
+        assert find_toml() == str(explicit)
+
+    def test_find_toml_implicit_candidates(self, monkeypatch, tmp_path):
+        home = tmp_path / "home"
+        user_conf = home / ".oduflow" / "conf" / "oduflow.toml"
+        monkeypatch.delenv("ODUFLOW_TOML", raising=False)
+        monkeypatch.setenv("HOME", str(home))
+
+        seen = []
+
+        def exists(path):
+            seen.append(path)
+            return path == str(user_conf)
+
+        monkeypatch.setattr("oduflow.settings.os.path.isfile", exists)
+
+        assert find_toml() == str(user_conf)
+        assert seen == [
+            "/etc/oduflow/oduflow.toml",
+            str(user_conf),
+        ]
+
+    def test_find_toml_ignores_legacy_home_file(self, monkeypatch, tmp_path):
+        home = tmp_path / "home"
+        legacy = home / ".oduflow" / "oduflow.toml"
+        monkeypatch.delenv("ODUFLOW_TOML", raising=False)
+        monkeypatch.setenv("HOME", str(home))
+        monkeypatch.setattr(
+            "oduflow.settings.os.path.isfile", lambda path: path == str(legacy)
+        )
+
+        with pytest.raises(FileNotFoundError) as exc:
+            find_toml()
+
+        message = str(exc.value)
+        assert str(legacy) not in message
+        assert str(home / ".oduflow" / "conf" / "oduflow.toml") in message
+
     def test_lifecycle_defaults(self):
         s = Settings(teams={"1": TeamSettings(team_id="1")})
         assert s.auto_stop_hours == 48
