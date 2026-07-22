@@ -92,6 +92,59 @@ def _normalize_extra_addons(raw_addons: object) -> dict[str, str]:
     return {}
 
 
+def _extra_checkout_sources(
+    container: Any, repo_names: Iterator[str]
+) -> dict[str, str]:
+    """Map extra-repo names to their current host bind sources."""
+    targets = {f"/mnt/extra-addons-{name}": name for name in repo_names}
+    sources: dict[str, str] = {}
+    for bind in container.attrs.get("HostConfig", {}).get("Binds") or []:
+        parts = bind.rsplit(":", 2)
+        if len(parts) < 2:
+            continue
+        host_path, container_path = parts[0], parts[1]
+        repo_name = targets.get(container_path)
+        if repo_name:
+            sources[repo_name] = host_path
+    return sources
+
+
+def _replace_extra_checkout_mounts(
+    volumes: dict[str, dict[str, str]],
+    labels: dict[str, str],
+    checkouts: dict[str, str],
+    revisions: dict[str, str],
+) -> None:
+    """Replace extra-addons bind sources while keeping container paths stable."""
+    targets = {f"/mnt/extra-addons-{name}" for name in checkouts}
+    for source, spec in list(volumes.items()):
+        if spec.get("bind") in targets:
+            del volumes[source]
+    for repo_name, source in checkouts.items():
+        volumes[source] = {
+            "bind": f"/mnt/extra-addons-{repo_name}",
+            "mode": "ro",
+        }
+    labels["oduflow.extra_addons_revisions"] = json.dumps(revisions)
+
+
+def _cleanup_legacy_extra_worktrees(
+    team: TeamSettings, env_name: str, repo_names: Iterator[str]
+) -> None:
+    """Remove old per-environment worktrees after their mounts were migrated."""
+    extra_dir = os.path.join(get_workspace_path(env_name, team.workspaces_dir), "extra")
+    if not os.path.isdir(extra_dir):
+        return
+    from oduflow.extra_addons import remove_worktree
+
+    for repo_name in repo_names:
+        path = os.path.join(extra_dir, repo_name)
+        if os.path.isdir(path):
+            remove_worktree(team, repo_name, path)
+    with contextlib.suppress(OSError):
+        os.rmdir(extra_dir)
+
+
 def _redact_repo_urls(text: str, *urls: str) -> str:
     """Remove embedded credentials from known repository URLs in output."""
     redacted = text
@@ -998,18 +1051,18 @@ def create_environment(
             git_user=git_user,
         )
 
-    # --- Extra addons worktrees ---
-    extra_mount_paths = []
+    # --- Shared immutable extra-addons checkouts ---
+    extra_mount_paths: list[tuple[str, str]] = []
+    extra_revisions: dict[str, str] = {}
     if extra_addons:
-        from oduflow.extra_addons import create_worktree
+        from oduflow.extra_addons import ensure_shared_checkout
 
-        extra_dir = os.path.join(workspace_path, "extra")
-        os.makedirs(extra_dir, exist_ok=True)
         for repo_name, addon_branch in extra_addons.items():
-            wt_path = os.path.join(extra_dir, repo_name)
-            create_worktree(team, repo_name, addon_branch, wt_path)
+            checkout = ensure_shared_checkout(team, repo_name, addon_branch)
             container_path = f"/mnt/extra-addons-{repo_name}"
-            extra_mount_paths.append((wt_path, container_path))
+            extra_mount_paths.append((checkout["path"], container_path))
+            extra_revisions[repo_name] = checkout["revision"]
+        labels["oduflow.extra_addons_revisions"] = json.dumps(extra_revisions)
 
     ts_name = ensure_team_tablespace(client, settings, team)
     if template_name is not None:
@@ -1289,6 +1342,7 @@ def create_environment(
         "setup_logs": setup_logs,
     }
     result["extra_addons"] = extra_addons or {}
+    result["extra_addons_revisions"] = extra_revisions
     result["local_path"] = repo_path if local_mount else ""
     result["elapsed_seconds"] = round(time.time() - start_time, 1)
     activity.touch(team, env_name)
@@ -2003,6 +2057,9 @@ def list_environments(settings: Settings, team: TeamSettings) -> list[dict[str, 
                 "extra_addons": _normalize_extra_addons(
                     json.loads(container.labels.get("oduflow.extra_addons", "{}")),
                 ),
+                "extra_addons_revisions": json.loads(
+                    container.labels.get("oduflow.extra_addons_revisions", "{}")
+                ),
                 "db_name": get_db_name(env_name, team.team_id),
                 "protected": is_protected(settings, team, env_name),
                 "auto_install_modules": container.labels.get(
@@ -2285,6 +2342,9 @@ def get_environment_info(
         result["extra_addons"] = _normalize_extra_addons(
             json.loads(labels.get("oduflow.extra_addons", "{}")),
         )
+        result["extra_addons_revisions"] = json.loads(
+            labels.get("oduflow.extra_addons_revisions", "{}")
+        )
         result["auto_install_modules"] = labels.get("oduflow.auto_install_modules", "")
         result["env_vars"] = json.loads(labels.get("oduflow.env_vars", "{}"))
         result["created_at"] = labels.get(
@@ -2464,7 +2524,9 @@ def _reapply_odoo_conf(
         return reapply_prod_odoo_conf(
             settings, team, labels.get("oduflow.prod_name", ""), container
         )
-    repo_path = get_repo_path(env_name, team.workspaces_dir)
+    repo_path = labels.get("oduflow.local_path") or get_repo_path(
+        env_name, team.workspaces_dir
+    )
     workspace_path = get_workspace_path(env_name, team.workspaces_dir)
     repo_odoo_conf = os.path.join(repo_path, ".oduflow", "odoo.conf")
     if os.path.isfile(repo_odoo_conf):
@@ -2620,8 +2682,9 @@ def pull_environment(
 
     Code-delivery mode is chosen from the env's labels:
 
-    * **git** (default) — ``git pull`` the branch (and extra-addon worktrees)
-      into the managed clone, which is bind-mounted into the container.
+    * **git** (default) — ``git pull`` the branch into the managed clone. Dev
+      extra-addons resolve to immutable shared SHA checkouts; production keeps
+      its private mutable worktrees for independent rollback.
     * **live-mount** (``oduflow.local_path`` label, gated by allow_local_path) — the
       agent's checkout is already bind-mounted, so there is nothing to pull;
       changes are detected from Oduflow's last successful local snapshot.
@@ -2666,9 +2729,12 @@ def pull_environment(
 
     # --- 1. Sync code + detect changed files and a diff base ---
     # Each (repo_path, base_ref, files) unit is classified against its OWN repo
-    # and old HEAD; extra-addon worktrees must not be classified against the main
+    # and old HEAD; extra-addon checkouts must not be classified against the main
     # repo's tree or their changes are misread (issue #51).
     classify_units: list[tuple[str, str | None, list[str]]] = []
+    pending_extra_checkouts: dict[str, str] = {}
+    pending_extra_revisions: dict[str, str] = {}
+    extra_mount_switch_needed = False
     if is_local:
         _trace("pull_environment(%s): live-mount, detecting local changes", env_name)
         base_ref, all_changed = _detect_local_changes(repo_path, env_name, team)
@@ -2683,14 +2749,24 @@ def pull_environment(
         base_ref = old_head
         classify_units.append((repo_path, old_head, changed_files))
 
-        extra_changed_files: list[str] = []
-        try:
-            extra_addons = json.loads(
-                container_obj.labels.get("oduflow.extra_addons", "{}")
-            )
-        except (json.JSONDecodeError, TypeError):
-            extra_addons = {}
-        if extra_addons:
+        all_changed = changed_files
+        # Dependency reinstall keys off the MAIN repo only: the pip/apt install
+        # helpers read only the main repo_path, never extra-addons checkouts.
+        main_changed_files = changed_files
+
+    try:
+        extra_addons = _normalize_extra_addons(
+            json.loads(container_obj.labels.get("oduflow.extra_addons", "{}"))
+        )
+    except (json.JSONDecodeError, TypeError):
+        extra_addons = {}
+
+    extra_changed_files: list[str] = []
+    if extra_addons:
+        is_production = container_obj.labels.get("oduflow.prod") == "true"
+        if is_production:
+            # Production retains one mutable worktree per deployment. Its
+            # deploy log records these HEADs and rollback resets them in place.
             from oduflow.extra_addons import pull_extra_worktree
 
             extra_dir = os.path.join(
@@ -2705,12 +2781,45 @@ def pull_environment(
                 )
                 extra_changed_files.extend(extra_files)
                 if extra_files:
-                    # Classify this worktree against its own path + old HEAD.
                     classify_units.append((wt_path, extra_old, extra_files))
-        all_changed = changed_files + extra_changed_files
-        # Dependency reinstall keys off the MAIN repo only: the pip/apt install
-        # helpers read only the main repo_path, never the extra-addon worktrees.
-        main_changed_files = changed_files
+        else:
+            from oduflow.extra_addons import checkout_revision, ensure_shared_checkout
+
+            try:
+                stored_revisions = json.loads(
+                    container_obj.labels.get("oduflow.extra_addons_revisions", "{}")
+                )
+            except (json.JSONDecodeError, TypeError):
+                stored_revisions = {}
+            if not isinstance(stored_revisions, dict):
+                stored_revisions = {}
+            current_sources = _extra_checkout_sources(container_obj, iter(extra_addons))
+            for repo_name, branch in extra_addons.items():
+                source = current_sources.get(repo_name, "")
+                current_revision = str(stored_revisions.get(repo_name, ""))
+                if not current_revision and source:
+                    current_revision = checkout_revision(source)
+                checkout = ensure_shared_checkout(
+                    team,
+                    repo_name,
+                    branch,
+                    current_revision=current_revision,
+                )
+                checkout_path = str(checkout["path"])
+                revision = str(checkout["revision"])
+                pending_extra_checkouts[repo_name] = checkout_path
+                pending_extra_revisions[repo_name] = revision
+                extra_mount_switch_needed = extra_mount_switch_needed or (
+                    source != checkout_path or current_revision != revision
+                )
+                extra_files = list(checkout["changed_files"])
+                extra_changed_files.extend(extra_files)
+                if extra_files:
+                    classify_units.append(
+                        (checkout_path, current_revision or None, extra_files)
+                    )
+
+    all_changed = all_changed + extra_changed_files
 
     _trace(
         "pull_environment(%s): %d changed files: %s",
@@ -2760,6 +2869,27 @@ def pull_environment(
             }
     else:
         if not all_changed:
+            if extra_mount_switch_needed:
+                update_environment(
+                    settings,
+                    team,
+                    env_name,
+                    extra_checkout_overrides=pending_extra_checkouts,
+                    extra_revision_overrides=pending_extra_revisions,
+                    pull_image=False,
+                    install_dependencies=False,
+                )
+                _cleanup_legacy_extra_worktrees(
+                    team, env_name, iter(pending_extra_checkouts)
+                )
+                return {
+                    "action": "none",
+                    "extra_addons_cache_migrated": True,
+                    "message": (
+                        "Already up to date. Extra-addons mounts now use the "
+                        "shared immutable checkout cache."
+                    ),
+                }
             return {
                 "action": "none",
                 "message": (
@@ -2770,7 +2900,22 @@ def pull_environment(
         to_upgrade = list(recommended.get("modules_to_upgrade", []))
         do_restart = recommended.get("action") == "restart"
 
-    # --- 3. Execute ---
+    # --- 3. Switch immutable mounts, then execute ---
+    # Do this only after strict guardrails have accepted the requested action.
+    # The checkout itself was prepared off to the side and is safe to cache even
+    # when strict mode blocks without touching the running container.
+    if extra_mount_switch_needed:
+        update_environment(
+            settings,
+            team,
+            env_name,
+            extra_checkout_overrides=pending_extra_checkouts,
+            extra_revision_overrides=pending_extra_revisions,
+            pull_image=False,
+            install_dependencies=False,
+        )
+        _cleanup_legacy_extra_worktrees(team, env_name, iter(pending_extra_checkouts))
+
     result = _apply_actions(
         client,
         settings,
@@ -2799,6 +2944,10 @@ def update_environment(
     *,
     env_override: dict[str, str] | None = None,
     image_override: str | None = None,
+    extra_checkout_overrides: dict[str, str] | None = None,
+    extra_revision_overrides: dict[str, str] | None = None,
+    pull_image: bool = True,
+    install_dependencies: bool = True,
 ) -> dict[str, Any]:
     """Re-create an environment's container, preserving DB, repo and filestore.
 
@@ -2806,9 +2955,11 @@ def update_environment(
     and configuration (useful when the container is broken). Optionally pulls a
     different ``image_override`` and/or fully replaces the user-supplied
     environment variables with ``env_override`` (an explicit dict; an empty dict
-    clears them). The PostgreSQL connection variables (HOST/USER/PASSWORD) are
-    always re-derived from the environment credentials, and image-baked env
-    comes from the image itself.
+    clears them). Internal extra-checkout overrides atomically switch immutable
+    SHA mounts during pull_and_apply; that path disables image pulls and the
+    redundant dependency reinstall. The PostgreSQL connection variables
+    (HOST/USER/PASSWORD) are always re-derived from the environment credentials,
+    and image-baked env comes from the image itself.
     """
     client = get_client()
     odoo_container_name = get_resource_name(
@@ -2825,20 +2976,29 @@ def update_environment(
             f"Environment '{env_name}' does not exist. Use create_environment first."
         )
 
-    # Image (current → target). Capture the current digest so we can report
-    # whether the running image actually changed after the pull.
+    # Labels
+    labels = dict(container.labels)
+
+    # Image (current → target). A digest-pinned recreation leaves Config.Image
+    # as sha256:..., so prefer the persisted tag before falling back to it.
+    # Capture the current digest so we can report whether the running image
+    # actually changed after the pull.
     try:
         current_image = container.image.tags[0]
     except (IndexError, Exception):
-        current_image = container.attrs["Config"]["Image"]
+        current_image = labels.get(settings.image_label) or container.attrs["Config"][
+            "Image"
+        ]
     odoo_image = image_override or current_image
     try:
         old_digest = container.image.id
     except Exception:
         old_digest = container.attrs.get("Image", "")
-
-    # Labels
-    labels = dict(container.labels)
+    run_image = (
+        old_digest
+        if not pull_image and not image_override and old_digest
+        else odoo_image
+    )
 
     # User-supplied environment variables: an explicit override wins (full
     # replace), otherwise restore from the persisted label. The DB connection
@@ -2857,6 +3017,14 @@ def update_environment(
             volumes[parts[0]] = {"bind": parts[1], "mode": parts[2]}
         elif len(parts) == 2:
             volumes[parts[0]] = {"bind": parts[1], "mode": "rw"}
+
+    if extra_checkout_overrides is not None:
+        _replace_extra_checkout_mounts(
+            volumes,
+            labels,
+            extra_checkout_overrides,
+            extra_revision_overrides or {},
+        )
 
     # Command
     raw_cmd = container.attrs["Config"].get("Cmd") or []
@@ -2882,19 +3050,20 @@ def update_environment(
     # at all (#49). If the pull fails, fall back to a local copy; if there is
     # none, abort with the existing environment left untouched.
     image_updated = False
-    try:
-        logger.info("Pulling image %s", odoo_image)
-        new_image_obj = client.images.pull(odoo_image)
-        image_updated = bool(old_digest) and new_image_obj.id != old_digest
-    except Exception as exc:
-        logger.warning("Could not pull image %s: %s", odoo_image, exc)
+    if pull_image:
         try:
-            client.images.get(odoo_image)
-        except docker.errors.ImageNotFound:
-            raise PrerequisiteNotMetError(
-                f"Image '{odoo_image}' could not be pulled and is not available "
-                "locally; leaving the existing environment untouched."
-            ) from exc
+            logger.info("Pulling image %s", odoo_image)
+            new_image_obj = client.images.pull(odoo_image)
+            image_updated = bool(old_digest) and new_image_obj.id != old_digest
+        except Exception as exc:
+            logger.warning("Could not pull image %s: %s", odoo_image, exc)
+            try:
+                client.images.get(odoo_image)
+            except docker.errors.ImageNotFound:
+                raise PrerequisiteNotMetError(
+                    f"Image '{odoo_image}' could not be pulled and is not available "
+                    "locally; leaving the existing environment untouched."
+                ) from exc
 
     logger.info(
         "Updating environment – stopping old container",
@@ -2934,7 +3103,7 @@ def update_environment(
                     team,
                     env_name,
                     env_db,
-                    odoo_image,
+                    run_image,
                     _tmp_vols,
                     template_name=template_name,
                 )
@@ -2980,18 +3149,26 @@ def update_environment(
         # a previous port-mode life so the slot is reusable.
         release_port(team.port_registry_path, env_name)
 
-    # Verify extra addons worktrees are intact
+    # Verify extra addons checkouts are intact. New environments use persistent
+    # SHA-keyed shared paths; legacy environments keep per-workspace worktrees
+    # until their next pull_and_apply migrates the mounts.
     extra_addons_json = labels.get("oduflow.extra_addons", "")
     if extra_addons_json:
         parsed = json.loads(extra_addons_json)
         extra_dict = _normalize_extra_addons(parsed)
+        revisions = json.loads(labels.get("oduflow.extra_addons_revisions", "{}"))
         extra_dir = os.path.join(
             get_workspace_path(env_name, team.workspaces_dir), "extra"
         )
         for rn in extra_dict:
-            wt = os.path.join(extra_dir, rn)
+            revision = revisions.get(rn, "") if isinstance(revisions, dict) else ""
+            wt = (
+                os.path.join(team.shared_extra_checkouts_dir, rn, revision)
+                if revision
+                else os.path.join(extra_dir, rn)
+            )
             if not os.path.isdir(wt):
-                logger.warning("Extra addons worktree missing: %s", wt)
+                logger.warning("Extra addons checkout missing: %s", wt)
 
     # Switching into port mode (was traefik) or a legacy container that never
     # published a port: allocate one now, right before recreation, so any
@@ -3011,7 +3188,7 @@ def update_environment(
     # 4. Re-create the container with the same settings
     # ------------------------------------------------------------------
     run_kwargs: dict[str, Any] = dict(
-        image=odoo_image,
+        image=run_image,
         name=odoo_container_name,
         detach=True,
         network=get_team_network_name(team.team_id, settings.prefix),
@@ -3037,19 +3214,22 @@ def update_environment(
 
     # Regenerate and copy odoo.conf into the new container (repo .oduflow/ takes
     # priority over the instance conf; extra-addons paths merged from labels).
-    repo_path = get_repo_path(env_name, team.workspaces_dir)
+    repo_path = labels.get("oduflow.local_path") or get_repo_path(
+        env_name, team.workspaces_dir
+    )
     _reapply_odoo_conf(settings, team, env_name, new_container)
 
     # ------------------------------------------------------------------
     # 5. Re-install apt packages and pip requirements
     # ------------------------------------------------------------------
     setup_logs: list[str] = []
-    apt_log = _install_apt_packages(new_container, repo_path)
-    if apt_log:
-        setup_logs.append(apt_log)
-    _, pip_log = _install_pip_requirements(new_container, repo_path)
-    if pip_log:
-        setup_logs.append(pip_log)
+    if install_dependencies:
+        apt_log = _install_apt_packages(new_container, repo_path)
+        if apt_log:
+            setup_logs.append(apt_log)
+        _, pip_log = _install_pip_requirements(new_container, repo_path)
+        if pip_log:
+            setup_logs.append(pip_log)
 
     # ------------------------------------------------------------------
     # 6. Build URL and return result

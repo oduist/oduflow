@@ -1420,7 +1420,8 @@ def pull_and_apply(
     Sync the latest code into an environment and apply the right Odoo action.
 
     Works for both code-delivery modes (chosen automatically per environment):
-    - git: pulls the branch (and extra-addon worktrees) into the managed clone.
+    - git: pulls the branch and resolves extra-addons to shared immutable
+      SHA checkouts before applying changes.
     - live-mount (from create_environment(local_path=...)): your
       edits are already live on disk; this just applies them — no git needed.
 

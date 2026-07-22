@@ -239,6 +239,10 @@ class TestTeamSettings:
         t = TeamSettings(team_id="1", data_dir="/srv/data")
         assert t.shared_repos_dir == "/srv/data/shared_repos"
 
+    def test_shared_extra_checkouts_dir(self):
+        t = TeamSettings(team_id="1", data_dir="/srv/data")
+        assert t.shared_extra_checkouts_dir == "/srv/data/shared_extra_checkouts"
+
     def test_frozen(self):
         t = TeamSettings(team_id="1")
         with pytest.raises(AttributeError):

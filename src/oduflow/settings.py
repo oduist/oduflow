@@ -62,6 +62,11 @@ class TeamSettings:
     def shared_repos_dir(self) -> str:
         return os.path.join(self.data_dir, "shared_repos")
 
+    @property
+    def shared_extra_checkouts_dir(self) -> str:
+        """Persistent immutable extra-addons checkouts, keyed by repo/SHA."""
+        return os.path.join(self.data_dir, "shared_extra_checkouts")
+
     def get_template_dir(self, template_name: str) -> str:
         # Reject names that could escape the templates directory (path
         # traversal) before they reach rmtree / file writes.

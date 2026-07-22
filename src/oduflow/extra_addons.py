@@ -6,6 +6,9 @@ import re
 import shutil
 import subprocess
 import tempfile
+import threading
+from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import Any
 
 from oduflow.docker_ops.client import get_client
@@ -25,6 +28,10 @@ logger = logging.getLogger("oduflow")
 GIT_ENV = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
 
 _NAME_RE = re.compile(r"^[a-zA-Z0-9_-]{1,63}$")
+_REVISION_RE = re.compile(r"^[0-9a-f]{40,64}$")
+
+_REPO_LOCKS_GUARD = threading.Lock()
+_REPO_LOCKS: dict[str, threading.RLock] = {}
 
 _AUTH_ERROR_KEYWORDS = (
     "Authentication failed",
@@ -34,6 +41,22 @@ _AUTH_ERROR_KEYWORDS = (
     "terminal prompts disabled",
     "Invalid username or password",
 )
+
+
+@contextmanager
+def _repo_operation_lock(team: TeamSettings, repo_name: str) -> Iterator[None]:
+    """Serialize fetch/worktree/cache mutations for one team's extra repo.
+
+    Environment locks intentionally allow different environments to run in
+    parallel. Extra repositories are shared between those environments, so Git
+    operations need their own, narrower lock. RLock keeps composed helpers
+    (ensure checkout -> fetch) safe without widening the lock to the whole team.
+    """
+    key = os.path.realpath(os.path.join(team.shared_repos_dir, repo_name))
+    with _REPO_LOCKS_GUARD:
+        lock = _REPO_LOCKS.setdefault(key, threading.RLock())
+    with lock:
+        yield
 
 
 def clone_extra_repo(
@@ -294,7 +317,7 @@ def unprotect_extra_repo(team: TeamSettings, name: str) -> dict[str, Any]:
     return {"name": name, "protected": False}
 
 
-def delete_extra_repo(
+def _delete_extra_repo_unlocked(
     settings: Settings, team: TeamSettings, name: str
 ) -> dict[str, Any]:
     path = os.path.join(team.shared_repos_dir, name)
@@ -332,9 +355,22 @@ def delete_extra_repo(
             f"{', '.join(dependent)}"
         )
 
+    # Cached SHA checkouts intentionally outlive environments. They disappear
+    # only with the owning extra repo, after the dependency guard above proves
+    # that no running/stopped managed container still mounts them.
+    checkout_root = os.path.join(team.shared_extra_checkouts_dir, name)
+    if os.path.isdir(checkout_root):
+        shutil.rmtree(checkout_root)
     shutil.rmtree(path)
     logger.info("Deleted extra repo '%s'", name)
     return {"name": name, "deleted": True}
+
+
+def delete_extra_repo(
+    settings: Settings, team: TeamSettings, name: str
+) -> dict[str, Any]:
+    with _repo_operation_lock(team, name):
+        return _delete_extra_repo_unlocked(settings, team, name)
 
 
 def _get_branch_refs(repo_path: str) -> dict[str, str]:
@@ -365,7 +401,7 @@ def _get_branch_refs(repo_path: str) -> dict[str, str]:
     return refs
 
 
-def fetch_extra_repo(
+def _fetch_extra_repo_unlocked(
     team: TeamSettings, name: str, branch: str | None = None
 ) -> dict[str, Any]:
     """Fetch latest changes and return a summary of what changed.
@@ -512,7 +548,14 @@ def fetch_extra_repo(
     }
 
 
-def create_worktree(
+def fetch_extra_repo(
+    team: TeamSettings, name: str, branch: str | None = None
+) -> dict[str, Any]:
+    with _repo_operation_lock(team, name):
+        return _fetch_extra_repo_unlocked(team, name, branch)
+
+
+def _create_worktree_unlocked(
     team: TeamSettings, repo_name: str, branch: str, target_path: str
 ) -> str:
     # A blank branch would produce `git worktree add ... ""` → the cryptic
@@ -573,7 +616,17 @@ def create_worktree(
     return target_path
 
 
-def remove_worktree(team: TeamSettings, repo_name: str, target_path: str) -> None:
+def create_worktree(
+    team: TeamSettings, repo_name: str, branch: str, target_path: str
+) -> str:
+    """Create a mutable per-consumer worktree (currently production only)."""
+    with _repo_operation_lock(team, repo_name):
+        return _create_worktree_unlocked(team, repo_name, branch, target_path)
+
+
+def _remove_worktree_unlocked(
+    team: TeamSettings, repo_name: str, target_path: str
+) -> None:
     bare_path = os.path.join(team.shared_repos_dir, repo_name)
     try:
         subprocess.run(
@@ -596,7 +649,192 @@ def remove_worktree(team: TeamSettings, repo_name: str, target_path: str) -> Non
         )
 
 
-def pull_extra_worktree(
+def remove_worktree(team: TeamSettings, repo_name: str, target_path: str) -> None:
+    with _repo_operation_lock(team, repo_name):
+        _remove_worktree_unlocked(team, repo_name, target_path)
+
+
+def _resolve_branch_revision(bare_path: str, repo_name: str, branch: str) -> str:
+    try:
+        result = subprocess.run(
+            [
+                "git",
+                "-C",
+                bare_path,
+                "rev-parse",
+                "--verify",
+                f"refs/heads/{branch}^{{commit}}",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=10,
+            env=GIT_ENV,
+        )
+    except subprocess.CalledProcessError as e:
+        raise NotFoundError(
+            f"Branch '{branch}' not found in extra repo '{repo_name}'."
+        ) from e
+    except subprocess.TimeoutExpired:
+        raise ExternalCommandError("git rev-parse", -1, "Command timed out (10s).")
+    revision = result.stdout.strip().lower()
+    if not _REVISION_RE.fullmatch(revision):
+        raise ExternalCommandError(
+            "git rev-parse", -1, f"Unexpected commit id for branch '{branch}'."
+        )
+    return revision
+
+
+def _checkout_head(path: str) -> str:
+    try:
+        result = subprocess.run(
+            ["git", "-C", path, "rev-parse", "--verify", "HEAD^{commit}"],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=10,
+            env=GIT_ENV,
+        )
+    except (
+        subprocess.CalledProcessError,
+        subprocess.TimeoutExpired,
+        FileNotFoundError,
+    ):
+        return ""
+    revision = result.stdout.strip().lower()
+    return revision if _REVISION_RE.fullmatch(revision) else ""
+
+
+def checkout_revision(path: str) -> str:
+    """Best-effort commit SHA for a mutable or shared extra checkout."""
+    return _checkout_head(path)
+
+
+def _changed_files_between(
+    bare_path: str, old_revision: str, new_revision: str
+) -> list[str]:
+    if old_revision == new_revision:
+        return []
+    if not _REVISION_RE.fullmatch(old_revision):
+        return []
+    try:
+        result = subprocess.run(
+            [
+                "git",
+                "-C",
+                bare_path,
+                "diff",
+                "--name-only",
+                f"{old_revision}..{new_revision}",
+                "--",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            env=GIT_ENV,
+        )
+    except subprocess.CalledProcessError as e:
+        raise ExternalCommandError("git diff --name-only", e.returncode, e.stderr or "")
+    except subprocess.TimeoutExpired:
+        raise ExternalCommandError(
+            "git diff --name-only", -1, "Command timed out (30s)."
+        )
+    return [path for path in result.stdout.splitlines() if path]
+
+
+def ensure_shared_checkout(
+    team: TeamSettings,
+    repo_name: str,
+    branch: str,
+    *,
+    current_revision: str = "",
+) -> dict[str, Any]:
+    """Return a persistent immutable checkout for the branch's current SHA.
+
+    Checkouts are shared by all development environments in the team and are
+    never reset in place. Moving a branch creates (or reuses) another SHA-keyed
+    checkout, so environments pinned to the old revision remain isolated.
+    """
+    if not branch or not branch.strip():
+        raise PrerequisiteNotMetError(
+            f"Extra addon repo '{repo_name}' requires a branch (e.g. '18.0'); "
+            "none was given."
+        )
+    bare_path = os.path.join(team.shared_repos_dir, repo_name)
+    if not os.path.isdir(bare_path):
+        raise NotFoundError(f"Extra repo '{repo_name}' not found. Add it first.")
+
+    with _repo_operation_lock(team, repo_name):
+        _fetch_extra_repo_unlocked(team, repo_name, branch)
+        revision = _resolve_branch_revision(bare_path, repo_name, branch)
+        repo_cache_dir = os.path.join(team.shared_extra_checkouts_dir, repo_name)
+        checkout_path = os.path.join(repo_cache_dir, revision)
+
+        existing_head = (
+            _checkout_head(checkout_path) if os.path.isdir(checkout_path) else ""
+        )
+        if existing_head != revision:
+            if os.path.exists(checkout_path):
+                _remove_worktree_unlocked(team, repo_name, checkout_path)
+                shutil.rmtree(checkout_path, ignore_errors=True)
+            os.makedirs(repo_cache_dir, exist_ok=True)
+            subprocess.run(
+                ["git", "-C", bare_path, "worktree", "prune"],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                env=GIT_ENV,
+            )
+            try:
+                subprocess.run(
+                    [
+                        "git",
+                        "-C",
+                        bare_path,
+                        "worktree",
+                        "add",
+                        "--detach",
+                        checkout_path,
+                        revision,
+                    ],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                    timeout=60,
+                    env=GIT_ENV,
+                )
+            except subprocess.CalledProcessError as e:
+                raise ExternalCommandError(
+                    "git worktree add",
+                    e.returncode,
+                    f"Failed to create shared checkout for '{repo_name}' at "
+                    f"{revision}: {e.stderr or ''}",
+                )
+            except subprocess.TimeoutExpired:
+                raise ExternalCommandError(
+                    "git worktree add", -1, "Command timed out (60s)."
+                )
+            logger.info(
+                "Created shared extra-addons checkout %s/%s at %s",
+                repo_name,
+                revision,
+                checkout_path,
+            )
+
+        changed_files = _changed_files_between(
+            bare_path, current_revision.lower(), revision
+        )
+        return {
+            "name": repo_name,
+            "branch": branch,
+            "revision": revision,
+            "path": checkout_path,
+            "changed_files": changed_files,
+        }
+
+
+def _pull_extra_worktree_unlocked(
     team: TeamSettings, repo_name: str, branch: str, worktree_path: str
 ) -> tuple[str, list[str]]:
     """Fetch the bare repo and reset the worktree to the branch tip.
@@ -652,6 +890,14 @@ def pull_extra_worktree(
         len(changed),
     )
     return old_head, changed
+
+
+def pull_extra_worktree(
+    team: TeamSettings, repo_name: str, branch: str, worktree_path: str
+) -> tuple[str, list[str]]:
+    """Update a mutable per-consumer worktree (currently production only)."""
+    with _repo_operation_lock(team, repo_name):
+        return _pull_extra_worktree_unlocked(team, repo_name, branch, worktree_path)
 
 
 def resolve_main_addons_path(repo_path: str) -> str:
