@@ -68,7 +68,6 @@ logger = logging.getLogger("oduflow")
 
 AGENT_USER = "agent"
 AGENT_HOME = "/home/agent"
-_AGENT_RUNTIME_VERSION = "3"  # browser MCP + non-root runtime
 
 
 def _trace(msg: str, *args: object) -> None:
@@ -1487,26 +1486,57 @@ mv "$tmp_path" "$config_path"
         )
 
 
+def _agent_container_config(
+    settings: Settings, team: TeamSettings, env: dict[str, str]
+) -> dict[str, Any]:
+    """Docker run configuration for the long-lived per-team agent container.
+
+    This dictionary is both hashed and passed to ``containers.run``. Keeping a
+    single declarative representation makes every material container-spec
+    change trigger recreation without a separately maintained runtime epoch.
+    """
+    return {
+        "image": settings.agent_image,
+        "detach": True,
+        "user": AGENT_USER,
+        "network": get_team_network_name(team.team_id, settings.prefix),
+        "environment": env,
+        "volumes": {
+            get_agent_home_volume_name(team.team_id, settings.prefix): {
+                "bind": AGENT_HOME,
+                "mode": "rw",
+            },
+            get_agent_workspace_volume_name(team.team_id, settings.prefix): {
+                "bind": "/workspace",
+                "mode": "rw",
+            },
+        },
+        "extra_hosts": {"host.docker.internal": "host-gateway"},
+        "shm_size": "1g",
+        "restart_policy": {"Name": "unless-stopped"},
+    }
+
+
 def _agent_config_hash(
-    image: str, env: dict[str, str], has_git_credentials: bool
+    container_config: dict[str, Any], has_git_credentials: bool
 ) -> str:
     """Fingerprint of the config the agent container was created with.
 
-    Stored as a container label; a mismatch on ensure means oduflow.toml
-    changed (credentials, image, port), so the container is recreated. HOME
-    and /workspace are volumes — nothing is lost. Git credentials are copied
-    into HOME by the volume init step at container creation, so their presence
-    is part of the fingerprint: a container created before setup_repo_auth
-    would otherwise keep matching forever and never pick up the file."""
+    Stored as a container label; a mismatch on ensure means the image, injected
+    config, or Docker run specification changed, so the container is recreated.
+    HOME and /workspace are volumes — nothing is lost. Git credentials are
+    copied into HOME by the volume init step at container creation, so their
+    presence is also part of the fingerprint: a container created before
+    setup_repo_auth would otherwise keep matching forever and never pick up the
+    file."""
     import hashlib
 
     payload = json.dumps(
-        [
-            _AGENT_RUNTIME_VERSION,
-            image,
-            sorted(env.items()),
-            has_git_credentials,
-        ],
+        {
+            "container": container_config,
+            "has_git_credentials": has_git_credentials,
+        },
+        sort_keys=True,
         separators=(",", ":"),
     )
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
@@ -1613,34 +1643,53 @@ def _ensure_agent_container(
         agent_env = dict(_agent_env_vars(settings, team))
         cred_file = team.git_credentials_file()
         has_git_credentials = os.path.isfile(cred_file)
-        config_hash = _agent_config_hash(
-            settings.agent_image, agent_env, has_git_credentials
-        )
+        container_config = _agent_container_config(settings, team, agent_env)
+        config_hash = _agent_config_hash(container_config, has_git_credentials)
 
         container_name = get_agent_container_name(team.team_id, settings.prefix)
+        existing_container = None
         try:
-            container = client.containers.get(container_name)
-            if container.labels.get("oduflow.agent_config_hash", "") == config_hash:
-                if container.status != "running":
-                    container.start()
+            existing_container = client.containers.get(container_name)
+            if (
+                existing_container.labels.get("oduflow.agent_config_hash", "")
+                == config_hash
+            ):
+                if existing_container.status != "running":
+                    existing_container.start()
                 return
-            # Config changed in oduflow.toml — recreate with the new env/image.
-            # HOME and /workspace are volumes, so auth, sessions and every
-            # checkout survive.
+        except docker.errors.NotFound:
+            pass
+
+        # Resolve the exact immutable image before touching a working
+        # container. A failed pull therefore leaves the previous agent
+        # available and its old config hash ensures a later restart retries.
+        try:
+            client.images.pull(settings.agent_image)
+        except Exception:
+            outcome = (
+                "keeping existing container"
+                if existing_container is not None
+                else "agent container was not created"
+            )
+            logger.warning(
+                "Could not pull agent image %s; %s",
+                settings.agent_image,
+                outcome,
+                extra={"container": container_name},
+                exc_info=True,
+            )
+            return
+
+        if existing_container is not None:
+            # Config changed — recreate with the already-pulled image. HOME and
+            # /workspace are volumes, so auth, sessions and checkouts survive.
             logger.info(
                 "Agent config changed; recreating container",
                 extra={"container": container_name},
             )
-            container.remove(force=True)
-        except docker.errors.NotFound:
-            pass
+            existing_container.remove(force=True)
 
         ensure_team_network(client, settings, team)
-
-        volumes: dict[str, dict[str, str]] = {
-            home_volume: {"bind": AGENT_HOME, "mode": "rw"},
-            workspace_volume: {"bind": "/workspace", "mode": "rw"},
-        }
 
         labels = dict(agent_labels)
         labels.update(
@@ -1653,8 +1702,6 @@ def _ensure_agent_container(
             }
         )
 
-        with contextlib.suppress(Exception):
-            client.images.pull(settings.agent_image)
         _prepare_agent_volumes(
             client,
             settings.agent_image,
@@ -1663,17 +1710,9 @@ def _ensure_agent_container(
             cred_file if has_git_credentials else None,
         )
         client.containers.run(
-            image=settings.agent_image,
             name=container_name,
-            detach=True,
-            user=AGENT_USER,
-            network=get_team_network_name(team.team_id, settings.prefix),
-            environment=agent_env,
             labels=labels,
-            volumes=volumes,
-            extra_hosts={"host.docker.internal": "host-gateway"},
-            shm_size="1g",
-            restart_policy={"Name": "unless-stopped"},
+            **container_config,
         )
         logger.info("Agent container ensured", extra={"container": container_name})
         # Report which Claude credential the (re)created container will use, so

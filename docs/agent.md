@@ -58,7 +58,7 @@ enablement and credentials live in the `[team.*]` sections:
 ```toml
 # Deployment-wide (optional)
 [agent]
-image = "oduist/oduflow-coder:latest"
+image = "oduist/oduflow-coder:0.2.3"
 # claude_model = ""     # optional Claude model override; empty = CLI default
 # codex_model = ""      # optional Codex model override; empty = CLI default
 
@@ -74,6 +74,12 @@ CLAUDE_CODE_OAUTH_TOKEN = ""   # Claude subscription token (`claude setup-token`
 ANTHROPIC_API_KEY = ""         # Claude API key (used when no OAuth token)
 OPENAI_API_KEY = ""            # Codex API key
 ```
+
+The default coder image is an immutable versioned tag coupled to this Oduflow
+release. Oduflow pulls a changed tag before replacing the running container; a
+failed pull leaves the previous container intact. The former official
+`oduist/oduflow-coder:latest` value resolves to the current pinned default
+when the configuration is loaded.
 
 When `CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY` is configured, the
 container automatically marks Claude Code's first-run onboarding as complete,
@@ -113,11 +119,16 @@ reference.
   only in single-team deployments; with several teams, each team sets its own
   keys in `[team.X.agent_env]` so an operator credential never leaks to
   tenants.
-- **Codex sandbox and approvals.** Codex CLI uses
-  `--dangerously-bypass-approvals-and-sandbox`, and Codex ACP starts in
-  `agent-full-access`, so installed MCP tools run without interactive
-  permission prompts or a nested Bubblewrap sandbox. The security boundary is
-  the unprivileged `agent` user inside the per-team Docker container.
+- **Sandbox and approvals.** Both agents run approval-free — the security
+  boundary is the unprivileged `agent` user inside the per-team Docker
+  container, not per-tool prompts. Codex CLI uses
+  `--dangerously-bypass-approvals-and-sandbox` and Codex ACP starts in
+  `agent-full-access` (no nested Bubblewrap sandbox). Claude matches this: the
+  Agent CLI console runs `claude --dangerously-skip-permissions`, and Agent
+  Chat's ACP adapter (`claude-agent-acp`) starts in `bypassPermissions`, seeded
+  via the container's user-tier `~/.claude/settings.json`
+  (`permissions.defaultMode`). So installed MCP tools run without interactive
+  permission prompts for either agent.
 
 ## Limitations
 

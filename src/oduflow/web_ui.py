@@ -398,7 +398,7 @@ def _acp_adapter_cmd(agent_type: str) -> list[str]:
     ``docker/agent/Dockerfile``."""
     if agent_type == "codex":
         return ["codex-acp"]
-    return ["claude-code-acp"]
+    return ["claude-agent-acp"]
 
 
 _CLAUDE_AUTH_GUIDANCE_MARKER = "Oduflow authentication guidance:"
@@ -3348,7 +3348,12 @@ def _build_routes(
                 # Codex does not attempt a nested bubblewrap sandbox.
                 cmd = _codex_cli_cmd(mcp_url, settings.agent_codex_model)
             else:
-                cmd = ["claude"]
+                # Approval-free like Codex: Docker + the unprivileged `agent`
+                # user are the security boundary, so the console skips per-tool
+                # prompts. Safe under the non-root agent user (the CLI's own root
+                # guard on this flag does not trip). Agent Chat gets the same via
+                # the seeded user-tier settings.json (permissions.defaultMode).
+                cmd = ["claude", "--dangerously-skip-permissions"]
                 if settings.agent_claude_model:
                     cmd += ["--model", settings.agent_claude_model]
 

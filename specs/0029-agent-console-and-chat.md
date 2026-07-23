@@ -38,7 +38,7 @@ WebSocket↔`docker exec` bridge:
 - **Agent CLI** (`ws_agent_console`): the agent's own TUI in xterm.js, exec'd
   with a PTY at the environment's checkout.
 - **Agent Chat** (`ws_agent_acp`): a TTY-less, line-framed relay to the agent's
-  ACP adapter (`claude-code-acp` / `codex-acp`), rendered by a vendored,
+  ACP adapter (`claude-agent-acp` / `codex-acp`), rendered by a vendored,
   framework-free browser client (`acp-client.js` + `chat.js`). A current
   session and bounded recent history per (environment, agent) are persisted;
   any selected conversation resumes via ACP `session/load`. Chats minimize to
@@ -148,6 +148,9 @@ history loading remains best-effort while its adapter matures.
 
 ## History
 
+- 2026-07-22 — replaced the rolling coder-image tag and manual runtime epoch
+  with the immutable, release-coupled image contract in
+  [[0040-versioned-coder-image-contract]].
 - 2026-07-21 — evolved durable chat state from one session id to a bounded MRU
   conversation history with first-prompt titles and dashboard switching;
   legacy values normalize on read and resume still goes exclusively through

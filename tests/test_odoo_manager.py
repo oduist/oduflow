@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, patch
 
 from oduflow.docker_ops import system_ops, env_ops, odoo_ops
 from oduflow.errors import ConflictError, NotFoundError, PrerequisiteNotMetError
-from oduflow.settings import Settings, TeamSettings
+from oduflow.settings import DEFAULT_AGENT_IMAGE, Settings, TeamSettings
 
 TEST_TEAM = TeamSettings(
     team_id="1",
@@ -2095,7 +2095,7 @@ class TestAgentContainer:
             base_data_dir="/tmp/flow-test",
             etc_dir="/tmp/flow-test/etc",
             port=8000,
-            agent_image="oduist/oduflow-coder:latest",
+            agent_image=DEFAULT_AGENT_IMAGE,
             teams={team.team_id: team},
         )
         base.update(kw)
@@ -2289,8 +2289,7 @@ class TestAgentContainer:
         existing.status = "running"
         existing.labels = {
             "oduflow.agent_config_hash": env_ops._agent_config_hash(
-                settings.agent_image,
-                env,
+                env_ops._agent_container_config(settings, team, env),
                 os.path.isfile(team.git_credentials_file()),
             )
         }
@@ -2360,7 +2359,7 @@ class TestAgentContainer:
         existing.status = "running"
         existing.labels = {
             "oduflow.agent_config_hash": env_ops._agent_config_hash(
-                s.agent_image, env, False
+                env_ops._agent_container_config(s, team, env), False
             )
         }
         mock_docker_client.volumes.get.return_value = MagicMock()
@@ -2372,6 +2371,49 @@ class TestAgentContainer:
         existing.remove.assert_called_once_with(force=True)
         vols = mock_docker_client.containers.run.call_args_list[0].kwargs["volumes"]
         assert any(v["bind"] == "/run/oduflow/git-credentials" for v in vols.values())
+
+    def test_ensure_recreates_when_pinned_image_changes(
+        self, monkeypatch, mock_docker_client
+    ):
+        monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        team = self._team()
+        old_settings = self._settings(
+            team=team, agent_image="oduist/oduflow-coder:0.2.1"
+        )
+        new_settings = self._settings(team=team)
+        existing = self._existing_container(old_settings, team, monkeypatch)
+        mock_docker_client.volumes.get.return_value = MagicMock()
+        mock_docker_client.containers.get.return_value = existing
+
+        env_ops._ensure_agent_container(mock_docker_client, new_settings, team)
+
+        mock_docker_client.images.pull.assert_called_once_with(DEFAULT_AGENT_IMAGE)
+        existing.remove.assert_called_once_with(force=True)
+        assert mock_docker_client.containers.run.call_args.kwargs["image"] == (
+            DEFAULT_AGENT_IMAGE
+        )
+
+    def test_failed_image_pull_preserves_existing_container(
+        self, monkeypatch, mock_docker_client
+    ):
+        monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        team = self._team(agent_env={"OPENAI_API_KEY": "new-key"})
+        settings = self._settings(team=team)
+        existing = MagicMock()
+        existing.status = "running"
+        existing.labels = {"oduflow.agent_config_hash": "stale"}
+        mock_docker_client.volumes.get.return_value = MagicMock()
+        mock_docker_client.containers.get.return_value = existing
+        mock_docker_client.images.pull.side_effect = RuntimeError("registry down")
+
+        env_ops._ensure_agent_container(mock_docker_client, settings, team)
+
+        existing.remove.assert_not_called()
+        mock_docker_client.containers.run.assert_not_called()
 
     def test_api_key_when_no_subscription(self, monkeypatch, mock_docker_client):
         monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)

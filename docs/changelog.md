@@ -4,6 +4,7 @@
 
 ### Features
 
+- **Versioned coder runtime contract** — hosted agents now use the immutable `oduist/oduflow-coder:0.2.3` image instead of a rolling `:latest` tag. The publish workflow emits only versioned multi-architecture tags, legacy official `:latest` configuration resolves to the release's pinned image, and Oduflow pulls a changed image before replacing a working container. Container recreation is derived from the actual Docker run specification rather than a manually bumped runtime epoch.
 - **Shared immutable extra-addons checkouts** — development environments using the same extra-addons commit now mount one persistent team-level checkout instead of materialising identical per-environment worktrees. Branch updates create a new SHA-keyed checkout and `pull_and_apply` switches only the requested environment, preserving independent database state; production keeps private worktrees for rollback. Existing environments migrate lazily on their next sync, and cached revisions remain until the extra repository is deleted.
 
 ### Dashboard
@@ -23,6 +24,7 @@
 
 ### Documentation
 
+- **Record the versioned coder-image contract** — specs/0040 documents immutable image publication, server/image version coupling, safe replacement ordering, and removal of the rolling `:latest` channel.
 - **Document the short transport flag** — HTTP server startup examples now show `oduflow -t http` / `uvx oduflow -t http` as the short form of `--transport http`.
 - **Record the shared extra-addons cache decision** — specs/0039 documents SHA-keyed checkout sharing, isolation from moving branches, persistent cache lifecycle, and why production remains on private worktrees.
 

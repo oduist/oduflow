@@ -70,11 +70,18 @@ fi
 # NPM_CONFIG_PREFIX points at $HOME/.npm-global (persistent volume), so this
 # downloads once per volume, not once per container. Failure is non-fatal:
 # Codex still works; Claude consoles/chats will report the missing binary.
-if command -v claude >/dev/null 2>&1 && command -v claude-code-acp >/dev/null 2>&1; then
+if command -v claude >/dev/null 2>&1 && command -v claude-agent-acp >/dev/null 2>&1; then
     log "Claude Code present ($(command -v claude))"
 else
     log "installing Claude Code + ACP adapter from npm (first start; persists on the home volume)"
-    if npm install -g @anthropic-ai/claude-code @zed-industries/claude-code-acp >/dev/null 2>&1; then
+    # The ACP adapter moved orgs: @zed-industries/claude-code-acp is deprecated
+    # and frozen; @agentclientprotocol/claude-agent-acp (bin: claude-agent-acp)
+    # is the maintained successor. The presence check above looks for the new
+    # bin, so a home volume seeded with the old adapter reinstalls onto the new
+    # one on its next start. Drop the deprecated package so its stale
+    # claude-code-acp bin doesn't linger on PATH (best-effort).
+    npm uninstall -g @zed-industries/claude-code-acp >/dev/null 2>&1 || true
+    if npm install -g @anthropic-ai/claude-code @agentclientprotocol/claude-agent-acp >/dev/null 2>&1; then
         log "Claude Code installed"
     else
         log "WARNING: Claude Code install failed (no network?); Claude consoles/chats will not work until it succeeds on a restart"
@@ -213,6 +220,50 @@ elif [ -n "${ANTHROPIC_API_KEY:-}" ]; then
 else
     log "Claude auth: NONE configured (use an interactive login; it persists on the home volume)"
 fi
+
+# --- 4a-bis. Claude approval-free browser chat -------------------------------
+# Browser Agent Chat/CLI run without per-tool approval prompts, exactly like
+# Codex (agent-full-access): Docker + the unprivileged `agent` user are the
+# security boundary. The maintained ACP adapter honors permissions.defaultMode
+# from the USER-tier settings file ($CLAUDE_CONFIG_DIR/settings.json) — escalating
+# modes are stripped only from committed project-tier settings, not this one. The
+# CLI console additionally passes --dangerously-skip-permissions. Merge (never
+# clobber) so an operator's own settings survive; only the defaultMode key is set.
+seed_claude_settings() {
+    local claude_dir="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+    local settings_json="$claude_dir/settings.json"
+    local tmp_json
+    local jq_failed=false
+    local jq_filter='
+        .permissions = (
+            if (.permissions | type) == "object" then .permissions else {} end
+        )
+        | .permissions.defaultMode = "bypassPermissions"
+    '
+
+    mkdir -p "$claude_dir"
+    tmp_json="$(mktemp "${settings_json}.tmp.XXXXXX")"
+
+    if [ -f "$settings_json" ] && jq -e 'type == "object"' "$settings_json" >/dev/null 2>&1; then
+        jq "$jq_filter" "$settings_json" > "$tmp_json" || jq_failed=true
+    else
+        if [ -e "$settings_json" ]; then
+            log "WARNING: replacing invalid Claude settings at $settings_json"
+        fi
+        jq --null-input "$jq_filter" > "$tmp_json" || jq_failed=true
+    fi
+
+    if [ "$jq_failed" = true ]; then
+        rm -f "$tmp_json"
+        log "WARNING: could not seed Claude approval-free settings"
+        return
+    fi
+
+    chmod 600 "$tmp_json"
+    mv -f "$tmp_json" "$settings_json"
+    log "Claude approval-free settings seeded (permissions.defaultMode=bypassPermissions)"
+}
+seed_claude_settings
 
 # --- 4b. Codex auth ----------------------------------------------------------
 # API key is the reliable path. Subscription via auth.json is seed-if-missing
