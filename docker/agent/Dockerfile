@@ -22,13 +22,13 @@
 # end user downloads them from npm directly (like npx) -- we never
 # redistribute them.
 #
-# Bump CODER_VERSION on every change and push :<version> + :latest
-# (see AGENTS.md "Publishing the Coder Image").
+# Bump CODER_VERSION on every change; CI publishes the immutable :<version>
+# tag only (see AGENTS.md "Publishing the Coder Image").
 # See specs/0029-agent-console-and-chat.md.
 
 FROM node:24-bookworm-slim
 
-ARG CODER_VERSION=0.2.2
+ARG CODER_VERSION=0.2.3
 LABEL org.opencontainers.image.title="oduflow-coder" \
       org.opencontainers.image.version="${CODER_VERSION}" \
       org.opencontainers.image.source="https://github.com/oduist/oduflow"

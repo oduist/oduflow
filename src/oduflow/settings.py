@@ -17,10 +17,25 @@ logger = logging.getLogger("oduflow")
 
 TRACE: bool = False
 
+DEFAULT_AGENT_IMAGE = "oduist/oduflow-coder:0.2.3"
+_LEGACY_AGENT_IMAGE = "oduist/oduflow-coder:latest"
+
 # Active MCP transport for the running server ("stdio" | "http").
 # Set in server.main() before the server starts. Mostly informational;
 # local_path is gated by the allow_local_path setting.
 TRANSPORT: str = "stdio"
+
+
+def _normalize_agent_image(value: object) -> str:
+    image = str(value or "").strip() or DEFAULT_AGENT_IMAGE
+    if image == _LEGACY_AGENT_IMAGE:
+        logger.warning(
+            "[agent].image %s is deprecated; using pinned image %s",
+            _LEGACY_AGENT_IMAGE,
+            DEFAULT_AGENT_IMAGE,
+        )
+        return DEFAULT_AGENT_IMAGE
+    return image
 
 
 @dataclass(frozen=True)
@@ -209,7 +224,7 @@ class Settings:
     # driving environments only through the Oduflow MCP server. Container and
     # volume names are derived per team in naming.py.
     # See specs/0029-agent-console-and-chat.md.
-    agent_image: str = "oduist/oduflow-coder:latest"
+    agent_image: str = DEFAULT_AGENT_IMAGE
     agent_claude_model: str = ""  # optional; empty = CLI default
     agent_codex_model: str = ""  # optional; empty = CLI default
 
@@ -573,8 +588,7 @@ class Settings:
             postgres_image=str(database.get("image", "postgres:15")),
             base_data_dir=base_data_dir,
             overlay_threshold_mb=int(storage.get("overlay_threshold_mb", 50)),
-            agent_image=str(agent.get("image", "oduist/oduflow-coder:latest")).strip()
-            or "oduist/oduflow-coder:latest",
+            agent_image=_normalize_agent_image(agent.get("image")),
             agent_claude_model=str(agent.get("claude_model", "")).strip(),
             agent_codex_model=str(agent.get("codex_model", "")).strip(),
             auto_stop_hours=int(lifecycle.get("auto_stop_hours", 48)),

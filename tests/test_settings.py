@@ -1,6 +1,6 @@
 import pytest
 from pathlib import Path
-from oduflow.settings import Settings, TeamSettings, find_toml
+from oduflow.settings import DEFAULT_AGENT_IMAGE, Settings, TeamSettings, find_toml
 
 
 class TestSettings:
@@ -321,9 +321,18 @@ class TestQuotas:
 class TestAgentSettings:
     def test_global_defaults(self):
         s = Settings()
-        assert s.agent_image == "oduist/oduflow-coder:latest"
+        assert s.agent_image == "oduist/oduflow-coder:0.2.3"
         assert s.agent_claude_model == ""
         assert s.agent_codex_model == ""
+
+    def test_default_image_matches_dockerfile_version(self):
+        dockerfile = Path(__file__).parents[1] / "docker" / "agent" / "Dockerfile"
+        version = next(
+            line.removeprefix("ARG CODER_VERSION=")
+            for line in dockerfile.read_text().splitlines()
+            if line.startswith("ARG CODER_VERSION=")
+        )
+        assert DEFAULT_AGENT_IMAGE == f"oduist/oduflow-coder:{version}"
 
     def test_team_defaults_agent_off(self):
         # The agent is a hosting feature; a team must opt in explicitly.
@@ -360,9 +369,21 @@ class TestAgentSettings:
         toml = tmp_path / "oduflow.toml"
         toml.write_text('[team.1]\nhostname = "localhost"\n')
         s = Settings.from_toml(str(toml))
-        assert s.agent_image == "oduist/oduflow-coder:latest"
+        assert s.agent_image == DEFAULT_AGENT_IMAGE
         assert s.teams["1"].agent_enabled is False
         assert s.teams["1"].agent_env == {}
+
+    def test_legacy_latest_image_migrates_to_pinned_default(self, tmp_path, caplog):
+        toml = tmp_path / "oduflow.toml"
+        toml.write_text(
+            '[agent]\nimage = "oduist/oduflow-coder:latest"\n'
+            '[team.1]\nhostname = "localhost"\n'
+        )
+
+        s = Settings.from_toml(str(toml))
+
+        assert s.agent_image == DEFAULT_AGENT_IMAGE
+        assert "is deprecated; using pinned image" in caplog.text
 
     def test_agent_env_must_be_table(self, tmp_path):
         toml = tmp_path / "oduflow.toml"

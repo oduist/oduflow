@@ -113,4 +113,4 @@ The per-team coding agent (see [Coding Agent](agent.md)) exposes one status endp
 |---|---|---|
 | `GET` | `/api/agent` | Whether the coding agent is enabled for the team and its default type (`claude` / `codex`) |
 | `WebSocket` | `/api/environments/{branch}/agent` | **Agent CLI** — the agent's interactive TUI, bridged from a PTY `docker exec` in the team's agent container (used by the dashboard console) |
-| `WebSocket` | `/api/environments/{branch}/agent-acp` | **Agent Chat** — a line-framed relay to the agent's ACP adapter (`claude-code-acp` / `codex-acp`), rendered by the browser chat client with per-environment conversation history |
+| `WebSocket` | `/api/environments/{branch}/agent-acp` | **Agent Chat** — a line-framed relay to the agent's ACP adapter (`claude-agent-acp` / `codex-acp`), rendered by the browser chat client with per-environment conversation history |

@@ -58,6 +58,7 @@ precursors).
 | [0037](0037-built-in-agent-browser-and-noninteractive-codex.md) | 2026-07-21 | Built-in Agent Browser MCP and non-interactive Codex trust model |
 | [0038](0038-agent-chat-file-attachments.md) | 2026-07-22 | Agent Chat file attachments through persistent workspace resources |
 | [0039](0039-shared-immutable-extra-addons-checkouts.md) | 2026-07-22 | Shared immutable extra-addons checkouts for development environments |
+| [0040](0040-versioned-coder-image-contract.md) | 2026-07-22 | Immutable, release-coupled coder image tags replace the rolling runtime |
 
 ## Design docs
 

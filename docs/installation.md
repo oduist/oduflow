@@ -162,7 +162,7 @@ auto_delete_hours = 0       # auto-delete environments stopped for N hours; 0 di
 # One agent container per team (Claude Code + OpenAI Codex), driven from the
 # dashboard (Agent Chat / Agent CLI). Opt-in per team via agent_enabled below.
 # [agent]
-# image = "oduist/oduflow-coder:latest"
+# image = "oduist/oduflow-coder:0.2.3"
 # claude_model = ""         # optional Claude model override; empty = CLI default
 # codex_model = ""          # optional Codex model override; empty = CLI default
 
@@ -232,7 +232,7 @@ The global `[agent]` section holds deployment-wide settings for the per-team cod
 
 | Key | Default | Description |
 |---|---|---|
-| `[agent].image` | `oduist/oduflow-coder:latest` | Image for the per-team coding-agent container (Claude Code + OpenAI Codex) |
+| `[agent].image` | `oduist/oduflow-coder:0.2.3` | Immutable image for the per-team coding-agent container (Claude Code + OpenAI Codex); the default is coupled to the Oduflow release |
 | `[agent].claude_model` | *(empty)* | Optional Claude model override for the agent; empty = CLI default |
 | `[agent].codex_model` | *(empty)* | Optional Codex model override for the agent; empty = CLI default |
 

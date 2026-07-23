@@ -260,36 +260,24 @@ the persistent home volume. Keep it that way when editing the Dockerfile.
 **Publication is automatic and merge-gated — never publish from a feature
 branch.** The CI workflow `.github/workflows/publish-coder.yml` builds and pushes
 `oduist/oduflow-coder` when a change under `docker/agent/**` lands on `main`.
-It reads the version from the Dockerfile's `ARG CODER_VERSION` and pushes both
-`:<version>` and `:latest` as a **multi-arch manifest (`linux/amd64` +
+It reads the version from the Dockerfile's `ARG CODER_VERSION` and pushes only
+the immutable `:<version>` tag as a **multi-arch manifest (`linux/amd64` +
 `linux/arm64`)**, so the image pulls on both x86_64 servers and Apple Silicon
-dev machines. So the flow is:
+dev machines. Oduflow's `DEFAULT_AGENT_IMAGE` pins that exact tag; no rolling
+`:latest` tag is published. So the flow is:
 
 1. Edit `docker/agent/` (Dockerfile / `entrypoint.sh` / `clone-env.sh`).
 2. **Bump `ARG CODER_VERSION`** in `docker/agent/Dockerfile` — that value is what
-   CI ships (a new `:<version>`); forgetting to bump republishes the same tag.
-3. Merge to `main` → CI builds and pushes. (A manual run is available via the
+   CI ships (a new `:<version>`); CI refuses to overwrite an existing tag.
+3. Update `DEFAULT_AGENT_IMAGE` in `src/oduflow/settings.py` to the same tag;
+   the unit suite checks that both versions match.
+4. Merge to `main` → CI builds and pushes. (A manual run is available via the
    workflow's `workflow_dispatch` trigger.)
 
 Do NOT run `docker push` for the coder image by hand from a working branch — that
 would ship an image built from unmerged code. The workflow needs repo secrets
 `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN` (a Docker Hub token with push rights to
 the `oduist` org).
-
-**Testing coder changes locally (no publish needed).** The agent container's
-image pull is best-effort (`contextlib.suppress` in `_ensure_agent_container`),
-so a locally-built image is used when the tag is not pulled from the registry.
-Build with a **local-only tag** and point `[agent].image` at it, then restart
-the Oduflow server — the agent container is recreated automatically whenever
-its configured image/env changed:
-
-```bash
-docker build --build-arg CODER_VERSION=<VERSION> \
-  -t oduist/oduflow-coder:dev-local docker/agent
-# set [agent].image = "oduist/oduflow-coder:dev-local" in oduflow.toml,
-# then restart the Oduflow server.
-```
-
-(Using a distinct tag like `:dev-local` avoids a registry pull overwriting your
-local build, which can happen if you reuse `:latest`.) Registry:
-hub.docker.com, repository: `oduist/oduflow-coder`.
+The runtime requires the configured image to be pullable before it replaces an
+existing agent container. Registry: hub.docker.com, repository:
+`oduist/oduflow-coder`.

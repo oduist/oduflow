@@ -60,7 +60,7 @@ auto_delete_hours = 0             # delete stopped environments after N hours (D
 # deployment-wide bits; changes apply on server restart (the agent container
 # is recreated automatically when its config changed).
 # [agent]
-# image = "oduist/oduflow-coder:latest"
+# image = "oduist/oduflow-coder:0.2.3"
 # claude_model = ""                # optional model override; empty = CLI default
 # codex_model = ""                 # optional model override; empty = CLI default
 

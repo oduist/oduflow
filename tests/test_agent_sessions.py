@@ -164,10 +164,10 @@ def test_file_permissions_are_restrictive(tmp_path):
 
 
 def test_acp_adapter_cmd():
-    assert _acp_adapter_cmd("claude") == ["claude-code-acp"]
+    assert _acp_adapter_cmd("claude") == ["claude-agent-acp"]
     assert _acp_adapter_cmd("codex") == ["codex-acp"]
     # Unknown agent falls back to Claude (the configured default agent).
-    assert _acp_adapter_cmd("something-else") == ["claude-code-acp"]
+    assert _acp_adapter_cmd("something-else") == ["claude-agent-acp"]
 
 
 def test_codex_cli_cmd_uses_docker_as_the_sandbox():
