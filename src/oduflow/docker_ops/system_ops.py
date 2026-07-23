@@ -3125,9 +3125,6 @@ def _wire_imported_addons(
         if kind == "remote" and origin_url:
             try:
                 extra_addons.clone_extra_repo(team, name, origin_url)
-                extra_addons._resolve_branch_revision(repo_path, name, branch)
-                wired[name] = branch
-                continue
             except Exception:
                 # A failed clone may leave a partial bare repo. It belongs to
                 # this import attempt, so remove it before a retry or fallback.
@@ -3138,6 +3135,19 @@ def _wire_imported_addons(
                     "Clone of extra repo '%s' failed; using uploaded files",
                     name,
                 )
+            else:
+                try:
+                    extra_addons._resolve_branch_revision(repo_path, name, branch)
+                except Exception:
+                    # Clone succeeded but the requested branch is missing on
+                    # the remote: the bare repo cannot serve this branch, so
+                    # discard it and let the caller fail loudly on the wrong
+                    # branch instead of silently masking the issue with local
+                    # files that the user did not request.
+                    shutil.rmtree(repo_path, ignore_errors=True)
+                    raise
+                wired[name] = branch
+                continue
         if not os.path.isdir(src_dir):
             raise PrerequisiteNotMetError(
                 f"Addon '{name}' has no uploaded files and no usable origin."

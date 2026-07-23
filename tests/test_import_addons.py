@@ -6,6 +6,7 @@ branch needs network and is not exercised here.
 """
 
 import json
+import os
 import tarfile
 
 import pytest
@@ -130,3 +131,51 @@ class TestWireImportedAddons:
         )
         with pytest.raises(PrerequisiteNotMetError, match="no uploaded files"):
             system_ops._wire_imported_addons(team, str(staging), "18.0")
+
+    def test_clone_success_with_wrong_branch_fails_loud(self, team, tmp_path):
+        """A successful clone whose branch is missing on the remote must NOT
+        silently fall back to local files; the user explicitly asked for the
+        remote version. The bare repo is removed and NotFoundError surfaces."""
+        from unittest.mock import patch
+
+        from oduflow import extra_addons
+        from oduflow.errors import NotFoundError
+
+        staging = tmp_path / "staging"
+        staging.mkdir()
+        # Provision BOTH local files and a remote URL: a too-broad except
+        # used to silently use the local files when the branch check failed.
+        local_src = staging / "addons" / "enterprise"
+        local_src.mkdir(parents=True)
+        (local_src / "__manifest__.py").write_text("{}")
+        (staging / "addons.json").write_text(
+            json.dumps(
+                [
+                    {
+                        "name": "enterprise",
+                        "kind": "remote",
+                        "origin_url": "https://example.com/enterprise.git",
+                        "branch": "18.0",
+                    }
+                ]
+            )
+        )
+
+        with (
+            patch.object(
+                extra_addons,
+                "clone_extra_repo",
+                return_value={"name": "enterprise"},
+            ),
+            patch.object(
+                extra_addons,
+                "_resolve_branch_revision",
+                side_effect=NotFoundError("Branch '18.0' not found."),
+            ),
+        ):
+            with pytest.raises(NotFoundError, match="Branch '18.0'"):
+                system_ops._wire_imported_addons(team, str(staging), "18.0")
+
+        # The bare repo the clone created must be cleaned up so it cannot be
+        # referenced as if it were a fresh wiring of the correct branch.
+        assert not os.path.exists(os.path.join(team.shared_repos_dir, "enterprise"))
