@@ -1857,7 +1857,7 @@
   <span>RAM: <span class="sys-val" id="sys-ram">—</span></span>
   <span>Load: <span class="sys-val" id="sys-load">—</span></span>
   <span id="health-chips"></span>
-  <div class="min-dock" id="min-dock" aria-label="Minimized windows"></div>
+  <div class="min-dock" id="min-dock" role="group" aria-label="Minimized windows"></div>
 </div>
 
 <div class="modal-overlay" id="confirm-modal" onclick="cancelConfirm(event)">
@@ -2177,8 +2177,10 @@ function restorePanel(id) {
 }
 
 function closeMinimized(id) {
+  var returnFocus = _minimized[id] && _minimized[id].returnFocus;
   var closer = MODAL_CLOSERS[id];
   if (closer) closer();   // per-type closer drops the chip and tears down WS/term
+  if (returnFocus && document.contains(returnFocus)) returnFocus.focus();
 }
 
 document.querySelectorAll('.modal-overlay').forEach(function(overlay) {

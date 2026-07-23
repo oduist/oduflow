@@ -3077,8 +3077,9 @@ def _wire_imported_addons(
     the staging dir. For each entry: ``kind == "remote"`` is cloned from its
     origin (updatable via update_extra_repo); everything else is seeded as a
     local (remote-less) repo from ``addons/<name>/``. A repo that already exists
-    is left as-is. Returns ``{name: branch}`` for every addon that is available
-    for the template to reference (existing or freshly created).
+    is reused only when the requested branch exists. Every declared addon must
+    be usable; otherwise finalization remains retryable and fails rather than
+    creating a template with an incomplete addons path.
     """
     from oduflow import extra_addons
 
@@ -3089,10 +3090,13 @@ def _wire_imported_addons(
         with open(manifest) as f:
             entries = json.load(f)
         if not isinstance(entries, list):
-            return {}
+            raise PrerequisiteNotMetError(
+                "The staged addons manifest must contain a JSON list."
+            )
     except (OSError, ValueError):
-        logger.warning("Could not read staged addons manifest %s", manifest)
-        return {}
+        raise PrerequisiteNotMetError(
+            "Could not read the staged addons manifest."
+        ) from None
 
     addons_src = os.path.join(staging_dir, "addons")
     wired: dict[str, str] = {}
@@ -3110,37 +3114,37 @@ def _wire_imported_addons(
         repo_path = os.path.join(team.shared_repos_dir, name)
 
         # Already registered (e.g. a re-run, or the user added it manually):
-        # reference it, don't recreate.
+        # reference it only if the requested branch is genuinely available.
         if os.path.isdir(repo_path):
+            extra_addons._resolve_branch_revision(repo_path, name, branch)
             wired[name] = branch
             logger.info("Extra repo '%s' already exists; referencing it", name)
             continue
 
         src_dir = os.path.join(addons_src, name)
-        try:
-            if kind == "remote" and origin_url:
-                try:
-                    extra_addons.clone_extra_repo(team, name, origin_url)
-                    wired[name] = branch
-                    continue
-                except Exception as exc:  # noqa: BLE001 - fall back to local files
-                    logger.warning(
-                        "Clone of extra repo '%s' from %s failed (%s); "
-                        "falling back to local copy if available",
-                        name,
-                        origin_url,
-                        exc,
-                    )
-            if os.path.isdir(src_dir):
-                extra_addons.create_local_repo(team, name, src_dir, branch)
+        if kind == "remote" and origin_url:
+            try:
+                extra_addons.clone_extra_repo(team, name, origin_url)
+                extra_addons._resolve_branch_revision(repo_path, name, branch)
                 wired[name] = branch
-            else:
+                continue
+            except Exception:
+                # A failed clone may leave a partial bare repo. It belongs to
+                # this import attempt, so remove it before a retry or fallback.
+                shutil.rmtree(repo_path, ignore_errors=True)
+                if not os.path.isdir(src_dir):
+                    raise
                 logger.warning(
-                    "Addon '%s' has no uploaded files and no usable origin; skipped",
+                    "Clone of extra repo '%s' failed; using uploaded files",
                     name,
                 )
-        except Exception as exc:  # noqa: BLE001 - one bad addon must not abort import
-            logger.warning("Could not wire imported addon '%s': %s", name, exc)
+        if not os.path.isdir(src_dir):
+            raise PrerequisiteNotMetError(
+                f"Addon '{name}' has no uploaded files and no usable origin."
+            )
+        extra_addons.create_local_repo(team, name, src_dir, branch)
+        extra_addons._resolve_branch_revision(repo_path, name, branch)
+        wired[name] = branch
 
     return wired
 
@@ -3163,44 +3167,62 @@ def finalize_imported_template(
     """
     from oduflow.docker_ops import env_ops
 
+    os.makedirs(staging_dir, exist_ok=True)
+    promoted_marker = os.path.join(staging_dir, ".promoted")
     staged_meta = os.path.join(staging_dir, "metadata.json")
     staged_dump = os.path.join(staging_dir, "dump.sql.gz")
     staged_fs = os.path.join(staging_dir, "filestore")
-    if not os.path.isfile(staged_meta) or not os.path.isfile(staged_dump):
+    tpl_dir = team.get_template_dir(template_name)
+    live_meta = team.get_template_metadata_path(template_name)
+    live_dump = os.path.join(tpl_dir, "dump.sql.gz")
+    promoted = os.path.isfile(promoted_marker)
+    if not (
+        os.path.isfile(staged_meta) or (promoted and os.path.isfile(live_meta))
+    ) or not (os.path.isfile(staged_dump) or (promoted and os.path.isfile(live_dump))):
         raise PrerequisiteNotMetError(
             "Manifest and SQL dump must be uploaded before finalize."
         )
+    metadata_source = staged_meta if os.path.isfile(staged_meta) else live_meta
     try:
-        with open(staged_meta) as f:
+        with open(metadata_source) as f:
             major_version = str(json.load(f).get("odoo_version") or "")
     except (OSError, ValueError):
         major_version = ""
 
     client = get_client()
-    tpl_dir = team.get_template_dir(template_name)
     template_filestore_path = team.get_template_filestore_path(template_name)
 
+    # Written before promotion so a crash after any individual rename can be
+    # retried from the mix of remaining staged and already-live artifacts.
+    open(promoted_marker, "a").close()
     with env_ops.remount_template_overlays(
         client, settings, team, template_name
     ) as remount:
         os.makedirs(tpl_dir, exist_ok=True)
 
         # Swap filestore (the overlay lower layer) while envs are unmounted.
-        if os.path.exists(template_filestore_path):
-            shutil.rmtree(template_filestore_path)
         if os.path.isdir(staged_fs):
+            if os.path.exists(template_filestore_path):
+                shutil.rmtree(template_filestore_path)
             os.rename(staged_fs, template_filestore_path)
-        else:
+        elif not os.path.isdir(template_filestore_path):
             os.makedirs(template_filestore_path, exist_ok=True)
 
         # Swap dump: drop stale dumps under other names so
         # get_template_sql_path resolves to the new gzip'd SQL dump.
-        for stale in ("dump.pgdump", "dump.sql", "dump.pgdump.gz", "dump.sql.gz"):
-            stale_path = os.path.join(tpl_dir, stale)
-            if os.path.isfile(stale_path):
-                os.remove(stale_path)
-        os.rename(staged_dump, os.path.join(tpl_dir, "dump.sql.gz"))
-        os.replace(staged_meta, team.get_template_metadata_path(template_name))
+        if os.path.isfile(staged_dump):
+            for stale in (
+                "dump.pgdump",
+                "dump.sql",
+                "dump.pgdump.gz",
+                "dump.sql.gz",
+            ):
+                stale_path = os.path.join(tpl_dir, stale)
+                if os.path.isfile(stale_path):
+                    os.remove(stale_path)
+            os.rename(staged_dump, live_dump)
+        if os.path.isfile(staged_meta):
+            os.replace(staged_meta, live_meta)
 
         if major_version:
             try:
@@ -3223,8 +3245,8 @@ def finalize_imported_template(
     # Turn any uploaded/announced addons (Enterprise, Themes, extra repos) into
     # Oduflow extra-addons repos and record them on the template so environments
     # created from it mount the same addons-path Odoo.sh ran with. Done after the
-    # DB restore and before staging cleanup; a single bad addon is logged, not
-    # fatal — the database/filestore import is the critical part.
+    # DB restore and before staging cleanup. Declared addons are part of the
+    # template contract, so a missing repo/branch keeps the import retryable.
     wired = _wire_imported_addons(team, staging_dir, major_version)
     if wired:
         meta_path = team.get_template_metadata_path(template_name)
@@ -3236,7 +3258,9 @@ def finalize_imported_template(
             with open(meta_path, "w") as f:
                 json.dump(md, f, indent=2)
         except (OSError, ValueError) as exc:
-            logger.warning("Could not record imported addons on template: %s", exc)
+            raise PrerequisiteNotMetError(
+                f"Could not record imported addons on the template: {exc}"
+            ) from exc
 
     shutil.rmtree(staging_dir, ignore_errors=True)
 

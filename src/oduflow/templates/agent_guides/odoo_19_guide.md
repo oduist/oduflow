@@ -9,7 +9,7 @@ Quick orientation for an agent about to author or refactor a module on 19.0.
 ## Runtime baseline
 
 - Python **3.10–3.14** (minimum is 3.10 — same as 18)
-- PostgreSQL **14+** (15+ recommended)
+- PostgreSQL **13+** (15+ recommended)
 
 ### If you run on Python 3.12+
 

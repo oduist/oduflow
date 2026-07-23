@@ -5,6 +5,7 @@ import textwrap
 import pytest
 
 from oduflow.git_analysis import (
+    _is_active_dep_file,
     _extract_field_lines,
     _extract_view_tag_attrs,
     _get_module_name,
@@ -72,6 +73,12 @@ class TestIsDepFile:
         # apt_packages.txt is only read from .oduflow/, never the repo root.
         assert _is_dep_file("apt_packages.txt") is False
 
+    def test_root_requirements_is_shadowed_by_oduflow_requirements(self, tmp_path):
+        (tmp_path / ".oduflow").mkdir()
+        (tmp_path / ".oduflow" / "requirements.txt").write_text("preferred\n")
+        assert _is_active_dep_file("requirements.txt", str(tmp_path)) is False
+        assert _is_active_dep_file(".oduflow/requirements.txt", str(tmp_path)) is True
+
 
 class TestIsTranslationFile:
     def test_po_catalog(self):
@@ -129,6 +136,13 @@ class TestClassifyChanges:
         result = classify_changes([".oduflow/requirements.txt"], "/tmp")
         assert result["action"] == "restart"
         assert result["details"]["deps_changed"] == [".oduflow/requirements.txt"]
+
+    def test_shadowed_root_requirements_does_not_restart(self, tmp_path):
+        (tmp_path / ".oduflow").mkdir()
+        (tmp_path / ".oduflow" / "requirements.txt").write_text("preferred\n")
+        result = classify_changes(["requirements.txt"], str(tmp_path))
+        assert result["action"] == "refresh"
+        assert result["details"]["deps_changed"] == []
 
     def test_apt_packages_restart(self):
         result = classify_changes([".oduflow/apt_packages.txt"], "/tmp")
@@ -700,6 +714,13 @@ class TestShallowClassify:
         result = shallow_classify([".oduflow/apt_packages.txt"], "/tmp")
         assert result["action"] == "restart"
         assert result["details"]["deps_changed"] == [".oduflow/apt_packages.txt"]
+
+    def test_shadowed_root_requirements_does_not_restart(self, tmp_path):
+        (tmp_path / ".oduflow").mkdir()
+        (tmp_path / ".oduflow" / "requirements.txt").write_text("preferred\n")
+        result = shallow_classify(["requirements.txt"], str(tmp_path))
+        assert result["action"] == "refresh"
+        assert result["details"]["deps_changed"] == []
 
     def test_only_xml_still_refresh(self):
         result = shallow_classify(["sale/views/sale_order.xml"], "/tmp")

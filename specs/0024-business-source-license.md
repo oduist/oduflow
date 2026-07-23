@@ -52,6 +52,17 @@ parameters:
   Licensor — eventual open-sourcing of each release is inherent to adopting
   BSL, not an optional extra.
 
+## How it works (macro)
+
+- BUSL applies separately to each publicly distributed version; its own
+  four-year clock starts on that version's first public distribution.
+- Non-production and the enumerated non-commercial production uses remain
+  available under the Additional Use Grant. Other production use is licensed
+  through the Individual, Business, or Integrator agreement matching who
+  operates the Odoo systems and for whose benefit.
+- At the end of a version's four-year period, that version automatically
+  transitions to MPL 2.0; newer versions continue on their independent clocks.
+
 ## Consequences
 
 - The commercial taxonomy is now part of the legal terms rather than only

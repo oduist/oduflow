@@ -308,6 +308,17 @@ def test_call_full_mode_passthrough(monkeypatch):
     assert res[0] == "called"
 
 
+def test_context_reader_failure_fails_closed(monkeypatch):
+    monkeypatch.setattr(
+        scoped_access,
+        "scoped_env_from_request",
+        lambda: (_ for _ in ()).throw(RuntimeError("request context unavailable")),
+    )
+    assert _run(_middleware().on_list_tools(object(), _list_next)) == []
+    with pytest.raises(ToolError):
+        _run(_middleware().on_call_tool(_Ctx("pull_and_apply"), _call_next))
+
+
 # --- OduflowTokenVerifier --------------------------------------------------
 
 
@@ -400,6 +411,7 @@ def test_mcp_access_endpoint_returns_url_and_token(monkeypatch):
     assert data["ok"] is True
     assert data["result"]["token"] == "the-secret"
     assert data["result"]["url"].endswith("/mcp/feature/x")
+    assert resp.headers["cache-control"] == "no-store"
 
 
 def test_mcp_access_endpoint_token_missing(monkeypatch):

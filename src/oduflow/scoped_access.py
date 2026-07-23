@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import copy
 import logging
+from contextvars import ContextVar
 from typing import Any
 
 from fastmcp.exceptions import ToolError
@@ -42,6 +43,10 @@ logger = logging.getLogger("oduflow")
 SCOPE_KEY = "oduflow_scoped_env"
 # Prefix of the access-token scope that binds a per-env token to its env.
 ENV_SCOPE_PREFIX = "oduflow_env:"
+_HTTP_REQUEST_ACTIVE: ContextVar[bool] = ContextVar(
+    "oduflow_http_request_active", default=False
+)
+_HTTP_URL_ENV: ContextVar[str | None] = ContextVar("oduflow_http_url_env", default=None)
 
 # Tools exposed on the scoped endpoint: full dev loop + restart, read-only and
 # diagnostics. Everything else (create/delete/stop/start/update/recreate,
@@ -144,6 +149,8 @@ def build_env_param_tools(mcp: Any) -> set[str]:
 
 def scoped_env_from_request() -> str | None:
     """The env parsed from a /mcp/<env> URL for the current request, if any."""
+    if _HTTP_REQUEST_ACTIVE.get():
+        return _HTTP_URL_ENV.get()
     try:
         from fastmcp.server.dependencies import get_http_request
 
@@ -160,6 +167,8 @@ def env_from_access_token() -> str | None:
 
         token = get_access_token()
     except Exception:
+        if _HTTP_REQUEST_ACTIVE.get():
+            raise
         return None
     if not token:
         return None
@@ -230,6 +239,7 @@ class ScopedEnvASGI:
         self.app = app
 
     async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
+        url_env: str | None = None
         if scope.get("type") == "http":
             path = scope.get("path", "")
             oauth_path = self._OAUTH_SUBPATHS.get(path)
@@ -244,6 +254,7 @@ class ScopedEnvASGI:
                 # plain environment name (slashes in branch names included).
                 scope = dict(scope)
                 scope[SCOPE_KEY] = env
+                url_env = env
                 scope["path"] = "/mcp"
                 scope["raw_path"] = b"/mcp"
             else:
@@ -252,6 +263,14 @@ class ScopedEnvASGI:
                     scope = dict(scope)
                     scope["path"] = rewritten
                     scope["raw_path"] = rewritten.encode()
+            active_token = _HTTP_REQUEST_ACTIVE.set(True)
+            env_token = _HTTP_URL_ENV.set(url_env)
+            try:
+                await self.app(scope, receive, send)
+            finally:
+                _HTTP_URL_ENV.reset(env_token)
+                _HTTP_REQUEST_ACTIVE.reset(active_token)
+            return
         await self.app(scope, receive, send)
 
     @staticmethod
@@ -292,7 +311,11 @@ class ScopedAccessMiddleware(Middleware):
         self._env_param = frozenset(env_param_tools)
 
     def _decide(self) -> tuple[str, str | None]:
-        return decide(scoped_env_from_request(), env_from_access_token())
+        try:
+            return decide(scoped_env_from_request(), env_from_access_token())
+        except Exception:
+            logger.exception("Could not resolve scoped MCP request context")
+            return ("deny", None)
 
     async def on_list_tools(
         self, context: MiddlewareContext[Any], call_next: CallNext[Any, Any]

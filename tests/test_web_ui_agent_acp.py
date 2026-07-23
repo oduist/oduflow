@@ -51,6 +51,20 @@ def _post(client: TestClient, session_id: str, title: str | None = None):
     return client.post(_SESSION_URL, json=body)
 
 
+@pytest.mark.parametrize("endpoint", ["terminal", "agent", "agent-acp"])
+def test_websockets_reject_invalid_branch_before_resource_lookup(tmp_path, endpoint):
+    client = _client(tmp_path)
+    with client.websocket_connect(
+        f"/api/environments/bad%5Cbranch/{endpoint}"
+    ) as websocket:
+        message = websocket.receive_text()
+        close = websocket.receive()
+
+    assert "Invalid environment name" in message
+    assert close["type"] == "websocket.close"
+    assert close["code"] == 1008
+
+
 def test_info_starts_with_empty_history(tmp_path):
     response = _client(tmp_path).get(_INFO_URL)
 

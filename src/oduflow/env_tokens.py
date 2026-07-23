@@ -40,10 +40,12 @@ MCP_TOKEN_LABEL = "oduflow.mcp_token"
 _MIN_SCAN_INTERVAL = 5.0
 
 _lock = threading.Lock()
+_scan_condition = threading.Condition(_lock)
 # token -> (team_id, env_name) for env-scoped tokens. Team tokens are resolved
 # directly from settings and are never cached here.
 _env_tokens: dict[str, tuple[str, str]] = {}
 _last_scan: float = 0.0
+_scan_in_progress = False
 
 
 def generate_token() -> str:
@@ -84,7 +86,7 @@ def resolve_token(settings: Settings, token: str) -> tuple[str, str | None] | No
     May block on a Docker scan (rate-limited); async callers should prefer
     :func:`resolve_token_async` to keep the event loop free.
     """
-    global _last_scan
+    global _last_scan, _scan_in_progress
     if not token:
         return None
     # 1. Team tokens (static, from settings) — never touches Docker.
@@ -92,18 +94,31 @@ def resolve_token(settings: Settings, token: str) -> tuple[str, str | None] | No
         if team.auth_token and secrets.compare_digest(token, team.auth_token):
             return (team_id, None)
     # 2. Env tokens: serve from cache; rescan at most once per interval.
-    with _lock:
+    with _scan_condition:
         hit = _env_tokens.get(token)
         if hit is not None:
             return hit
         fresh_enough = (time.monotonic() - _last_scan) < _MIN_SCAN_INTERVAL
-    if fresh_enough:
-        return None  # unknown token, rate-limited: don't rescan
-    fresh = _scan_env_tokens(settings)  # outside the lock (blocking Docker call)
-    with _lock:
+        if fresh_enough:
+            return None  # unknown token, rate-limited: don't rescan
+        if _scan_in_progress:
+            while _scan_in_progress:
+                _scan_condition.wait()
+            return _env_tokens.get(token)
+        _scan_in_progress = True
+    try:
+        fresh = _scan_env_tokens(settings)  # outside lock (blocking Docker call)
+    except Exception:
+        with _scan_condition:
+            _scan_in_progress = False
+            _scan_condition.notify_all()
+        raise
+    with _scan_condition:
         _env_tokens.clear()
         _env_tokens.update(fresh)
         _last_scan = time.monotonic()
+        _scan_in_progress = False
+        _scan_condition.notify_all()
     return fresh.get(token)
 
 
@@ -119,6 +134,6 @@ async def resolve_token_async(
 def invalidate_cache() -> None:
     """Drop the cached env-token map and force the next lookup to rescan."""
     global _last_scan
-    with _lock:
+    with _scan_condition:
         _env_tokens.clear()
         _last_scan = 0.0

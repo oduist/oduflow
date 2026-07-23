@@ -6,7 +6,6 @@ branch needs network and is not exercised here.
 """
 
 import json
-import os
 import tarfile
 
 import pytest
@@ -95,7 +94,10 @@ class TestWireImportedAddons:
         assert wired == {"themes": "17.0"}
 
     def test_existing_repo_is_referenced_not_recreated(self, team, tmp_path):
-        os.makedirs(os.path.join(team.shared_repos_dir, "enterprise"))
+        source = _make_repo_dir(tmp_path, top="existing-enterprise")
+        from oduflow.extra_addons import create_local_repo
+
+        create_local_repo(team, "enterprise", str(source), "18.0")
         staging = tmp_path / "staging"
         staging.mkdir()
         (staging / "addons.json").write_text(
@@ -103,3 +105,28 @@ class TestWireImportedAddons:
         )
         wired = system_ops._wire_imported_addons(team, str(staging), "18.0")
         assert wired == {"enterprise": "18.0"}
+
+    def test_existing_repo_without_requested_branch_fails(self, team, tmp_path):
+        source = _make_repo_dir(tmp_path, top="existing-enterprise")
+        from oduflow.errors import NotFoundError
+        from oduflow.extra_addons import create_local_repo
+
+        create_local_repo(team, "enterprise", str(source), "17.0")
+        staging = tmp_path / "staging"
+        staging.mkdir()
+        (staging / "addons.json").write_text(
+            json.dumps([{"name": "enterprise", "kind": "local", "branch": "18.0"}])
+        )
+        with pytest.raises(NotFoundError, match="Branch '18.0'"):
+            system_ops._wire_imported_addons(team, str(staging), "18.0")
+
+    def test_declared_addon_without_remote_or_files_fails(self, team, tmp_path):
+        from oduflow.errors import PrerequisiteNotMetError
+
+        staging = tmp_path / "staging"
+        staging.mkdir()
+        (staging / "addons.json").write_text(
+            json.dumps([{"name": "enterprise", "kind": "local", "branch": "18.0"}])
+        )
+        with pytest.raises(PrerequisiteNotMetError, match="no uploaded files"):
+            system_ops._wire_imported_addons(team, str(staging), "18.0")

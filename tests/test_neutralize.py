@@ -10,6 +10,8 @@ from __future__ import annotations
 from unittest.mock import MagicMock
 
 import docker as _docker
+import pytest
+
 from oduflow import sanitizer
 from oduflow.naming import get_db_name, get_resource_name
 
@@ -34,6 +36,24 @@ def _neutralize_cmd(container) -> str | None:
         if isinstance(cmd, str) and "neutralize" in cmd:
             return cmd
     return None
+
+
+@pytest.mark.parametrize(
+    "image,expected",
+    [
+        ("odoo:15.0", 15),
+        ("registry.example:5000/acme/odoo-enterprise:15.0-custom", 15),
+        ("ghcr.io/acme/odoo-16", 16),
+        ("ghcr.io/acme/platform:latest", None),
+    ],
+)
+def test_detect_odoo_major_from_official_and_custom_images(image, expected):
+    container = MagicMock()
+    container.labels = {"oduflow.image": image}
+    assert (
+        sanitizer._detect_odoo_major_from_container(container, "oduflow.image")
+        == expected
+    )
 
 
 class TestNeutralizeEnvironment:

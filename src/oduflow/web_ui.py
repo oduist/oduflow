@@ -15,7 +15,8 @@ import socket
 import tempfile
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
+from functools import wraps
 from typing import Any
 from urllib.parse import quote, urlsplit
 
@@ -699,6 +700,7 @@ def _build_routes(
     # Per-app so test apps and real deployments don't share failure counters.
     login_limiter = _LoginRateLimiter()
     import_staging_locks = _ImportStagingLocks()
+    import_locks: dict[tuple[str, str], asyncio.Lock] = {}
 
     def _set_session_cookie(
         response: Response, team: TeamSettings, request: Request
@@ -1528,24 +1530,59 @@ def _build_routes(
     ) -> tuple[TeamSettings, dict[str, object]]:
         return import_tokens.load_token(get_settings(), _import_token_value(request))
 
+    def _serialize_import(
+        handler: Callable[[Request], Awaitable[Response]],
+    ) -> Callable[[Request], Awaitable[Response]]:
+        """Serialize import mutations for one team/template upload."""
+
+        @wraps(handler)
+        async def wrapped(request: Request) -> Response:
+            try:
+                team, record = _resolve_import_token(request)
+            except FlowError as e:
+                return _error_response(e)
+            key = (team.team_id, str(record["template_name"]))
+            lock = import_locks.setdefault(key, asyncio.Lock())
+            async with lock:
+                return await handler(request)
+
+        return wrapped
+
     def _import_progress(team: TeamSettings, template_name: str) -> dict[str, object]:
-        """Derive upload progress from what sits in the import STAGING dir (not
-        the token, and never the live template). Disk-derived progress makes a
-        re-run resumable even with a fresh token after the old one expired;
-        reading staging (not the template) means importing over an existing
-        template re-uploads everything instead of silently "resuming" from the
-        old template's files."""
+        """Derive resumable upload progress from the import staging directory.
+
+        Before promotion, live template files are deliberately ignored so an
+        overwrite cannot fake progress from old data. A ``.promoted`` marker
+        explicitly switches missing artifacts to the live copy, allowing a
+        failed final restore to retry without re-uploading moved files.
+        """
         staging = team.get_import_staging_dir(template_name)  # validates name
-        manifest = os.path.isfile(os.path.join(staging, "metadata.json"))
-        dump = os.path.isfile(os.path.join(staging, "dump.sql.gz"))
+        promoted = os.path.isfile(os.path.join(staging, ".promoted"))
+        live_dir = team.get_template_dir(template_name)
+        staged_meta = os.path.join(staging, "metadata.json")
+        staged_dump = os.path.join(staging, "dump.sql.gz")
+        live_meta = team.get_template_metadata_path(template_name)
+        live_dump = os.path.join(live_dir, "dump.sql.gz")
+        manifest = os.path.isfile(staged_meta) or (
+            promoted and os.path.isfile(live_meta)
+        )
+        dump = os.path.isfile(staged_dump) or (promoted and os.path.isfile(live_dump))
         # dump_bytes lets a chunked upload resume mid-file: bytes already on the
         # server, whether the dump is complete (final file) or partial (.part).
         if dump:
-            dump_bytes = os.path.getsize(os.path.join(staging, "dump.sql.gz"))
+            dump_path = staged_dump if os.path.isfile(staged_dump) else live_dump
+            dump_bytes = os.path.getsize(dump_path)
         else:
             dpart = os.path.join(staging, "dump.sql.gz.part")
             dump_bytes = os.path.getsize(dpart) if os.path.isfile(dpart) else 0
-        fs_dir = os.path.join(staging, "filestore")
+        staged_fs_dir = os.path.join(staging, "filestore")
+        fs_dir = (
+            staged_fs_dir
+            if os.path.isdir(staged_fs_dir)
+            else team.get_template_filestore_path(template_name)
+            if promoted
+            else staged_fs_dir
+        )
         chunks: list[str] = []
         if os.path.isdir(fs_dir):
             # A chunk directory appears only after its tar was extracted in
@@ -1683,6 +1720,7 @@ def _build_routes(
             }
         )
 
+    @_serialize_import
     async def api_import_manifest(request: Request) -> JSONResponse:
         try:
             team, record = _resolve_import_token(request)
@@ -1746,6 +1784,7 @@ def _build_routes(
                 f.write(data)
         return "written", os.path.getsize(part_path)
 
+    @_serialize_import
     async def api_import_dump(request: Request) -> JSONResponse:
         try:
             team, record = _resolve_import_token(request)
@@ -1811,6 +1850,7 @@ def _build_routes(
             os.replace(part, dest)
         return JSONResponse({"ok": True, "received": size, "complete": complete})
 
+    @_serialize_import
     async def api_import_filestore(request: Request) -> JSONResponse:
         try:
             team, record = _resolve_import_token(request)
@@ -1896,6 +1936,7 @@ def _build_routes(
             if os.path.exists(staged_path):
                 os.remove(staged_path)
 
+    @_serialize_import
     async def api_import_addon(request: Request) -> JSONResponse:
         """Receive one addon directory (tar stream) that becomes a local
         (remote-less) extra-addons repo — Enterprise, Themes or a private extra
@@ -2015,6 +2056,7 @@ def _build_routes(
                     os.remove(final_tar)
         return JSONResponse({"ok": True, "received": size, "complete": complete})
 
+    @_serialize_import
     async def api_import_addon_remote(request: Request) -> JSONResponse:
         """Announce a reachable extra repo (no files uploaded) — it is cloned
         from its origin at finalize so it stays updatable via Oduflow."""
@@ -2039,6 +2081,12 @@ def _build_routes(
             return JSONResponse(
                 {"ok": False, "error": "origin_url is required"}, status_code=400
             )
+        try:
+            from oduflow.url_safety import assert_allowed_url
+
+            assert_allowed_url(origin_url, require_https=True, allow_private=False)
+        except FlowError as e:
+            return _error_response(e)
         branch = str((body or {}).get("branch") or "").strip()
         template_name = str(record["template_name"])
         try:
@@ -2063,7 +2111,8 @@ def _build_routes(
             return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
         return JSONResponse({"ok": True})
 
-    def api_import_finalize(request: Request) -> JSONResponse:
+    @_serialize_import
+    async def api_import_finalize(request: Request) -> JSONResponse:
         try:
             team, record = _resolve_import_token(request)
         except FlowError as e:
@@ -3092,7 +3141,10 @@ def _build_routes(
             else:
                 base = (settings.oauth_base_url or str(request.base_url)).rstrip("/")
             url = f"{base}/mcp/{quote(branch, safe='/')}"
-            return JSONResponse({"ok": True, "result": {"url": url, "token": token}})
+            return JSONResponse(
+                {"ok": True, "result": {"url": url, "token": token}},
+                headers={"Cache-Control": "no-store"},
+            )
         except FlowError as e:
             return _error_response(e)
         except Exception:
@@ -3267,7 +3319,14 @@ def _build_routes(
         try:
             import docker as _docker
             from oduflow.docker_ops.client import get_client as _get_client
-            from oduflow.naming import get_db_name, get_resource_name
+            from oduflow.naming import get_db_name, get_resource_name, validate_env_name
+
+            try:
+                validate_env_name(branch)
+            except ValueError as e:
+                await websocket.send_text(f"\x1b[31mError: {e}\x1b[0m\r\n")
+                await websocket.close(code=1008)
+                return
 
             settings = get_settings()
             team = _get_ui_team(websocket)
@@ -3554,7 +3613,15 @@ def _build_routes(
             from oduflow.naming import (
                 get_agent_checkout_dir,
                 get_agent_container_name,
+                validate_env_name,
             )
+
+            try:
+                validate_env_name(branch)
+            except ValueError as e:
+                await websocket.send_text(f"\x1b[31mError: {e}\x1b[0m\r\n")
+                await websocket.close(code=1008)
+                return
 
             settings = get_settings()
             team = _get_ui_team(websocket)
@@ -3792,7 +3859,7 @@ def _build_routes(
         branch = websocket.path_params["branch"]
         await websocket.accept()
 
-        async def _err(msg: str) -> None:
+        async def _err(msg: str, close_code: int = 1011) -> None:
             try:
                 await websocket.send_text(
                     json.dumps(
@@ -3806,7 +3873,7 @@ def _build_routes(
             except Exception:
                 pass
             try:
-                await websocket.close(code=1011)
+                await websocket.close(code=close_code)
             except Exception:
                 pass
 
@@ -3824,6 +3891,14 @@ def _build_routes(
                 )
             except Exception:
                 pass
+
+        from oduflow.naming import validate_env_name
+
+        try:
+            validate_env_name(branch)
+        except ValueError as e:
+            await _err(str(e), close_code=1008)
+            return
 
         try:
             from docker.utils.socket import (
