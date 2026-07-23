@@ -35,10 +35,12 @@ available to resumed conversations and agent tools until the environment is
 deleted. Environment deletion removes both its checkout and attachment tree.
 
 Small images take a capability-aware fast path: when the ACP agent advertises
-`promptCapabilities.image`, the prompt carries an ACP `image` block with the
-stored file URI and inline image data so the model receives visual context
-directly. Other files, large images, and agents without that capability use the
-baseline `resource_link` representation.
+`promptCapabilities.image`, the prompt carries both the baseline
+`resource_link` and an ACP `image` block with inline image data. The link keeps
+the exact stored path visible to filesystem tools even when an ACP adapter
+discards image-block URI metadata; the image block gives the model direct visual
+context. Other files, large images, and agents without that capability use only
+the baseline `resource_link` representation.
 
 ## How it works
 
@@ -79,3 +81,5 @@ baseline `resource_link` representation.
 - 2026-07-22 — introduced authenticated uploads, persistent workspace storage,
   ACP resource/image blocks, composer attachment states and environment-scoped
   cleanup.
+- 2026-07-23 — kept a `resource_link` alongside inline image data so ACP
+  adapters cannot hide the persisted filesystem path from the agent.

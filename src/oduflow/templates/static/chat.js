@@ -906,36 +906,42 @@
     };
   }
 
-  function attachmentPromptBlock(attachment, canInlineImage) {
-    if (!canInlineImage) return Promise.resolve(resourceLinkBlock(attachment));
+  function attachmentPromptBlocks(attachment, canInlineImage) {
+    var resourceLink = resourceLinkBlock(attachment);
+    if (!canInlineImage) return Promise.resolve([resourceLink]);
+    // Keep the link even when image bytes are inlined: ACP adapters commonly
+    // discard image URI/_meta fields, but preserve resource links as text.
     return new Promise(function (resolve) {
       var reader = new FileReader();
       reader.onload = function () {
         var dataUrl = String(reader.result || '');
         var comma = dataUrl.indexOf(',');
-        if (comma === -1) { resolve(resourceLinkBlock(attachment)); return; }
-        resolve({
-          type: 'image',
-          data: dataUrl.slice(comma + 1),
-          mimeType: attachment.mimeType,
-          uri: attachment.uri,
-          _meta: {
-            oduflow: {
-              id: attachment.id,
-              name: attachment.name,
-              path: attachment.path,
-              size: attachment.size
+        if (comma === -1) { resolve([resourceLink]); return; }
+        resolve([
+          resourceLink,
+          {
+            type: 'image',
+            data: dataUrl.slice(comma + 1),
+            mimeType: attachment.mimeType,
+            uri: attachment.uri,
+            _meta: {
+              oduflow: {
+                id: attachment.id,
+                name: attachment.name,
+                path: attachment.path,
+                size: attachment.size
+              }
             }
           }
-        });
+        ]);
       };
-      reader.onerror = function () { resolve(resourceLinkBlock(attachment)); };
+      reader.onerror = function () { resolve([resourceLink]); };
       reader.readAsDataURL(attachment.file);
     });
   }
 
   function buildPromptBlocks(inst, text, attachments) {
-    var blocks = [Promise.resolve({ type: 'text', text: text })];
+    var groups = [Promise.resolve([{ type: 'text', text: text }])];
     var inlineImageBytes = 0;
     for (var i = 0; i < attachments.length; i++) {
       var attachment = attachments[i];
@@ -943,9 +949,18 @@
         attachment.mimeType.indexOf('image/') === 0 && attachment.file &&
         inlineImageBytes + attachment.size <= INLINE_IMAGE_MAX_BYTES;
       if (canInlineImage) inlineImageBytes += attachment.size;
-      blocks.push(attachmentPromptBlock(attachment, canInlineImage));
+      groups.push(attachmentPromptBlocks(attachment, canInlineImage));
     }
-    return Promise.all(blocks);
+    return Promise.all(groups).then(function (resolvedGroups) {
+      var blocks = [];
+      for (var groupIndex = 0; groupIndex < resolvedGroups.length; groupIndex++) {
+        var group = resolvedGroups[groupIndex];
+        for (var blockIndex = 0; blockIndex < group.length; blockIndex++) {
+          blocks.push(group[blockIndex]);
+        }
+      }
+      return blocks;
+    });
   }
 
   function refreshHistory(inst, res) {
