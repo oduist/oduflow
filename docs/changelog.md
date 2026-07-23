@@ -12,6 +12,11 @@
 
 ### Bug Fixes
 
+- **Agent Chat image uploads keep their filesystem path** — small images still
+  reach multimodal agents as inline visual input, but now also retain the
+  persisted `/workspace/.oduflow-uploads/...` resource link. Claude and Codex
+  can therefore use the exact uploaded file with shell and Odoo tools instead
+  of guessing temporary upload locations.
 - **Hosted agents use the reachable scoped MCP endpoint** — Agent CLI and Agent Chat now use the team's public HTTPS `/mcp/<environment>` URL in Traefik mode (and an explicit `oauth_base_url` in port mode), matching the dashboard's **MCP Access** dialog. Local port-mode deployments retain the `host.docker.internal` fallback.
 - **Claude Agent Chat explains rejected credentials** — provider credentials copied into `[team.*.agent_env]` now have surrounding whitespace removed before they reach the coder container. When Claude ACP returns a recognizable authentication failure, Agent Chat preserves the provider error and adds recovery specific to the active setup-token, API-key, or interactive-login mode. Oduflow still fails closed instead of silently switching accounts or billing methods.
 - **claude.ai OAuth connector reaches the authorization endpoint** — a claude.ai custom connector derives its OAuth endpoints path-relative to the MCP URL (requesting `https://<host>/mcp/authorize` and `/mcp/token`) instead of following the root endpoints advertised by discovery. The outer scoped-access shim treated `authorize`/`token` as an environment name and rewrote the request onto the auth-protected `/mcp` endpoint, so the flow failed with `401 invalid_token` before it could start. Oduflow now routes the reserved OAuth/discovery sub-paths requested under `/mcp/` (`/mcp/authorize`, `/mcp/token`, `/mcp/register`, `/mcp/.well-known/*`) to the real root routes. Scoped `/mcp/<env>` connectors remain Bearer-only.
