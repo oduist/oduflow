@@ -1,13 +1,15 @@
 import pytest
 
 from oduflow.naming import (
-    slugify_branch,
     get_db_name,
+    get_filestore_paths,
+    get_repo_path,
     get_resource_name,
+    get_service_container_name,
     get_template_db_name,
     get_workspace_path,
-    get_repo_path,
-    get_filestore_paths,
+    slugify_branch,
+    validate_service_name,
     validate_template_name,
 )
 
@@ -75,6 +77,50 @@ class TestGetResourceName:
 
     def test_custom_prefix(self):
         assert get_resource_name("main", "odoo", "test-", "2") == "test-2-main-odoo"
+
+
+class TestServiceNaming:
+    @pytest.mark.parametrize(
+        "good",
+        ["redis", "Odoo-MCP-server", "service_1", "service.v2", "1-service"],
+    )
+    def test_accepts_docker_safe_names(self, good):
+        assert validate_service_name(good) == good
+        assert (
+            get_service_container_name(good, "oduflow-", "1")
+            == f"oduflow-1-svc-{good}"
+        )
+
+    @pytest.mark.parametrize(
+        "bad",
+        [
+            "",
+            "Odoo MCP server",
+            "-service",
+            "_service",
+            ".service",
+            "service/name",
+            "service:name",
+            "service@host",
+            "service\n",
+        ],
+    )
+    def test_rejects_names_docker_would_reject(self, bad):
+        with pytest.raises(ValueError, match="Invalid service name"):
+            validate_service_name(bad)
+        with pytest.raises(ValueError, match="Invalid service name"):
+            get_service_container_name(bad, "oduflow-", "1")
+
+    def test_error_explains_how_to_replace_spaces(self):
+        with pytest.raises(ValueError) as exc_info:
+            get_service_container_name("Odoo MCP server", "oduflow-", "1")
+
+        assert str(exc_info.value) == (
+            "Invalid service name 'Odoo MCP server': must start with a letter "
+            "or digit and contain only letters, digits, dots, hyphens, and "
+            "underscores. Spaces are not allowed; use hyphens instead (for "
+            "example, 'odoo-mcp-server')."
+        )
 
 
 class TestGetWorkspacePath:

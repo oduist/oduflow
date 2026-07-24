@@ -9,6 +9,7 @@ from urllib.parse import urlparse, urlunparse
 # path traversal) and contain only [a-zA-Z0-9_.-] (which rules out quotes,
 # semicolons and whitespace — i.e. SQL-identifier break-out).
 _TEMPLATE_SEGMENT_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_.-]*$")
+_SERVICE_NAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_.-]*$")
 
 
 def validate_template_name(template_name: str) -> str:
@@ -76,6 +77,24 @@ def validate_env_name(env_name: str) -> str:
         raise ValueError(
             f"Invalid environment name '{env_name}': must contain at least one "
             "alphanumeric, '_' or '-' character."
+        )
+    return name
+
+
+def validate_service_name(name: str) -> str:
+    """Validate an auxiliary-service name and return it unchanged.
+
+    Service names become Docker container names directly, so silently
+    normalizing them would make the identifier shown to the user differ from
+    the resource Docker created. Reject unsupported names at the shared naming
+    chokepoint instead.
+    """
+    if not name or not _SERVICE_NAME_RE.fullmatch(name):
+        raise ValueError(
+            f"Invalid service name '{name}': must start with a letter or digit "
+            "and contain only letters, digits, dots, hyphens, and underscores. "
+            "Spaces are not allowed; use hyphens instead (for example, "
+            "'odoo-mcp-server')."
         )
     return name
 
@@ -164,6 +183,7 @@ def get_resource_name(
 def get_service_container_name(name: str, prefix: str, team_id: str) -> str:
     """Docker container name for an auxiliary service (team-scoped, see
     get_resource_name)."""
+    validate_service_name(name)
     return f"{prefix}{team_id}-svc-{name}"
 
 

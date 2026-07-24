@@ -43,6 +43,26 @@ def test_create_service_accepts_structured_routes(tmp_path):
     assert create.call_args.kwargs["routes"] == routes
 
 
+def test_create_service_rejects_invalid_name_with_explanation(tmp_path):
+    client = _client(tmp_path)
+
+    response = client.post(
+        "/api/services/create",
+        json={"name": "Odoo MCP server", "image": "example/mcp:1", "port": 8080},
+    )
+
+    assert response.status_code == 400
+    assert response.json() == {
+        "ok": False,
+        "error": (
+            "Invalid service name 'Odoo MCP server': must start with a letter "
+            "or digit and contain only letters, digits, dots, hyphens, and "
+            "underscores. Spaces are not allowed; use hyphens instead (for "
+            "example, 'odoo-mcp-server')."
+        ),
+    }
+
+
 def test_update_service_distinguishes_missing_and_empty_routes(tmp_path):
     client = _client(tmp_path)
     result = {
