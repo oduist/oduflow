@@ -2379,12 +2379,13 @@ function renderEnvironments(envs, force) {
       '</span>';
     })();
 
-    const metaHtml = (env.odoo_image || env.repo_url || env.db_name || env.template_name)
+    const metaHtml = (env.odoo_image || env.repo_url || env.local_path || env.db_name || env.template_name)
       ? '<div class="env-meta">' +
           (env.db_name ? '<span>DB: <strong class="copy-db" role="button" tabindex="0" title="Copy database name" aria-label="Copy database name" onclick="copyToClipboard(\'' + esc(env.db_name).replace(/'/g, "\\'") + '\')">' + esc(env.db_name) + '</strong></span>' : '') +
           (env.template_name && env.template_name !== 'none' ? '<span>Template: <strong>' + esc(env.template_name) + '</strong></span>' : '') +
           (env.odoo_image ? '<span>Image: <strong>' + esc(env.odoo_image) + '</strong></span>' : '') +
-          (env.repo_url ? '<span>Repo: <strong>' + esc(env.repo_url) + '</strong></span>' : '') +
+          (env.repo_url && !env.local_path ? '<span>Repo: <strong>' + esc(env.repo_url) + '</strong></span>' : '') +
+          (env.local_path ? '<span>Live-mount: <strong>' + esc(env.local_path) + '</strong></span>' : '') +
           (env.created_at ? '<span>Created: <strong>' + formatDate(env.created_at) + '</strong></span>' : '') +
           (env.last_activity ? '<span title="Last MCP call or dashboard action for this environment">Active: <strong>' + formatDate(env.last_activity) + '</strong></span>' : '') +
           (env.stopped_at ? '<span>Stopped: <strong>' + formatDate(env.stopped_at) + (env.auto_stopped ? ' (auto)' : '') + '</strong></span>' : '') +

@@ -3,6 +3,7 @@ import os
 import glob as glob_mod
 import re
 
+import docker
 from docker import DockerClient
 
 from oduflow.docker_ops.system_ops import _exec_sql
@@ -142,8 +143,8 @@ def neutralize_environment(
     covered too — a partial ``addons_path`` would silently skip them.
 
     This is the baseline sanitization layer (block anything going out / phoning
-    home); per-project and per-team ``.odoo_sanitize`` scripts (e.g. PII
-    anonymization) run on top of it via :func:`sanitize_environment`.
+    home); per-project ``.oduflow/odoo_sanitize`` and per-team scripts (e.g.
+    PII anonymization) run on top of it via :func:`sanitize_environment`.
 
     Note: neutralization leaves ``database.uuid`` and ``database.enterprise_code``
     untouched — it only stops transmission by disabling crons; it does not
@@ -218,9 +219,9 @@ def sanitize_environment(
 
     Runs sanitization scripts in two tiers:
     1. Team-level scripts from ``{data_dir}/odoo_sanitize/`` (managed by the
-       team administrator, created during ``oduflow init``).
-    2. Per-project scripts from the repository's ``.odoo_sanitize/`` folder
-       (managed by the developer).
+       team administrator, created during startup).
+    2. Per-project scripts from the repository's
+       ``.oduflow/odoo_sanitize/`` folder (managed by the developer).
 
     Both folders support ``.sql`` and ``.py`` files executed in alphabetical
     order.
@@ -239,8 +240,46 @@ def sanitize_environment(
     )
 
     # --- Per-project sanitization from repo ---
+    # Managed-clone environments keep their checkout under the Oduflow
+    # workspace. Live-mount environments keep it elsewhere and record the real
+    # host path on the serving container.
     repo_path = get_repo_path(env_name, team.workspaces_dir)
-    repo_dir = os.path.join(repo_path, ".odoo_sanitize")
+    odoo_container_name = get_resource_name(
+        env_name, "odoo", settings.prefix, team.team_id
+    )
+    try:
+        container = client.containers.get(odoo_container_name)
+        labels = container.labels if isinstance(container.labels, dict) else {}
+        repo_path = labels.get("oduflow.local_path") or repo_path
+    except docker.errors.NotFound:
+        logger.debug(
+            "Could not resolve live-mount path for sanitize; using managed path",
+        )
+
+    # Compatibility for repositories created before project sanitization moved
+    # under .oduflow/. Keep this runtime-only: new documentation points solely
+    # at the canonical path.
+    legacy_repo_dir = os.path.join(repo_path, ".odoo_sanitize")
+    if os.path.isdir(legacy_repo_dir):
+        warning = (
+            "[SANITIZE:repo] WARNING: Project sanitize scripts moved to "
+            ".oduflow/odoo_sanitize; move scripts from .odoo_sanitize there."
+        )
+        logger.warning(warning)
+        logs.append(warning)
+        logs.extend(
+            _run_scripts_from_dir(
+                legacy_repo_dir,
+                "repo-legacy",
+                client,
+                settings,
+                team,
+                env_db,
+                env_name,
+            )
+        )
+
+    repo_dir = os.path.join(repo_path, ".oduflow", "odoo_sanitize")
     logs.extend(
         _run_scripts_from_dir(
             repo_dir, "repo", client, settings, team, env_db, env_name

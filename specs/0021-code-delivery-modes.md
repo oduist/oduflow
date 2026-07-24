@@ -16,11 +16,12 @@ by **pushing code to a branch** and asking the environment to pull and apply it
 server runs elsewhere, code can only reach it over git, and pushing is the audit
 trail.
 
-But for a developer running Oduflow **locally over stdio**, the git round-trip is
-pure friction. The agent already has the checkout open on the same host as the
-Docker daemon; making it commit and push to GitHub just so Oduflow can pull the
-change back onto the same disk is a slow, noisy dev loop for what is conceptually
-"edit a file and reload".
+But for a developer running Oduflow **locally**, the git round-trip is pure
+friction. The agent already has the checkout open on the same host as the Docker
+daemon; making it commit and push to GitHub just so Oduflow can pull the change
+back onto the same disk is a slow, noisy dev loop for what is conceptually "edit
+a file and reload". Local operators may use stdio or run the HTTP transport to
+get the dashboard; code delivery should behave the same in both.
 
 A second force: when the agent *authored* the edits, it already knows what they
 are. Forcing every change through pure auto-classification is both unnecessary
@@ -33,17 +34,18 @@ heuristic). Yet leaving the agent fully in charge invites the classic mistake of
 Support **two code-delivery modes**, chosen per environment, and make applying
 changes an **explicit, classified step** in both.
 
-- **`repo_url` (git mode) — default, the only mode for remote/HTTP.** The agent
+- **`repo_url` (git mode) — default.** The agent
   pushes to its branch; `create_environment(repo_url=...)` clones it; later
   `pull_and_apply` pulls the branch into the managed clone and applies the right
   Odoo action. This is the multi-user CI path and stays the default.
-- **`local_path` (live-mount) — local fast-path, stdio only.**
+- **`local_path` (live-mount) — trusted local fast-path.**
   `create_environment(local_path=<abs path>)` **bind-mounts the agent's own
   checkout** straight into the container instead of cloning. Edits are visible
   inside Odoo instantly; there is no push, no pull, no second copy on disk. It is
-  **gated to the stdio transport** (recorded in `settings.TRANSPORT`) and to an
-  `allow_local_path` setting, and is **rejected over HTTP** — a remote tenant
-  must never be able to mount an arbitrary host path.
+  gated by `allow_local_path` and works through both stdio and HTTP so a local
+  developer can use the dashboard. Because the mount is read/write and names a
+  host path, it is a trusted single-user feature; hosted, remote, and multi-user
+  operators disable it.
 - **`pull_and_apply` as an explicit guardrail, not implicit auto-sync.** Applying
   is always a deliberate tool call, never a hidden file-watcher. The tool is
   transport-agnostic and parameterised: the agent passes explicit
@@ -70,8 +72,9 @@ changes an **explicit, classified step** in both.
   non-git directories. Either way the guardrail and the classifier see a
   `changed_files` set and recommend the minimal correct action.
 - **Safety boundary on the live-mount.** Live-mount is the fast path *because* it
-  trusts the caller's host — so it is confined to stdio, where caller and host
-  are the same trust domain. The HTTP transport never exposes it.
+  trusts the caller with host-filesystem access. `allow_local_path` is enabled
+  for the local single-user workflow and must be disabled for hosted, remote, or
+  multi-user deployments; startup emits a security warning while it is enabled.
 
 ## Consequences
 
@@ -86,7 +89,7 @@ changes an **explicit, classified step** in both.
   path.
 - The two modes share almost all machinery (`pull_and_apply`, classification,
   the environment lifecycle); the difference is localized to *clone vs
-  bind-mount* and a transport gate, keeping the surface small.
+  bind-mount*, keeping the surface small.
 - Templates had to learn about the mode too: a template saved from a
   live-mounted environment carries a `local_path` instead of a `repo_url` and
   recreates the live-mount on use (when `allow_local_path` is enabled).

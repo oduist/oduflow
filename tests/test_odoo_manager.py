@@ -1544,8 +1544,38 @@ class TestGetEnvironmentInfo:
         assert result["db_name"] == "oduflow_1_main"
         assert result["db_user"] == "u_1_main"
         assert result["repo_url"] == "https://github.com/example/repo.git"
+        assert result["local_path"] == ""
         assert result["odoo_image"] == "odoo:17.0"
         assert result["template_name"] == "default"
+
+    @patch(
+        "oduflow.docker_ops.env_ops.load_credentials",
+        return_value={"pg_user": "u_1_main", "pg_password": "test-pw"},
+    )
+    def test_live_mount_path(self, mock_load_creds, mock_docker_client):
+        odoo = MagicMock()
+        odoo.status = "running"
+        odoo.labels = {
+            "oduflow.template": "default",
+            "oduflow.repo": "/Users/dev/addons",
+            "oduflow.local_path": "/Users/dev/addons",
+            "oduflow.image": "odoo:17.0",
+            "oduflow.extra_addons": "{}",
+        }
+        odoo.attrs = {"NetworkSettings": {"Ports": {}}}
+        db = MagicMock()
+        db.status = "running"
+
+        def get_container(name):
+            if name == "oduflow-db":
+                return db
+            return odoo
+
+        mock_docker_client.containers.get.side_effect = get_container
+
+        result = env_ops.get_environment_info(TEST_SETTINGS, TEST_TEAM, "main")
+
+        assert result["local_path"] == "/Users/dev/addons"
 
 
 class TestInstallModules:

@@ -47,3 +47,11 @@ def test_chat_assets_share_one_positive_integer_cache_version(tmp_path):
         assert versioned.headers["content-type"].startswith("application/javascript")
         assert versioned.headers["cache-control"] == "public, max-age=86400"
         assert versioned.content == unversioned.content
+
+
+def test_environment_metadata_shows_live_mount_path(tmp_path):
+    client = _client(tmp_path)
+    dashboard = client.get("/")
+
+    assert dashboard.status_code == 200
+    assert "env.local_path ? '<span>Live-mount:" in dashboard.text

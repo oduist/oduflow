@@ -1121,7 +1121,7 @@ For Odoo versions that provide it, Oduflow first runs Odoo's native `odoo neutra
 Custom sanitization then uses a **two-tier** approach:
 
 1. **Team-level scripts** from `{team_data_dir}/odoo_sanitize/` — managed by the administrator, shared across all environments in the team
-2. **Per-project scripts** from `.odoo_sanitize/` in the repository root — managed by the developer, specific to the project
+2. **Per-project scripts** from `.oduflow/odoo_sanitize/` in the repository root — managed by the developer, specific to the project
 
 Both folders support `.sql` and `.py` files, executed in alphabetical order (first all `.sql`, then all `.py`). Team-level scripts run first, then per-project scripts.
 
@@ -1149,20 +1149,20 @@ The team administrator can add, modify, or remove scripts in this folder to cont
 
 ### Per-project sanitization
 
-You can add project-specific sanitization by placing scripts in a `.odoo_sanitize/` folder in your repository root:
+You can add project-specific sanitization under `.oduflow/odoo_sanitize/` in your repository root:
 
 | File type | Execution method |
 |-----------|-----------------|
 | `*.sql`   | Executed directly against the environment database via `psql` |
 | `*.py`    | Executed inside the Odoo container via `python3 -c` |
 
-**Example SQL script** (`.odoo_sanitize/01_clean_partners.sql`):
+**Example SQL script** (`.oduflow/odoo_sanitize/01_clean_partners.sql`):
 
 ```sql
 UPDATE res_partner SET email = 'test@example.com' WHERE email IS NOT NULL;
 ```
 
-**Example Python script** (`.odoo_sanitize/02_reset_passwords.py`):
+**Example Python script** (`.oduflow/odoo_sanitize/02_reset_passwords.py`):
 
 ```python
 import os, psycopg2

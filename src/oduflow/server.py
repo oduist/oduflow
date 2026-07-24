@@ -508,7 +508,7 @@ def create_environment(
         repo_url: URL of the git repository to clone. Optional when template_name is specified (loaded from template metadata).
         odoo_image: Full Docker image name with tag (e.g. "odoo:19.0"). Optional when template_name is specified (loaded from template metadata).
         extra_addons: Comma-separated list of extra addon repo names with branches (e.g. "enterprise:19.0,custom-themes:main"). Each entry must include a branch after a colon.
-        sanitize: Sanitize the database after provisioning (default: True). Runs Odoo's native neutralization (deactivates outgoing mail servers and crons, disables payment providers, scrubs third-party API credentials, sets database.is_neutralized) and then any custom scripts from the .odoo_sanitize/ folder in the repository. Only applies to environments created from a template.
+        sanitize: Sanitize the database after provisioning (default: True). Runs Odoo's native neutralization (deactivates outgoing mail servers and crons, disables payment providers, scrubs third-party API credentials, sets database.is_neutralized) and then any custom scripts from the .oduflow/odoo_sanitize/ folder in the repository. Only applies to environments created from a template.
         auto_install_modules: Comma-separated list of Odoo modules to install automatically after the environment is provisioned (e.g. "sale,purchase,stock"). When a template is specified and this is empty, the value is loaded from template metadata.
         env_vars: Comma-separated KEY=VALUE pairs injected as environment variables into the Odoo container (e.g. "WORKERS=2,LIMIT_TIME_CPU=600"). These are added on top of the database connection variables (HOST/USER/PASSWORD).
         local_path: LOCAL FAST-PATH. Absolute path to a checkout on THIS host. When set, Oduflow skips git clone and bind-mounts the directory live into the container — your file edits are visible instantly, no git push/pull needed. After editing, call pull_and_apply with explicit install/upgrade/restart to apply. repo_url is not required in this mode. Gated by allow_local_path (default: true).
@@ -1143,7 +1143,7 @@ def list_environments(ctx: Context | None = None) -> str:
             output += f"  Database: {env['db_name']}\n"
         if env.get("odoo_image"):
             output += f"  Image: {env['odoo_image']}\n"
-        if env.get("repo_url"):
+        if env.get("repo_url") and not env.get("local_path"):
             output += f"  Repo: {env['repo_url']}\n"
         if env.get("local_path"):
             output += f"  Live-mount: {env['local_path']}\n"
@@ -1329,8 +1329,11 @@ def get_environment_info(env_name: str, ctx: Context | None = None) -> str:
     lines.append(f"Database: {info['db_name']}")
     if info.get("url"):
         lines.append(f"URL: {info['url']}")
-    if info.get("repo_url"):
+    if info.get("repo_url") and not info.get("local_path"):
         lines.append(f"Repo: {info['repo_url']}")
+    if info.get("local_path"):
+        lines.append("Code delivery: live-mount")
+        lines.append(f"Live-mount: {info['local_path']}")
     if info.get("odoo_image"):
         lines.append(f"Image: {info['odoo_image']}")
     if info.get("template_name"):
@@ -4553,12 +4556,30 @@ def _run_cli() -> None:
         return
 
 
+def _warn_local_path_security(settings: Settings) -> None:
+    """Warn operators about the host-filesystem trust granted by live-mount."""
+    if not settings.allow_local_path:
+        return
+    logger.warning(
+        "SECURITY WARNING: local_path live-mount mode is ENABLED "
+        "([server].allow_local_path = true).\n"
+        "Clients allowed to create environments can bind-mount any existing "
+        "directory from the Oduflow host into an Odoo container with read/write "
+        "access.\n"
+        "Use live-mount only for trusted, single-user local development. For "
+        "hosted, remote, or multi-user deployments, set "
+        "[server].allow_local_path = false and restart Oduflow."
+    )
+
+
 def _start_stdio() -> None:
     """Start the MCP server (stdio transport)."""
     import asyncio
 
     from oduflow.backup_scheduler import start_backup_scheduler
 
+    settings = _get_settings()
+    _warn_local_path_security(settings)
     reaper.start_reaper(_get_settings, _locks)
     start_backup_scheduler(_get_settings, _locks)
     try:
@@ -4607,6 +4628,7 @@ def _start_http() -> None:
     # ui_password for existing configs that still have none. The fail-closed
     # check below only trips if this could not write the config.
     settings = _ensure_web_ui_password(settings)
+    _warn_local_path_security(settings)
     host = "0.0.0.0" if settings.routing_mode == "traefik" else settings.host
     port = settings.port
 
