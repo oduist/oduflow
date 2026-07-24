@@ -1301,8 +1301,9 @@ def create_environment(
         # third-party credentials scrubbed, database.is_neutralized=true). Runs
         # in the serving container so it sees the full addons_path.
         setup_logs.extend(neutralize_environment(client, settings, team, env_name))
-        # Layer 2: custom team/repo .odoo_sanitize scripts (e.g. PII scrubbing)
-        # run on top of the neutralized database.
+        # Layer 2: custom team/repo sanitization scripts (e.g. PII scrubbing)
+        # run on top of the neutralized database. Project scripts live under
+        # .oduflow/odoo_sanitize in the active checkout.
         sanitize_logs = sanitize_environment(client, settings, team, env_name)
         setup_logs.extend(sanitize_logs)
 
@@ -2375,6 +2376,7 @@ def get_environment_info(
         labels = odoo_container.labels
         result["template_name"] = labels.get("oduflow.template", "none")
         result["repo_url"] = sanitize_repo_url(labels.get(settings.repo_label, ""))
+        result["local_path"] = labels.get("oduflow.local_path", "")
         result["odoo_image"] = labels.get(settings.image_label, "")
         result["git_branch"] = labels.get("oduflow.git_branch", env_name)
         result["git_user"] = labels.get("oduflow.git_user", "")
@@ -3025,9 +3027,9 @@ def update_environment(
     try:
         current_image = container.image.tags[0]
     except (IndexError, Exception):
-        current_image = labels.get(settings.image_label) or container.attrs["Config"][
-            "Image"
-        ]
+        current_image = (
+            labels.get(settings.image_label) or container.attrs["Config"]["Image"]
+        )
     odoo_image = image_override or current_image
     try:
         old_digest = container.image.id

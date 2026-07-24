@@ -120,7 +120,7 @@ hostname = "localhost"
 [server]
 host = "0.0.0.0"           # HTTP server bind address
 port = 8000                 # HTTP server port
-allow_local_path = true     # allow live-mount (bind local checkout) environments
+allow_local_path = true     # trusted single-user local development; disable on hosted/multi-user servers
 # allow_insecure_http = false  # serve /mcp over HTTP with NO auth (only behind your own proxy)
 # trace = false             # verbose tracing for git analysis & env ops
 
@@ -189,7 +189,7 @@ port_range = [50000, 50100]          # port range for Odoo containers [start, en
 |---|---|---|
 | `[server].host` | `0.0.0.0` | HTTP server bind address |
 | `[server].port` | `8000` | HTTP server port |
-| `[server].allow_local_path` | `true` | Allow live-mount (`local_path`) environments that bind-mount a local checkout instead of cloning. Set `false` to force git-clone delivery only |
+| `[server].allow_local_path` | `true` | Allow trusted local-development live-mounts that bind a host checkout read/write. Set `false` on hosted, remote, or multi-user servers, or whenever only git-clone delivery is required |
 | `[server].allow_insecure_http` | `false` | Serve the `/mcp` endpoint over plain HTTP with **no** authentication. Only enable behind your own authenticating proxy |
 | `[server].trace` | `false` | Enable detailed trace logging for git analysis and environment operations |
 | `[server].disable_telemetry` | `false` | Disable anonymous usage telemetry (see [Telemetry](#telemetry)) |

@@ -62,11 +62,14 @@ Two related decisions, both about confining blast radius at the database layer.
   Odoo can recreate them cleanly on first start. This is the load-bearing glue
   that makes a cloned DB usable under a non-superuser owner.
 - **Sanitization tiers.** `sanitize_environment` runs scripts from the team's
-  `{data_dir}/odoo_sanitize/` first (seeded on `oduflow init` with a bundled
-  `01_disable_mail.sql`), then from the repo's `.odoo_sanitize/` folder. `.sql`
-  runs against the env DB; `.py` runs *inside* the Odoo container using the
-  per-env credentials, so repo rules can use the Odoo ORM. Failures are logged as
-  warnings, not fatal — sanitization is best-effort hardening, not a gate.
+  `{data_dir}/odoo_sanitize/` first (seeded with a bundled
+  `01_disable_mail.sql`), then from the active checkout's
+  `.oduflow/odoo_sanitize/` folder. The checkout is resolved from
+  `oduflow.local_path` for live-mount environments and from the managed workspace
+  otherwise. `.sql` runs against the env DB; `.py` runs *inside* the Odoo
+  container using the per-env credentials, so repo rules can use the Odoo ORM.
+  Failures are logged as warnings, not fatal — sanitization is best-effort
+  hardening, not a gate.
 
 ## Consequences
 
@@ -152,7 +155,7 @@ native neutralization, rather than re-implementing what Odoo already ships:
 
 - `cd0b9ec` (2026-02-24) — two-tier sanitization: drop hardcoded built-in queries;
   bundle `01_disable_mail.sql`; create `/etc/oduflow/odoo_sanitize/` on init; run
-  system-wide then per-repo `.odoo_sanitize/` scripts; add `sanitize` param to
+  system-wide then per-repo sanitization scripts; add `sanitize` param to
   `create_environment` (default True).
 - `e4949b0` (2026-02-26) — per-environment PostgreSQL credentials: `env_credentials.py`,
   `_create_pg_role`/`_drop_pg_role`, env role as DB owner, global user kept for
@@ -168,4 +171,4 @@ native neutralization, rather than re-implementing what Odoo already ships:
   the bootstrap injects a random secret into the generated config (see Evolution).
 - (2026-07-07) — **native neutralization baseline:** `neutralize_environment` runs
   `odoo-bin neutralize` inside the serving container as the first step of the
-  sanitize gate, ahead of the team/repo `.odoo_sanitize` tiers (see Evolution).
+  sanitize gate, ahead of the team/repo custom-script tiers (see Evolution).

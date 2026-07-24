@@ -1,3 +1,4 @@
+import logging
 import sys
 from unittest.mock import patch
 
@@ -303,6 +304,7 @@ class TestListEnvironmentsTool:
                 "env_name": "local",
                 "status": "running",
                 "url": "http://localhost:50000",
+                "repo_url": "/Users/dev/addons",
                 "local_path": "/Users/dev/addons",
                 "containers": [],
             }
@@ -311,6 +313,7 @@ class TestListEnvironmentsTool:
         result = _call_tool("list_environments")
 
         assert "Live-mount: /Users/dev/addons" in result
+        assert "Repo:" not in result
 
 
 class TestAgentInstructionsTool:
@@ -362,6 +365,29 @@ class TestInfoTool:
         assert "All containers running" in result
         assert "Database: oduflow_1_main" in result
         assert "DB (shared)" in result
+
+    @patch("oduflow.docker_ops.env_ops.get_environment_info")
+    def test_info_shows_live_mount(self, mock_info):
+        mock_info.return_value = {
+            "env_name": "main",
+            "db_name": "oduflow_1_main",
+            "workspace": "/srv/oduflow/instance_1/workspaces/main",
+            "all_running": True,
+            "repo_url": "/Users/dev/addons",
+            "local_path": "/Users/dev/addons",
+            "odoo_image": "odoo:17.0",
+            "template_name": "default",
+            "extra_addons": {},
+            "git_user": "",
+            "odoo": {"status": "running", "running": True},
+            "db": {"status": "running", "running": True},
+        }
+
+        result = _call_tool("get_environment_info", env_name="main")
+
+        assert "Code delivery: live-mount" in result
+        assert "Live-mount: /Users/dev/addons" in result
+        assert "Repo:" not in result
 
 
 class TestErrorHandling:
@@ -969,6 +995,28 @@ class TestRestoreServiceTool:
 
 
 class TestHttpFailClosed:
+    def test_live_mount_security_warning_when_enabled(self, caplog):
+        from oduflow import server
+
+        settings = Settings(allow_local_path=True)
+
+        with caplog.at_level(logging.WARNING, logger="oduflow"):
+            server._warn_local_path_security(settings)
+
+        assert "local_path live-mount mode is ENABLED" in caplog.text
+        assert "read/write access" in caplog.text
+        assert "allow_local_path = false" in caplog.text
+
+    def test_live_mount_security_warning_skipped_when_disabled(self, caplog):
+        from oduflow import server
+
+        settings = Settings(allow_local_path=False)
+
+        with caplog.at_level(logging.WARNING, logger="oduflow"):
+            server._warn_local_path_security(settings)
+
+        assert "local_path live-mount mode is ENABLED" not in caplog.text
+
     def test_start_http_refuses_without_auth(self):
         # Issue #37: HTTP transport must not serve /mcp unauthenticated.
         from oduflow import server

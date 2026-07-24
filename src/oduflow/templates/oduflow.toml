@@ -2,7 +2,7 @@
 [server]
 host = "0.0.0.0"
 port = 8000
-allow_local_path = true        # allow live-mount (bind local checkout) workflows
+allow_local_path = true        # trusted single-user local development; disable on hosted/multi-user servers
 # allow_insecure_http = false  # serve HTTP /mcp with NO auth (only behind your own proxy)
 # trace = false                    # verbose tracing for git analysis & env ops
 
