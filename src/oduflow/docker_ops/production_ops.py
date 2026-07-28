@@ -658,6 +658,7 @@ def create_production(
             name=container_name,
             detach=True,
             network=get_team_network_name(team.team_id, settings.prefix),
+            extra_hosts={"host.docker.internal": "host-gateway"},
             **default_env_limits(),
             environment=odoo_env,
             labels=labels,

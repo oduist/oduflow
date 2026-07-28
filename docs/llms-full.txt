@@ -748,7 +748,7 @@ oduflow call create_service redis redis:7 6379
 oduflow call create_service meilisearch getmeili/meilisearch:v1.6 7700 "" "MEILI_MASTER_KEY=devkey123"
 ```
 
-All services share the `oduflow-net` Docker network and can communicate using container names as hostnames (e.g. `oduflow-svc-redis:6379`).
+A team's services share its isolated `oduflow-{team_id}-net` Docker network and communicate using container names as hostnames — the DNS name is the full container name `oduflow-{team_id}-svc-{name}` (e.g. `oduflow-1-svc-redis:6379`), which is exactly the `Container:` value reported by `create_service`.
 
 ## 🔧 CI/CD Pipeline Integration
 
@@ -1516,11 +1516,21 @@ oduflow call create_service '{"name":"fs","image":"oduist/freeswitch:latest","ho
 
 Services are:
 
-- Attached to the shared `oduflow-net` network (accessible by all Odoo containers)
+- Attached to the team's isolated Docker network `oduflow-{team_id}-net` (reachable by that team's Odoo containers and other services)
 - Given an `unless-stopped` restart policy
 - Automatically routed through Traefik with HTTPS when in traefik mode
 - In Traefik TLS mode, automatically given the exact system mount `oduflow-traefik-acme:/etc/traefik:ro`
 - Labeled for management (`oduflow.managed=true`, `oduflow.service=<name>`)
+
+### Connecting from Odoo
+
+Inside the team's Docker network the service is reachable by its **container
+name** — the DNS name is exactly `oduflow-{team_id}-svc-{name}` (e.g.
+`oduflow-1-svc-redis:6379`). There is no shorter alias such as `redis` or
+`oduflow-svc-redis`. This is precisely the `Container:` / `Internal hostname:`
+value reported by `create_service` and `get_service_info`. The `URL:` line is
+the **external** Traefik/host address, not the internal one. `host_mode`
+services are not on the team network — reach them via `host.docker.internal`.
 
 ### Restricted HTTP Path Routes
 
@@ -2563,10 +2573,10 @@ overlay_threshold_mb = 999999
                      │
      ┌───────────────┼────────────────────┐
      ▼               ▼                    ▼
-  oduflow-net    oduflow-db          oduflow-{branch}-odoo
-  (network)      (PostgreSQL)        (Odoo containers)
-                                     oduflow-svc-{name}
-                                     (Service containers)
+oduflow-{team}-net oduflow-db      oduflow-{team}-{branch}-odoo
+  (per-team net)   (PostgreSQL)    (Odoo containers)
+                                   oduflow-{team}-svc-{name}
+                                   (Service containers)
 ```
 
 ### Key Architectural Decisions
@@ -2684,13 +2694,13 @@ This means no manual ownership fixups are ever needed on either platform.
 
 | Resource | Name | Description |
 |---|---|---|
-| **Network** | `oduflow-net` | Shared bridge network for all containers |
+| **Network** | `oduflow-{team_id}-net` | Per-team isolated bridge network (only shared PostgreSQL and the Traefik bridge cross teams) |
 | **DB container** | `oduflow-db` | PostgreSQL 15, shared across all environments |
 | **DB volume** | `oduflow-db-data` | Persistent database storage |
 | **Template DB** | `oduflow_template_{team_id}_{name}` | Created from the dump file, used as PostgreSQL template |
 | **Environment DB** | `oduflow_{team_id}_{branch}` | Created from template DB via `CREATE DATABASE ... TEMPLATE` |
-| **Odoo containers** | `oduflow-{branch}-odoo` | One per environment |
-| **Service containers** | `oduflow-svc-{name}` | One per auxiliary service |
+| **Odoo containers** | `oduflow-{team_id}-{branch}-odoo` | One per environment |
+| **Service containers** | `oduflow-{team_id}-svc-{name}` | One per auxiliary service; also its internal DNS hostname on the team network |
 | **Traefik** (optional) | `oduflow-traefik` | Reverse proxy with auto-HTTPS |
 | **Traefik volume** (optional) | `oduflow-traefik-acme` | Let's Encrypt certificate storage |
 

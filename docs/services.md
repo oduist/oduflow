@@ -34,12 +34,31 @@ oduflow call create_service '{
 
 Services are:
 
-- Attached to the shared `oduflow-net` network (accessible by all Odoo containers)
+- Attached to the team's isolated Docker network `oduflow-{team_id}-net` (reachable by that team's Odoo containers and other services)
 - Given an `unless-stopped` restart policy
 - Automatically routed through Traefik with HTTPS when in traefik mode
 - In Traefik TLS mode, automatically given the exact system mount `oduflow-traefik-acme:/etc/traefik:ro`
 - Labeled for management (`oduflow.managed=true`, `oduflow.service=<name>`)
 - Always created from a freshly pulled image — `create_service` and `restore_service` explicitly pull before running, so mutable tags like `:latest` get the current published version instead of a stale local cache
+
+### Connecting from Odoo
+
+Inside the team's Docker network the service is reachable by its **container
+name** — the DNS name is exactly `oduflow-{team_id}-svc-{name}` (e.g.
+`oduflow-1-svc-redis`). There is no shorter alias such as `redis` or
+`oduflow-svc-redis`. This is precisely the `Container:` / `Internal hostname:`
+value that `create_service` and `get_service_info` report, so configure Odoo
+against that:
+
+```
+oduflow-1-svc-redis:6379
+```
+
+The `URL:` line printed by the service tools is the **external** Traefik/host
+address, not the internal one — do not use it for in-cluster connections.
+
+`host_mode` services are not on the team network, so they are not resolvable by
+container name; reach them via `host.docker.internal` instead.
 
 ### Restricted HTTP Path Routes
 

@@ -205,6 +205,10 @@ class TestCreateEnvironment:
         mock_role.assert_called_once()
         # Greenfield: isolated init container + serving container = 2 run calls.
         assert mock_docker_client.containers.run.call_count == 2
+        for run_call in mock_docker_client.containers.run.call_args_list:
+            assert run_call.kwargs["extra_hosts"] == {
+                "host.docker.internal": "host-gateway"
+            }
         mock_alloc.assert_called_once()
 
     @patch("oduflow.docker_ops.env_ops.release_port")
@@ -409,6 +413,9 @@ class TestCreateEnvironment:
         init_run = mock_docker_client.containers.run.call_args_list[0]
         assert "-i base" in init_run.kwargs["command"]
         assert "--stop-after-init" in init_run.kwargs["command"]
+        assert init_run.kwargs["extra_hosts"] == {
+            "host.docker.internal": "host-gateway"
+        }
 
     @patch(
         "oduflow.extra_addons.generate_odoo_conf",
@@ -1258,6 +1265,7 @@ class TestUpdateEnvironment:
         }
         assert run_kwargs["labels"][TEST_SETTINGS.image_label] == "odoo:17.0"
         assert json.loads(run_kwargs["labels"]["oduflow.env_vars"]) == {"FOO": "new"}
+        assert run_kwargs["extra_hosts"] == {"host.docker.internal": "host-gateway"}
         mock_docker_client.images.pull.assert_called_once_with("odoo:17.0")
         assert result["image"] == "odoo:17.0"
         assert result["image_updated"] is True
