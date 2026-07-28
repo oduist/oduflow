@@ -152,7 +152,7 @@ oduflow call create_service redis redis:7 6379
 oduflow call create_service meilisearch getmeili/meilisearch:v1.6 7700 "" "MEILI_MASTER_KEY=devkey123"
 ```
 
-All services share the `oduflow-net` Docker network and can communicate using container names as hostnames (e.g. `oduflow-svc-redis:6379`).
+A team's services share its isolated `oduflow-{team_id}-net` Docker network and communicate using container names as hostnames — the DNS name is the full container name `oduflow-{team_id}-svc-{name}` (e.g. `oduflow-1-svc-redis:6379`), which is exactly the `Container:` value reported by `create_service`.
 
 ## 🔧 CI/CD Pipeline Integration
 

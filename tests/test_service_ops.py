@@ -1207,6 +1207,43 @@ class TestUpdateService:
         assert result["image_updated"] is False
         assert result["config_updated"] is False
         assert result["url"] == "http://localhost:6379"
+        assert result["host_mode"] is False
+        container.stop.assert_not_called()
+        container.remove.assert_not_called()
+
+    def test_update_host_mode_no_changes_preserves_mode(self, mock_docker_client):
+        """A no-op update still reports the service's current network mode."""
+        container = self._make_container(
+            image_tags=["freeswitch:latest"],
+            labels={
+                "oduflow.managed": "true",
+                "oduflow.service": "fs",
+                "oduflow.host_mode": "true",
+            },
+            attrs={"Config": {"Env": []}},
+        )
+        pulled_image = MagicMock()
+        pulled_image.id = container.image.id
+        mock_docker_client.images.pull.return_value = pulled_image
+        mock_docker_client.containers.get.return_value = container
+
+        preset = {
+            "name": "fs",
+            "image": "freeswitch:latest",
+            "port": 8080,
+            "hostname": "",
+            "env_vars": {},
+            "host_mode": True,
+        }
+
+        with patch(
+            "oduflow.docker_ops.service_ops.service_presets.get_preset",
+            return_value=preset,
+        ):
+            result = service_ops.update_service(TEST_SETTINGS, TEST_TEAM, "fs")
+
+        assert result["host_mode"] is True
+        assert result["config_updated"] is False
         container.stop.assert_not_called()
         container.remove.assert_not_called()
 

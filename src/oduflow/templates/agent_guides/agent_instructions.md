@@ -137,6 +137,8 @@ Extra addons repositories (Odoo Enterprise, OCA, your own shared addons) are clo
 | `delete_service_preset(name)` | Remove a saved service preset |
 | `run_service_command(name, command, user?)` | Execute a shell command inside a service container. Default user is `root`. Output is cached if large — use `read_output` for drill-down |
 
+> **Connecting to a service from Odoo:** use the container name reported as `Container:` / `Internal hostname:` by `create_service` and `get_service_info` — that is the exact DNS name (`oduflow-{team}-svc-{name}`) resolvable from Odoo and every other container on the team network. There is no shorter alias, and the `URL:` line is the *external* Traefik/host address, not the internal one. Host-mode services are not on the team network — reach them via `host.docker.internal`.
+
 > **Changing a service:** use `update_service` for any change — image, env vars, port/routes, hostname, host mode, volumes or capabilities. If recreating manually, call `get_service_info` first and replay its complete user-controlled configuration. Omit implicit system mounts.
 
 > **Traefik TLS certificate store:** every service receives the exact system volume at `/etc/traefik` read-only. It is implicit and not part of the preset or the user-supplied `volumes` replacement. `/etc/traefik` is reserved, and all other raw `oduflow-*` volumes remain forbidden. `update_service` validates candidate volumes before stopping the current container.

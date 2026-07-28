@@ -495,6 +495,28 @@ class TestCreateServiceTool:
         assert "redis" in result
         assert "oduflow-1-svc-redis" in result
         assert "http://localhost:6379" in result
+        # Bridge-mode services advertise the container name as the internal
+        # hostname so agents connect to it instead of the external URL.
+        assert "Internal hostname (from Odoo & other team services)" in result
+
+    @patch("oduflow.docker_ops.service_ops.create_service")
+    def test_create_host_mode_reports_host_docker_internal(self, mock_create):
+        mock_create.return_value = {
+            "name": "fs",
+            "container_name": "oduflow-1-svc-fs",
+            "url": "https://fs.example.com",
+            "image": "oduist/freeswitch:latest",
+            "host_mode": True,
+        }
+        result = _get_tool_fn("create_service")(
+            name="fs",
+            image="oduist/freeswitch:latest",
+            port=8080,
+            host_mode=True,
+        )
+        # Host-mode services are not on the team network — the internal-hostname
+        # line must point to host.docker.internal, not the container name.
+        assert "host.docker.internal" in result
 
     @patch("oduflow.docker_ops.service_ops.create_service")
     def test_create_with_env_vars_parsing(self, mock_create):
@@ -572,6 +594,25 @@ class TestUpdateServiceTool:
             cap_add_override=None,
             privileged_override=None,
             routes_override=None,
+        )
+
+    @patch("oduflow.docker_ops.service_ops.update_service")
+    def test_update_host_mode_reports_host_docker_internal(self, mock_update):
+        mock_update.return_value = {
+            "name": "fs",
+            "container_name": "oduflow-1-svc-fs",
+            "url": "https://fs.example.com",
+            "image": "oduist/freeswitch:latest",
+            "host_mode": True,
+            "image_updated": False,
+            "config_updated": False,
+        }
+
+        result = _get_tool_fn("update_service")(name="fs")
+
+        assert (
+            "Internal hostname: host network — reach it via host.docker.internal"
+            in result
         )
 
     @patch("oduflow.docker_ops.service_ops.update_service")

@@ -38,10 +38,10 @@
                      │
      ┌───────────────┼────────────────────┐
      ▼               ▼                    ▼
-  oduflow-net    oduflow-db          oduflow-{branch}-odoo
-  (network)      (PostgreSQL)        (Odoo containers)
-                                     oduflow-svc-{name}
-                                     (Service containers)
+oduflow-{team}-net oduflow-db      oduflow-{team}-{branch}-odoo
+  (per-team net)   (PostgreSQL)    (Odoo containers)
+                                   oduflow-{team}-svc-{name}
+                                   (Service containers)
 ```
 
 ### Key Architectural Decisions
@@ -159,13 +159,13 @@ This means no manual ownership fixups are ever needed on either platform.
 
 | Resource | Name | Description |
 |---|---|---|
-| **Network** | `oduflow-net` | Shared bridge network for all containers |
+| **Network** | `oduflow-{team_id}-net` | Per-team isolated bridge network (only shared PostgreSQL and the Traefik bridge cross teams) |
 | **DB container** | `oduflow-db` | PostgreSQL 15, shared across all environments |
 | **DB volume** | `oduflow-db-data` | Persistent database storage |
 | **Template DB** | `oduflow_template_{team_id}_{name}` | Created from the dump file, used as PostgreSQL template |
 | **Environment DB** | `oduflow_{team_id}_{branch}` | Created from template DB via `CREATE DATABASE ... TEMPLATE` |
-| **Odoo containers** | `oduflow-{branch}-odoo` | One per environment |
-| **Service containers** | `oduflow-svc-{name}` | One per auxiliary service |
+| **Odoo containers** | `oduflow-{team_id}-{branch}-odoo` | One per environment |
+| **Service containers** | `oduflow-{team_id}-svc-{name}` | One per auxiliary service; also its internal DNS hostname on the team network |
 | **Traefik** (optional) | `oduflow-traefik` | Reverse proxy with auto-HTTPS |
 | **Traefik volume** (optional) | `oduflow-traefik-acme` | Let's Encrypt certificate storage |
 

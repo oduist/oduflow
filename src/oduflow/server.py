@@ -2115,6 +2115,23 @@ def run_db_query(
 # =============================================================================
 
 
+def _service_internal_host_line(container_name: str, host_mode: bool) -> str:
+    """The hostname other team containers (Odoo included) use to reach a service.
+
+    On the team's Docker network the resolvable DNS name is exactly the
+    container name (``{prefix}{team}-svc-{name}``) — there is no short alias.
+    Host-mode services are not on that network, so they are reached through
+    ``host.docker.internal`` instead. Stated explicitly because the ``URL:``
+    line is the *external* Traefik/host address, not the internal one.
+    """
+    if host_mode:
+        return (
+            "Internal hostname: host network — reach it via host.docker.internal "
+            "(host-mode services are not resolvable by container name)"
+        )
+    return f"Internal hostname (from Odoo & other team services): {container_name}"
+
+
 @mcp.tool()
 @handle_errors
 @with_team_lock
@@ -2185,6 +2202,7 @@ def create_service(
         f"Service created successfully!\n"
         f"Name: {result['name']}\n"
         f"Container: {result['container_name']}\n"
+        f"{_service_internal_host_line(result['container_name'], host_mode)}\n"
         f"Image: {result['image']}\n"
         f"URL: {result['url']}"
         f"{vol_info}"
@@ -2274,6 +2292,7 @@ def update_service(
         f"Status: {status}\n"
         f"Name: {result['name']}\n"
         f"Container: {result['container_name']}\n"
+        f"{_service_internal_host_line(result['container_name'], bool(result.get('host_mode')))}\n"
         f"Image: {result['image']}\n"
         f"Digest: {digest_short}\n"
         f"URL: {result['url']}"
@@ -2331,6 +2350,9 @@ def get_service_info(name: str, ctx: Context | None = None) -> str:
 
     lines = [f"Service '{info['name']}': {info['status']}"]
     lines.append(f"Container: {info['container_name']}")
+    lines.append(
+        _service_internal_host_line(info["container_name"], bool(info.get("host_mode")))
+    )
     lines.append(f"Image: {info['image']}")
     if digest_short:
         lines.append(f"Digest: {digest_short}")
@@ -2476,6 +2498,7 @@ def restore_service(name: str, ctx: Context | None = None) -> str:
         f"Service restored from preset!\n"
         f"Name: {result['name']}\n"
         f"Container: {result['container_name']}\n"
+        f"{_service_internal_host_line(result['container_name'], bool(result.get('host_mode')))}\n"
         f"Image: {result['image']}\n"
         f"URL: {result['url']}"
         f"{extra}"

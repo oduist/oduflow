@@ -416,6 +416,7 @@ def create_service(
         "container_name": container_name,
         "image": image,
         "url": url,
+        "host_mode": host_mode,
         "routes": _routes_with_urls(routes, hostname),
     }
 
@@ -881,6 +882,7 @@ def update_service(
             "container_name": container_name,
             "image": target_image,
             "url": url,
+            "host_mode": is_host_mode,
             "image_updated": False,
             "config_updated": False,
             "old_digest": old_digest,

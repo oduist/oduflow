@@ -195,6 +195,7 @@ class TestCreateProduction:
         # Serving command has no --dev=xml.
         assert kwargs["command"] == "odoo -d oduflow_1_prod-erp"
         assert kwargs["environment"]["HOST"] == settings.prod_db_container
+        assert kwargs["extra_hosts"] == {"host.docker.internal": "host-gateway"}
 
         record = production_registry.get_production(team, "erp")
         assert record["auto_update"] is True
