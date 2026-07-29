@@ -59,6 +59,7 @@ precursors).
 | [0038](0038-agent-chat-file-attachments.md) | 2026-07-22 | Agent Chat file attachments through persistent workspace resources |
 | [0039](0039-shared-immutable-extra-addons-checkouts.md) | 2026-07-22 | Shared immutable extra-addons checkouts for development environments |
 | [0040](0040-versioned-coder-image-contract.md) | 2026-07-22 | Immutable, release-coupled coder image tags replace the rolling runtime |
+| [0041](0041-internal-only-auxiliary-services.md) | 2026-07-29 | Internal-only auxiliary services: no hostname, no Traefik router, no host port — reachable only by container name |
 
 ## Design docs
 

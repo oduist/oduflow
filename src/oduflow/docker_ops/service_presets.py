@@ -67,8 +67,13 @@ def save_preset(
     cap_add: list[str] | None = None,
     privileged: bool = False,
     routes: list[dict[str, object]] | None = None,
+    internal_only: bool = False,
 ) -> dict[str, Any]:
-    """Save (or overwrite) a single service preset and return it."""
+    """Save (or overwrite) a single service preset and return it.
+
+    ``internal_only`` is written only when true, so presets saved before the
+    mode existed keep reading back as published services.
+    """
     short_hostname = hostname or ""
     if short_hostname and base_hostname:
         suffix = f".{base_hostname}"
@@ -90,6 +95,8 @@ def save_preset(
         preset["privileged"] = True
     if routes:
         preset["routes"] = routes
+    if internal_only:
+        preset["internal_only"] = True
     data = _load_presets(team)
     data[name] = preset
     _save_presets(team, data)

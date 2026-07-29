@@ -137,6 +137,23 @@ class TestEnsureTraefik:
         # Traefik terminates TLS itself, so no upstream forwarded-header trust.
         assert not any("forwardedHeaders" in a for a in cmd)
 
+    def test_docker_provider_does_not_expose_by_default(self, tmp_path):
+        """Containers are published only when they ask to be.
+
+        Without this, Traefik would generate a router for every container it
+        sees — including auxiliary services created in internal-only mode,
+        which carry no router labels precisely because they must not be
+        reachable from outside. Those services also set traefik.enable=false
+        for themselves, so the two defences are independent; this asserts the
+        global half.
+        """
+        for tls in (True, False):
+            client = self._client_no_container()
+            system_ops._ensure_traefik(client, _traefik_settings(tmp_path, tls))
+            cmd = client.containers.run.call_args[1]["command"]
+            assert "--providers.docker.exposedbydefault=false" in cmd
+            assert "--providers.docker.exposedbydefault=true" not in cmd
+
     def test_mounts_dynamic_directory_with_file_provider(self, tmp_path):
         client = self._client_no_container()
         system_ops._ensure_traefik(client, _traefik_settings(tmp_path, True))

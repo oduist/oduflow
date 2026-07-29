@@ -140,8 +140,38 @@ def _validate_service_exposure(
     settings: Settings,
     port: int | None,
     routes: list[dict[str, object]] | None,
+    *,
+    internal_only: bool = False,
+    hostname: str | None = None,
+    host_mode: bool = False,
 ) -> None:
-    """Require exactly one supported public exposure model."""
+    """Require exactly one supported exposure model.
+
+    A service is either published (a catch-all ``port`` or restricted ``routes``)
+    or ``internal_only`` — reachable from sibling containers over the team
+    network by container name, with no public hostname, no Traefik router and no
+    host port binding.
+    """
+    if internal_only:
+        if port not in (None, 0):
+            raise ValueError(
+                "An internal-only service is not published: omit port. Peers "
+                "reach it by container name on the port the image listens on. "
+                "Set internal_only=false to publish it."
+            )
+        if routes:
+            raise ValueError("An internal-only service cannot define HTTP routes.")
+        if hostname:
+            raise ValueError(
+                "An internal-only service has no public hostname: omit hostname."
+            )
+        if host_mode:
+            raise ValueError(
+                "internal_only cannot be combined with host_mode: a host-network "
+                "container is not reachable by container name and is exposed on "
+                "the host's interfaces."
+            )
+        return
     if routes:
         if settings.routing_mode != "traefik":
             raise ValueError("HTTP path routes require routing.mode = 'traefik'.")
@@ -263,10 +293,18 @@ def create_service(
     cap_add: list[str] | None = None,
     privileged: bool = False,
     routes: list[dict[str, object]] | None = None,
+    internal_only: bool = False,
 ) -> dict[str, Any]:
     container_name = get_service_container_name(name, settings.prefix, team.team_id)
     routes = normalize_http_routes(routes)
-    _validate_service_exposure(settings, port, routes)
+    _validate_service_exposure(
+        settings,
+        port,
+        routes,
+        internal_only=internal_only,
+        hostname=hostname,
+        host_mode=host_mode,
+    )
     client = get_client()
 
     # Services join the team's isolated network (not needed for host mode).
@@ -305,7 +343,22 @@ def create_service(
     else:
         run_kwargs["network"] = team_network
 
-    if settings.routing_mode == "traefik":
+    url: str | None
+    if internal_only:
+        # No Traefik router, no host port binding: the container is reachable
+        # only from the team network, by container name.
+        labels["oduflow.internal_only"] = "true"
+        # Belt and braces. Oduflow's own Traefik runs with
+        # --providers.docker.exposedbydefault=false (system_ops), so a
+        # label-less container already gets no router — but that invariant
+        # lives in a different container, is not re-applied to a Traefik that
+        # predates it, and does not hold for an operator-supplied proxy.
+        # Stating the refusal on the container makes the isolation a property
+        # of the service itself.
+        labels["traefik.enable"] = "false"
+        hostname = None
+        url = None
+    elif settings.routing_mode == "traefik":
         if not hostname:
             hostname = f"{name}.{team.hostname}"
         elif "." not in hostname:
@@ -407,6 +460,7 @@ def create_service(
             cap_add=cap_add,
             privileged=privileged,
             routes=routes,
+            internal_only=internal_only,
         )
     except Exception:
         logger.warning("Failed to save service preset for %s", name, exc_info=True)
@@ -417,6 +471,7 @@ def create_service(
         "image": image,
         "url": url,
         "host_mode": host_mode,
+        "internal_only": internal_only,
         "routes": _routes_with_urls(routes, hostname),
     }
 
@@ -498,9 +553,13 @@ def _describe_service_container(
     url: str | None = None
     hostname: str | None = None
     is_host_mode = container.labels.get("oduflow.host_mode") == "true"
-    routes = _routes_from_labels(container.labels)
+    is_internal_only = container.labels.get("oduflow.internal_only") == "true"
+    routes = None if is_internal_only else _routes_from_labels(container.labels)
 
-    if settings.routing_mode == "traefik":
+    if is_internal_only:
+        # Nothing to report: no published port, no hostname, no public URL.
+        pass
+    elif settings.routing_mode == "traefik":
         rule_value = _traefik_label_by_suffix(container.labels, ".rule")
         match = re.search(r"Host\(`([^`]+)`\)", rule_value)
         if match:
@@ -582,6 +641,7 @@ def _describe_service_container(
         "routes": _routes_with_urls(routes, hostname),
         "env_vars": env_vars,
         "host_mode": is_host_mode,
+        "internal_only": is_internal_only,
         "volumes": svc_volumes,
         "cap_add": svc_cap_add,
         "privileged": svc_privileged,
@@ -666,6 +726,7 @@ def update_service(
     cap_add_override: list[str] | None = None,
     privileged_override: bool | None = None,
     routes_override: list[dict[str, object]] | None = None,
+    internal_only_override: bool | None = None,
 ) -> dict[str, Any]:
     """Pull the latest image for a service and re-create it with the same settings.
 
@@ -712,7 +773,27 @@ def update_service(
         old_volumes = preset.get("volumes") or None
         cap_add = preset.get("cap_add") or None
         privileged = preset.get("privileged", False)
-        routes = normalize_http_routes(preset.get("routes"))
+        # Presets written before internal-only existed simply lack the key.
+        internal_only = bool(preset.get("internal_only", False))
+        # The preset is authoritative, but it is written best-effort, so it can
+        # fall behind the container it describes. Guessing either way would
+        # silently change public exposure — re-publishing a withdrawn service
+        # or withdrawing a working one — so an ambiguous pair is refused
+        # outright. An explicit override says which state the operator meant
+        # and resolves it.
+        label_internal_only = container.labels.get("oduflow.internal_only") == "true"
+        mode_mismatch = internal_only != label_internal_only
+        if mode_mismatch and internal_only_override is None:
+            preset_state = "internal-only" if internal_only else "published"
+            live_state = "internal-only" if label_internal_only else "published"
+            raise ConflictError(
+                f"Service '{name}' has an ambiguous exposure mode: the saved "
+                f"preset says {preset_state}, the running container is "
+                f"{live_state}. Refusing to guess, because either answer would "
+                "silently change public exposure. Repeat this update with an "
+                "explicit internal_only=true or internal_only=false."
+            )
+        routes = None if internal_only else normalize_http_routes(preset.get("routes"))
     else:
         # Legacy fallback: extract from running container
         raw_env = container.attrs.get("Config", {}).get("Env", [])
@@ -724,7 +805,10 @@ def update_service(
                     env_vars[key] = value
 
         is_host_mode = container.labels.get("oduflow.host_mode") == "true"
-        routes = _routes_from_labels(container.labels)
+        internal_only = container.labels.get("oduflow.internal_only") == "true"
+        # No preset, so there is nothing the container can disagree with.
+        mode_mismatch = False
+        routes = None if internal_only else _routes_from_labels(container.labels)
 
         host_config = container.attrs.get("HostConfig", {}) or {}
         cap_add = list(host_config.get("CapAdd") or []) or None
@@ -733,7 +817,9 @@ def update_service(
         port = None
         hostname = None
 
-        if settings.routing_mode == "traefik":
+        if internal_only:
+            pass  # No router labels and no published port to recover.
+        elif settings.routing_mode == "traefik":
             rule_value = _traefik_label_by_suffix(container.labels, ".rule")
             match = re.search(r"Host\(`([^`]+)`\)", rule_value)
             if match:
@@ -787,7 +873,40 @@ def update_service(
 
         env_vars = env_vars or None
 
-    if (
+    # Apply overrides and track whether config changed
+    # Services created before the implicit ACME mount was introduced are
+    # brought forward by an ordinary update, even when the image digest and
+    # user-controlled settings are otherwise unchanged.
+    config_changed = _needs_traefik_acme_mount(settings, container)
+
+    if mode_mismatch:
+        # An override resolved a preset/label disagreement. Recreate even when
+        # nothing else changed: the running container is in the *other* mode,
+        # so without this the call would report the declared mode while leaving
+        # the actual exposure untouched.
+        config_changed = True
+
+    # Resolved first: it decides whether the service needs a port at all.
+    if internal_only_override is not None and internal_only_override != internal_only:
+        if internal_only_override:
+            if (
+                port_override is not None
+                or routes_override
+                or hostname_override is not None
+            ):
+                raise ValueError(
+                    "internal_only=true cannot be combined with port, routes or "
+                    "hostname in the same update — an internal-only service has "
+                    "no public exposure."
+                )
+            # Drop the previous public exposure outright.
+            port = None
+            routes = None
+            hostname = None
+        internal_only = internal_only_override
+        config_changed = True
+
+    if not internal_only and (
         port is None
         and not routes
         and port_override is None
@@ -795,11 +914,6 @@ def update_service(
     ):
         raise NotFoundError(f"Cannot determine port for service '{name}'.")
 
-    # Apply overrides and track whether config changed
-    # Services created before the implicit ACME mount was introduced are
-    # brought forward by an ordinary update, even when the image digest and
-    # user-controlled settings are otherwise unchanged.
-    config_changed = _needs_traefik_acme_mount(settings, container)
     if env_override is not None and env_override != (env_vars or {}):
         env_vars = env_override or None
         config_changed = True
@@ -830,7 +944,7 @@ def update_service(
             new_routes = normalized_override
         else:
             new_routes = None
-            if port_override is None:
+            if port_override is None and not internal_only:
                 raise ValueError(
                     "Removing routes requires a replacement port in the same update."
                 )
@@ -844,7 +958,14 @@ def update_service(
             "them with routes=[] and a replacement port."
         )
 
-    _validate_service_exposure(settings, port, routes)
+    _validate_service_exposure(
+        settings,
+        port,
+        routes,
+        internal_only=internal_only,
+        hostname=hostname,
+        host_mode=is_host_mode,
+    )
 
     # Determine the image to pull (override or current)
     target_image = image_override if image_override else old_image
@@ -870,7 +991,11 @@ def update_service(
     if not needs_recreate:
         logger.info("No changes for service %s: %s", name, new_digest[:19])
         # Compute URL for return
-        if settings.routing_mode == "traefik":
+        h: str | None = None
+        url: str | None
+        if internal_only:
+            url = None
+        elif settings.routing_mode == "traefik":
             h = hostname or f"{name}.{team.hostname}"
             if "." not in h:
                 h = f"{h}.{team.hostname}"
@@ -883,13 +1008,12 @@ def update_service(
             "image": target_image,
             "url": url,
             "host_mode": is_host_mode,
+            "internal_only": internal_only,
             "image_updated": False,
             "config_updated": False,
             "old_digest": old_digest,
             "new_digest": new_digest,
-            "routes": _routes_with_urls(
-                routes, h if settings.routing_mode == "traefik" else None
-            ),
+            "routes": _routes_with_urls(routes, h),
         }
 
     logger.info(
@@ -918,6 +1042,7 @@ def update_service(
         cap_add=cap_add,
         privileged=privileged,
         routes=routes,
+        internal_only=internal_only,
     )
 
     result["image_updated"] = image_updated

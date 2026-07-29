@@ -1898,11 +1898,15 @@ def _build_routes(
             hostname = (body.get("hostname") or "").strip() or None
             env_vars_raw = (body.get("env_vars") or "").strip()
             host_mode = bool(body.get("host_mode", False))
-            if not name or not image or (not port and not routes):
+            internal_only = bool(body.get("internal_only", False))
+            if not name or not image or (not internal_only and not port and not routes):
                 return JSONResponse(
                     {
                         "ok": False,
-                        "error": "name, image and either port or routes are required.",
+                        "error": (
+                            "name, image and either port, routes or internal_only "
+                            "are required."
+                        ),
                     },
                     status_code=400,
                 )
@@ -1935,6 +1939,7 @@ def _build_routes(
                 cap_add=cap_add,
                 privileged=privileged,
                 routes=routes,
+                internal_only=internal_only,
             )
             return JSONResponse({"ok": True, "result": result})
         except ValueError as e:
@@ -1996,6 +2001,13 @@ def _build_routes(
                 if body and "privileged" in body and body["privileged"] is not None
                 else None
             )
+            internal_only_override = (
+                bool(body["internal_only"])
+                if body
+                and "internal_only" in body
+                and body["internal_only"] is not None
+                else None
+            )
             cap_add_override = None
             if body and "net_admin" in body and body["net_admin"] is not None:
                 cap_add_override = ["NET_ADMIN"] if bool(body["net_admin"]) else []
@@ -2013,6 +2025,7 @@ def _build_routes(
                 cap_add_override=cap_add_override,
                 privileged_override=privileged_override,
                 routes_override=routes_override,
+                internal_only_override=internal_only_override,
             )
             return JSONResponse({"ok": True, "result": result})
         except ValueError as e:
@@ -2110,11 +2123,15 @@ def _build_routes(
             hostname = (body.get("hostname") or "").strip() or None
             env_vars_raw = (body.get("env_vars") or "").strip()
             host_mode = bool(body.get("host_mode", False))
-            if not name or not image or (not port and not routes):
+            internal_only = bool(body.get("internal_only", False))
+            if not name or not image or (not internal_only and not port and not routes):
                 return JSONResponse(
                     {
                         "ok": False,
-                        "error": "name, image and either port or routes are required.",
+                        "error": (
+                            "name, image and either port, routes or internal_only "
+                            "are required."
+                        ),
                     },
                     status_code=400,
                 )
@@ -2147,6 +2164,7 @@ def _build_routes(
                 cap_add=cap_add,
                 privileged=privileged,
                 routes=routes,
+                internal_only=internal_only,
             )
             return JSONResponse({"ok": True, "result": result})
         except ValueError as e:

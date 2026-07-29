@@ -297,6 +297,7 @@
   .badge-pulse { animation: badge-pulse 0.9s cubic-bezier(0.22, 1, 0.36, 1) 2; }
   .badge-privileged { background: color-mix(in oklab, var(--red) 20%, transparent); color: var(--red); margin-left: 6px; }
   .badge-netadmin { background: color-mix(in oklab, var(--accent) 20%, transparent); color: var(--accent); margin-left: 6px; }
+  .badge-internal { background: var(--subtle); color: var(--text-dim); border: 1px solid var(--border); margin-left: 6px; }
   /* Production tab */
   .prod-webhook {
     display: flex;
@@ -1516,7 +1517,9 @@
         <select id="svc-exposure" onchange="toggleServiceExposure('svc')">
           <option value="port">Single port (all paths)</option>
           <option value="routes">Restricted path routes (Traefik)</option>
+          <option value="internal">Internal only (not published)</option>
         </select>
+        <div class="route-hint" id="svc-internal-hint" style="display:none;">Reachable only from Odoo and other team services, by container name on whatever port the image listens on. No public hostname, no host port.</div>
       </div>
       <div class="form-group" id="svc-port-group">
         <label for="svc-port">Container port</label>
@@ -1528,7 +1531,7 @@
         <button class="btn btn-sm" type="button" onclick="addServiceRoute('svc')">Add route</button>
         <div class="route-list" id="svc-routes"></div>
       </div>
-      <div class="form-group">
+      <div class="form-group" id="svc-hostname-group">
         <label for="svc-hostname">Hostname (optional, traefik mode)</label>
         <input type="text" id="svc-hostname" placeholder="e.g. redis">
       </div>
@@ -1536,7 +1539,7 @@
         <label for="svc-envvars">Environment variables (optional)</label>
         <textarea id="svc-envvars" rows="5" placeholder="KEY1=val1&#10;KEY2=val2"></textarea>
       </div>
-      <div class="form-group check-row">
+      <div class="form-group check-row" id="svc-host-mode-group">
         <input type="checkbox" id="svc-host-mode">
         <label for="svc-host-mode" >Host network mode</label>
       </div>
@@ -1589,7 +1592,9 @@
         <select id="restore-svc-exposure" onchange="toggleServiceExposure('restore-svc')">
           <option value="port">Single port (all paths)</option>
           <option value="routes">Restricted path routes (Traefik)</option>
+          <option value="internal">Internal only (not published)</option>
         </select>
+        <div class="route-hint" id="restore-svc-internal-hint" style="display:none;">Reachable only from Odoo and other team services, by container name on whatever port the image listens on. No public hostname, no host port.</div>
       </div>
       <div class="form-group" id="restore-svc-port-group">
         <label for="restore-svc-port">Container port</label>
@@ -1601,7 +1606,7 @@
         <button class="btn btn-sm" type="button" onclick="addServiceRoute('restore-svc')">Add route</button>
         <div class="route-list" id="restore-svc-routes"></div>
       </div>
-      <div class="form-group">
+      <div class="form-group" id="restore-svc-hostname-group">
         <label for="restore-svc-hostname">Hostname (optional, traefik mode)</label>
         <input type="text" id="restore-svc-hostname" placeholder="e.g. redis">
       </div>
@@ -1609,7 +1614,7 @@
         <label for="restore-svc-envvars">Environment variables (optional)</label>
         <textarea id="restore-svc-envvars" rows="4" placeholder="KEY1=val1&#10;KEY2=val2"></textarea>
       </div>
-      <div class="form-group check-row">
+      <div class="form-group check-row" id="restore-svc-host-mode-group">
         <input type="checkbox" id="restore-svc-host-mode">
         <label for="restore-svc-host-mode" >Host network mode</label>
       </div>
@@ -3736,9 +3741,16 @@ function addServiceRoute(prefix, route) {
 }
 
 function toggleServiceExposure(prefix) {
-  var routeMode = document.getElementById(prefix + '-exposure').value === 'routes';
-  document.getElementById(prefix + '-port-group').style.display = routeMode ? 'none' : '';
+  var mode = document.getElementById(prefix + '-exposure').value;
+  var routeMode = mode === 'routes';
+  var internalMode = mode === 'internal';
+  document.getElementById(prefix + '-port-group').style.display = (routeMode || internalMode) ? 'none' : '';
   document.getElementById(prefix + '-routes-group').style.display = routeMode ? '' : 'none';
+  document.getElementById(prefix + '-internal-hint').style.display = internalMode ? '' : 'none';
+  // Public-exposure inputs are meaningless for an internal-only service.
+  document.getElementById(prefix + '-hostname-group').style.display = internalMode ? 'none' : '';
+  document.getElementById(prefix + '-host-mode-group').style.display = internalMode ? 'none' : '';
+  if (internalMode) document.getElementById(prefix + '-host-mode').checked = false;
   if (routeMode && !document.querySelector('#' + prefix + '-routes .route-row')) {
     addServiceRoute(prefix);
   }
@@ -3794,6 +3806,9 @@ function renderServices(services) {
       volHtml = '<div class="svc-meta"><span>Volumes: <strong>' + volStr + '</strong></span></div>';
     }
     var capBadges = '';
+    if (svc.internal_only) {
+      capBadges += '<span class="badge badge-internal" title="Not published: no public hostname, no Traefik router, no host port">internal only</span>';
+    }
     if (svc.privileged) {
       capBadges += '<span class="badge badge-privileged" title="Privileged container (full host access)">privileged</span>';
     } else if (svc.cap_add && svc.cap_add.indexOf('NET_ADMIN') !== -1) {
@@ -3963,12 +3978,14 @@ async function submitCreateService() {
   var name = document.getElementById('svc-name').value.trim();
   var image = document.getElementById('svc-image').value.trim();
   var port = document.getElementById('svc-port').value.trim();
-  var routeMode = document.getElementById('svc-exposure').value === 'routes';
+  var exposure = document.getElementById('svc-exposure').value;
+  var routeMode = exposure === 'routes';
+  var internalMode = exposure === 'internal';
   var hostname = document.getElementById('svc-hostname').value.trim();
   var envvars = document.getElementById('svc-envvars').value.trim();
   var errEl = document.getElementById('create-svc-error');
 
-  if (!name || !image || (!routeMode && !port)) {
+  if (!name || !image || (!routeMode && !internalMode && !port)) {
     errEl.textContent = 'Service name, Docker image and exposure are required.';
     errEl.style.display = 'block';
     return;
@@ -3984,10 +4001,18 @@ async function submitCreateService() {
     var svcVolumes = document.getElementById('svc-volumes').value.trim();
     var privileged = document.getElementById('svc-privileged').checked;
     var netAdmin = document.getElementById('svc-net-admin').checked;
-    var payload = { name: name, image: image, host_mode: hostMode, privileged: privileged, net_admin: netAdmin };
-    if (routeMode) payload.routes = collectServiceRoutes('svc');
+    var payload = {
+      name: name,
+      image: image,
+      host_mode: internalMode ? false : hostMode,
+      privileged: privileged,
+      net_admin: netAdmin,
+      internal_only: internalMode
+    };
+    if (internalMode) { /* no port, no routes, no hostname */ }
+    else if (routeMode) payload.routes = collectServiceRoutes('svc');
     else payload.port = parseInt(port, 10);
-    if (hostname) payload.hostname = hostname;
+    if (hostname && !internalMode) payload.hostname = hostname;
     if (envvars) payload.env_vars = envvars;
     if (svcVolumes) payload.volumes = svcVolumes;
     var r = await fetch(API_SERVICES + '/create', {
@@ -4054,10 +4079,12 @@ function renderPresetsList(presets) {
       '</div>' +
       '<div class="preset-meta">' +
         '<span>Image: <strong>' + esc(p.image) + '</strong></span>' +
-        (p.routes && p.routes.length
-          ? '<span>Routes: <strong>' + p.routes.map(function(route) { return esc(route.path) + '→' + route.port; }).join(', ') + '</strong></span>'
-          : '<span>Port: <strong>' + p.port + '</strong></span>') +
-        (p.hostname ? '<span>Host: <strong>' + esc(p.hostname) + '</strong></span>' : '') +
+        (p.internal_only
+          ? '<span>Exposure: <strong>internal only</strong></span>'
+          : (p.routes && p.routes.length
+            ? '<span>Routes: <strong>' + p.routes.map(function(route) { return esc(route.path) + '→' + route.port; }).join(', ') + '</strong></span>'
+            : '<span>Port: <strong>' + p.port + '</strong></span>')) +
+        (p.hostname && !p.internal_only ? '<span>Host: <strong>' + esc(p.hostname) + '</strong></span>' : '') +
         envStr +
         (p.volumes && p.volumes.length ? '<span>Volumes: <strong>' + p.volumes.map(function(v) { return esc(v.volume) + ':' + esc(v.mount_path); }).join(', ') + '</strong></span>' : '') +
       '</div>' +
@@ -4093,17 +4120,18 @@ async function doDeletePreset(name) {
 function _fillRestoreFields(p) {
    document.getElementById('restore-svc-name').value = p.name || '';
    document.getElementById('restore-svc-image').value = p.image || '';
-   document.getElementById('restore-svc-port').value = p.routes && p.routes.length ? '' : (p.port || '');
-   document.getElementById('restore-svc-exposure').value = p.routes && p.routes.length ? 'routes' : 'port';
-   setServiceRoutes('restore-svc', p.routes || []);
+   document.getElementById('restore-svc-port').value = (p.internal_only || (p.routes && p.routes.length)) ? '' : (p.port || '');
+   document.getElementById('restore-svc-exposure').value =
+     p.internal_only ? 'internal' : (p.routes && p.routes.length ? 'routes' : 'port');
+   setServiceRoutes('restore-svc', p.internal_only ? [] : (p.routes || []));
    toggleServiceExposure('restore-svc');
-   document.getElementById('restore-svc-hostname').value = p.hostname || '';
+   document.getElementById('restore-svc-hostname').value = p.internal_only ? '' : (p.hostname || '');
    var envStr = '';
    if (p.env_vars && Object.keys(p.env_vars).length) {
      envStr = Object.keys(p.env_vars).map(function(k) { return k + '=' + p.env_vars[k]; }).join('\n');
    }
    document.getElementById('restore-svc-envvars').value = envStr;
-   document.getElementById('restore-svc-host-mode').checked = !!p.host_mode;
+   document.getElementById('restore-svc-host-mode').checked = !p.internal_only && !!p.host_mode;
    var volStr = '';
    if (p.volumes && p.volumes.length) {
      volStr = p.volumes.map(function(v) { return v.volume + ':' + v.mount_path + (v.mode === 'ro' ? ':ro' : ''); }).join('\n');
@@ -4168,12 +4196,14 @@ async function submitRestoreService() {
   var name = document.getElementById('restore-svc-name').value.trim();
   var image = document.getElementById('restore-svc-image').value.trim();
   var port = document.getElementById('restore-svc-port').value.trim();
-  var routeMode = document.getElementById('restore-svc-exposure').value === 'routes';
+  var exposure = document.getElementById('restore-svc-exposure').value;
+  var routeMode = exposure === 'routes';
+  var internalMode = exposure === 'internal';
   var hostname = document.getElementById('restore-svc-hostname').value.trim();
   var envvars = document.getElementById('restore-svc-envvars').value.trim();
   var errEl = document.getElementById('restore-svc-error');
 
-  if (!name || !image || (!routeMode && !port)) {
+  if (!name || !image || (!routeMode && !internalMode && !port)) {
     errEl.textContent = 'Service name, Docker image and exposure are required.';
     errEl.style.display = 'block';
     return;
@@ -4188,10 +4218,18 @@ async function submitRestoreService() {
     var restoreVolumes = document.getElementById('restore-svc-volumes').value.trim();
     var privileged = document.getElementById('restore-svc-privileged').checked;
     var netAdmin = document.getElementById('restore-svc-net-admin').checked;
-    var payload = { name: name, image: image, host_mode: hostMode, privileged: privileged, net_admin: netAdmin };
-    if (routeMode) payload.routes = collectServiceRoutes('restore-svc');
+    var payload = {
+      name: name,
+      image: image,
+      host_mode: internalMode ? false : hostMode,
+      privileged: privileged,
+      net_admin: netAdmin,
+      internal_only: internalMode
+    };
+    if (internalMode) { /* no port, no routes, no hostname */ }
+    else if (routeMode) payload.routes = collectServiceRoutes('restore-svc');
     else payload.port = parseInt(port, 10);
-    if (hostname) payload.hostname = hostname;
+    if (hostname && !internalMode) payload.hostname = hostname;
     if (envvars) payload.env_vars = envvars;
     if (restoreVolumes) payload.volumes = restoreVolumes;
     var r = await fetch(API_PRESETS + '/restore', {

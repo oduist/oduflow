@@ -2132,6 +2132,13 @@ def _service_internal_host_line(container_name: str, host_mode: bool) -> str:
     return f"Internal hostname (from Odoo & other team services): {container_name}"
 
 
+def _service_exposure_line(result: dict[str, Any]) -> str:
+    """The ``URL:``/``Exposure:`` line for a service create/update/restore result."""
+    if result.get("internal_only"):
+        return "Exposure: internal only (no public URL, no host port)"
+    return f"URL: {result['url']}"
+
+
 @mcp.tool()
 @handle_errors
 @with_team_lock
@@ -2146,6 +2153,7 @@ def create_service(
     privileged: bool = False,
     net_admin: bool = False,
     routes: list[dict[str, object]] | None = None,
+    internal_only: bool = False,
     ctx: Context | None = None,
 ) -> str:
     """
@@ -2162,6 +2170,7 @@ def create_service(
         privileged: Run the container in privileged mode (full host access). Use with care — implies all Linux capabilities. Mutually exclusive with net_admin (privileged already grants NET_ADMIN).
         net_admin: Add the NET_ADMIN Linux capability. Required for VPN/WireGuard, tun/tap devices, and iptables manipulation inside the container.
         routes: Alternative Traefik exposure mode. Each object has path, backend port, and optional strip_prefix. Routes target this same service and unlisted paths return Traefik 404. Mutually exclusive with the top-level port.
+        internal_only: Do not expose the service publicly at all — no hostname, no Traefik router, no host port. It still joins the team network, so Odoo and other services reach it at the container name on whatever port the image listens on (e.g. a NATS broker at oduflow-1-svc-nats:4222). Mutually exclusive with port, routes, hostname and host_mode.
     """
     settings = _get_settings()
     team = _resolve_team(ctx)
@@ -2185,6 +2194,7 @@ def create_service(
         cap_add=cap_add,
         privileged=privileged,
         routes=routes,
+        internal_only=internal_only,
     )
     vol_info = ""
     if parsed_volumes:
@@ -2204,7 +2214,7 @@ def create_service(
         f"Container: {result['container_name']}\n"
         f"{_service_internal_host_line(result['container_name'], host_mode)}\n"
         f"Image: {result['image']}\n"
-        f"URL: {result['url']}"
+        f"{_service_exposure_line(result)}"
         f"{vol_info}"
         f"{route_info}"
     )
@@ -2224,6 +2234,7 @@ def update_service(
     privileged: bool | None = None,
     net_admin: bool | None = None,
     routes: list[dict[str, object]] | None = None,
+    internal_only: bool | None = None,
     ctx: Context | None = None,
 ) -> str:
     """
@@ -2245,6 +2256,7 @@ def update_service(
         privileged: Run the container in privileged mode (full host access). Leave unset (null) to keep current mode. Mutually exclusive with net_admin (privileged already grants NET_ADMIN).
         net_admin: Add (True) or remove (False) the NET_ADMIN Linux capability — required for VPN/WireGuard, tun/tap, and iptables. Leave unset (null) to keep current capabilities.
         routes: Full replacement HTTP route list. Leave unset to preserve it. Pass [] together with port to return to a single catch-all port.
+        internal_only: Switch the exposure mode. True withdraws the service from public routing entirely (drops its hostname, Traefik router and host port; it stays reachable by container name on the team network) and must not be combined with port/routes/hostname. False re-publishes it and requires a port or routes in the same call. Leave unset (null) to keep the current mode.
     """
     settings = _get_settings()
     team = _resolve_team(ctx)
@@ -2277,6 +2289,7 @@ def update_service(
         cap_add_override=cap_add_override,
         privileged_override=privileged,
         routes_override=routes,
+        internal_only_override=internal_only,
     )
 
     if result.get("image_updated"):
@@ -2295,7 +2308,7 @@ def update_service(
         f"{_service_internal_host_line(result['container_name'], bool(result.get('host_mode')))}\n"
         f"Image: {result['image']}\n"
         f"Digest: {digest_short}\n"
-        f"URL: {result['url']}"
+        f"{_service_exposure_line(result)}"
     )
 
 
@@ -2356,6 +2369,11 @@ def get_service_info(name: str, ctx: Context | None = None) -> str:
     lines.append(f"Image: {info['image']}")
     if digest_short:
         lines.append(f"Digest: {digest_short}")
+    if info.get("internal_only"):
+        lines.append(
+            "Exposure: internal only (no public hostname, no Traefik router, "
+            "no host port)"
+        )
     if info.get("port") is not None:
         lines.append(f"Port: {info['port']}")
     if info.get("hostname"):
@@ -2423,7 +2441,9 @@ def list_service_presets(ctx: Context | None = None) -> str:
             else ""
         )
         output += f"- {p['name']}: image={p['image']}"
-        if not p.get("routes"):
+        if p.get("internal_only"):
+            output += ", internal_only=true"
+        elif not p.get("routes"):
             output += f", port={p['port']}"
         if p.get("hostname"):
             output += f", hostname={p['hostname']}"
@@ -2466,19 +2486,22 @@ def restore_service(name: str, ctx: Context | None = None) -> str:
     preset_volumes = preset.get("volumes") or None
     preset_cap_add = preset.get("cap_add") or None
     preset_privileged = preset.get("privileged", False)
+    # Presets predating the internal-only mode simply lack the key.
+    preset_internal_only = bool(preset.get("internal_only", False))
     result = service_ops.create_service(
         settings,
         team,
         name=preset["name"],
         image=preset["image"],
-        port=preset["port"],
-        hostname=preset.get("hostname") or None,
+        port=None if preset_internal_only else preset["port"],
+        hostname=None if preset_internal_only else (preset.get("hostname") or None),
         env_vars=preset.get("env_vars") or None,
         host_mode=preset.get("host_mode", False),
         volumes=preset_volumes,
         cap_add=preset_cap_add,
         privileged=preset_privileged,
-        routes=preset.get("routes") or None,
+        routes=None if preset_internal_only else (preset.get("routes") or None),
+        internal_only=preset_internal_only,
     )
     extra = ""
     if preset_volumes:
@@ -2500,7 +2523,7 @@ def restore_service(name: str, ctx: Context | None = None) -> str:
         f"Container: {result['container_name']}\n"
         f"{_service_internal_host_line(result['container_name'], bool(result.get('host_mode')))}\n"
         f"Image: {result['image']}\n"
-        f"URL: {result['url']}"
+        f"{_service_exposure_line(result)}"
         f"{extra}"
     )
 
@@ -2533,6 +2556,8 @@ def list_services(ctx: Context | None = None) -> str:
     for svc in services:
         output += f"- {svc['name']} ({svc['container_name']}): {svc['status']}\n"
         output += f"  Image: {svc['image']}\n"
+        if svc.get("internal_only"):
+            output += "  Exposure: internal only\n"
         if svc.get("port"):
             output += f"  Port: {svc['port']}\n"
         if svc.get("url"):
