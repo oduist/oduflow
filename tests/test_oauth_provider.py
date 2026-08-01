@@ -205,9 +205,7 @@ class TestOduflowOAuthProvider:
         # A non-issued value is not a valid refresh token.
         assert _run(provider.load_refresh_token(client, "team_1")) is None
 
-    def test_expired_access_token_keeps_refresh_token_across_restart(
-        self, monkeypatch
-    ):
+    def test_expired_access_token_keeps_refresh_token_across_restart(self, monkeypatch):
         from oduflow import oauth_token_store as store_mod
         from mcp.server.auth.provider import TokenError
 

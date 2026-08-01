@@ -122,6 +122,9 @@ host = "0.0.0.0"           # HTTP server bind address
 port = 8000                 # HTTP server port
 allow_local_path = true     # trusted single-user local development; disable on hosted/multi-user servers
 # allow_insecure_http = false  # serve /mcp over HTTP with NO auth (only behind your own proxy)
+# login_path = "/auth_login"   # dashboard sign-in URL; off /login to cut scanner noise, not a security control
+# trusted_proxies = []         # proxies whose X-Forwarded-For is believed for login throttling; empty = none
+                               # loopback is NOT implicit: Docker Desktop needs ["127.0.0.1"]
 # trace = false             # verbose tracing for git analysis & env ops
 
 # ── Routing ───────────────────────────────────────────
@@ -191,6 +194,8 @@ port_range = [50000, 50100]          # port range for Odoo containers [start, en
 | `[server].port` | `8000` | HTTP server port |
 | `[server].allow_local_path` | `true` | Allow trusted local-development live-mounts that bind a host checkout read/write. Set `false` on hosted, remote, or multi-user servers, or whenever only git-clone delivery is required |
 | `[server].allow_insecure_http` | `false` | Serve the `/mcp` endpoint over plain HTTP with **no** authentication. Only enable behind your own authenticating proxy |
+| `[server].login_path` | `/auth_login` | URL path of the Web Dashboard sign-in page. A non-standard path reduces automated scanner noise (bots probe `/login`, `/admin`, `/wp-login.php`); it is **not** a security control and does not replace authentication or rate limiting — see [Web Dashboard Auth](security.md#web-dashboard-auth). `/login` itself returns `404` |
+| `[server].trusted_proxies` | *(empty)* | Reverse proxies (IPs and/or CIDRs) whose `X-Forwarded-For` may be believed when resolving the client IP for login throttling. Empty = trust nobody, use the raw TCP peer. Wildcards are rejected, loopback is **not** trusted implicitly, and `FORWARDED_ALLOW_IPS` is ignored. Traefik mode adds its own container network automatically; set this for an additional proxy (nginx, Cloudflare tunnel, load balancer) or for Docker Desktop (`["127.0.0.1"]`) — see [Web Dashboard Auth](security.md#which-client-ip-the-throttle-sees) |
 | `[server].trace` | `false` | Enable detailed trace logging for git analysis and environment operations |
 | `[server].disable_telemetry` | `false` | Disable anonymous usage telemetry (see [Telemetry](#telemetry)) |
 

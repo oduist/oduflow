@@ -143,6 +143,107 @@ Fresh configs get a generated `ui_password` for `[team.1]` on first startup.
 Older HTTP configs with an empty `ui_password` are also auto-filled on startup
 and written back to `oduflow.toml`, so an upgrade does not expose the dashboard.
 
+### Brute-force protection
+
+Failed sign-ins are throttled in two dimensions:
+
+- **Per client IP** — 10 failures in a 5-minute sliding window locks that IP out
+  for the rest of the window. A successful sign-in clears its counter.
+- **Deployment-wide** — 100 failures in the same window, a backstop against
+  guessing spread over many source addresses. It sits far above the per-IP
+  threshold so one user mistyping their password cannot lock out a team.
+
+A throttled request answers `429` with a `Retry-After` header and the same
+generic *"Too many failed attempts"* page for every caller; a wrong password
+answers `401` with the same body regardless of what was submitted, so nothing
+reveals whether a given password half was close. Lockouts are logged (client IP
+and retry window — never the submitted password).
+
+Counters live in the server process; Oduflow runs the dashboard from a single
+process, so a restart resets them.
+
+### Which client IP the throttle sees
+
+`X-Forwarded-For` is attacker-controlled: if it were believed unconditionally,
+a client could mint a fresh throttle bucket per request just by varying the
+header. So the header is honoured **only when the immediate TCP peer is a
+trusted proxy**, in two places kept in step with each other — Uvicorn's
+`proxy_headers` layer and the throttle's own resolution:
+
+| Deployment | Immediate peer | Trusted to set `X-Forwarded-For` |
+|---|---|---|
+| Port mode, direct access | the browser/client itself | **nobody** — the peer address is used as-is |
+| Traefik mode on Linux | the Traefik container | Traefik's Docker network CIDRs, resolved from the live network at startup |
+| Traefik mode on Docker Desktop (macOS/Windows) | 127.0.0.1 (container→host traffic is NAT'd) | the Docker network CIDRs — **add `"127.0.0.1"` to `trusted_proxies`**, see below |
+| Behind your own proxy (nginx, Cloudflare tunnel, load balancer) | that proxy | nothing until you list it in `[server].trusted_proxies` |
+
+```toml
+[server]
+trusted_proxies = ["10.0.0.5", "172.18.0.0/16"]   # IPs and/or CIDRs
+```
+
+A wildcard (`*`, `0.0.0.0/0`, `::/0`) is **rejected**: the backend port is
+reachable directly on the host, so blanket trust would let any client spoof its
+address past the throttle. Malformed entries are rejected at config load.
+
+When the peer is trusted, the client address is taken by walking
+`X-Forwarded-For` right-to-left and using the first entry that is not itself a
+trusted proxy — each hop appends, so anything further left was supplied by the
+client and is ignored. With no trusted proxy configured (the default), the raw
+peer address is used and the header has no effect at all.
+
+#### Loopback is never trusted implicitly
+
+`127.0.0.1` gets no special treatment. On a Linux host Traefik reaches the
+backend from the bridge subnet, so an implicit loopback grant would only ever
+benefit *local* processes — any script, cron job, or co-tenant container on the
+box could then set `X-Forwarded-For` and cycle throttle buckets freely. If you
+need it, grant it explicitly:
+
+```toml
+[server]
+trusted_proxies = ["127.0.0.1"]
+```
+
+The one deployment that genuinely requires this is **Docker Desktop**
+(macOS/Windows), where container→host traffic is NAT'd and Traefik therefore
+arrives from `127.0.0.1` rather than the bridge subnet. Without the entry
+Oduflow still runs and still throttles — it just sees every request as coming
+from `127.0.0.1`, so the per-IP limit collapses into a deployment-wide one
+(coarse, but fail-safe). Linux hosts need no such entry.
+
+The `FORWARDED_ALLOW_IPS` environment variable — Uvicorn's own way to widen
+this trust — is **not** honoured. Oduflow always passes Uvicorn an explicit
+list computed from `oduflow.toml`, including an empty list when nothing is
+trusted, so the effective trust is exactly what your config says and cannot be
+widened from the environment.
+
+Practical consequence: **if you front Oduflow with your own reverse proxy and
+do not set `trusted_proxies`, every request shares the proxy's address** and
+the per-IP limit degrades into a deployment-wide one. That fails safe (nobody
+escapes throttling) but is coarse — configure `trusted_proxies` to get
+per-client granularity. Traefik mode on Linux needs no configuration; it is
+handled automatically.
+
+### Sign-in URL
+
+The sign-in page is served at `/auth_login`, configurable via
+`[server].login_path`. The default is not `/login` because commodity scanners
+probe the standard paths constantly, and moving off them removes most of that
+log noise. `/login` and every other unknown path return a plain `404` — there
+is no redirect or alias left behind, since one would keep the old surface fully
+reachable.
+
+> **A non-standard login path reduces automated scanner noise. It is not a
+> security control and does not replace authentication or rate limiting.**
+
+The URL is not a secret: it is plainly visible to anyone who loads the
+dashboard, appears in browser history and proxy logs, and is one redirect away
+for any authenticated user. What actually protects the endpoint is the
+`ui_password` check and the throttle described above. Treat the rename purely
+as log hygiene — it does not justify a weaker password, and it must never be
+used as a reason to skip either control.
+
 ## When auth is disabled
 
 MCP auth and Web UI auth are configured independently per team:

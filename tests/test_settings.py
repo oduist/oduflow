@@ -1,6 +1,12 @@
 import pytest
 from pathlib import Path
-from oduflow.settings import DEFAULT_AGENT_IMAGE, Settings, TeamSettings, find_toml
+from oduflow.settings import (
+    DEFAULT_AGENT_IMAGE,
+    DEFAULT_LOGIN_PATH,
+    Settings,
+    TeamSettings,
+    find_toml,
+)
 
 
 class TestSettings:
@@ -573,3 +579,211 @@ class TestBackupSettings:
             )
         )
         assert s.backup.prefix == "my/prefix"
+
+
+class TestLoginPath:
+    """[server].login_path — the dashboard sign-in URL (see web_ui)."""
+
+    def _toml(self, tmp_path, body: str):
+        toml = tmp_path / "oduflow.toml"
+        toml.write_text(body + '\n[team.1]\nhostname = "localhost"\n')
+        return str(toml)
+
+    def test_default_is_non_standard(self, tmp_path):
+        s = Settings.from_toml(self._toml(tmp_path, ""))
+        assert s.web_login_path == DEFAULT_LOGIN_PATH != "/login"
+
+    def test_custom_path_accepted_and_normalized(self, tmp_path):
+        s = Settings.from_toml(
+            self._toml(tmp_path, '[server]\nlogin_path = "/way/in/"\n')
+        )
+        assert s.web_login_path == "/way/in"
+
+    def test_empty_falls_back_to_default(self, tmp_path):
+        s = Settings.from_toml(self._toml(tmp_path, '[server]\nlogin_path = ""\n'))
+        assert s.web_login_path == DEFAULT_LOGIN_PATH
+
+    @pytest.mark.parametrize(
+        "value",
+        [
+            "/",  # the dashboard root, not a page of its own
+            "way-in",  # not absolute
+            "/way in",  # whitespace
+            "/way?next=/",  # query
+            "/way#frag",  # fragment
+            "//evil.example.com/way",  # protocol-relative URL
+            "https://evil.example.com/way",  # absolute URL
+            "/way//in",  # empty segment
+            "/way/../etc",  # relative segment
+            "/way'in",  # would break the JS/HTML string literal
+        ],
+    )
+    def test_malformed_paths_rejected(self, tmp_path, value):
+        with pytest.raises(ValueError, match="login_path"):
+            Settings.from_toml(
+                self._toml(tmp_path, f'[server]\nlogin_path = "{value}"\n')
+            )
+
+    @pytest.mark.parametrize(
+        "value", ["/logout", "/healthz", "/api/stats", "/static/chat.js"]
+    )
+    def test_reserved_paths_rejected(self, tmp_path, value):
+        with pytest.raises(ValueError, match="reserved"):
+            Settings.from_toml(
+                self._toml(tmp_path, f'[server]\nlogin_path = "{value}"\n')
+            )
+
+    def test_validate_rechecks_programmatic_settings(self):
+        s = Settings(
+            base_data_dir="/tmp",
+            web_login_path="/api/sneaky",
+            teams={"1": TeamSettings(team_id="1")},
+        )
+        with pytest.raises(ValueError, match="reserved"):
+            s.validate()
+
+
+class TestTrustedProxies:
+    """[server].trusted_proxies — whose X-Forwarded-For may be believed."""
+
+    def _toml(self, tmp_path, body: str):
+        toml = tmp_path / "oduflow.toml"
+        toml.write_text(body + '\n[team.1]\nhostname = "localhost"\n')
+        return str(toml)
+
+    def test_default_is_empty(self, tmp_path):
+        s = Settings.from_toml(self._toml(tmp_path, ""))
+        assert s.trusted_proxies == ()
+
+    def test_ips_and_cidrs_accepted(self, tmp_path):
+        s = Settings.from_toml(
+            self._toml(
+                tmp_path,
+                '[server]\ntrusted_proxies = ["10.0.0.1", "172.18.0.0/16", "::1"]\n',
+            )
+        )
+        assert s.trusted_proxies == ("10.0.0.1", "172.18.0.0/16", "::1")
+
+    @pytest.mark.parametrize("value", ["*", "0.0.0.0/0", "::/0"])
+    def test_wildcard_rejected(self, tmp_path, value):
+        with pytest.raises(ValueError, match="wildcard"):
+            Settings.from_toml(
+                self._toml(tmp_path, f'[server]\ntrusted_proxies = ["{value}"]\n')
+            )
+
+    @pytest.mark.parametrize("value", ["not-an-ip", "10.0.0.999", "10.0.0.0/99"])
+    def test_malformed_entries_rejected(self, tmp_path, value):
+        with pytest.raises(ValueError, match="valid IP"):
+            Settings.from_toml(
+                self._toml(tmp_path, f'[server]\ntrusted_proxies = ["{value}"]\n')
+            )
+
+    def test_bare_string_rejected(self, tmp_path):
+        with pytest.raises(ValueError, match="must be a list"):
+            Settings.from_toml(
+                self._toml(tmp_path, '[server]\ntrusted_proxies = "10.0.0.1"\n')
+            )
+
+    def test_validate_rechecks_programmatic_settings(self):
+        s = Settings(
+            base_data_dir="/tmp",
+            trusted_proxies=("*",),
+            teams={"1": TeamSettings(team_id="1")},
+        )
+        with pytest.raises(ValueError, match="wildcard"):
+            s.validate()
+
+
+class TestForwardedAllowIps:
+    """Uvicorn's proxy-header trust list must stay in step with web_ui._client_ip."""
+
+    def test_port_mode_trusts_nobody_by_default(self):
+        """Explicitly empty, never None: None would hand Uvicorn back to its own
+        default (FORWARDED_ALLOW_IPS, else 127.0.0.1)."""
+        from oduflow.server import _forwarded_allow_ips
+
+        s = Settings(routing_mode="port", teams={"1": TeamSettings(team_id="1")})
+        assert _forwarded_allow_ips(s) == []
+
+    def test_port_mode_trusts_exactly_the_configured_proxies(self):
+        from oduflow.server import _forwarded_allow_ips
+
+        s = Settings(
+            routing_mode="port",
+            trusted_proxies=("10.0.0.1",),
+            teams={"1": TeamSettings(team_id="1")},
+        )
+        # No implicit loopback: it is a grant like any other, so it is opt-in.
+        assert _forwarded_allow_ips(s) == ["10.0.0.1"]
+
+    def test_env_var_does_not_widen_trust(self, monkeypatch):
+        from oduflow.server import _forwarded_allow_ips
+
+        monkeypatch.setenv("FORWARDED_ALLOW_IPS", "*")
+        s = Settings(routing_mode="port", teams={"1": TeamSettings(team_id="1")})
+        assert _forwarded_allow_ips(s) == []
+
+    def test_traefik_mode_unions_docker_subnet_and_configured_proxies(
+        self, monkeypatch
+    ):
+        from oduflow import server
+
+        class _Net:
+            attrs = {"IPAM": {"Config": [{"Subnet": "172.18.0.0/16"}]}}
+
+            def reload(self):
+                pass
+
+        class _Client:
+            networks = type("N", (), {"get": staticmethod(lambda name: _Net())})()
+
+        monkeypatch.setattr("oduflow.docker_ops.client.get_client", lambda: _Client())
+        s = Settings(
+            routing_mode="traefik",
+            trusted_proxies=("10.0.0.1",),
+            teams={"1": TeamSettings(team_id="1")},
+        )
+        # Traefik's own network, plus what the operator declared — and nothing
+        # else: loopback on a Traefik host is a local process, not a proxy.
+        assert server._forwarded_allow_ips(s) == ["10.0.0.1", "172.18.0.0/16"]
+
+    def test_traefik_mode_without_configured_proxies_is_just_the_network(
+        self, monkeypatch
+    ):
+        from oduflow import server
+
+        class _Net:
+            attrs = {"IPAM": {"Config": [{"Subnet": "172.18.0.0/16"}]}}
+
+            def reload(self):
+                pass
+
+        class _Client:
+            networks = type("N", (), {"get": staticmethod(lambda name: _Net())})()
+
+        monkeypatch.setattr("oduflow.docker_ops.client.get_client", lambda: _Client())
+        s = Settings(routing_mode="traefik", teams={"1": TeamSettings(team_id="1")})
+        assert server._forwarded_allow_ips(s) == ["172.18.0.0/16"]
+
+    def test_traefik_mode_refuses_without_a_subnet(self, monkeypatch):
+        """No IPAM subnet means we cannot scope trust; never fall back to '*'."""
+        from oduflow import server
+        from oduflow.errors import PrerequisiteNotMetError
+
+        class _Net:
+            attrs = {"IPAM": {"Config": []}}
+
+            def reload(self):
+                pass
+
+        class _Client:
+            networks = type("N", (), {"get": staticmethod(lambda name: _Net())})()
+
+        monkeypatch.setattr("oduflow.docker_ops.client.get_client", lambda: _Client())
+        s = Settings(
+            routing_mode="traefik",
+            trusted_proxies=("10.0.0.1",),
+            teams={"1": TeamSettings(team_id="1")},
+        )
+        with pytest.raises(PrerequisiteNotMetError, match="no IPAM subnet"):
+            server._forwarded_allow_ips(s)

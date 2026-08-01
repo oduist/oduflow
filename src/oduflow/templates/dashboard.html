@@ -1923,13 +1923,17 @@
   </div>
 </div>
 <script>
+// Sign-in page path, substituted server-side from [server].login_path so the
+// dashboard never hardcodes it (web_ui.dashboard).
+const LOGIN_PATH = '__LOGIN_PATH__';
+
 // Redirect to the login page whenever a request is rejected as unauthenticated
 // (e.g. the session cookie expired while the tab was open).
 (function () {
   const _fetch = window.fetch;
   window.fetch = function () {
     return _fetch.apply(this, arguments).then(function (resp) {
-      if (resp.status === 401) { window.location.href = '/login'; }
+      if (resp.status === 401) { window.location.href = LOGIN_PATH; }
       return resp;
     });
   };

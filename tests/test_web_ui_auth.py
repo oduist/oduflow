@@ -18,13 +18,14 @@ import tempfile
 
 import pytest
 from starlette.applications import Starlette
+from starlette.requests import HTTPConnection
 from starlette.routing import Router, WebSocketRoute
 from starlette.testclient import TestClient
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
 from oduflow import web_ui
 from oduflow.licensing import LicenseInfo, TYPE_INDIVIDUAL, TYPE_UNLICENSED
-from oduflow.settings import Settings, TeamSettings
+from oduflow.settings import DEFAULT_LOGIN_PATH, Settings, TeamSettings
 from oduflow.web_ui import (
     _AUTH_COOKIE,
     BasicAuthMiddleware,
@@ -43,11 +44,18 @@ _DATA_DIR = tempfile.mkdtemp(prefix="oduflow-uiauth-test-")
 
 
 def _settings(
-    routing_mode: str = "port", etc_dir: str = "", *, prod_enabled: bool = False
+    routing_mode: str = "port",
+    etc_dir: str = "",
+    *,
+    prod_enabled: bool = False,
+    login_path: str = DEFAULT_LOGIN_PATH,
+    trusted_proxies: tuple[str, ...] = (),
 ) -> Settings:
     return Settings(
         routing_mode=routing_mode,
         prod_enabled=prod_enabled,
+        web_login_path=login_path,
+        trusted_proxies=trusted_proxies,
         base_data_dir=_DATA_DIR,
         etc_dir=etc_dir,
         teams={
@@ -58,6 +66,17 @@ def _settings(
 
 def _team(settings: Settings) -> TeamSettings:
     return settings.teams["1"]
+
+
+def _conn(peer: str, headers: dict[str, str]) -> HTTPConnection:
+    """A bare ASGI connection with a given TCP peer and headers."""
+    return HTTPConnection(
+        {
+            "type": "http",
+            "headers": [(k.lower().encode(), v.encode()) for k, v in headers.items()],
+            "client": (peer, 12345),
+        }
+    )
 
 
 def _basic(user: str, password: str) -> dict[str, str]:
@@ -169,21 +188,23 @@ def test_dashboard_redirects_to_login_when_unauthenticated():
     client = TestClient(_full_app(_settings()))
     resp = client.get("/", follow_redirects=False)
     assert resp.status_code == 302
-    assert resp.headers["location"] == "/login"
+    assert resp.headers["location"] == DEFAULT_LOGIN_PATH
     # No Basic dialog is triggered anymore.
     assert "www-authenticate" not in {k.lower() for k in resp.headers}
 
 
 def test_login_page_is_public():
     client = TestClient(_full_app(_settings()))
-    resp = client.get("/login")
+    resp = client.get(DEFAULT_LOGIN_PATH)
     assert resp.status_code == 200
     assert "password" in resp.text.lower()
 
 
 def test_login_success_sets_cookie_and_redirects():
     client = TestClient(_full_app(_settings()))
-    resp = client.post("/login", data={"password": _PW}, follow_redirects=False)
+    resp = client.post(
+        DEFAULT_LOGIN_PATH, data={"password": _PW}, follow_redirects=False
+    )
     assert resp.status_code == 303
     assert resp.headers["location"] == "/"
     assert f"{_AUTH_COOKIE}=" in resp.headers.get("set-cookie", "")
@@ -193,7 +214,9 @@ def test_login_success_sets_cookie_and_redirects():
 
 def test_login_wrong_password_rejected():
     client = TestClient(_full_app(_settings()))
-    resp = client.post("/login", data={"password": "nope"}, follow_redirects=False)
+    resp = client.post(
+        DEFAULT_LOGIN_PATH, data={"password": "nope"}, follow_redirects=False
+    )
     assert resp.status_code == 401
     assert _AUTH_COOKIE not in resp.headers.get("set-cookie", "")
 
@@ -202,12 +225,241 @@ def test_login_rate_limited_after_repeated_failures():
     # Issue #56: the login endpoint must throttle brute-force attempts.
     client = TestClient(_full_app(_settings()))
     for _ in range(10):
-        resp = client.post("/login", data={"password": "nope"}, follow_redirects=False)
+        resp = client.post(
+            DEFAULT_LOGIN_PATH, data={"password": "nope"}, follow_redirects=False
+        )
         assert resp.status_code == 401
     # The 11th attempt (and beyond) is locked out, even with the right password.
-    resp = client.post("/login", data={"password": _PW}, follow_redirects=False)
+    resp = client.post(
+        DEFAULT_LOGIN_PATH, data={"password": _PW}, follow_redirects=False
+    )
     assert resp.status_code == 429
     assert _AUTH_COOKIE not in resp.headers.get("set-cookie", "")
+    # A locked-out client is told when to come back.
+    assert int(resp.headers["retry-after"]) > 0
+
+
+def test_login_lockout_expires_after_window(monkeypatch):
+    """Once the sliding window passes, the same client may try again."""
+    client = TestClient(_full_app(_settings()))
+    for _ in range(10):
+        client.post(DEFAULT_LOGIN_PATH, data={"password": "nope"})
+    assert client.post(DEFAULT_LOGIN_PATH, data={"password": _PW}).status_code == 429
+
+    # Advance the clock past the 300s window (the limiter uses time.monotonic).
+    real_monotonic = web_ui.time.monotonic
+    monkeypatch.setattr(
+        web_ui.time, "monotonic", lambda: real_monotonic() + 301, raising=False
+    )
+    resp = client.post(
+        DEFAULT_LOGIN_PATH, data={"password": _PW}, follow_redirects=False
+    )
+    assert resp.status_code == 303
+    assert f"{_AUTH_COOKIE}=" in resp.headers.get("set-cookie", "")
+
+
+def test_login_success_resets_the_failure_counter():
+    client = TestClient(_full_app(_settings()))
+    for _ in range(9):
+        assert (
+            client.post(DEFAULT_LOGIN_PATH, data={"password": "nope"}).status_code
+            == 401
+        )
+    assert client.post(DEFAULT_LOGIN_PATH, data={"password": _PW}).status_code == 200
+    # Drop the session cookie: otherwise the login handler short-circuits to
+    # "already signed in" and never reaches the throttle.
+    client.cookies.clear()
+    # The counter is cleared, so 9 more failures still do not lock the client out.
+    for _ in range(9):
+        assert (
+            client.post(DEFAULT_LOGIN_PATH, data={"password": "nope"}).status_code
+            == 401
+        )
+
+
+def test_login_throttle_is_per_client_ip():
+    """One noisy IP must not lock out everyone else (below the global cap)."""
+    app = _full_app(_settings())
+    attacker = TestClient(app, client=("10.0.0.1", 1234))
+    victim = TestClient(app, client=("10.0.0.2", 1234))
+    for _ in range(10):
+        attacker.post(DEFAULT_LOGIN_PATH, data={"password": "nope"})
+    assert attacker.post(DEFAULT_LOGIN_PATH, data={"password": _PW}).status_code == 429
+    assert victim.post(DEFAULT_LOGIN_PATH, data={"password": _PW}).status_code == 200
+
+
+def test_login_throttle_ignores_spoofed_forwarding_headers():
+    """X-Forwarded-For is attacker-controlled: with no trusted proxy configured
+    a fresh value must not reset the bucket, or the limit is trivially bypassed."""
+    client = TestClient(_full_app(_settings()), client=("198.51.100.7", 1234))
+    for i in range(10):
+        resp = client.post(
+            DEFAULT_LOGIN_PATH,
+            data={"password": "nope"},
+            headers={"X-Forwarded-For": f"203.0.113.{i}"},
+        )
+        assert resp.status_code == 401
+    resp = client.post(
+        DEFAULT_LOGIN_PATH,
+        data={"password": _PW},
+        headers={"X-Forwarded-For": "203.0.113.99"},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 429
+
+
+# --- client IP resolution (trusted proxies) ------------------------------
+#
+# Uvicorn's own proxy_headers layer resolves scope["client"] when the peer is
+# in forwarded_allow_ips (server._forwarded_allow_ips keeps the two lists in
+# step). These tests drive the app layer directly, which is what runs when the
+# peer was not trusted there — and is idempotent when it was.
+
+
+def test_client_ip_direct_connection_uses_peer():
+    settings = _settings(trusted_proxies=("10.0.0.1",))
+    conn = _conn("203.0.113.5", {"x-forwarded-for": "192.0.2.9"})
+    # The peer is a plain client, not the proxy -> its header is ignored.
+    assert web_ui._client_ip(conn, settings) == "203.0.113.5"
+
+
+def test_client_ip_trusted_proxy_uses_forwarded_header():
+    settings = _settings(trusted_proxies=("10.0.0.1",))
+    conn = _conn("10.0.0.1", {"x-forwarded-for": "203.0.113.5"})
+    assert web_ui._client_ip(conn, settings) == "203.0.113.5"
+
+
+def test_client_ip_trusted_proxy_cidr():
+    settings = _settings(trusted_proxies=("10.0.0.0/24",))
+    conn = _conn("10.0.0.77", {"x-forwarded-for": "203.0.113.5"})
+    assert web_ui._client_ip(conn, settings) == "203.0.113.5"
+
+
+def test_client_ip_untrusted_peer_cannot_spoof():
+    """The core property: without trust, the header is inert."""
+    settings = _settings(trusted_proxies=("10.0.0.1",))
+    for spoof in ("203.0.113.5", "10.0.0.1", "127.0.0.1"):
+        conn = _conn("198.51.100.7", {"x-forwarded-for": spoof})
+        assert web_ui._client_ip(conn, settings) == "198.51.100.7"
+
+
+def test_client_ip_default_trusts_no_proxy():
+    settings = _settings()  # no trusted_proxies configured
+    conn = _conn("10.0.0.1", {"x-forwarded-for": "203.0.113.5"})
+    assert web_ui._client_ip(conn, settings) == "10.0.0.1"
+
+
+def test_client_ip_takes_rightmost_untrusted_hop():
+    """A client may prepend fake hops; only what the trusted chain appended counts."""
+    settings = _settings(trusted_proxies=("10.0.0.1", "10.0.0.2"))
+    conn = _conn(
+        "10.0.0.1",
+        # Client-supplied junk, then the real client, then trusted hops.
+        {"x-forwarded-for": "1.2.3.4, 203.0.113.5, 10.0.0.2"},
+    )
+    assert web_ui._client_ip(conn, settings) == "203.0.113.5"
+
+
+def test_client_ip_falls_back_to_peer_without_header():
+    settings = _settings(trusted_proxies=("10.0.0.1",))
+    assert web_ui._client_ip(_conn("10.0.0.1", {}), settings) == "10.0.0.1"
+    # Every hop trusted (nothing untrusted to pick): the peer, not a guess.
+    conn = _conn("10.0.0.1", {"x-forwarded-for": "10.0.0.1"})
+    assert web_ui._client_ip(conn, settings) == "10.0.0.1"
+
+
+def test_throttle_separates_clients_behind_one_trusted_proxy():
+    """Two users behind the same proxy must get independent buckets."""
+    app = _full_app(_settings(trusted_proxies=("10.0.0.1",)))
+    proxy = TestClient(app, client=("10.0.0.1", 1234))
+    noisy = {"X-Forwarded-For": "203.0.113.5"}
+    quiet = {"X-Forwarded-For": "203.0.113.6"}
+    for _ in range(10):
+        assert (
+            proxy.post(
+                DEFAULT_LOGIN_PATH, data={"password": "nope"}, headers=noisy
+            ).status_code
+            == 401
+        )
+    assert (
+        proxy.post(
+            DEFAULT_LOGIN_PATH, data={"password": _PW}, headers=noisy
+        ).status_code
+        == 429
+    )
+    assert (
+        proxy.post(
+            DEFAULT_LOGIN_PATH, data={"password": _PW}, headers=quiet
+        ).status_code
+        == 200
+    )
+
+
+def test_throttle_behind_proxy_still_blocks_a_spoofing_client():
+    """A client behind a trusted proxy cannot escape by prepending fake hops:
+    the proxy appends the real address to the right of whatever it sent."""
+    app = _full_app(_settings(trusted_proxies=("10.0.0.1",)))
+    proxy = TestClient(app, client=("10.0.0.1", 1234))
+    for i in range(10):
+        resp = proxy.post(
+            DEFAULT_LOGIN_PATH,
+            data={"password": "nope"},
+            headers={"X-Forwarded-For": f"192.0.2.{i}, 203.0.113.5"},
+        )
+        assert resp.status_code == 401
+    resp = proxy.post(
+        DEFAULT_LOGIN_PATH,
+        data={"password": _PW},
+        headers={"X-Forwarded-For": "192.0.2.99, 203.0.113.5"},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 429
+
+
+def test_login_failure_response_is_generic():
+    """No user enumeration: a missing password and a wrong one look identical."""
+    client = TestClient(_full_app(_settings()))
+    empty = client.post(DEFAULT_LOGIN_PATH, data={"password": ""})
+    wrong = client.post(DEFAULT_LOGIN_PATH, data={"password": "definitely-not-it"})
+    assert empty.status_code == wrong.status_code == 401
+    assert empty.text == wrong.text
+    assert _PW not in wrong.text
+
+
+def test_legacy_login_path_is_404_not_a_redirect():
+    """The old /login must not survive as an alias or redirect (scanner noise)."""
+    client = TestClient(_full_app(_settings()))
+    for method in ("get", "post"):
+        resp = getattr(client, method)("/login", follow_redirects=False)
+        assert resp.status_code == 404, method
+        assert "location" not in {k.lower() for k in resp.headers}
+
+
+def test_unknown_path_is_404_not_a_login_redirect():
+    client = TestClient(_full_app(_settings()))
+    resp = client.get("/wp-login.php", follow_redirects=False)
+    assert resp.status_code == 404
+    assert DEFAULT_LOGIN_PATH not in resp.text
+
+
+def test_login_path_is_configurable():
+    client = TestClient(_full_app(_settings(login_path="/way-in")))
+
+    assert client.get("/way-in").status_code == 200
+    # The default path is not also served.
+    assert client.get(DEFAULT_LOGIN_PATH, follow_redirects=False).status_code == 404
+    # Redirects and the rendered form both point at the configured path.
+    assert client.get("/", follow_redirects=False).headers["location"] == "/way-in"
+    assert 'action="/way-in"' in client.get("/way-in").text
+    resp = client.post("/way-in", data={"password": _PW}, follow_redirects=False)
+    assert resp.status_code == 303
+
+
+def test_dashboard_reports_configured_login_path():
+    client = TestClient(_full_app(_settings(login_path="/way-in")))
+    body = client.get("/", headers=_basic("admin", _PW)).text
+    assert "LOGIN_PATH = '/way-in'" in body
+    assert "__LOGIN_PATH__" not in body
 
 
 def test_login_redirects_when_already_authenticated():
@@ -215,17 +467,17 @@ def test_login_redirects_when_already_authenticated():
     token = _make_ui_token(_team(settings), settings)
     client = TestClient(_full_app(settings))
     client.cookies.set(_AUTH_COOKIE, token)
-    resp = client.get("/login", follow_redirects=False)
+    resp = client.get(DEFAULT_LOGIN_PATH, follow_redirects=False)
     assert resp.status_code == 302
     assert resp.headers["location"] == "/"
 
 
 def test_logout_clears_cookie():
     client = TestClient(_full_app(_settings()))
-    client.post("/login", data={"password": _PW})
+    client.post(DEFAULT_LOGIN_PATH, data={"password": _PW})
     resp = client.post("/logout", follow_redirects=False)
     assert resp.status_code == 303
-    assert resp.headers["location"] == "/login"
+    assert resp.headers["location"] == DEFAULT_LOGIN_PATH
     set_cookie = resp.headers.get("set-cookie", "").lower()
     assert _AUTH_COOKIE in set_cookie
     assert "max-age=0" in set_cookie or "expires=" in set_cookie
@@ -302,7 +554,7 @@ def test_dashboard_invalid_cookie_redirects_to_login():
     client.cookies.set(_AUTH_COOKIE, "1.deadbeef")
     resp = client.get("/", follow_redirects=False)
     assert resp.status_code == 302
-    assert resp.headers["location"] == "/login"
+    assert resp.headers["location"] == DEFAULT_LOGIN_PATH
 
 
 def test_non_ascii_cookie_does_not_crash():

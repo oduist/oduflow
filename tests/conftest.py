@@ -84,9 +84,7 @@ def _wait_for_odoo_container_running(
     settings: Settings, team: TeamSettings, env_name: str, timeout: int = 60
 ) -> None:
     client = get_client()
-    container_name = get_resource_name(
-        env_name, "odoo", settings.prefix, team.team_id
-    )
+    container_name = get_resource_name(env_name, "odoo", settings.prefix, team.team_id)
     deadline = time.monotonic() + timeout
     last_status = "unknown"
     while time.monotonic() < deadline:

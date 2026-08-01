@@ -6,6 +6,7 @@ import base64
 import hashlib
 import hmac
 import html
+import ipaddress
 import json
 import logging
 import os
@@ -25,11 +26,12 @@ from starlette.requests import ClientDisconnect, HTTPConnection, Request
 from starlette.responses import (
     HTMLResponse,
     JSONResponse,
+    PlainTextResponse,
     RedirectResponse,
     Response,
 )
 from starlette.applications import Starlette
-from starlette.routing import BaseRoute, Route, WebSocketRoute
+from starlette.routing import BaseRoute, Match, Route, WebSocketRoute
 from starlette.types import ASGIApp, Receive, Scope, Send
 from starlette.websockets import WebSocket
 
@@ -79,9 +81,11 @@ _AUTH_COOKIE = "oduflow_ui_auth"
 # as /api/templates/{name}/delete with name="import" to unauthenticated calls.
 # NOTE: /api/templates/import-token (which mints the token) is deliberately NOT
 # public — it stays behind the UI login.
+# NOTE: the sign-in page is NOT listed here — its path is configurable
+# ([server].login_path, default /auth_login) and is allowed dynamically by
+# BasicAuthMiddleware.
 _PUBLIC_PATHS = frozenset(
     {
-        "/login",
         "/logout",
         "/favicon.ico",
         "/logo.png",
@@ -224,9 +228,26 @@ def _is_cross_origin(headers: Headers) -> bool:
 
 
 class BasicAuthMiddleware:
-    def __init__(self, app: ASGIApp, get_settings: Callable[[], Settings]) -> None:
+    def __init__(
+        self,
+        app: ASGIApp,
+        get_settings: Callable[[], Settings],
+        routes: "list[BaseRoute] | None" = None,
+    ) -> None:
         self._app = app
         self._get_settings = get_settings
+        # Used to tell "unauthenticated user hit a real page" (-> redirect to
+        # the login page) from "path does not exist at all" (-> plain 404).
+        # Without this every bogus URL would answer 302 -> login page, which
+        # both leaks the login path and feeds scanner retries.
+        self._routes = routes or []
+
+    def _route_exists(self, scope: Scope) -> bool:
+        for route in self._routes:
+            match, _ = route.matches(scope)
+            if match is not Match.NONE:
+                return True
+        return False
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] not in ("http", "websocket"):
@@ -234,8 +255,11 @@ class BasicAuthMiddleware:
             return
 
         path = scope.get("path", "")
+        login_path = self._get_settings().web_login_path
         if scope["type"] == "http" and (
-            path in _PUBLIC_PATHS or path.startswith(_PUBLIC_PREFIXES)
+            path == login_path
+            or path in _PUBLIC_PATHS
+            or path.startswith(_PUBLIC_PREFIXES)
         ):
             await self._app(scope, receive, send)
             return
@@ -284,8 +308,13 @@ class BasicAuthMiddleware:
                 {"ok": False, "error": "Unauthorized"}, status_code=401
             )
             await response(scope, receive, send)
+        elif not self._route_exists(scope):
+            # Includes the legacy /login: it is a plain 404 now, not a redirect,
+            # so scanners get no hint and no working alias remains.
+            response = PlainTextResponse("Not Found", status_code=404)
+            await response(scope, receive, send)
         else:
-            response = RedirectResponse("/login", status_code=302)
+            response = RedirectResponse(login_path, status_code=302)
             await response(scope, receive, send)
 
     def _check_credentials(self, auth_header: str) -> "TeamSettings | None":
@@ -311,16 +340,69 @@ def _is_secure_request(request: Request) -> bool:
     return forwarded.split(",")[0].strip().lower() == "https"
 
 
+def _is_trusted_proxy(host: str, trusted: tuple[str, ...]) -> bool:
+    """Whether ``host`` (a TCP peer address) is one of the configured proxies."""
+    if not host or not trusted:
+        return False
+    try:
+        addr = ipaddress.ip_address(host)
+    except ValueError:
+        # Not an IP at all (unix socket, TestClient's "testclient"): untrusted.
+        return False
+    for entry in trusted:
+        try:
+            if "/" in entry:
+                if addr in ipaddress.ip_network(entry, strict=False):
+                    return True
+            elif addr == ipaddress.ip_address(entry):
+                return True
+        except ValueError:  # pragma: no cover - rejected by settings validation
+            continue
+    return False
+
+
+def _client_ip(conn: HTTPConnection, settings: Settings) -> str:
+    """The address to key rate limiting on, resolved fail-closed.
+
+    Default (no ``[server].trusted_proxies``) is the raw TCP peer: believing
+    ``X-Forwarded-For`` unconditionally would let one client mint a fresh
+    throttle bucket per request just by varying a header.
+
+    When the *immediate peer* is a configured proxy, the real client is taken
+    from ``X-Forwarded-For`` by walking right-to-left and returning the first
+    entry that is not itself a trusted proxy (each hop appends, so the
+    rightmost untrusted entry is the closest address the trusted chain
+    actually observed; anything further left was supplied by the client).
+
+    Idempotent with respect to Uvicorn's own ``proxy_headers`` handling: when
+    that layer has already resolved the client, the peer we see is the
+    untrusted client address and this function returns it unchanged.
+    """
+    peer = conn.client.host if conn.client else ""
+    trusted = settings.trusted_proxies
+    if not _is_trusted_proxy(peer, trusted):
+        return peer or "unknown"
+    forwarded = conn.headers.get("x-forwarded-for", "")
+    for candidate in reversed([p.strip() for p in forwarded.split(",") if p.strip()]):
+        if not _is_trusted_proxy(candidate, trusted):
+            return candidate
+    # Header absent, or every hop in it is a trusted proxy: fall back to the
+    # peer rather than inventing a client address.
+    return peer or "unknown"
+
+
 _TEMPLATE_DIR = pathlib.Path(__file__).resolve().parent / "templates"
 
 
-def _render_login(error: str = "") -> str:
+def _render_login(login_path: str, error: str = "") -> str:
     """Render the login page, optionally with a server-controlled error banner."""
     page = (_TEMPLATE_DIR / "login.html").read_text(encoding="utf-8")
     # Escape the message so the banner stays safe even if a future caller passes
     # user-influenced text (today's callers pass static literals).
     banner = f'<div class="error">{html.escape(error)}</div>' if error else ""
-    return page.replace("<!--ERROR-->", banner)
+    return page.replace("<!--ERROR-->", banner).replace(
+        "__LOGIN_ACTION__", html.escape(login_path, quote=True)
+    )
 
 
 async def _read_login_password(request: Request) -> str:
@@ -554,10 +636,12 @@ def _wire_codex_acp_mcp(
 class _LoginRateLimiter:
     """Best-effort in-memory throttle for failed logins (issue #56).
 
-    Tracks failed attempts per client IP in a sliding window; once the threshold
-    is reached the IP is locked out for the rest of the window. A successful
-    login clears the IP. The dashboard runs in a single uvicorn process, so an
-    in-memory store is sufficient.
+    Tracks failed attempts per key in a sliding window; once the threshold is
+    reached the key is locked out for the rest of the window, and
+    ``retry_after`` reports how long that lasts. A successful login clears the
+    key. Oduflow serves the dashboard from a single uvicorn process (one
+    ``oduflow`` systemd unit / container per deployment), so process memory is
+    the whole state; a multi-process deployment would need a shared store.
     """
 
     def __init__(self, max_attempts: int = 10, window_seconds: int = 300) -> None:
@@ -575,10 +659,18 @@ class _LoginRateLimiter:
             self._failures.pop(key, None)
 
     def is_limited(self, key: str) -> bool:
+        return self.retry_after(key) > 0
+
+    def retry_after(self, key: str) -> int:
+        """Seconds until ``key`` may try again; 0 when it is not locked out."""
         with self._lock:
             now = time.monotonic()
             self._prune(key, now)
-            return len(self._failures.get(key, [])) >= self.max_attempts
+            attempts = self._failures.get(key, [])
+            if len(attempts) < self.max_attempts:
+                return 0
+            # Locked out until the oldest attempt in the window ages out.
+            return max(1, int(attempts[0] + self.window - now) + 1)
 
     def record_failure(self, key: str) -> None:
         with self._lock:
@@ -596,7 +688,14 @@ def _build_routes(
     locks: LockManager,
 ) -> list[BaseRoute]:
     # Per-app so test apps and real deployments don't share failure counters.
+    # Two dimensions: per client IP, and one deployment-wide counter. The
+    # dashboard has a single account per team and the form carries no username,
+    # so "per account" is necessarily the global bucket — it is set far above
+    # the per-IP threshold so it only bites on distributed guessing, not on one
+    # user fat-fingering their password.
     login_limiter = _LoginRateLimiter()
+    global_limiter = _LoginRateLimiter(max_attempts=100, window_seconds=300)
+    _GLOBAL_KEY = "*"
 
     def _set_session_cookie(
         response: Response, team: TeamSettings, request: Request
@@ -613,9 +712,16 @@ def _build_routes(
 
     def dashboard(request: Request) -> HTMLResponse:
         html_path = _TEMPLATE_DIR / "dashboard.html"
-        html = html_path.read_text(encoding="utf-8").replace(
-            "__PRODUCTION_TAB_HIDDEN__",
-            "" if get_settings().prod_enabled else "hidden",
+        settings = get_settings()
+        html = (
+            html_path.read_text(encoding="utf-8")
+            .replace(
+                "__PRODUCTION_TAB_HIDDEN__",
+                "" if settings.prod_enabled else "hidden",
+            )
+            # JS string literal: the path is validated by
+            # settings.normalize_login_path (no quotes/whitespace possible).
+            .replace("__LOGIN_PATH__", settings.web_login_path)
         )
         response = HTMLResponse(html)
         team = getattr(request.state, "team", None)
@@ -625,6 +731,7 @@ def _build_routes(
 
     async def login(request: Request) -> Response:
         settings = get_settings()
+        login_path = settings.web_login_path
         # Auth disabled entirely -> the dashboard is open, no login needed.
         if not any(t.ui_password for t in settings.teams.values()):
             return RedirectResponse("/", status_code=302)
@@ -633,11 +740,24 @@ def _build_routes(
         if token and _check_cookie_token(token, settings) is not None:
             return RedirectResponse("/", status_code=302)
         if request.method == "POST":
-            client_ip = request.client.host if request.client else "unknown"
-            if login_limiter.is_limited(client_ip):
+            # X-Forwarded-For is honoured only when the immediate peer is a
+            # configured [server].trusted_proxies entry; otherwise this is the
+            # raw TCP peer. See _client_ip.
+            client_ip = _client_ip(request, settings)
+            retry_after = max(
+                login_limiter.retry_after(client_ip),
+                global_limiter.retry_after(_GLOBAL_KEY),
+            )
+            if retry_after:
+                logger.warning(
+                    "Login throttled for %s (retry after %ss)", client_ip, retry_after
+                )
                 return HTMLResponse(
-                    _render_login("Too many failed attempts. Try again later."),
+                    _render_login(
+                        login_path, "Too many failed attempts. Try again later."
+                    ),
                     status_code=429,
+                    headers={"Retry-After": str(retry_after)},
                 )
             password = await _read_login_password(request)
             team = settings.get_team_by_ui_password(password) if password else None
@@ -647,11 +767,16 @@ def _build_routes(
                 _set_session_cookie(response, team, request)
                 return response
             login_limiter.record_failure(client_ip)
-            return HTMLResponse(_render_login("Invalid password."), status_code=401)
-        return HTMLResponse(_render_login())
+            global_limiter.record_failure(_GLOBAL_KEY)
+            # Generic message: never reveal whether the account/password half
+            # was the wrong one (the form has no username field by design).
+            return HTMLResponse(
+                _render_login(login_path, "Invalid password."), status_code=401
+            )
+        return HTMLResponse(_render_login(login_path))
 
     def logout(request: Request) -> RedirectResponse:
-        response = RedirectResponse("/login", status_code=303)
+        response = RedirectResponse(get_settings().web_login_path, status_code=303)
         response.delete_cookie(_AUTH_COOKIE, path="/", samesite="strict")
         return response
 
@@ -4228,7 +4353,10 @@ def _build_routes(
 
     return [
         Route("/", dashboard, methods=["GET"]),
-        Route("/login", login, methods=["GET", "POST"]),
+        # Sign-in page path comes from [server].login_path (default
+        # /auth_login). Routes are built once at startup, so a config reload
+        # needs a restart to move it.
+        Route(get_settings().web_login_path, login, methods=["GET", "POST"]),
         Route("/logout", logout, methods=["POST"]),
         Route("/favicon.ico", favicon, methods=["GET"]),
         Route("/logo.png", logo, methods=["GET"]),
@@ -4385,7 +4513,7 @@ def mount_web_ui(
     settings = get_settings()
     has_ui_passwords = any(t.ui_password for t in settings.teams.values())
     if has_ui_passwords:
-        sub_app = BasicAuthMiddleware(sub_app, get_settings)
+        sub_app = BasicAuthMiddleware(sub_app, get_settings, routes=routes)
         logger.info("Web UI Basic Auth ENABLED (user: %s)", _AUTH_USER)
     else:
         logger.warning("Web UI auth DISABLED (no ui_password set in any team)")

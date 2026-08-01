@@ -132,6 +132,88 @@ class TeamSettings:
 _HHMM_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
 _KEEP_PAIR_RE = re.compile(r"^\d+:\d+$")
 
+# Dashboard sign-in path. Non-standard on purpose (see Settings.web_login_path).
+DEFAULT_LOGIN_PATH = "/auth_login"
+# Paths the login page may never take over: they are either real endpoints or
+# reserved prefixes whose routing/auth rules would silently change meaning.
+_RESERVED_LOGIN_PATHS = frozenset(
+    {"/", "/logout", "/healthz", "/favicon.ico", "/logo.png", "/oduflow-connect"}
+)
+_RESERVED_LOGIN_PREFIXES = ("/api/", "/static/")
+_LOGIN_PATH_RE = re.compile(r"^(/[A-Za-z0-9._~-]+)+/?$")
+
+
+def normalize_trusted_proxies(value: object) -> tuple[str, ...]:
+    """Validate ``[server].trusted_proxies`` into a tuple of IPs/CIDRs.
+
+    Every entry must parse as an IP address or network. A wildcard is refused
+    outright: trusting every peer would let any direct client to the backend
+    port spoof its address and walk past the login throttle.
+    """
+    import ipaddress
+
+    if value in (None, "", []):
+        return ()
+    if isinstance(value, str):
+        raise ValueError(
+            "[server] trusted_proxies must be a list of IPs/CIDRs "
+            f'(e.g. ["10.0.0.0/24"]), got a string {value!r}'
+        )
+    if not isinstance(value, (list, tuple)):
+        raise ValueError(f"[server] trusted_proxies must be a list, got {value!r}")
+    entries: list[str] = []
+    for raw in value:
+        entry = str(raw).strip()
+        if entry in ("*", "0.0.0.0/0", "::/0"):
+            raise ValueError(
+                f"[server] trusted_proxies refuses the wildcard {entry!r}: trusting "
+                "every peer lets any client spoof X-Forwarded-For and bypass the "
+                "login throttle. List the proxy addresses explicitly."
+            )
+        try:
+            if "/" in entry:
+                ipaddress.ip_network(entry, strict=False)
+            else:
+                ipaddress.ip_address(entry)
+        except ValueError as exc:
+            raise ValueError(
+                f"[server] trusted_proxies entry {entry!r} is not a valid IP "
+                f"address or CIDR network: {exc}"
+            ) from exc
+        entries.append(entry)
+    return tuple(entries)
+
+
+def normalize_login_path(value: str) -> str:
+    """Validate and normalize a configured dashboard login path.
+
+    Must be a single absolute URL path with no query, fragment, whitespace or
+    empty segments, and must not collide with an existing route or prefix.
+    """
+    path = str(value).strip()
+    if not path:
+        return DEFAULT_LOGIN_PATH
+    if not path.startswith("/"):
+        raise ValueError(f"[server] login_path must start with '/', got {path!r}")
+    # Restrictive on purpose: no query/fragment/whitespace, and no character
+    # that would need escaping when the path is interpolated into the login
+    # form action or a JS string literal in the dashboard template.
+    if not _LOGIN_PATH_RE.match(path):
+        raise ValueError(
+            "[server] login_path must be a bare URL path of [A-Za-z0-9._~-] "
+            f"segments (no query, fragment, or whitespace), got {path!r}"
+        )
+    path = path.rstrip("/") or "/"
+    if "//" in path or any(seg in (".", "..") for seg in path.split("/")):
+        raise ValueError(
+            f"[server] login_path has empty or relative segments: {path!r}"
+        )
+    if path in _RESERVED_LOGIN_PATHS or path.startswith(_RESERVED_LOGIN_PREFIXES):
+        raise ValueError(
+            f"[server] login_path {path!r} collides with a reserved Oduflow route."
+        )
+    return path
+
 
 @dataclass(frozen=True)
 class BackupSettings:
@@ -190,6 +272,23 @@ class Settings:
     # default so /mcp is never served unauthenticated by accident (#37); set
     # true only when fronting Oduflow with your own auth proxy.
     allow_insecure_http: bool = False
+    # URL path of the dashboard sign-in page. Deliberately NOT "/login": the
+    # default keeps commodity scanners (which hammer /login, /admin, /wp-login)
+    # off the endpoint, which cuts log noise. It is NOT a security control —
+    # authentication and the login throttle are (see web_ui._LoginRateLimiter).
+    # Configured as [server].login_path.
+    web_login_path: str = DEFAULT_LOGIN_PATH
+    # Reverse proxies (IPs or CIDRs) whose X-Forwarded-For may be believed.
+    # Empty (default) = trust nobody: the login throttle keys off the raw TCP
+    # peer, so a client cannot rotate its apparent address by sending a header.
+    # Set this only for a proxy you actually run in front of Oduflow; a wildcard
+    # is rejected, and loopback gets no implicit grant (a local process is not
+    # a proxy). In traefik mode Oduflow already trusts its own Traefik
+    # container network automatically — this is for anything additional
+    # (Cloudflare tunnel, nginx, a load balancer) and for Docker Desktop, which
+    # NATs container->host traffic to 127.0.0.1. Configured as
+    # [server].trusted_proxies.
+    trusted_proxies: tuple[str, ...] = ()
 
     # Routing
     routing_mode: str = "port"
@@ -337,6 +436,12 @@ class Settings:
 
         if self.routing_mode not in ("port", "traefik"):
             raise ValueError("routing_mode must be 'port' or 'traefik'")
+
+        # Also validated at parse time; re-checked here so programmatically
+        # constructed Settings cannot mount the login page on a reserved path
+        # or declare a bogus/wildcard trusted proxy.
+        normalize_login_path(self.web_login_path)
+        normalize_trusted_proxies(list(self.trusted_proxies))
 
         if self.routing_mode == "traefik" and self.routing_tls:
             if not self.acme_email:
@@ -579,6 +684,10 @@ class Settings:
             disable_telemetry=bool(server.get("disable_telemetry", False)),
             allow_local_path=bool(server.get("allow_local_path", True)),
             allow_insecure_http=bool(server.get("allow_insecure_http", False)),
+            web_login_path=normalize_login_path(
+                str(server.get("login_path", DEFAULT_LOGIN_PATH))
+            ),
+            trusted_proxies=normalize_trusted_proxies(server.get("trusted_proxies")),
             routing_mode=routing_mode,
             acme_email=str(routing.get("acme_email", "")).strip(),
             routing_tls=bool(routing.get("tls", True)),

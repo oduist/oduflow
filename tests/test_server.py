@@ -1114,7 +1114,9 @@ class TestHttpFailClosed:
 
     def test_port_mode_does_not_trust_forwarded_ips(self):
         # In port mode the TCP peer is the real client; trusting X-Forwarded-For
-        # would let it spoof its IP, so uvicorn keeps the default trust list.
+        # would let it spoof its IP. The trust list is an explicitly empty list,
+        # never None — None would hand uvicorn back to its own default
+        # (FORWARDED_ALLOW_IPS from the environment, else 127.0.0.1).
         from oduflow import server
 
         settings = Settings(
@@ -1134,7 +1136,7 @@ class TestHttpFailClosed:
             server._start_http()
             _, kwargs = mock_uvicorn.call_args
             assert kwargs["proxy_headers"] is True
-            assert kwargs["forwarded_allow_ips"] is None
+            assert kwargs["forwarded_allow_ips"] == []
 
     def test_traefik_mode_trusts_forwarded_ips(self):
         # Behind Traefik the peer is always the proxy, so uvicorn must read the
@@ -1195,8 +1197,11 @@ class TestHttpFailClosed:
         with patch("oduflow.docker_ops.client.get_client", return_value=client):
             trusted = server._traefik_forwarded_allow_ips(settings)
 
-        assert trusted == ["127.0.0.1", "172.18.0.0/16", "::1", "fd00::/64"]
+        # Traefik's own network CIDRs only: loopback is not granted implicitly
+        # (a local process on the host is not a proxy) and "*" never appears.
+        assert trusted == ["172.18.0.0/16", "fd00::/64"]
         assert "*" not in trusted
+        assert "127.0.0.1" not in trusted
 
     def test_traefik_proxy_trust_fails_closed_without_network(self):
         from oduflow import server

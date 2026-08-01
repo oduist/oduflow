@@ -86,7 +86,24 @@ matured:
    a proper **`/login` page and `/logout`** (`#54`): unauthenticated page loads
    redirect to `/login`, `/api/*` returns `401 JSON`, WebSocket handshakes close
    with `1008`. **Basic auth is retained for API/CLI clients** — so scripts keep
-   working while humans get a real login. This is the current model.
+   working while humans get a real login.
+4. **Throttled, relocated sign-in.** Two hardening passes on that form. First
+   (`#56`) a sliding-window throttle on failed logins; it now runs in two
+   dimensions — per client IP and one deployment-wide backstop — answering
+   `429` with `Retry-After` and the same generic body every other failure
+   returns, so nothing enumerable leaks. `X-Forwarded-For` counts only when the
+   immediate peer is a trusted proxy (Traefik's own container network, plus
+   `[server].trusted_proxies`; wildcards refused, loopback not implicit,
+   `FORWARDED_ALLOW_IPS` not inherited — the trust list handed to Uvicorn is
+   always explicit, empty included), resolved identically by Uvicorn's
+   `proxy_headers` layer and by the throttle so the two never disagree —
+   otherwise any client could mint a fresh bucket per request.
+   Second, the page moved off `/login` to a configurable
+   `[server].login_path` (default `/auth_login`). That is **log-noise
+   reduction, not a control** — scanners hammer the standard paths — so no
+   redirect or alias was left behind: `/login`, like every unknown path, now
+   returns a plain `404` instead of the previous blanket redirect to the login
+   page. This is the current model.
 
 ## Consequences
 

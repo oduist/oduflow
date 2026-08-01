@@ -38,7 +38,9 @@ def test_is_cross_origin_rejects_foreign_origin():
 
 
 def test_is_cross_origin_referer_fallback():
-    assert _is_cross_origin(_headers(host="h", referer="https://evil.example/x")) is True
+    assert (
+        _is_cross_origin(_headers(host="h", referer="https://evil.example/x")) is True
+    )
     assert _is_cross_origin(_headers(host="h", referer="https://h/dash")) is False
 
 
