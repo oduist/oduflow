@@ -283,6 +283,7 @@ After `git pull --rebase`, Oduflow compares `HEAD` before and after, then classi
 | `*.py` with `fields.*` changes | Field definitions added/removed/modified | **Upgrade** the module |
 | `*.py` (no field changes) | Business logic change | **Restart** the container |
 | `security/*.xml` | Access control or record rules | **Upgrade** the module |
+| `i18n/*.po` | Translation terms, loaded into the database on upgrade | **Upgrade** the module |
 | `*.xml` (not in security/) | Views, actions, data | **Refresh** (hot-reloaded via `--dev=xml`) |
 | `*.js` | Frontend assets | **Refresh** (hot-reloaded via `--dev=xml`) |
 
