@@ -167,6 +167,16 @@ def _is_dep_file(file_path: str) -> bool:
     return file_path.replace(os.sep, "/") in DEP_FILE_PATHS
 
 
+def _is_translation_file(file_path: str) -> bool:
+    """Return True for a translation catalog Odoo loads into the database.
+
+    Only ``.po`` files count: Odoo loads them on module install/upgrade, so a
+    changed catalog needs an upgrade to reach the database. A ``.pot`` is the
+    translator template and is never loaded, so it is not upgrade-worthy.
+    """
+    return os.path.splitext(file_path)[1].lower() == ".po"
+
+
 def classify_changes(
     changed_files: list[str], repo_path: str, base_ref: str = "HEAD~1"
 ) -> dict[str, Any]:
@@ -184,6 +194,7 @@ def classify_changes(
                 "xml_security": [...],   # xml in security/
                 "manifest_upgrade": [...], # modules needing upgrade due to manifest
                 "js_changed": [...],
+                "i18n_changed": [...],   # .po catalogs (module upgrade)
                 "restart_required": [...],
                 "deps_changed": [...],   # dependency descriptors (requirements/apt)
             }
@@ -204,6 +215,7 @@ def classify_changes(
     xml_hot = []
     xml_security = []
     js_changed = []
+    i18n_changed: list[str] = []
     restart_required = []
     deps_changed: list[str] = []
     modules_to_upgrade: set[str] = set()
@@ -289,6 +301,13 @@ def classify_changes(
             _trace("  file=%s ext=.js module=%s -> hot-reload JS", f, module)
             continue
 
+        if _is_translation_file(f) and module:
+            i18n_changed.append(f)
+            if module not in modules_to_install:
+                modules_to_upgrade.add(module)
+            _trace("  file=%s ext=.po module=%s -> translations, UPGRADE", f, module)
+            continue
+
         _trace("  file=%s ext=%s module=%s -> ignored", f, ext, module)
 
     modules_to_upgrade -= modules_to_install
@@ -300,6 +319,7 @@ def classify_changes(
         "manifest_upgrade": sorted(modules_to_upgrade),
         "manifest_install": sorted(modules_to_install),
         "js_changed": js_changed,
+        "i18n_changed": i18n_changed,
         "restart_required": restart_required,
         "deps_changed": deps_changed,
     }
@@ -417,6 +437,7 @@ def shallow_classify(changed_files: list[str], repo_path: str = "") -> dict[str,
     xml_hot: list[str] = []
     xml_security: list[str] = []
     js_changed: list[str] = []
+    i18n_changed: list[str] = []
     restart_required: list[str] = []
     deps_changed: list[str] = []
     modules_to_upgrade: set[str] = set()
@@ -446,6 +467,10 @@ def shallow_classify(changed_files: list[str], repo_path: str = "") -> dict[str,
             continue
         if ext == ".js":
             js_changed.append(f)
+            continue
+        if _is_translation_file(f) and module:
+            i18n_changed.append(f)
+            modules_to_upgrade.add(module)
 
     details = {
         "py_changed": py_changed,
@@ -454,6 +479,7 @@ def shallow_classify(changed_files: list[str], repo_path: str = "") -> dict[str,
         "manifest_upgrade": sorted(modules_to_upgrade),
         "manifest_install": [],
         "js_changed": js_changed,
+        "i18n_changed": i18n_changed,
         "restart_required": restart_required,
         "deps_changed": deps_changed,
     }
@@ -503,6 +529,7 @@ _DETAIL_LIST_KEYS = (
     "manifest_upgrade",
     "manifest_install",
     "js_changed",
+    "i18n_changed",
 )
 
 
@@ -573,9 +600,9 @@ def guardrail_warnings(
         )
     for m in sorted(rec_upgrade - requested):
         warnings.append(
-            f"Module '{m}' has data/schema changes (manifest, security/data XML, or a "
-            f"changed field) — consider upgrade='{m}' (-u); a restart won't load "
-            "them into the database."
+            f"Module '{m}' has data/schema changes (manifest, security/data XML, "
+            f"translations, or a changed field) — consider upgrade='{m}' (-u); a "
+            "restart won't load them into the database."
         )
     if recommended.get("action") == "restart" and not do_restart and not requested:
         warnings.append(

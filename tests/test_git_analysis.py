@@ -9,6 +9,7 @@ from oduflow.git_analysis import (
     _is_security_path,
     _is_data_path,
     _is_dep_file,
+    _is_translation_file,
     _extract_field_lines,
     _extract_view_tag_attrs,
 )
@@ -67,6 +68,21 @@ class TestIsDepFile:
     def test_root_apt_packages_is_not_a_dep_file(self):
         # apt_packages.txt is only read from .oduflow/, never the repo root.
         assert _is_dep_file("apt_packages.txt") is False
+
+
+class TestIsTranslationFile:
+    def test_po_catalog(self):
+        assert _is_translation_file("sale/i18n/ru.po") is True
+
+    def test_uppercase_extension(self):
+        assert _is_translation_file("sale/i18n/RU.PO") is True
+
+    def test_pot_template_is_not_loaded(self):
+        # .pot is the translator template; Odoo never loads it into the DB.
+        assert _is_translation_file("sale/i18n/sale.pot") is False
+
+    def test_other_file(self):
+        assert _is_translation_file("sale/views/sale_order.xml") is False
 
 
 class TestClassifyChanges:
@@ -177,6 +193,52 @@ class TestClassifyChanges:
         result = classify_changes(files, "/tmp")
         assert result["action"] == "upgrade"
         assert "connect_elevenlabs" in result["modules_to_upgrade"]
+
+    def test_po_triggers_upgrade(self):
+        # Translations only reach the database through a module upgrade.
+        files = ["sale/i18n/ru.po"]
+        result = classify_changes(files, "/tmp")
+        assert result["action"] == "upgrade"
+        assert result["modules_to_upgrade"] == ["sale"]
+        assert result["details"]["i18n_changed"] == ["sale/i18n/ru.po"]
+
+    def test_po_beats_hot_reload_xml(self):
+        files = ["sale/views/sale_order.xml", "sale/i18n/ru.po"]
+        result = classify_changes(files, "/tmp")
+        assert result["action"] == "upgrade"
+        assert result["modules_to_upgrade"] == ["sale"]
+        assert result["details"]["xml_hot"] == ["sale/views/sale_order.xml"]
+
+    def test_pot_only_stays_refresh(self):
+        files = ["sale/views/sale_order.xml", "sale/i18n/sale.pot"]
+        result = classify_changes(files, "/tmp")
+        assert result["action"] == "refresh"
+        assert result["modules_to_upgrade"] == []
+        assert result["details"]["i18n_changed"] == []
+
+    def test_po_in_new_module_stays_install(self, tmp_path):
+        module_dir = tmp_path / "addons_veles" / "customer_code"
+        (module_dir / "i18n").mkdir(parents=True)
+        (module_dir / "__manifest__.py").write_text(
+            "{'name': 'Customer Code', 'version': '17.0.1.0.0', 'data': []}"
+        )
+        (module_dir / "i18n" / "ru.po").write_text('msgid ""\nmsgstr ""\n')
+
+        import subprocess
+        from unittest.mock import patch
+
+        def mock_subprocess_run(cmd, **kwargs):
+            raise subprocess.CalledProcessError(128, cmd)
+
+        with patch("subprocess.run", side_effect=mock_subprocess_run):
+            files = [
+                "addons_veles/customer_code/__manifest__.py",
+                "addons_veles/customer_code/i18n/ru.po",
+            ]
+            result = classify_changes(files, str(tmp_path))
+            assert result["action"] == "install"
+            assert result["modules_to_install"] == ["customer_code"]
+            assert result["modules_to_upgrade"] == []
 
     def test_js_only(self):
         files = ["web/static/src/js/app.js"]
@@ -639,6 +701,18 @@ class TestShallowClassify:
     def test_only_xml_still_refresh(self):
         result = shallow_classify(["sale/views/sale_order.xml"], "/tmp")
         assert result["action"] == "refresh"
+
+    def test_po_triggers_upgrade(self):
+        result = shallow_classify(["sale/i18n/ru.po"], "/tmp")
+        assert result["action"] == "upgrade"
+        assert result["modules_to_upgrade"] == ["sale"]
+        assert result["details"]["i18n_changed"] == ["sale/i18n/ru.po"]
+
+    def test_pot_only_stays_refresh(self):
+        files = ["sale/views/sale_order.xml", "sale/i18n/sale.pot"]
+        result = shallow_classify(files, "/tmp")
+        assert result["action"] == "refresh"
+        assert result["modules_to_upgrade"] == []
 
 
 class TestMergeRecommendations:

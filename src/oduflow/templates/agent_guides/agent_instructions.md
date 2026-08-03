@@ -16,7 +16,7 @@ Before editing, identify how the environment receives code:
 - **`repo_url` mode:** Oduflow owns a managed clone. Edit locally, commit, push, then call `pull_and_apply` so Oduflow can pull the pushed commits.
 - **`local_path` live-mount mode:** Oduflow bind-mounts a local folder. Edit files directly in that folder; no push is required. Git commits are optional and are not used by Oduflow to decide what was applied.
 
-In live-mount mode, you as the agent must track the intent of your own edits. If you add/change fields, models, `_inherit`/`_name`, manifest `data`/`depends`, security/data XML, `ir.cron`, mail templates, or anything loaded into the database, call `pull_and_apply(..., upgrade="module")`. If you add a new module, call `install="module"`. Use `restart=True` only for Python logic changes that do not require registry/schema/data updates.
+In live-mount mode, you as the agent must track the intent of your own edits. If you add/change fields, models, `_inherit`/`_name`, manifest `data`/`depends`, security/data XML, `ir.cron`, mail templates, `i18n/*.po` translations, or anything loaded into the database, call `pull_and_apply(..., upgrade="module")`. If you add a new module, call `install="module"`. Use `restart=True` only for Python logic changes that do not require registry/schema/data updates.
 
 ---
 
@@ -314,7 +314,7 @@ When Oduflow runs on the same machine as the code, skip the GitHub round-trip en
 Notes:
 - `local_path` is controlled by `[server].allow_local_path` (default: `true`). Set it to `false` to disable live-mounts.
 - Live-mount change detection is snapshot-based and independent of Git. Oduflow records which local file state was last successfully applied and compares later calls against that snapshot.
-- In live-mount mode, you as the agent must track the intent of your own edits. If you add/change fields, models, `_inherit`/`_name`, manifest `data`/`depends`, security/data XML, `ir.cron`, mail templates, or anything loaded into the database, call `pull_and_apply(..., upgrade="module")`. If you add a new module, call `install="module"`. Use `restart=True` only for Python logic changes that do not require registry/schema/data updates.
+- In live-mount mode, you as the agent must track the intent of your own edits. If you add/change fields, models, `_inherit`/`_name`, manifest `data`/`depends`, security/data XML, `ir.cron`, mail templates, `i18n/*.po` translations, or anything loaded into the database, call `pull_and_apply(..., upgrade="module")`. If you add a new module, call `install="module"`. Use `restart=True` only for Python logic changes that do not require registry/schema/data updates.
 - Git is optional in live-mount mode. Commit whenever you want for your own workflow; Oduflow does not require commits, create commits, or read Git state to apply local changes.
 - With `repo_url` mode, use the normal remote workflow: edit locally, commit, push, then call `pull_and_apply` so the managed clone can pull the pushed commits.
 

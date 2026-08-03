@@ -970,7 +970,7 @@ def get_agent_instructions(ctx: Context | None = None) -> str:
                 "Use the local live-mount workflow for these environments:\n"
                 "1. Edit files directly in the mounted local folder; no git push is required.\n"
                 "2. Call `pull_and_apply` after edits. Prefer explicit actions when you authored the changes.\n"
-                '3. If you add/change fields, models, `_inherit`/`_name`, manifest `data`/`depends`, security/data XML, `ir.cron`, mail templates, or anything loaded into the database, call `pull_and_apply(..., upgrade="module")`.\n'
+                '3. If you add/change fields, models, `_inherit`/`_name`, manifest `data`/`depends`, security/data XML, `ir.cron`, mail templates, `i18n/*.po` translations, or anything loaded into the database, call `pull_and_apply(..., upgrade="module")`.\n'
                 '4. If you add a new module, call `pull_and_apply(..., install="module")`.\n'
                 "5. Use `restart=True` only for Python logic changes that do not require registry/schema/data updates.\n"
                 "6. Git commits are optional in live-mount mode and are not used by Oduflow to detect applied changes.\n\n"
