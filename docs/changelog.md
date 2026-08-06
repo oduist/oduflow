@@ -1,5 +1,21 @@
 # Changelog
 
+## v1.68.1
+
+### Bug Fixes
+
+- **Translation changes now reach the database** — a pull that only touched
+  `i18n/*.po` was classified as a plain refresh (or restart), so the new terms
+  were never loaded: translation catalogs only enter the database through a
+  module install or upgrade. `classify_changes`/`shallow_classify` now classify a
+  changed `.po` as an upgrade of the module that owns it, reported in the new
+  `details["i18n_changed"]` list and merged across the main repository and the
+  extra-addon worktrees. `.pot` templates stay ignored (Odoo never loads them),
+  and a `.po` inside a module that is new in the same push keeps the stronger
+  install action. The guardrail hint and the live-mount agent instructions —
+  where the agent picks the action itself — now mention `i18n/*.po` as well.
+  (#164)
+
 ## v1.68.0
 
 ### Features
