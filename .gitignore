@@ -71,3 +71,7 @@ uv.lock
 run.sh
 oduflow_data_*/
 .vscode/
+
+# mutmut mutation testing workspace + result cache
+mutants/
+.mutmut-cache

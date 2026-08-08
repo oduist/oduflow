@@ -118,3 +118,30 @@ class TestGuardrailWarnings:
             "modules_to_upgrade": [],
         }
         assert guardrail_warnings(rec, [], ["sale"], False) == []
+
+    def test_explicit_restart_silences_the_restart_warning(self):
+        rec = {
+            "action": "restart",
+            "modules_to_install": [],
+            "modules_to_upgrade": [],
+        }
+        assert guardrail_warnings(rec, [], [], True) == []
+
+    def test_an_install_implies_a_restart(self):
+        # Installing or upgrading a module restarts the container anyway, so a
+        # recommended restart that is already covered must not warn.
+        rec = {
+            "action": "restart",
+            "modules_to_install": [],
+            "modules_to_upgrade": [],
+        }
+        assert guardrail_warnings(rec, ["sale"], [], False) == []
+        assert guardrail_warnings(rec, [], ["sale"], False) == []
+
+    def test_non_restart_recommendation_never_warns_about_restart(self):
+        rec = {
+            "action": "refresh",
+            "modules_to_install": [],
+            "modules_to_upgrade": [],
+        }
+        assert guardrail_warnings(rec, [], [], False) == []
