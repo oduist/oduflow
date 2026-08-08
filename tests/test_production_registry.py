@@ -110,3 +110,58 @@ class TestRobustness:
         # State on disk is valid JSON with all records.
         with open(reg.registry_path(team)) as f:
             assert len(json.load(f)["productions"]) == 10
+
+
+class TestStateShape:
+    def test_a_fresh_registry_declares_schema_version_1(self, team):
+        # The version gates future migrations; a wrong value would make an
+        # upgrade skip or re-run them.
+        reg.create_production(team, "erp", {})
+
+        with open(reg.registry_path(team)) as f:
+            assert json.load(f)["version"] == 1
+
+    def test_a_legacy_registry_without_a_version_is_stamped_as_1(self, team):
+        path = reg.registry_path(team)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as f:
+            json.dump({"productions": {}}, f)
+
+        assert reg._load_state(path)["version"] == 1
+
+    def test_the_webhook_secret_is_43_url_safe_chars(self, team):
+        # token_urlsafe(32) -> 43 chars; the value is a shared HMAC secret, so
+        # its entropy is worth pinning.
+        reg.create_production(team, "erp", {})
+
+        secret = reg.get_webhook_secret(team)
+        assert len(secret) == 43
+
+    def test_a_registry_missing_the_productions_map_is_rejected(self, team):
+        # Both halves of the shape check matter: a dict without "productions"
+        # must not be accepted and then written back as a valid registry.
+        path = reg.registry_path(team)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as f:
+            json.dump({"version": 1, "webhook_secret": "s"}, f)
+
+        with pytest.raises(RuntimeError, match="Malformed"):
+            reg._load_state(path)
+
+    def test_a_non_dict_registry_is_rejected(self, team):
+        path = reg.registry_path(team)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as f:
+            json.dump(["not", "a", "registry"], f)
+
+        with pytest.raises(RuntimeError, match="Malformed"):
+            reg._load_state(path)
+
+    def test_a_productions_value_of_the_wrong_type_is_rejected(self, team):
+        path = reg.registry_path(team)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as f:
+            json.dump({"version": 1, "productions": []}, f)
+
+        with pytest.raises(RuntimeError, match="Malformed"):
+            reg._load_state(path)

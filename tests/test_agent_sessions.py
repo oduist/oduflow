@@ -311,3 +311,43 @@ def test_delete_environment_clears_chat_sessions(tmp_path, monkeypatch):
     assert agent_sessions.get_session(team, "feature/x", "claude") is None
     assert agent_sessions.get_session(team, "feature/x", "codex") is None
     assert agent_sessions.get_session(team, "other", "claude") == "keep-me"
+
+
+def _normalize_history(entries):
+    state = agent_sessions._normalize({"current": None, "history": entries})
+    return [e["session_id"] for e in (state or {}).get("history", [])]
+
+
+def test_history_entries_must_be_dicts_with_a_session_id():
+    # Both halves of the guard matter: a bare string entry has no .get, and a
+    # dict without session_id would land in history as a KeyError waiting to
+    # happen.
+    assert _normalize_history(
+        [
+            {"session_id": "keep"},
+            "a bare string",
+            {"title": "no id"},
+            {"session_id": ""},
+            None,
+            {"session_id": "keep2"},
+        ]
+    ) == ["keep", "keep2"]
+
+
+def test_duplicate_session_ids_are_collapsed():
+    assert _normalize_history(
+        [{"session_id": "a"}, {"session_id": "a"}, {"session_id": "b"}]
+    ) == ["a", "b"]
+
+
+def test_a_non_list_history_yields_no_entries():
+    assert _normalize_history("not a list") == []
+
+
+def test_a_non_dict_non_str_value_normalizes_to_nothing():
+    assert agent_sessions._normalize(42) is None
+    assert agent_sessions._normalize(None) is None
+
+
+def test_an_empty_legacy_string_normalizes_to_nothing():
+    assert agent_sessions._normalize("") is None

@@ -49,6 +49,11 @@ def _load_registry(registry_path: str) -> dict[str, int]:
     try:
         with open(registry_path) as f:
             data = json.load(f)
+        if not isinstance(data, dict):
+            # Valid JSON of the wrong shape (a truncated write leaving `null`,
+            # a hand-edit) would raise AttributeError past the handlers below.
+            logger.warning("Ignoring malformed port registry %s", registry_path)
+            return {}
         return {k: int(v) for k, v in data.items()}
     except (json.JSONDecodeError, ValueError, OSError) as e:
         logger.warning("Could not load port registry %s: %s", registry_path, e)

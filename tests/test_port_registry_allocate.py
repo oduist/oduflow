@@ -130,6 +130,18 @@ class TestCorruptRegistry:
 
         assert allocate_port(path, "main", 50_000, 50_100) == 50_000
 
+    @pytest.mark.parametrize("doc", ["null", "[1, 2]", '"a string"'])
+    def test_a_json_document_of_the_wrong_shape_is_treated_as_empty(
+        self, tmp_path, doc
+    ):
+        # Valid JSON of the wrong shape used to raise AttributeError past the
+        # error handling and abort environment creation.
+        path = _path(tmp_path)
+        with open(path, "w") as f:
+            f.write(doc)
+
+        assert allocate_port(path, "main", 50_000, 50_100) == 50_000
+
     def test_registry_is_written_as_readable_json(self, tmp_path):
         path = _path(tmp_path)
         allocate_port(path, "main", 50_000, 50_100)
