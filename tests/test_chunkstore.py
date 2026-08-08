@@ -434,3 +434,71 @@ class TestPruneKeepRevisions:
     def test_prune_requires_a_policy(self, small_config_storage):
         with pytest.raises(ValueError, match="keep"):
             chunkstore.prune(small_config_storage)
+
+
+class TestCountingStorage:
+    """The dedup tests' instrument: if its counters lie, every "how many PUTs
+    did this incremental backup do?" assertion silently passes."""
+
+    def _counting(self, tmp_path):
+        return CountingStorage(LocalStorage(str(tmp_path / "store")))
+
+    def test_every_operation_is_counted_once(self, tmp_path):
+        storage = self._counting(tmp_path)
+
+        storage.put("k", b"v")
+        storage.exists("k")
+        storage.get("k")
+        storage.list("")
+        storage.rename("k", "k2")
+        storage.delete("k2")
+
+        assert storage.counts == {
+            "exists": 1,
+            "get": 1,
+            "put": 1,
+            "list": 1,
+            "rename": 1,
+            "delete": 1,
+        }
+
+    def test_counters_start_at_zero(self, tmp_path):
+        assert set(self._counting(tmp_path).counts.values()) == {0}
+
+    def test_repeated_calls_accumulate(self, tmp_path):
+        storage = self._counting(tmp_path)
+        storage.put("a", b"1")
+        storage.put("b", b"2")
+
+        assert storage.counts["put"] == 2
+
+    def test_every_call_is_delegated_to_the_inner_storage(self, tmp_path):
+        storage = self._counting(tmp_path)
+
+        storage.put("k", b"payload")
+
+        assert storage.exists("k") is True
+        assert storage.get("k") == b"payload"
+        assert storage.list("") == ["k"]
+
+    def test_rename_moves_the_object_in_the_inner_storage(self, tmp_path):
+        storage = self._counting(tmp_path)
+        storage.put("old", b"payload")
+
+        storage.rename("old", "new")
+
+        assert storage.inner.exists("new") is True
+        assert storage.inner.exists("old") is False
+
+    def test_delete_removes_from_the_inner_storage(self, tmp_path):
+        storage = self._counting(tmp_path)
+        storage.put("k", b"v")
+
+        storage.delete("k")
+
+        assert storage.inner.exists("k") is False
+
+    def test_exists_reports_the_inner_answer(self, tmp_path):
+        storage = self._counting(tmp_path)
+
+        assert storage.exists("absent") is False

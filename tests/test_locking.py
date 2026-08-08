@@ -5,6 +5,10 @@ reaches for restarts and recreations; the message therefore names the operation
 that holds the lock and how long it has held it.
 """
 
+from __future__ import annotations
+
+import threading
+
 import pytest
 
 from oduflow.errors import BusyError
@@ -94,3 +98,139 @@ class TestSystemLockDiagnostics:
         assert "init_system" in str(exc.value)
         locks.release_system()
         locks.acquire_system()  # released cleanly
+
+
+class TestEnvLocks:
+    def test_a_second_acquire_of_the_same_env_is_busy(self):
+        locks = LockManager()
+        locks.acquire_env("main")
+
+        with pytest.raises(BusyError):
+            locks.acquire_env("main")
+
+    def test_different_environments_do_not_contend(self):
+        locks = LockManager()
+        locks.acquire_env("main")
+
+        locks.acquire_env("other")  # must not raise
+
+    def test_release_makes_the_env_available_again(self):
+        locks = LockManager()
+        locks.acquire_env("main")
+        locks.release_env("main")
+
+        locks.acquire_env("main")  # must not raise
+
+    def test_releasing_an_unheld_env_is_a_no_op(self):
+        LockManager().release_env("never-locked")  # must not raise
+
+    def test_a_double_release_is_a_no_op(self):
+        locks = LockManager()
+        locks.acquire_env("main")
+        locks.release_env("main")
+
+        locks.release_env("main")  # must not raise
+
+    def test_blocking_acquire_succeeds_when_free(self):
+        assert LockManager().acquire_env_blocking("main", 0.1) is True
+
+    def test_blocking_acquire_times_out_when_held(self):
+        locks = LockManager()
+        locks.acquire_env_blocking("main", 0.1)
+
+        assert locks.acquire_env_blocking("main", 0.05) is False
+
+    def test_blocking_acquire_waits_for_a_release(self):
+        locks = LockManager()
+        locks.acquire_env_blocking("main", 0.1)
+        threading.Timer(0.05, lambda: locks.release_env("main")).start()
+
+        assert locks.acquire_env_blocking("main", 5) is True
+        locks.release_env("main")
+
+
+class TestTeamLocks:
+    def test_a_team_operation_blocks_that_team_s_environments(self):
+        locks = LockManager()
+        locks.acquire_team("1")
+
+        with pytest.raises(BusyError, match="team"):
+            locks.acquire_env("main", team_id="1")
+
+    def test_another_team_is_unaffected(self):
+        locks = LockManager()
+        locks.acquire_team("1")
+
+        locks.acquire_env("main", team_id="2")  # must not raise
+
+    def test_an_env_operation_blocks_its_team_lock(self):
+        locks = LockManager()
+        locks.acquire_env("main", team_id="1")
+
+        with pytest.raises(BusyError):
+            locks.acquire_team("1")
+
+    def test_a_second_team_acquire_is_busy(self):
+        locks = LockManager()
+        locks.acquire_team("1")
+
+        with pytest.raises(BusyError):
+            locks.acquire_team("1")
+
+    def test_releasing_the_env_frees_the_team_lock(self):
+        # The team is remembered at acquire time, so release needs no team_id.
+        locks = LockManager()
+        locks.acquire_env("main", team_id="1")
+        locks.release_env("main")
+
+        locks.acquire_team("1")  # must not raise
+
+    def test_the_team_stays_blocked_while_any_of_its_envs_is_busy(self):
+        locks = LockManager()
+        locks.acquire_env("main", team_id="1")
+        locks.acquire_env("other", team_id="1")
+        locks.release_env("main")
+
+        with pytest.raises(BusyError):
+            locks.acquire_team("1")
+
+        locks.release_env("other")
+        locks.acquire_team("1")  # now free
+
+    def test_an_untagged_env_lock_does_not_block_a_team(self):
+        # Only team-scoped acquires participate in the team accounting.
+        locks = LockManager()
+        locks.acquire_env("main")
+
+        locks.acquire_team("1")  # must not raise
+
+
+class TestSystemLock:
+    def test_a_second_system_acquire_is_busy(self):
+        locks = LockManager()
+        locks.acquire_system()
+
+        with pytest.raises(BusyError, match="system-level"):
+            locks.acquire_system()
+
+    def test_release_makes_the_system_lock_available_again(self):
+        locks = LockManager()
+        locks.acquire_system()
+        locks.release_system()
+
+        locks.acquire_system()  # must not raise
+
+    def test_releasing_an_unheld_system_lock_is_a_no_op(self):
+        LockManager().release_system()  # must not raise
+
+    def test_a_double_release_is_a_no_op(self):
+        locks = LockManager()
+        locks.acquire_system()
+        locks.release_system()
+
+        locks.release_system()  # must not raise
+
+    def test_two_managers_do_not_share_state(self):
+        LockManager().acquire_system()
+
+        LockManager().acquire_system()  # must not raise
