@@ -72,6 +72,7 @@ from oduflow.naming import (
     validate_domain,
     validate_prod_name,
 )
+from oduflow.resource_plan import ResourcePlan
 from oduflow.settings import Settings, TeamSettings
 
 logger = logging.getLogger("oduflow")
@@ -157,19 +158,30 @@ def _build_prod_odoo_conf(
     name: str,
     repo_path: str,
     extra_container_paths: list[str],
+    *,
+    plan: ResourcePlan | None = None,
+    output_path: str | None = None,
 ) -> str:
     """Generate the merged production odoo.conf; return the host path."""
     from oduflow.extra_addons import generate_odoo_conf, resolve_main_addons_path
     from oduflow.pg_tune import detect_resources
     from oduflow.prod_tune import compute_odoo_worker_settings
+    from oduflow.resource_plan import build_resource_plan
 
-    res = detect_resources()
+    if plan is None:
+        res = detect_resources()
+        plan = build_resource_plan(
+            res["total_ram_mb"],
+            res["cpu_count"],
+            production_enabled=True,
+        )
     overrides = compute_odoo_worker_settings(
-        res["cpu_count"],
-        res["total_ram_mb"],
+        plan.host_cpu_count,
+        plan.host_ram_mb,
         workers_cap=settings.prod_workers_cap,
+        plan=plan,
     )
-    generated = os.path.join(_workspace(team, name), "odoo.conf")
+    generated = output_path or os.path.join(_workspace(team, name), "odoo.conf")
     generate_odoo_conf(
         _prod_base_conf_path(team, repo_path),
         generated,
@@ -178,6 +190,21 @@ def _build_prod_odoo_conf(
         overrides=overrides,
     )
     return generated
+
+
+def stage_prod_odoo_conf(
+    client: DockerClient,
+    settings: Settings,
+    team: TeamSettings,
+    name: str,
+    generated_path: str,
+) -> str | None:
+    """Copy a generated config into an existing production without restarting."""
+    container = _get_container(client, settings, team, name)
+    if container is None:
+        return None
+    _copy_file_to_container(container, generated_path, "/etc/odoo")
+    return str(container.name)
 
 
 def reapply_prod_odoo_conf(

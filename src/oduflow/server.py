@@ -4480,21 +4480,33 @@ def _copy_bundled_configs() -> None:
 
     dest = etc_dir / "postgresql.conf"
     if not dest.is_file():
-        if not _write_tuned_pg_conf(dest):
+        if not _write_tuned_pg_conf(dest, settings=settings):
             _copy_bundled_pg_conf(dest)
+    else:
+        _warn_stale_dev_pg_conf(dest, settings)
 
 
-def _write_tuned_pg_conf(dest: pathlib.Path) -> bool:
+def _write_tuned_pg_conf(
+    dest: pathlib.Path, *, settings: Settings | None = None
+) -> bool:
     """Generate a resource-tuned postgresql.conf at ``dest``. True on success."""
     try:
         from oduflow import pg_tune
+        from oduflow.resource_plan import build_resource_plan
 
+        settings = settings or _get_settings()
         res = pg_tune.detect_resources()
+        plan = build_resource_plan(
+            res["total_ram_mb"],
+            res["cpu_count"],
+            production_enabled=settings.prod_enabled,
+        )
         content = pg_tune.generate_postgresql_conf(
             res["total_ram_mb"],
             res["cpu_count"],
             source=res["source"],
             oduflow_version=_get_version(),
+            plan=plan,
         )
         dest.write_text(content, encoding="utf-8")
         logger.info(
@@ -4514,6 +4526,284 @@ def _write_tuned_pg_conf(dest: pathlib.Path) -> bool:
             exc_info=True,
         )
         return False
+
+
+def _warn_stale_dev_pg_conf(dest: pathlib.Path, settings: Settings) -> None:
+    """Warn when an auto-generated dev config no longer matches host intent."""
+    try:
+        from oduflow import pg_tune
+        from oduflow.resource_plan import (
+            build_resource_plan,
+            tune_marker,
+            tune_status,
+        )
+
+        content = dest.read_text(encoding="utf-8", errors="replace")
+        res = pg_tune.detect_resources()
+        plan = build_resource_plan(
+            res["total_ram_mb"],
+            res["cpu_count"],
+            production_enabled=settings.prod_enabled,
+        )
+        status = tune_status(content, tune_marker(plan, "dev"))
+        if status in {"stale", "legacy"}:
+            logger.warning(
+                "Auto-generated PostgreSQL config %s is %s for the current "
+                "host resource plan; run `oduflow retune-postgres` to preview "
+                "the update",
+                dest,
+                status,
+            )
+    except Exception:
+        logger.debug("Could not check PostgreSQL tuning fingerprint", exc_info=True)
+
+
+def _run_retune_postgres(
+    settings: Settings, *, apply: bool = False, force: bool = False
+) -> bool:
+    """Preview or explicitly apply the current unified host resource plan."""
+    import datetime
+    import difflib
+    import shutil
+    import tempfile
+
+    from oduflow import pg_tune, prod_tune
+    from oduflow.docker_ops.client import get_client
+    from oduflow.naming import get_repo_path, get_workspace_path, prod_env_name
+    from oduflow.resource_plan import (
+        ProfileName,
+        TuneStatus,
+        build_resource_plan,
+        describe_plan,
+        tune_marker,
+        tune_status,
+    )
+
+    res = pg_tune.detect_resources()
+    plan = build_resource_plan(
+        res["total_ram_mb"],
+        res["cpu_count"],
+        production_enabled=settings.prod_enabled,
+    )
+    version = _get_version()
+    targets: list[tuple[ProfileName, pathlib.Path, str, str]] = [
+        (
+            "dev",
+            pathlib.Path(settings.etc_dir) / "postgresql.conf",
+            pg_tune.generate_postgresql_conf(
+                res["total_ram_mb"],
+                res["cpu_count"],
+                source=res["source"],
+                oduflow_version=version,
+                plan=plan,
+            ),
+            settings.shared_db_container,
+        )
+    ]
+    if settings.prod_enabled:
+        targets.append(
+            (
+                "production",
+                pathlib.Path(settings.etc_dir) / "postgresql-prod.conf",
+                prod_tune.generate_prod_postgresql_conf(
+                    res["total_ram_mb"],
+                    res["cpu_count"],
+                    source=res["source"],
+                    oduflow_version=version,
+                    plan=plan,
+                ),
+                settings.prod_db_container,
+            )
+        )
+
+    odoo_targets: list[tuple[TeamSettings, str, pathlib.Path, str, str | None]] = []
+    odoo_errors: list[str] = []
+    if settings.prod_enabled:
+        with tempfile.TemporaryDirectory(prefix="oduflow-retune-") as tmp_dir:
+            for team in settings.teams.values():
+                for name, record in sorted(
+                    production_registry.list_productions(team).items()
+                ):
+                    env_name = prod_env_name(name)
+                    repo_path = get_repo_path(env_name, team.workspaces_dir)
+                    if not os.path.isdir(repo_path):
+                        odoo_errors.append(
+                            f"team {team.team_id}/{name}: repository checkout "
+                            f"not found at {repo_path}"
+                        )
+                        continue
+                    extra_addons = record.get("extra_addons", {})
+                    extra_names = (
+                        list(extra_addons) if isinstance(extra_addons, dict) else []
+                    )
+                    candidate_path = (
+                        pathlib.Path(tmp_dir) / team.team_id / f"{name}.conf"
+                    )
+                    candidate_path.parent.mkdir(parents=True, exist_ok=True)
+                    try:
+                        production_ops._build_prod_odoo_conf(
+                            settings,
+                            team,
+                            name,
+                            repo_path,
+                            [f"/mnt/extra-addons-{repo}" for repo in extra_names],
+                            plan=plan,
+                            output_path=str(candidate_path),
+                        )
+                    except Exception as exc:  # noqa: BLE001 - report each production
+                        odoo_errors.append(f"team {team.team_id}/{name}: {exc}")
+                        continue
+                    path = (
+                        pathlib.Path(get_workspace_path(env_name, team.workspaces_dir))
+                        / "odoo.conf"
+                    )
+                    existing = (
+                        path.read_text(encoding="utf-8", errors="replace")
+                        if path.is_file()
+                        else None
+                    )
+                    odoo_targets.append(
+                        (
+                            team,
+                            name,
+                            path,
+                            candidate_path.read_text(encoding="utf-8"),
+                            existing,
+                        )
+                    )
+
+    print("\nUnified resource plan")
+    print("=" * 70)
+    for line in describe_plan(plan):
+        print(f"  {line}")
+
+    inspected: list[
+        tuple[ProfileName, pathlib.Path, str, str, str | None, TuneStatus]
+    ] = []
+    for profile, path, candidate, container in targets:
+        existing = (
+            path.read_text(encoding="utf-8", errors="replace")
+            if path.is_file()
+            else None
+        )
+        status = tune_status(existing, tune_marker(plan, profile))
+        # A matching planner marker is authoritative. Preserve any operator
+        # edits beneath it and do not churn the informational Oduflow version
+        # in the header on every package upgrade.
+        if status == "current" and existing is not None:
+            candidate = existing
+        inspected.append((profile, path, candidate, container, existing, status))
+        print(f"\n[{profile}] {path} ({status})")
+        if existing == candidate:
+            print("  No content changes.")
+            continue
+        diff = difflib.unified_diff(
+            (existing or "").splitlines(),
+            candidate.splitlines(),
+            fromfile=str(path),
+            tofile=f"{path} (retuned)",
+            lineterm="",
+        )
+        for line in diff:
+            print(line)
+
+    for team, name, path, candidate, existing in odoo_targets:
+        status = "current" if existing == candidate else "stale"
+        print(f"\n[production Odoo {team.team_id}/{name}] {path} ({status})")
+        if existing == candidate:
+            print("  No content changes.")
+            continue
+        diff = difflib.unified_diff(
+            (existing or "").splitlines(),
+            candidate.splitlines(),
+            fromfile=str(path),
+            tofile=f"{path} (retuned)",
+            lineterm="",
+        )
+        for line in diff:
+            print(line)
+
+    if odoo_errors:
+        print("\nCould not plan production Odoo config(s):")
+        for error in odoo_errors:
+            print(f"  {error}")
+
+    changed = [item for item in inspected if item[4] != item[2]]
+    changed_odoo = [item for item in odoo_targets if item[4] != item[3]]
+    if not apply:
+        if changed or changed_odoo:
+            print("\nPreview only. Re-run with --apply to write these changes.")
+        else:
+            print("\nAll managed configs already match the plan.")
+        if not settings.prod_enabled:
+            print("Production is disabled; postgresql-prod.conf was not planned.")
+        return not odoo_errors
+
+    custom = [str(path) for _, path, _, _, _, status in changed if status == "custom"]
+    if custom and not force:
+        print("\nRefusing to overwrite custom PostgreSQL config(s):")
+        for custom_path in custom:
+            print(f"  {custom_path}")
+        print("Re-run with --apply --force only if replacing them is intentional.")
+        return False
+
+    if odoo_errors:
+        print("\nRefusing to apply an incomplete production Odoo resource plan.")
+        return False
+
+    stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    pg_restart: list[str] = []
+    odoo_restart: list[str] = []
+
+    def _backup(path: pathlib.Path) -> None:
+        backup = pathlib.Path(f"{path}.bak-{stamp}")
+        suffix = 1
+        while backup.exists():
+            backup = pathlib.Path(f"{path}.bak-{stamp}-{suffix}")
+            suffix += 1
+        shutil.copy2(path, backup)
+        print(f"Backup: {backup}")
+
+    client = get_client() if changed_odoo else None
+    for _profile, path, candidate, container, existing, _status in changed:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if existing is not None:
+            _backup(path)
+        path.write_text(candidate, encoding="utf-8")
+        print(f"Updated: {path}")
+        pg_restart.append(container)
+
+    for team, name, path, candidate, existing in changed_odoo:
+        assert client is not None
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if existing is not None:
+            _backup(path)
+        path.write_text(candidate, encoding="utf-8")
+        print(f"Updated: {path}")
+        staged_container = production_ops.stage_prod_odoo_conf(
+            client, settings, team, name, str(path)
+        )
+        if staged_container is None:
+            print(
+                f"No container for production {team.team_id}/{name}; "
+                "updated its generated config on disk only."
+            )
+        else:
+            print(f"Staged in container: {staged_container}")
+            odoo_restart.append(staged_container)
+
+    if not changed and not changed_odoo:
+        print("\nNo files changed.")
+        return True
+    if pg_restart:
+        print("\nRestart existing PostgreSQL containers to activate these settings:")
+        for container in pg_restart:
+            print(f"  docker restart {container}")
+    if odoo_restart:
+        print("\nRestart production Odoo containers to activate worker settings:")
+        for container in odoo_restart:
+            print(f"  docker restart {container}")
+    return True
 
 
 def _copy_bundled_pg_conf(dest: pathlib.Path) -> None:
@@ -5074,6 +5364,20 @@ def _run_cli() -> None:
         action="store_true",
         help="overwrite changed bundled files without prompting",
     )
+    p_retune = sub.add_parser(
+        "retune-postgres",
+        help="Preview the unified host resource plan and managed config changes",
+    )
+    p_retune.add_argument(
+        "--apply",
+        action="store_true",
+        help="Back up and write planned configs; stage production Odoo configs",
+    )
+    p_retune.add_argument(
+        "--force",
+        action="store_true",
+        help="Allow --apply to replace a custom, non-Oduflow-generated config",
+    )
 
     # --- Template commands (need --team) ---
     p_reload = sub.add_parser(
@@ -5349,6 +5653,17 @@ def _run_cli() -> None:
 
     if args.command == "upgrade":
         _run_upgrade(_settings, force=args.force)
+        return
+
+    if args.command == "retune-postgres":
+        if args.force and not args.apply:
+            parser.error("retune-postgres --force requires --apply")
+        if not _run_retune_postgres(
+            _settings,
+            apply=args.apply,
+            force=args.force,
+        ):
+            sys.exit(1)
         return
 
     if args.command == "reload-template":

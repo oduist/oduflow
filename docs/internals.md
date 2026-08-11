@@ -208,20 +208,27 @@ MCP clients receive errors as `ToolError` with a descriptive message. REST API c
 
 ## PostgreSQL Tuning
 
-At first system initialization Oduflow detects CPU/RAM from Docker (then host
-stats, with a conservative fallback) and generates `postgresql.conf`. The dev
-profile is deliberately lean for many single-user Odoo containers:
+`resource_plan.py` computes one deterministic host-wide budget from CPU/RAM
+detected from Docker (then host stats, with a conservative fallback) plus
+`[production].enabled`. The dev PostgreSQL, production PostgreSQL, and
+production Odoo renderers consume that plan rather than independently claiming
+the host. The dev profile remains deliberately lean for many single-user Odoo
+containers:
 
-- `shared_buffers` is about 10% of RAM, floored at 128 MB and capped at 1 GB.
+- In dev-only mode, `shared_buffers` is about 10% of RAM, floored at 128 MB and
+  capped at 1 GB; production mode coordinates 5% dev + 20% production targets.
 - `work_mem` is derived from the 100-connection ceiling and clamped to 4–16 MB.
 - Parallel workers and autovacuum workers scale conservatively with CPU count.
 - Planner costs assume SSD storage; statements slower than one second are logged.
 
-The generated file starts with `# KEEP`, so `oduflow upgrade` preserves it. To
-regenerate it from current resources, remove the deployed file, restart Oduflow,
-then restart the shared PostgreSQL container.
-
-Production uses a separate, independently generated profile in its dedicated
-cluster: roughly 20% of RAM for `shared_buffers` (512 MB–8 GB), a 200-connection
-ceiling, more parallelism, and WAL archiving hooks for WAL-G. See
+Production keeps its separate 200-connection profile, parallelism, and WAL-G
+archiving hooks while taking its memory/CPU inputs from the same plan. The plan
+also assigns a 45% RAM budget to production Odoo worker sizing. See
 [Production Hosting](production.md).
+
+Generated configs carry a planner-version fingerprint. Startup reports stale
+managed configs but preserves the `# KEEP` contract; `retune-postgres` is the
+explicit preview/apply boundary because several PostgreSQL settings require a
+restart and operator-authored configs must never be silently replaced. Applying
+the plan also stages regenerated worker settings in existing production Odoo
+containers, while leaving every restart under operator control.

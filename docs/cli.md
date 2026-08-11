@@ -41,7 +41,20 @@ oduflow upgrade
 
 # Refresh non-interactively (for scripts and automated deployments)
 oduflow upgrade --force
+
+# Preview the unified host resource plan and managed config diffs
+oduflow retune-postgres
+
+# Back up and write configs; stage production Odoo configs in containers
+oduflow retune-postgres --apply
 ```
+
+`retune-postgres` accounts for `[production].enabled` and does not restart
+containers. For existing productions, `--apply` also regenerates `odoo.conf`
+with the planned worker count and copies it into the container; the command
+then lists every PostgreSQL and Odoo container that should be restarted. It
+refuses to replace a custom PostgreSQL config unless `--apply --force` is
+given. See [PostgreSQL resource planning](installation.md#configuration-file-overrides).
 
 `oduflow upgrade` compares and interactively refreshes the system
 `postgresql.conf` plus each team's `odoo.conf`, agent guides, and bundled

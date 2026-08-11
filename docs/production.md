@@ -61,6 +61,15 @@ container and then its dedicated PostgreSQL container without deleting any
 container, volume, database, filestore, or registry data. Re-enabling starts
 PostgreSQL first and then starts all managed production Odoo containers.
 
+Enabling production also changes the unified host resource plan. New configs
+coordinate dev PostgreSQL, production PostgreSQL, and production Odoo workers
+instead of letting each profile size itself against the whole host. Existing
+configs are not silently replaced: after changing `enabled`, run
+`oduflow retune-postgres` to inspect the new plan, then
+`oduflow retune-postgres --apply`. The apply step also stages regenerated
+worker settings in every existing production Odoo container; restart the
+PostgreSQL and Odoo containers it lists.
+
 ## Creating a production
 
 ```text
