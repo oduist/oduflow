@@ -99,19 +99,21 @@ class TestProdPostgresConf:
         huge = _parse(prod_tune.generate_prod_postgresql_conf(128 * 1024, 32))
         assert _mb(huge["wal_buffers"]) == 64
 
-    def test_parallel_gather_switches_at_four_cpus(self):
-        # Below 4 CPUs: min(cpu, 2). From 4 up: max(cpu // 2, 2).
+    def test_parallel_gather_uses_the_production_cpu_budget(self):
+        # The unified plan gives production PostgreSQL roughly half the host
+        # CPUs, then applies the below-4 / 4-and-up parallelism formula.
         def gather(cpu):
             return _parse(
                 prod_tune.generate_prod_postgresql_conf(16384, cpu)
             )["max_parallel_workers_per_gather"]
 
         assert gather(1) == "1"
-        assert gather(2) == "2"
+        assert gather(2) == "1"
         assert gather(3) == "2"
         assert gather(4) == "2"  # max(2, 2)
-        assert gather(8) == "4"
-        assert gather(32) == "16"
+        assert gather(8) == "2"
+        assert gather(12) == "3"
+        assert gather(32) == "8"
 
     def test_parallel_maintenance_workers_are_capped_at_four(self):
         def maint(cpu):
@@ -120,8 +122,8 @@ class TestProdPostgresConf:
             )["max_parallel_maintenance_workers"]
 
         assert maint(1) == "1"
-        assert maint(4) == "2"
-        assert maint(8) == "4"
+        assert maint(4) == "1"
+        assert maint(8) == "2"
         assert maint(32) == "4"  # capped
 
     def test_autovacuum_workers_are_clamped_between_three_and_six(self):
@@ -131,14 +133,15 @@ class TestProdPostgresConf:
             )["autovacuum_max_workers"]
 
         assert workers(1) == "3"  # floor
-        assert workers(8) == "4"
-        assert workers(12) == "6"
+        assert workers(8) == "3"
+        assert workers(16) == "4"
+        assert workers(24) == "6"
         assert workers(32) == "6"  # cap
 
-    def test_worker_processes_track_cpu_count(self):
+    def test_worker_processes_track_the_production_cpu_budget(self):
         settings = _parse(prod_tune.generate_prod_postgresql_conf(16384, 8))
-        assert settings["max_worker_processes"] == "8"
-        assert settings["max_parallel_workers"] == "8"
+        assert settings["max_worker_processes"] == "4"
+        assert settings["max_parallel_workers"] == "4"
 
     def test_degenerate_resources_still_produce_a_valid_conf(self):
         # Detection can fail and report zeroes; the file must still be usable.
@@ -180,10 +183,10 @@ class TestOdooWorkerSettings:
         assert opts["workers"] == "20"
 
     def test_db_maxconn_scales_with_workers(self):
-        # 8 workers -> 2*8+3 = 19 connections.
+        # Unified plan gives this host 7 workers -> 2*7+3 = 17 connections.
         opts = prod_tune.compute_odoo_worker_settings(4, 32768)
-        assert opts["workers"] == "8"
-        assert opts["db_maxconn"] == "19"
+        assert opts["workers"] == "7"
+        assert opts["db_maxconn"] == "17"
 
     def test_db_maxconn_has_a_floor_of_16(self):
         # 2 workers -> 2*2+3 = 7, raised to the 16-connection floor.
@@ -218,5 +221,5 @@ class TestOdooWorkerSettings:
 
     def test_ram_budget_is_one_worker_per_gib_of_the_45_percent_share(self):
         # 6827 MB * 0.45 = 3072 MB -> exactly 3 GiB -> 3 workers, below both
-        # the CPU formula (17) and the cap (8).
+        # the planned-CPU formula (13) and the cap (8).
         assert prod_tune.compute_odoo_worker_settings(8, 6827)["workers"] == "3"
