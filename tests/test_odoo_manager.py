@@ -1402,6 +1402,99 @@ class TestUpdateEnvironment:
             env_ops.update_environment(TEST_SETTINGS, TEST_TEAM, "xyz")
 
 
+class TestAutoInstallReadiness:
+    def test_registry_probe_selects_target_database(self):
+        probe = env_ops._odoo_registry_probe("oduflow_1_feature")
+
+        assert probe[:2] == ["python3", "-c"]
+        assert "/web/login?" in probe[2]
+        assert "oduflow_1_feature" in probe[2]
+        assert "HTTPCookieProcessor" in probe[2]
+
+    def test_wait_retries_until_target_registry_is_ready(self):
+        container = MagicMock()
+        container.exec_run.side_effect = [
+            (1, b"not ready"),
+            docker.errors.APIError("container restarting"),
+            (0, b"ready"),
+        ]
+
+        with patch("oduflow.docker_ops.env_ops.time.sleep") as mock_sleep:
+            assert (
+                env_ops._wait_for_container_odoo_ready(container, "oduflow_1_feature")
+                is True
+            )
+
+        assert container.exec_run.call_count == 3
+        expected_probe = env_ops._odoo_registry_probe("oduflow_1_feature")
+        assert all(
+            call.args[0] == expected_probe for call in container.exec_run.call_args_list
+        )
+        assert mock_sleep.call_count == 2
+
+    def test_wait_times_out_after_last_failed_probe(self):
+        container = MagicMock()
+        container.exec_run.return_value = (1, b"not ready")
+
+        with (
+            patch(
+                "oduflow.docker_ops.env_ops.time.monotonic",
+                side_effect=[10.0, 12.0],
+            ),
+            patch("oduflow.docker_ops.env_ops.time.sleep") as mock_sleep,
+        ):
+            assert (
+                env_ops._wait_for_container_odoo_ready(
+                    container, "oduflow_1_feature", timeout=1
+                )
+                is False
+            )
+
+        container.exec_run.assert_called_once_with(
+            env_ops._odoo_registry_probe("oduflow_1_feature")
+        )
+        mock_sleep.assert_not_called()
+
+    @patch(
+        "oduflow.docker_ops.env_ops._wait_for_container_odoo_ready",
+        return_value=True,
+    )
+    def test_auto_install_waits_before_starting_second_odoo(self, mock_wait):
+        container = MagicMock()
+        container.exec_run.return_value = (0, b"installed")
+        calls = MagicMock()
+        calls.attach_mock(mock_wait, "wait")
+        calls.attach_mock(container.exec_run, "install")
+
+        result = env_ops._auto_install_modules(
+            container,
+            "oduflow_1_feature",
+            ["red_border"],
+            env_name="feature",
+        )
+
+        assert [call[0] for call in calls.mock_calls] == ["wait", "install"]
+        mock_wait.assert_called_once_with(container, "oduflow_1_feature")
+        install_cmd = container.exec_run.call_args.args[0]
+        assert "-d oduflow_1_feature -i red_border" in install_cmd
+        assert "completed successfully" in result
+
+    @patch(
+        "oduflow.docker_ops.env_ops._wait_for_container_odoo_ready",
+        return_value=False,
+    )
+    def test_auto_install_is_not_attempted_before_readiness(self, mock_wait):
+        container = MagicMock()
+
+        result = env_ops._auto_install_modules(
+            container, "oduflow_1_feature", ["red_border"]
+        )
+
+        mock_wait.assert_called_once_with(container, "oduflow_1_feature")
+        container.exec_run.assert_not_called()
+        assert "installation was not attempted" in result
+
+
 class TestDeleteEnvironment:
     @patch("oduflow.docker_ops.env_ops._drop_pg_role")
     @patch(
