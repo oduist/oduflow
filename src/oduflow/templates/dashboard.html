@@ -573,6 +573,15 @@
   .modal-sm { max-width: 460px; }
   .modal-md { max-width: 520px; }
   .modal-routes { max-width: 680px; max-height: 90vh; }
+  #template-settings-modal .modal { width: min(760px, calc(100vw - 32px)); max-height: 90vh; }
+  #template-metadata-editor {
+    min-height: 48vh;
+    resize: vertical;
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    line-height: 1.5;
+    tab-size: 2;
+  }
   /* Unified large modal size (chat / terminals) — almost fullscreen, with margins */
   .modal-terminal, .modal-chat { width: 92vw; max-width: 92vw; height: 90vh; max-height: 90vh; }
   /* --- ACP chat (chat.js) — Engineer's Console tokens only (DESIGN.md) --- */
@@ -1707,6 +1716,27 @@
           <button class="btn" onclick="closeImportOdooModal()">Close</button>
           <button class="btn-create" onclick="copyImportOdooCommand()">Copy command</button>
         </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="template-settings-modal" onclick="closeTemplateSettingsModal(event)">
+  <div class="modal">
+    <div class="modal-header">
+      <h2 id="template-settings-title">Template settings</h2>
+      <button class="modal-close" aria-label="Close template settings" onclick="closeTemplateSettingsModal()">&times;</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-error" id="template-settings-error"></div>
+      <div class="form-group">
+        <label for="template-metadata-editor">metadata.json</label>
+        <textarea id="template-metadata-editor" rows="18" spellcheck="false" autocomplete="off" aria-describedby="template-metadata-hint" disabled></textarea>
+        <div class="hint" id="template-metadata-hint">This is the complete template metadata file. Changes affect environments created from this template.</div>
+      </div>
+      <div class="form-actions">
+        <button class="btn" onclick="closeTemplateSettingsModal()">Cancel</button>
+        <button class="btn-create" id="template-settings-submit" onclick="submitTemplateSettings()" disabled>Save settings</button>
       </div>
     </div>
   </div>
@@ -3291,6 +3321,103 @@ async function submitImportOdoo() {
 
 var _renameTplName = '';
 
+var _templateSettingsName = '';
+var _templateSettingsRevision = '';
+var _templateSettingsLoadToken = 0;
+
+async function openTemplateSettingsModal(name) {
+  _templateSettingsName = name;
+  _templateSettingsRevision = '';
+  var token = ++_templateSettingsLoadToken;
+  var editor = document.getElementById('template-metadata-editor');
+  var errEl = document.getElementById('template-settings-error');
+  var btn = document.getElementById('template-settings-submit');
+  document.getElementById('template-settings-title').textContent = 'Template settings — ' + name;
+  editor.value = 'Loading metadata.json...';
+  editor.disabled = true;
+  btn.disabled = true;
+  btn.textContent = 'Save settings';
+  errEl.style.display = 'none';
+  errEl.textContent = '';
+  showModal('template-settings-modal');
+
+  try {
+    var r = await fetch(API_TEMPLATES + '/' + encodeURIComponent(name) + '/metadata');
+    var data = await r.json();
+    if (token !== _templateSettingsLoadToken) return;
+    if (data.ok) {
+      editor.value = data.content;
+      _templateSettingsRevision = data.revision;
+      editor.disabled = false;
+      btn.disabled = false;
+      editor.focus();
+    } else {
+      editor.value = '';
+      errEl.textContent = data.error || 'Failed to load template settings';
+      errEl.style.display = 'block';
+    }
+  } catch (e) {
+    if (token !== _templateSettingsLoadToken) return;
+    editor.value = '';
+    errEl.textContent = 'Connection error: ' + e.message;
+    errEl.style.display = 'block';
+  }
+}
+
+function closeTemplateSettingsModal(event) {
+  if (event && event.target !== event.currentTarget) return;
+  _templateSettingsLoadToken += 1;
+  hideModal('template-settings-modal');
+}
+
+async function submitTemplateSettings() {
+  var editor = document.getElementById('template-metadata-editor');
+  var errEl = document.getElementById('template-settings-error');
+  var btn = document.getElementById('template-settings-submit');
+  try {
+    var parsed = JSON.parse(editor.value);
+    if (!parsed || Array.isArray(parsed) || typeof parsed !== 'object') {
+      throw new Error('Template metadata must be a JSON object.');
+    }
+  } catch (e) {
+    errEl.textContent = 'Invalid JSON: ' + e.message;
+    errEl.style.display = 'block';
+    editor.focus();
+    return;
+  }
+
+  errEl.style.display = 'none';
+  btn.disabled = true;
+  btn.textContent = 'Saving...';
+  try {
+    var r = await fetch(API_TEMPLATES + '/' + encodeURIComponent(_templateSettingsName) + '/metadata', {
+      method: 'PUT',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        content: editor.value,
+        revision: _templateSettingsRevision
+      })
+    });
+    var data = await r.json();
+    if (data.ok) {
+      editor.value = data.content;
+      _templateSettingsRevision = data.revision;
+      showToast('Template "' + _templateSettingsName + '" settings saved');
+      hideModal('template-settings-modal');
+      await loadTemplates();
+    } else {
+      errEl.textContent = data.error || 'Failed to save template settings';
+      errEl.style.display = 'block';
+    }
+  } catch (e) {
+    errEl.textContent = 'Connection error: ' + e.message;
+    errEl.style.display = 'block';
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Save settings';
+  }
+}
+
 function openRenameTemplateModal(name) {
   _renameTplName = name;
   var errEl = document.getElementById('rename-tpl-error');
@@ -3423,9 +3550,14 @@ function renderTemplates(templates) {
     var fsTag = t.has_filestore
       ? '<span class="tag tag-ok" title="Filestore snapshot (attachments) is present">Filestore</span>'
       : '<span class="tag tag-missing" title="No filestore snapshot">No Filestore</span>';
-    var modeTag = t.use_overlay
-      ? '<span class="tag tag-neutral" title="Filestore cloning mode: copy-on-write via fuse-overlayfs">Overlay</span>'
-      : '<span class="tag tag-neutral" title="Filestore cloning mode: plain copy">Copy</span>';
+    var modeTag = t.metadata_valid === false
+      ? ''
+      : (t.use_overlay
+        ? '<span class="tag tag-neutral" title="Filestore cloning mode: copy-on-write via fuse-overlayfs">Overlay</span>'
+        : '<span class="tag tag-neutral" title="Filestore cloning mode: plain copy">Copy</span>');
+    var metadataTag = t.metadata_valid === false
+      ? '<span class="tag tag-missing" title="metadata.json is invalid; open Settings to repair it">Invalid metadata</span>'
+      : '';
     var sizeHtml = '';
     if (t.filestore_size_mb != null || t.dump_size_mb != null) {
       var fmtSize = function(mb) {
@@ -3448,8 +3580,9 @@ function renderTemplates(templates) {
       '<div class="tpl-head">' +
         '<span class="tpl-name">' + esc(t.template_name) + '</span>' +
         '<div class="tpl-head-right">' +
-          '<div class="tpl-meta">' + dbTag + sqlTag + fsTag + modeTag + sizeHtml + '</div>' +
+          '<div class="tpl-meta">' + dbTag + sqlTag + fsTag + modeTag + metadataTag + sizeHtml + '</div>' +
           '<button class="btn-create btn-sm" onclick="openCreateFromTemplate(\'' + escAttr(t.template_name) + '\')">+ New Env</button>' +
+          '<button class="btn btn-sm" onclick="openTemplateSettingsModal(\'' + escAttr(t.template_name) + '\')">Settings</button>' +
           '<button class="btn btn-sm" onclick="openRenameTemplateModal(\'' + escAttr(t.template_name) + '\')">Rename</button>' +
           '<button class="btn btn-delete btn-sm" onclick="doDeleteTemplate(\'' + escAttr(t.template_name) + '\')">Remove</button>' +
         '</div>' +
@@ -5219,6 +5352,7 @@ var MODAL_CLOSERS = {
   'license-modal': closeLicenseModal,
   'add-extra-repo-modal': closeAddExtraRepoModal,
   'add-credential-modal': closeAddCredentialModal,
+  'template-settings-modal': closeTemplateSettingsModal,
   'confirm-modal': cancelConfirm,
   'note-modal': closeNoteModal
 };

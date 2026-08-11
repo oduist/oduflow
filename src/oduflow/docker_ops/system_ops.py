@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextlib
 import gzip
+import hashlib
 import json
 import logging
 import os
@@ -3477,6 +3478,92 @@ def rename_template(
     }
 
 
+def get_template_metadata(team: TeamSettings, template_name: str) -> dict[str, str]:
+    """Return a template's raw metadata file and its optimistic revision.
+
+    Invalid JSON is deliberately returned unchanged so the dashboard editor can
+    be used to repair a file that was broken by an earlier filesystem edit.
+    """
+    validate_template_name(template_name)
+    template_dir = team.get_template_dir(template_name)
+    if not os.path.isdir(template_dir):
+        raise NotFoundError(f"Template '{template_name}' not found.")
+
+    metadata_path = team.get_template_metadata_path(template_name)
+    try:
+        with open(metadata_path, "rb") as f:
+            raw = f.read()
+    except FileNotFoundError:
+        raw = b""
+
+    return {
+        "content": raw.decode("utf-8") if raw else "{}\n",
+        "revision": hashlib.sha256(raw).hexdigest(),
+    }
+
+
+def update_template_metadata(
+    team: TeamSettings,
+    template_name: str,
+    content: str,
+    expected_revision: str,
+) -> dict[str, str]:
+    """Validate and atomically replace a template's ``metadata.json`` file."""
+    validate_template_name(template_name)
+    template_dir = team.get_template_dir(template_name)
+    if not os.path.isdir(template_dir):
+        raise NotFoundError(f"Template '{template_name}' not found.")
+
+    metadata_path = team.get_template_metadata_path(template_name)
+    try:
+        with open(metadata_path, "rb") as f:
+            current_raw = f.read()
+    except FileNotFoundError:
+        current_raw = b""
+
+    current_revision = hashlib.sha256(current_raw).hexdigest()
+    if expected_revision != current_revision:
+        raise ConflictError(
+            f"Template '{template_name}' metadata changed after it was opened. "
+            "Reload the settings and apply your changes again."
+        )
+
+    try:
+        metadata = json.loads(content)
+    except json.JSONDecodeError as exc:
+        raise ValueError(
+            f"Invalid JSON at line {exc.lineno}, column {exc.colno}: {exc.msg}"
+        ) from exc
+    if not isinstance(metadata, dict):
+        raise TypeError("Template metadata must be a JSON object.")
+
+    normalized = (json.dumps(metadata, indent=2, ensure_ascii=False) + "\n").encode(
+        "utf-8"
+    )
+    tmp_path = f"{metadata_path}.tmp-{uuid.uuid4().hex}"
+    try:
+        mode = stat.S_IMODE(os.stat(metadata_path).st_mode)
+    except FileNotFoundError:
+        mode = 0o644
+
+    try:
+        with open(tmp_path, "wb") as f:
+            f.write(normalized)
+            f.flush()
+            os.fsync(f.fileno())
+        os.chmod(tmp_path, mode)
+        os.replace(tmp_path, metadata_path)
+    finally:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+
+    logger.info("Updated metadata for template %s", template_name)
+    return {
+        "content": normalized.decode("utf-8"),
+        "revision": hashlib.sha256(normalized).hexdigest(),
+    }
+
+
 def list_templates(settings: Settings, team: TeamSettings) -> list[dict[str, Any]]:
     client = get_client()
     templates = team.list_templates()
@@ -3486,12 +3573,26 @@ def list_templates(settings: Settings, team: TeamSettings) -> list[dict[str, Any
         has_sql = os.path.isfile(team.get_template_sql_path(template_name))
         has_filestore = os.path.isdir(team.get_template_filestore_path(template_name))
         db_loaded = _db_exists(client, settings, tpl_db)
-        metadata = {}
+        metadata: dict[str, Any] = {}
+        metadata_valid = True
         metadata_path = team.get_template_metadata_path(template_name)
         if os.path.isfile(metadata_path):
-            with open(metadata_path) as f:
-                metadata = json.load(f)
-        if "filestore_size_mb" not in metadata or "dump_size_mb" not in metadata:
+            try:
+                with open(metadata_path) as f:
+                    loaded_metadata = json.load(f)
+                if not isinstance(loaded_metadata, dict):
+                    raise TypeError("metadata must be a JSON object")
+                metadata = loaded_metadata
+            except (OSError, TypeError, UnicodeError, ValueError) as exc:
+                metadata_valid = False
+                logger.warning(
+                    "Could not read metadata for template %s: %s",
+                    template_name,
+                    exc,
+                )
+        if metadata_valid and (
+            "filestore_size_mb" not in metadata or "dump_size_mb" not in metadata
+        ):
             metadata = _update_template_sizes(team, settings, template_name, metadata)
         result.append(
             {
@@ -3500,6 +3601,7 @@ def list_templates(settings: Settings, team: TeamSettings) -> list[dict[str, Any
                 "has_sql": has_sql,
                 "has_filestore": has_filestore,
                 "db_loaded": db_loaded,
+                "metadata_valid": metadata_valid,
                 "odoo_image": metadata.get("odoo_image", ""),
                 "repo_url": metadata.get("repo_url", ""),
                 "git_user": metadata.get("git_user", ""),
