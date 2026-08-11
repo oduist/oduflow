@@ -5,10 +5,10 @@ import textwrap
 import pytest
 
 from oduflow.git_analysis import (
-    _is_active_dep_file,
     _extract_field_lines,
     _extract_view_tag_attrs,
     _get_module_name,
+    _is_active_dep_file,
     _is_data_path,
     _is_dep_file,
     _is_security_path,

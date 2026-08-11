@@ -15,8 +15,7 @@ import socket
 import tempfile
 import threading
 import time
-from collections.abc import Awaitable, Callable
-from functools import wraps
+from collections.abc import Callable
 from typing import Any
 from urllib.parse import quote, urlsplit
 
@@ -700,7 +699,6 @@ def _build_routes(
     # Per-app so test apps and real deployments don't share failure counters.
     login_limiter = _LoginRateLimiter()
     import_staging_locks = _ImportStagingLocks()
-    import_locks: dict[tuple[str, str], asyncio.Lock] = {}
 
     def _set_session_cookie(
         response: Response, team: TeamSettings, request: Request
@@ -1530,24 +1528,6 @@ def _build_routes(
     ) -> tuple[TeamSettings, dict[str, object]]:
         return import_tokens.load_token(get_settings(), _import_token_value(request))
 
-    def _serialize_import(
-        handler: Callable[[Request], Awaitable[Response]],
-    ) -> Callable[[Request], Awaitable[Response]]:
-        """Serialize import mutations for one team/template upload."""
-
-        @wraps(handler)
-        async def wrapped(request: Request) -> Response:
-            try:
-                team, record = _resolve_import_token(request)
-            except FlowError as e:
-                return _error_response(e)
-            key = (team.team_id, str(record["template_name"]))
-            lock = import_locks.setdefault(key, asyncio.Lock())
-            async with lock:
-                return await handler(request)
-
-        return wrapped
-
     def _import_progress(team: TeamSettings, template_name: str) -> dict[str, object]:
         """Derive resumable upload progress from the import staging directory.
 
@@ -1729,7 +1709,6 @@ def _build_routes(
             }
         )
 
-    @_serialize_import
     async def api_import_manifest(request: Request) -> JSONResponse:
         try:
             team, record = _resolve_import_token(request)
@@ -1793,7 +1772,6 @@ def _build_routes(
                 f.write(data)
         return "written", os.path.getsize(part_path)
 
-    @_serialize_import
     async def api_import_dump(request: Request) -> JSONResponse:
         try:
             team, record = _resolve_import_token(request)
@@ -1859,7 +1837,6 @@ def _build_routes(
             os.replace(part, dest)
         return JSONResponse({"ok": True, "received": size, "complete": complete})
 
-    @_serialize_import
     async def api_import_filestore(request: Request) -> JSONResponse:
         try:
             team, record = _resolve_import_token(request)
@@ -1945,7 +1922,6 @@ def _build_routes(
             if os.path.exists(staged_path):
                 os.remove(staged_path)
 
-    @_serialize_import
     async def api_import_addon(request: Request) -> JSONResponse:
         """Receive one addon directory (tar stream) that becomes a local
         (remote-less) extra-addons repo — Enterprise, Themes or a private extra
@@ -2065,7 +2041,6 @@ def _build_routes(
                     os.remove(final_tar)
         return JSONResponse({"ok": True, "received": size, "complete": complete})
 
-    @_serialize_import
     async def api_import_addon_remote(request: Request) -> JSONResponse:
         """Announce a reachable extra repo (no files uploaded) — it is cloned
         from its origin at finalize so it stays updatable via Oduflow."""
@@ -2120,8 +2095,7 @@ def _build_routes(
             return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
         return JSONResponse({"ok": True})
 
-    @_serialize_import
-    async def api_import_finalize(request: Request) -> JSONResponse:
+    def api_import_finalize(request: Request) -> JSONResponse:
         try:
             team, record = _resolve_import_token(request)
         except FlowError as e:
