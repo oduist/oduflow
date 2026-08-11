@@ -14,11 +14,10 @@ import subprocess
 from unittest.mock import patch
 
 import pytest
+from tool_helpers import call_tool as _call_tool  # noqa: E402
 
 from oduflow.docker_ops import env_ops, system_ops
 from oduflow.settings import Settings, TeamSettings
-
-from tool_helpers import call_tool as _call_tool  # noqa: E402
 
 
 def _make_env(tmp_path):
