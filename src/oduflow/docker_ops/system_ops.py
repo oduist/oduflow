@@ -1295,10 +1295,109 @@ def _pg_restore_jobs() -> int:
 
 
 _PG_TABLESPACES_MOUNT = "/tablespaces"
+_PG_EXCHANGE_MOUNT = "/exchange"
 
 
 def _pg_tablespaces_host_dir(settings: Settings) -> str:
     return os.path.join(settings.base_data_dir, "pg_tablespaces")
+
+
+def _pg_exchange_host_dir(settings: Settings) -> str:
+    return os.path.join(settings.base_data_dir, "pg_exchange")
+
+
+def _pg_exchange_dirs(
+    client: DockerClient, settings: Settings, team: TeamSettings
+) -> tuple[str, str] | None:
+    """Host and in-container paths of the team's dump exchange dir, if mounted.
+
+    Returns None when the shared PostgreSQL container predates the mount (it is
+    only attached at creation time, and an existing container is never recreated
+    behind the operator's back). Callers fall back to streaming the dump out
+    through the exec API, so nothing has to be migrated: an installation picks
+    up the faster path whenever its PostgreSQL container is next recreated.
+    """
+    try:
+        container = client.containers.get(settings.shared_db_container)
+    except (docker.errors.NotFound, docker.errors.APIError):
+        return None
+    attrs = getattr(container, "attrs", None)
+    mounts = attrs.get("Mounts") if isinstance(attrs, dict) else None
+    if not isinstance(mounts, list):
+        return None
+    if not any(
+        isinstance(m, dict) and m.get("Destination") == _PG_EXCHANGE_MOUNT
+        for m in mounts
+    ):
+        return None
+    leaf = f"team_{team.team_id}"
+    return (
+        os.path.join(_pg_exchange_host_dir(settings), leaf),
+        f"{_PG_EXCHANGE_MOUNT}/{leaf}",
+    )
+
+
+@contextlib.contextmanager
+def _staged_db_dump(
+    client: DockerClient,
+    settings: Settings,
+    team: TeamSettings,
+    db_name: str,
+    dest_path: str,
+) -> Any:
+    """Dump *db_name* for *dest_path*, as cheaply as this installation allows.
+
+    Yields ``(host_path, container_path)``. ``container_path`` is None unless
+    the dump was staged in the pg_exchange mount, where PostgreSQL can restore
+    it in place instead of having it copied into its writable layer first.
+    Writing through the mount also leaves the archive's TOC offsets intact,
+    which a parallel ``pg_restore`` uses; a dump streamed from stdout cannot
+    carry them.
+
+    On a clean exit the staged dump is moved to *dest_path*; on failure nothing
+    is left behind, and *dest_path* is never half-written.
+    """
+    db_container = client.containers.get(settings.shared_db_container)
+    exchange = _pg_exchange_dirs(client, settings, team)
+    dump_cmd = ["pg_dump", "-U", settings.db_user, "-Fc"]
+    container_path: str | None = None
+
+    if exchange is None:
+        host_path = f"{dest_path}.staged"
+        _stream_exec_to_file(
+            client, db_container, [*dump_cmd, db_name], host_path, tool="pg_dump"
+        )
+    else:
+        host_dir, container_dir = exchange
+        os.makedirs(host_dir, exist_ok=True)
+        name = f"{db_name}-{uuid.uuid4().hex}.pgdump"
+        host_path = os.path.join(host_dir, name)
+        container_path = f"{container_dir}/{name}"
+        exit_code, output = db_container.exec_run(
+            [*dump_cmd, "-f", container_path, db_name]
+        )
+        if exit_code != 0:
+            with contextlib.suppress(OSError):
+                os.remove(host_path)
+            msg = output.decode("utf-8") if isinstance(output, bytes) else str(output)
+            raise ExternalCommandError("pg_dump", exit_code, msg)
+
+    try:
+        yield host_path, container_path
+        try:
+            os.replace(host_path, dest_path)
+        except OSError as exc:
+            # Both paths sit under the base data dir, so this is normally a free
+            # rename. XFS also refuses it (-EXDEV) when the exchange dir was
+            # never stamped with the team's quota project — see quotas.py.
+            logger.warning(
+                "Could not move the staged dump into place (%s); copying instead",
+                exc,
+            )
+            shutil.move(host_path, dest_path)
+    finally:
+        with contextlib.suppress(OSError):
+            os.remove(host_path)
 
 
 def _ensure_pg_container(
@@ -1306,11 +1405,17 @@ def _ensure_pg_container(
 ) -> None:
     """Start (or create) the shared PostgreSQL container.
 
-    Mounts only the dedicated pg_tablespaces directory into the container —
-    never the whole data dir: PostgreSQL has no business seeing team
-    workspaces or credentials. Per-team tablespace directories are created
-    inside this one mount, so adding a team never requires recreating the
-    container (see ensure_team_tablespace).
+    Mounts only dedicated base-level directories into the container — never the
+    whole data dir: PostgreSQL has no business seeing team workspaces or
+    credentials. Per-team subdirectories are created inside these mounts, so
+    adding a team never requires recreating the container (see
+    ensure_team_tablespace).
+
+    pg_tablespaces holds the databases themselves. pg_exchange is where dumps
+    are staged: writing one there costs a single write to its final filesystem
+    instead of a full-size copy through the container's writable layer, and a
+    restore can read it in place. It carries no new exposure — a dump is a
+    subset of the cluster this container already serves.
     """
     try:
         db_container = client.containers.get(settings.shared_db_container)
@@ -1322,6 +1427,8 @@ def _ensure_pg_container(
 
     tablespaces_dir = _pg_tablespaces_host_dir(settings)
     os.makedirs(tablespaces_dir, exist_ok=True)
+    exchange_dir = _pg_exchange_host_dir(settings)
+    os.makedirs(exchange_dir, exist_ok=True)
     client.containers.run(
         settings.postgres_image,
         name=settings.shared_db_container,
@@ -1337,6 +1444,7 @@ def _ensure_pg_container(
                 "mode": "ro",
             },
             tablespaces_dir: {"bind": _PG_TABLESPACES_MOUNT, "mode": "rw"},
+            exchange_dir: {"bind": _PG_EXCHANGE_MOUNT, "mode": "rw"},
         },
         command=["postgres", "-c", "config_file=/etc/postgresql/postgresql.conf"],
         environment={
@@ -1804,7 +1912,14 @@ def reload_template(
     team: TeamSettings,
     template_name: str,
     dump_path: str | None = None,
+    container_dump_path: str | None = None,
 ) -> dict[str, Any]:
+    """Rebuild the template database from its dump.
+
+    ``container_dump_path`` names a dump the PostgreSQL container can already
+    read (staged in the pg_exchange mount), skipping the copy into its writable
+    layer. The caller owns that file; only dumps copied in here are cleaned up.
+    """
     client = get_client()
     tpl_db = get_template_db_name(template_name, team.team_id)
     resolved_dump = dump_path or team.get_template_sql_path(template_name)
@@ -1841,15 +1956,16 @@ def reload_template(
         # The DB container is shared across teams, whose locks do not contend.
         # Use an opaque per-restore name so one restore cannot overwrite or
         # clean up another restore's input file.
-        container_dump_name = f"oduflow-restore-{uuid.uuid4().hex}"
-        container_dump_path = f"/tmp/{container_dump_name}"
-        container_tmp_files.add(container_dump_path)
-        _copy_file_to_container(
-            db_container,
-            resolved_dump,
-            "/tmp",
-            archive_name=container_dump_name,
-        )
+        if container_dump_path is None:
+            container_dump_name = f"oduflow-restore-{uuid.uuid4().hex}"
+            container_dump_path = f"/tmp/{container_dump_name}"
+            container_tmp_files.add(container_dump_path)
+            _copy_file_to_container(
+                db_container,
+                resolved_dump,
+                "/tmp",
+                archive_name=container_dump_name,
+            )
 
         # pg_restore runs with --no-owner so restored objects are owned by the
         # restoring superuser, not by whatever role the dump recorded. For
@@ -2448,22 +2564,28 @@ def publish_env_as_template(
         check_db_quota(client, settings, team)
 
     _wait_pg_ready(client, settings)
-    db_container = client.containers.get(settings.shared_db_container)
 
-    # 1. pg_dump branch DB → new template dump. Ownership is stripped at restore
-    # time (pg_restore --no-owner in reload_template), NOT here: --no-owner is
-    # ignored by pg_dump for the -Fc archive format.
+    # 1-2. pg_dump the branch DB, then rebuild the template DB from it, and only
+    # then move the dump into the template dir — a failed restore leaves no
+    # half-published template behind. Ownership is stripped at restore time
+    # (pg_restore --no-owner in reload_template), NOT here: --no-owner is ignored
+    # by pg_dump for the -Fc archive format.
     dump_path = team.get_template_sql_path(template_name)
     os.makedirs(os.path.dirname(dump_path), exist_ok=True)
-    dump_cmd = ["pg_dump", "-U", settings.db_user, "-Fc", env_db]
 
     logger.info("Dumping branch database %s", env_db)
-    _stream_exec_to_file(client, db_container, dump_cmd, dump_path, tool="pg_dump")
-
-    logger.info("Branch dump saved to %s", dump_path)
-
-    # 2. Reload template DB from new dump
-    reload_template(settings, team, template_name=template_name, dump_path=dump_path)
+    with _staged_db_dump(client, settings, team, env_db, dump_path) as (
+        staged_dump,
+        container_dump,
+    ):
+        logger.info("Branch dump saved to %s", staged_dump)
+        reload_template(
+            settings,
+            team,
+            template_name=template_name,
+            dump_path=staged_dump,
+            container_dump_path=container_dump,
+        )
 
     # ------------------------------------------------------------------
     # 3-7. Swap the template's lower filestore non-destructively (issue #2).

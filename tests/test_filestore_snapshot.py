@@ -191,6 +191,11 @@ def test_chown_falls_back_to_container_on_permission_error(tmp_path):
 # --------------------------------------------------------------------------
 
 
+def _fake_pg_dump(client, container, cmd, dest_path, *, tool):
+    _write(dest_path, "PGDMP")
+    return 5
+
+
 def _publish(tmp_path, *, env_template: str, target_template: str):
     """Drive publish_env_as_template over a real on-disk filestore layout."""
     import contextlib
@@ -229,7 +234,7 @@ def _publish(tmp_path, *, env_template: str, target_template: str):
         ),
         patch.object(system_ops, "check_db_quota"),
         patch.object(system_ops, "_wait_pg_ready"),
-        patch.object(system_ops, "_stream_exec_to_file"),
+        patch.object(system_ops, "_stream_exec_to_file", side_effect=_fake_pg_dump),
         patch.object(system_ops, "reload_template"),
         patch.object(system_ops, "get_odoo_uid_gid", return_value="101:102"),
         patch.object(system_ops, "chown_recursive"),
