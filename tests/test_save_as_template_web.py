@@ -6,6 +6,8 @@ only create fresh templates), an empty name is rejected before any Docker call,
 and a duplicate name surfaces the backend ConflictError as a failed response.
 """
 
+from concurrent.futures import ThreadPoolExecutor
+from threading import Event
 from unittest.mock import patch
 
 import pytest
@@ -60,6 +62,43 @@ def test_save_as_template_creates_new(tmp_path):
     assert publish.call_args.kwargs["template_name"] == "prod"
     # The UI never overwrites: no overwrite flag is passed (defaults to False).
     assert publish.call_args.kwargs.get("overwrite") in (None, False)
+
+
+def test_save_as_template_does_not_block_dashboard(tmp_path):
+    client = _client(tmp_path)
+    operation_started = Event()
+    release_operation = Event()
+
+    def publish(*args, **kwargs):
+        operation_started.set()
+        assert release_operation.wait(timeout=5)
+        return {
+            "status": "promoted",
+            "env_name": "feature-x",
+            "template_db": "oduflow_1_t_prod",
+        }
+
+    with (
+        client,
+        patch(
+            "oduflow.web_ui.system_ops.publish_env_as_template",
+            side_effect=publish,
+        ),
+        ThreadPoolExecutor(max_workers=2) as executor,
+    ):
+        save = executor.submit(
+            client.post,
+            "/api/environments/feature-x/save-as-template",
+            json={"template_name": "prod"},
+        )
+        try:
+            assert operation_started.wait(timeout=2)
+            dashboard = executor.submit(client.get, "/").result(timeout=2)
+            assert dashboard.status_code == 200
+        finally:
+            release_operation.set()
+
+        assert save.result(timeout=2).status_code == 200
 
 
 def test_save_as_template_requires_name(tmp_path):

@@ -21,6 +21,7 @@ from urllib.parse import quote, urlsplit
 
 from itsdangerous import BadData, URLSafeTimedSerializer
 from starlette.applications import Starlette
+from starlette.concurrency import run_in_threadpool
 from starlette.datastructures import Headers
 from starlette.exceptions import HTTPException
 from starlette.requests import ClientDisconnect, HTTPConnection, Request
@@ -355,6 +356,11 @@ def _error_response(e: FlowError) -> JSONResponse:
     return JSONResponse({"ok": False, "error": str(e)}, status_code=status)
 
 
+async def _offload(func: Callable[..., Any], /, *args: Any, **kwargs: Any) -> Any:
+    """Run blocking dashboard work without stalling the ASGI event loop."""
+    return await run_in_threadpool(func, *args, **kwargs)
+
+
 def _normalize_extra_addons(raw_addons: object) -> dict[str, str]:
     if isinstance(raw_addons, dict):
         return raw_addons
@@ -596,12 +602,27 @@ class _LoginRateLimiter:
             self._failures.pop(key, None)
 
 
+class _ImportStagingLocks:
+    """Serialize finalizers that mutate one template import staging tree."""
+
+    def __init__(self) -> None:
+        self._locks: dict[str, threading.Lock] = {}
+        self._map_lock = threading.Lock()
+
+    def for_path(self, staging: str) -> threading.Lock:
+        with self._map_lock:
+            if staging not in self._locks:
+                self._locks[staging] = threading.Lock()
+            return self._locks[staging]
+
+
 def _build_routes(
     get_settings: Callable[[], Settings],
     locks: LockManager,
 ) -> list[BaseRoute]:
     # Per-app so test apps and real deployments don't share failure counters.
     login_limiter = _LoginRateLimiter()
+    import_staging_locks = _ImportStagingLocks()
 
     def _set_session_cookie(
         response: Response, team: TeamSettings, request: Request
@@ -858,7 +879,8 @@ def _build_routes(
         try:
             settings = get_settings()
             activity.touch(team, branch)
-            result = env_ops.update_environment(
+            result = await _offload(
+                env_ops.update_environment,
                 settings,
                 team,
                 branch,
@@ -967,8 +989,12 @@ def _build_routes(
             # No overwrite from the UI: publishing over an existing template is a
             # deliberate re-baseline reserved for the MCP tool, so a duplicate name
             # here raises ConflictError (surfaced to the client by _error_response).
-            result = system_ops.publish_env_as_template(
-                get_settings(), team, branch, template_name=template_name
+            result = await _offload(
+                system_ops.publish_env_as_template,
+                get_settings(),
+                team,
+                branch,
+                template_name=template_name,
             )
             return JSONResponse(
                 {
@@ -1112,7 +1138,8 @@ def _build_routes(
                 if auto_install_raw
                 else []
             )
-            result = env_ops.create_environment(
+            result = await _offload(
+                env_ops.create_environment,
                 settings,
                 team,
                 env_name,
@@ -1307,7 +1334,9 @@ def _build_routes(
         except BusyError as e:
             return _error_response(e)
         try:
-            result = system_ops.rename_template(get_settings(), team, name, new_name)
+            result = await _offload(
+                system_ops.rename_template, get_settings(), team, name, new_name
+            )
             return JSONResponse({"ok": True, "result": result})
         except ValueError as e:  # invalid template name
             return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
@@ -1713,15 +1742,24 @@ def _build_routes(
             return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
         fs_dir = os.path.join(staging, "filestore")
         os.makedirs(staging, exist_ok=True)
-        tmp_tar = os.path.join(staging, f".chunk_{chunk}.tar")
+        fd, tmp_tar = tempfile.mkstemp(
+            dir=staging, prefix=f".chunk_{chunk}_", suffix=".tar"
+        )
         try:
-            with open(tmp_tar, "wb") as f:
+            with os.fdopen(fd, "wb") as f:
                 async for data in request.stream():
                     f.write(data)
+
             # Atomic: the chunk dir appears in staging only after the whole tar
             # extracted, so a truncated upload is never mistaken for a complete
             # chunk on resume.
-            system_ops.extract_filestore_chunk(tmp_tar, fs_dir, chunk)
+            def _finish_filestore_chunk() -> None:
+                with import_staging_locks.for_path(staging):
+                    if os.path.isdir(os.path.join(fs_dir, chunk)):
+                        return
+                    system_ops.extract_filestore_chunk(tmp_tar, fs_dir, chunk)
+
+            await _offload(_finish_filestore_chunk)
         except Exception:
             logger.exception(
                 "Failed to receive filestore chunk %s for %s", chunk, template_name
@@ -1760,8 +1798,16 @@ def _build_routes(
             except (OSError, ValueError):
                 entries = []
         entries.append(entry)
-        with open(path, "w") as f:
-            json.dump(entries, f, indent=2)
+        fd, staged_path = tempfile.mkstemp(
+            dir=staging, prefix=".addons_", suffix=".json"
+        )
+        try:
+            with os.fdopen(fd, "w") as f:
+                json.dump(entries, f, indent=2)
+            os.replace(staged_path, path)
+        finally:
+            if os.path.exists(staged_path):
+                os.remove(staged_path)
 
     async def api_import_addon(request: Request) -> JSONResponse:
         """Receive one addon directory (tar stream) that becomes a local
@@ -1786,24 +1832,25 @@ def _build_routes(
             return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
         addons_dir = os.path.join(staging, "addons")
         os.makedirs(staging, exist_ok=True)
-        final_tar = os.path.join(staging, f".addon_{name}.tar")
-        part = f"{final_tar}.part"
+        part = os.path.join(staging, f".addon_{name}.tar.part")
 
-        def _finish() -> None:
+        def _finish(final_tar: str) -> None:
             """Extract the assembled tar and record the addon; clean up."""
             try:
-                system_ops.extract_addon_dir(final_tar, addons_dir, name)
-                _record_import_addon(
-                    team,
-                    template_name,
-                    {
-                        "name": name,
-                        "kind": "local",
-                        "branch": branch,
-                        "origin_url": "",
-                        "category": category,
-                    },
-                )
+                with import_staging_locks.for_path(staging):
+                    if not os.path.isdir(os.path.join(addons_dir, name)):
+                        system_ops.extract_addon_dir(final_tar, addons_dir, name)
+                    _record_import_addon(
+                        team,
+                        template_name,
+                        {
+                            "name": name,
+                            "kind": "local",
+                            "branch": branch,
+                            "origin_url": "",
+                            "category": category,
+                        },
+                    )
             finally:
                 if os.path.exists(final_tar):
                     os.remove(final_tar)
@@ -1811,12 +1858,14 @@ def _build_routes(
         offset_raw = request.query_params.get("offset")
         if offset_raw is None:
             # Legacy single-shot upload (no chunking).
+            fd, final_tar = tempfile.mkstemp(
+                dir=staging, prefix=f".addon_{name}_", suffix=".tar"
+            )
             try:
-                with open(part, "wb") as f:
+                with os.fdopen(fd, "wb") as f:
                     async for data in request.stream():
                         f.write(data)
-                os.replace(part, final_tar)
-                _finish()
+                await _offload(_finish, final_tar)
             except Exception:
                 logger.exception(
                     "Failed to receive addon %s for %s", name, template_name
@@ -1825,8 +1874,8 @@ def _build_routes(
                     {"ok": False, "error": "Internal server error."}, status_code=500
                 )
             finally:
-                if os.path.exists(part):
-                    os.remove(part)
+                if os.path.exists(final_tar):
+                    os.remove(final_tar)
             return JSONResponse({"ok": True})
 
         # Chunked upload: append at `offset`, extract when the part hits `total`.
@@ -1860,9 +1909,13 @@ def _build_routes(
             )
         complete = total > 0 and size >= total
         if complete:
+            fd, final_tar = tempfile.mkstemp(
+                dir=staging, prefix=f".addon_{name}_", suffix=".tar"
+            )
+            os.close(fd)
             try:
                 os.replace(part, final_tar)
-                _finish()
+                await _offload(_finish, final_tar)
             except Exception:
                 logger.exception(
                     "Failed to finalize addon %s for %s", name, template_name
@@ -1870,6 +1923,9 @@ def _build_routes(
                 return JSONResponse(
                     {"ok": False, "error": "Internal server error."}, status_code=500
                 )
+            finally:
+                if os.path.exists(final_tar):
+                    os.remove(final_tar)
         return JSONResponse({"ok": True, "received": size, "complete": complete})
 
     async def api_import_addon_remote(request: Request) -> JSONResponse:
@@ -1899,17 +1955,23 @@ def _build_routes(
         branch = str((body or {}).get("branch") or "").strip()
         template_name = str(record["template_name"])
         try:
-            _record_import_addon(
-                team,
-                template_name,
-                {
-                    "name": name,
-                    "kind": "remote",
-                    "branch": branch,
-                    "origin_url": origin_url,
-                    "category": "extra",
-                },
-            )
+            staging = team.get_import_staging_dir(template_name)
+
+            def _record_remote_addon() -> None:
+                with import_staging_locks.for_path(staging):
+                    _record_import_addon(
+                        team,
+                        template_name,
+                        {
+                            "name": name,
+                            "kind": "remote",
+                            "branch": branch,
+                            "origin_url": origin_url,
+                            "category": "extra",
+                        },
+                    )
+
+            await _offload(_record_remote_addon)
         except ValueError as e:  # invalid template name
             return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
         return JSONResponse({"ok": True})
@@ -2006,7 +2068,8 @@ def _build_routes(
             privileged = bool(body.get("privileged", False))
             net_admin = bool(body.get("net_admin", False))
             cap_add = ["NET_ADMIN"] if net_admin else None
-            result = service_ops.create_service(
+            result = await _offload(
+                service_ops.create_service,
                 get_settings(),
                 team,
                 name,
@@ -2084,7 +2147,8 @@ def _build_routes(
             if body and "net_admin" in body and body["net_admin"] is not None:
                 cap_add_override = ["NET_ADMIN"] if bool(body["net_admin"]) else []
 
-            result = service_ops.update_service(
+            result = await _offload(
+                service_ops.update_service,
                 get_settings(),
                 team,
                 name,
@@ -2218,7 +2282,8 @@ def _build_routes(
             privileged = bool(body.get("privileged", False))
             net_admin = bool(body.get("net_admin", False))
             cap_add = ["NET_ADMIN"] if net_admin else None
-            result = service_ops.create_service(
+            result = await _offload(
+                service_ops.create_service,
                 get_settings(),
                 team,
                 name,
@@ -2285,8 +2350,12 @@ def _build_routes(
                     {"ok": False, "error": "Volume name is required."},
                     status_code=400,
                 )
-            result = volume_ops.create_volume(
-                get_settings(), team, name, description=description
+            result = await _offload(
+                volume_ops.create_volume,
+                get_settings(),
+                team,
+                name,
+                description=description,
             )
             return JSONResponse({"ok": True, "result": result})
         except FlowError as e:
@@ -2644,7 +2713,9 @@ def _build_routes(
                 )
             from oduflow.extra_addons import clone_extra_repo
 
-            result = clone_extra_repo(team, name, repo_url, git_user=git_user)
+            result = await _offload(
+                clone_extra_repo, team, name, repo_url, git_user=git_user
+            )
             return JSONResponse({"ok": True, "result": result})
         except FlowError as e:
             return _error_response(e)
@@ -2666,7 +2737,7 @@ def _build_routes(
         try:
             from oduflow.extra_addons import fetch_extra_repo
 
-            summary = fetch_extra_repo(team, name)
+            summary = await _offload(fetch_extra_repo, team, name)
             return JSONResponse({"ok": True, "result": summary})
         except FlowError as e:
             return _error_response(e)
@@ -2757,8 +2828,8 @@ def _build_routes(
             from oduflow import git_ops
 
             team = _get_ui_team(request)
-            result = git_ops.setup_repo_auth(
-                repo_url, cred_file=team.git_credentials_file()
+            result = await _offload(
+                git_ops.setup_repo_auth, repo_url, cred_file=team.git_credentials_file()
             )
             return JSONResponse({"ok": True, "result": result})
         except FlowError as e:
@@ -2815,8 +2886,11 @@ def _build_routes(
             from oduflow.git_ops import validate_credential
 
             team = _get_ui_team(request)
-            status = validate_credential(
-                host, username, cred_file=team.git_credentials_file()
+            status = await _offload(
+                validate_credential,
+                host,
+                username,
+                cred_file=team.git_credentials_file(),
             )
             return JSONResponse({"ok": True, "status": status})
         except Exception:
@@ -2916,7 +2990,9 @@ def _build_routes(
             body = await request.json()
             user = (body.get("user") or "admin").strip() or "admin"
             activity.touch(team, branch)
-            result = odoo_ops.connect_as_user(settings, team, branch, user)
+            result = await _offload(
+                odoo_ops.connect_as_user, settings, team, branch, user
+            )
             return JSONResponse(
                 {
                     "ok": True,
@@ -2968,7 +3044,9 @@ def _build_routes(
             team = _get_ui_team(request)
             user = (request.query_params.get("user") or "admin").strip() or "admin"
             activity.touch(team, branch)
-            result = odoo_ops.connect_as_user(settings, team, branch, user)
+            result = await _offload(
+                odoo_ops.connect_as_user, settings, team, branch, user
+            )
             if settings.routing_mode == "traefik":
                 env_host = result["cookie_domain"]
                 token = connect_tokens.issue(env_host, result["sid"])
@@ -3888,7 +3966,8 @@ def _build_routes(
         except FlowError as e:
             return _error_response(e)
         try:
-            result = production_ops.create_production(
+            result = await _offload(
+                production_ops.create_production,
                 settings,
                 team,
                 name,
@@ -4089,8 +4168,12 @@ def _build_routes(
         except FlowError as e:
             return _error_response(e)
         try:
-            result = production_ops.delete_production(
-                settings, team, name, drop_database=bool(data.get("drop_database"))
+            result = await _offload(
+                production_ops.delete_production,
+                settings,
+                team,
+                name,
+                drop_database=bool(data.get("drop_database")),
             )
             return JSONResponse({"ok": True, **result})
         except FlowError as e:
@@ -4159,7 +4242,9 @@ def _build_routes(
         except FlowError as e:
             return _error_response(e)
         try:
-            result = backup_ops.restore_production(settings, team, name, snapshot_id)
+            result = await _offload(
+                backup_ops.restore_production, settings, team, name, snapshot_id
+            )
             return JSONResponse({"ok": True, **result})
         except FlowError as e:
             return _error_response(e)
