@@ -6,11 +6,11 @@ ingest call. Because the token expires quickly, a copy left in the terminal
 scrollback is useless afterwards.
 
 Each token is one JSON file under ``<team.data_dir>/import_tokens/<token>.json``.
-The token carries only auth + the target template; it deliberately does NOT
-store upload progress. Resume is instead derived from what is actually staged on
-disk in the template directory (see ``web_ui``), so a re-run — even with a freshly
-minted token after the previous one expired mid-upload — continues where it left
-off instead of restarting.
+The token carries auth, the target template, and the selected addon error policy;
+it deliberately does NOT store upload progress. Resume is instead derived from
+what is actually staged on disk in the template directory (see ``web_ui``), so a
+re-run — even with a freshly minted token after the previous one expired
+mid-upload — continues where it left off instead of restarting.
 """
 
 from __future__ import annotations
@@ -30,6 +30,12 @@ from oduflow.settings import Settings, TeamSettings
 _TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{16,64}$")
 _DEFAULT_TTL_SECONDS = 15 * 60
 _lock = threading.Lock()
+
+ADDON_ERROR_POLICY_STRICT = "strict"
+ADDON_ERROR_POLICY_BEST_EFFORT = "best_effort"
+ADDON_ERROR_POLICIES = frozenset(
+    {ADDON_ERROR_POLICY_STRICT, ADDON_ERROR_POLICY_BEST_EFFORT}
+)
 
 
 def _tokens_dir(team: TeamSettings) -> str:
@@ -82,6 +88,7 @@ def create_token(
     team: TeamSettings,
     template_name: str,
     *,
+    addon_error_policy: str = ADDON_ERROR_POLICY_STRICT,
     ttl_seconds: int = _DEFAULT_TTL_SECONDS,
     now: float | None = None,
 ) -> dict[str, object]:
@@ -90,12 +97,15 @@ def create_token(
     from oduflow.naming import validate_template_name
 
     validate_template_name(template_name)
+    if addon_error_policy not in ADDON_ERROR_POLICIES:
+        raise ValueError("addon_error_policy must be 'strict' or 'best_effort'.")
     now = time.time() if now is None else now
     _cleanup_expired(team, now=now)
     record = {
         "token": secrets.token_urlsafe(24),
         "team_id": team.team_id,
         "template_name": template_name,
+        "addon_error_policy": addon_error_policy,
         "created_at": now,
         "expires_at": now + ttl_seconds,
     }

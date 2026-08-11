@@ -93,3 +93,39 @@ def test_dashboard_accepts_opencode_default_and_labels_it(tmp_path):
     assert "data.default === 'opencode'" in dashboard.text
     assert "(agentType === 'opencode' ? 'OpenCode' : 'Claude')" in dashboard.text
     assert "var CHAT_V = '6'" in dashboard.text
+
+
+def test_minimized_window_dock_has_group_semantics_and_restores_focus(tmp_path):
+    dashboard = _client(tmp_path).get("/").text
+    assert 'id="min-dock" role="group"' in dashboard
+
+    # closeMinimized must capture returnFocus BEFORE calling closer() (otherwise
+    # closer() would tear down the chip and the captured element would already
+    # be detached), and the focus call must happen AFTER closer() (so the
+    # trigger element is still in the DOM). Asserting on the literal text does
+    # not catch a reorder; pin down the order of the three statements.
+    match = re.search(
+        r"function closeMinimized\(id\) \{(.*?)\}\s*$",
+        dashboard,
+        re.DOTALL | re.MULTILINE,
+    )
+    assert match is not None, "closeMinimized function not found in dashboard"
+    body = match.group(1)
+    capture_at = body.find("returnFocus = _minimized")
+    closer_at = body.find("closer()")
+    focus_at = body.find("returnFocus.focus()")
+    assert 0 <= capture_at < closer_at < focus_at, (
+        f"closeMinimized statement order is wrong: "
+        f"capture={capture_at}, closer={closer_at}, focus={focus_at}"
+    )
+
+
+def test_odoo_sh_import_exposes_best_effort_addon_policy(tmp_path):
+    dashboard = _client(tmp_path).get("/").text
+
+    assert 'id="import-best-effort" disabled' in dashboard
+    assert "Continue if some addons are unavailable" in dashboard
+    assert (
+        "addon_error_policy: document.getElementById('import-best-effort').checked "
+        "? 'best_effort' : 'strict'" in dashboard
+    )

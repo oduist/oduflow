@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import threading
+from concurrent.futures import ThreadPoolExecutor
+
 import pytest
 
 from oduflow import env_tokens
@@ -91,3 +94,28 @@ def test_env_token_cached(monkeypatch):
     assert env_tokens.resolve_token(s, "env-secret") == ("1", "main")
     assert env_tokens.resolve_token(s, "env-secret") == ("1", "main")
     assert calls["n"] == 1  # second lookup served from the cache
+
+
+def test_concurrent_unknown_tokens_share_one_scan(monkeypatch):
+    s = _settings()
+    scan_started = threading.Event()
+    release_scan = threading.Event()
+    calls = {"n": 0}
+
+    def fake_scan(settings):
+        calls["n"] += 1
+        scan_started.set()
+        assert release_scan.wait(timeout=2)
+        return {"env-secret": ("1", "main")}
+
+    monkeypatch.setattr(env_tokens, "_scan_env_tokens", fake_scan)
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        futures = [
+            pool.submit(env_tokens.resolve_token, s, "env-secret") for _ in range(8)
+        ]
+        assert scan_started.wait(timeout=2)
+        release_scan.set()
+        results = [future.result(timeout=2) for future in futures]
+
+    assert results == [("1", "main")] * 8
+    assert calls["n"] == 1

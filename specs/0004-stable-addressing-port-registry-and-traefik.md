@@ -56,6 +56,17 @@ Separate **port allocation** (stable, persisted) from **request routing**
   multi-instance / multi-team routing and for hosting the dashboard behind the
   same proxy.
 
+## Evolution
+
+Traefik routing later gained a deploy-time `[routing].tls` choice. The default
+`true` mode keeps Traefik responsible for :443, Let's Encrypt, and HTTP→HTTPS
+redirects. With `tls = false`, an upstream such as a Cloudflare tunnel owns TLS:
+Traefik listens on plain HTTP :80, does not configure ACME or redirects, and
+trusts the upstream's forwarded scheme while Oduflow continues to advertise
+public `https://` URLs. Because routing entrypoints are baked into environment
+and service container labels, changing this setting recreates Traefik and
+requires existing routed containers to be recreated to eliminate label drift.
+
 ## History
 
 - `c60eb5f` (2026-02-07) — persistent port mapping: `port_registry.py` + `ports.json`,
@@ -65,3 +76,5 @@ Separate **port allocation** (stable, persisted) from **request routing**
   provider with watch; each instance writes its own `instance-{id}.yml`, no
   Traefik restart needed.
 - `727448b` — match TLS certresolver name to Traefik's ACME provider.
+- 2026-07-03 — add HTTP-only Traefik mode for upstream TLS termination,
+  including drift detection and forwarded-scheme handling (#103).

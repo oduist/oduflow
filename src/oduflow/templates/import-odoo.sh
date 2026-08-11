@@ -55,7 +55,7 @@ SERVER="${SERVER%/}"
 # final URL directly — POSTs must not rely on redirect-following, which would
 # drop the request body.
 EFFECTIVE="$(curl -fsSIL -o /dev/null -w '%{url_effective}' "${SERVER}/import-odoo.sh" 2>/dev/null || true)"
-if [ -n "$EFFECTIVE" ]; then
+if [ -n "$EFFECTIVE" ] && [ "${EFFECTIVE%/import-odoo.sh}" != "$EFFECTIVE" ]; then
     SERVER="${EFFECTIVE%/import-odoo.sh}"
 fi
 
@@ -92,6 +92,14 @@ API="${SERVER}/api/templates/import"
 # bodies over 100 MB with a 413. 90 MiB per part stays safely under that.
 PART_BYTES=$((90 * 1024 * 1024))
 
+# curl 7.76 added --fail-with-body; Odoo.sh images with older curl still need
+# to run the importer, even though their -f fallback cannot preserve error
+# bodies. Keep the richer diagnostic whenever the installed curl supports it.
+CURL_FAIL=(-f)
+if curl --help all 2>/dev/null | grep -q -- '--fail-with-body'; then
+    CURL_FAIL=(--fail-with-body)
+fi
+
 # ---- helpers ---------------------------------------------------------------
 
 human() {  # bytes -> human readable
@@ -106,6 +114,17 @@ json_field() {  # file expr  (expr is python on obj `d`)
     python3 -c 'import sys,json
 d=json.load(open(sys.argv[1]))
 print('"$2"')' "$1" 2>/dev/null || true
+}
+
+urlencode() {  # one query-string component
+    python3 -c 'import sys, urllib.parse
+print(urllib.parse.quote(sys.argv[1], safe=""))' "$1"
+}
+
+addon_remote_json() {  # name origin branch
+    python3 -c 'import json, sys
+print(json.dumps({"name": sys.argv[1], "origin_url": sys.argv[2], "branch": sys.argv[3]}))' \
+        "$1" "$2" "$3"
 }
 
 upload_ranges() {  # file url extra_query start_offset [label]
@@ -152,7 +171,7 @@ echo ">> Importing '$DB' into Oduflow at $SERVER"
 
 STATUS_FILE="$(mktemp)"
 trap 'rm -f "$STATUS_FILE"' EXIT
-if ! curl -sS --fail-with-body -H "$AUTH" "${API}/status" -o "$STATUS_FILE" 2>/dev/null; then
+if ! curl -sS "${CURL_FAIL[@]}" -H "$AUTH" "${API}/status" -o "$STATUS_FILE" 2>/dev/null; then
     echo "ERROR: could not reach $SERVER or token is invalid/expired." >&2
     [ -s "$STATUS_FILE" ] && { echo "       Server said:" >&2; head -c 300 "$STATUS_FILE" >&2; echo >&2; }
     echo "       Generate a fresh token from the dashboard and retry." >&2
@@ -331,7 +350,8 @@ upload_addon_files() {  # path name branch category
         rm -f "$tmptar"; return 1
     fi
     upload_ranges "$tmptar" "${API}/addon" \
-        "name=${name}&branch=${branch}&category=${cat}" 0 "addon ${name}"
+        "name=$(urlencode "$name")&branch=$(urlencode "$branch")&category=$(urlencode "$cat")" \
+        0 "addon ${name}"
     rc=$?
     rm -f "$tmptar"
     return "$rc"
@@ -339,7 +359,7 @@ upload_addon_files() {  # path name branch category
 
 announce_addon_remote() {  # name origin branch
     curl -fsS -H "$AUTH" -H "Content-Type: application/json" \
-        --data-binary "$(printf '{"name":"%s","origin_url":"%s","branch":"%s"}' "$1" "$2" "$3")" \
+        --data-binary "$(addon_remote_json "$1" "$2" "$3")" \
         -X POST "${API}/addon-remote" >/dev/null
 }
 
@@ -421,7 +441,7 @@ RESULT_FILE="$(mktemp)"
 trap 'rm -f "$STATUS_FILE" "$RESULT_FILE"' EXIT
 # --fail-with-body keeps the server's error body on HTTP >= 400 (plain -f
 # would discard it, hiding the reason the riskiest step failed).
-if ! curl -sS --fail-with-body -H "$AUTH" -X POST "${API}/finalize" -o "$RESULT_FILE"; then
+if ! curl -sS "${CURL_FAIL[@]}" -H "$AUTH" -X POST "${API}/finalize" -o "$RESULT_FILE"; then
     echo "ERROR: finalize request failed:" >&2
     cat "$RESULT_FILE" >&2 || true
     echo >&2
@@ -442,4 +462,12 @@ if not d.get("ok"):
     print(">> ERROR:", d.get("error","unknown error")); sys.exit(1)
 r=d.get("result",{})
 print(">> Done — template ready:", r.get("template_name"))
-print("   DB:", r.get("template_db"), " restore:", r.get("restore_seconds"), "s")' "$RESULT_FILE"
+print("   DB:", r.get("template_db"), " restore:", r.get("restore_seconds"), "s")
+warnings = r.get("addon_warnings") or []
+if warnings:
+    print(">> Addon warnings:")
+    for warning in warnings:
+        name = warning.get("name") or "unknown"
+        action = warning.get("action") or "warning"
+        reason = warning.get("reason") or "No reason reported."
+        print("   WARNING:", name, "—", action, "—", reason)' "$RESULT_FILE"

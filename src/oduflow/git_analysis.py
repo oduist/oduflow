@@ -21,9 +21,10 @@ def _trace(msg: str, *args: object) -> None:
 MANIFEST_KEYS_WITH_FILES = ("data", "demo", "assets", "qweb")
 RESTART_REQUIRED_PATHS = {".oduflow/odoo.conf", ".oduflow/odoo.prod.conf"}
 
-# Dependency descriptors Oduflow actually reads into the container. A change to
-# any of these means Python/apt deps changed → reinstall + restart. Only these
-# exact repo-root-relative paths are installed (see
+# Dependency descriptors Oduflow can read into the container. A change to the
+# active one means Python/apt deps changed → reinstall + restart. The
+# .oduflow/requirements.txt file shadows the root fallback when both exist.
+# Only these exact repo-root-relative paths are installed (see
 # env_ops._install_pip_requirements / _install_apt_packages); a nested
 # ``foo/requirements.txt`` or a repo-root ``apt_packages.txt`` is intentionally
 # NOT a dependency descriptor.
@@ -177,6 +178,16 @@ def _is_translation_file(file_path: str) -> bool:
     return os.path.splitext(file_path)[1].lower() == ".po"
 
 
+def _is_active_dep_file(file_path: str, repo_path: str) -> bool:
+    """Whether a changed dependency file is the one Oduflow actually reads."""
+    normalized = file_path.replace(os.sep, "/")
+    if normalized == "requirements.txt" and os.path.isfile(
+        os.path.join(repo_path, ".oduflow", "requirements.txt")
+    ):
+        return False
+    return normalized in DEP_FILE_PATHS
+
+
 def classify_changes(
     changed_files: list[str], repo_path: str, base_ref: str = "HEAD~1"
 ) -> dict[str, Any]:
@@ -235,7 +246,7 @@ def classify_changes(
             )
             continue
 
-        if _is_dep_file(f):
+        if _is_active_dep_file(f, repo_path):
             deps_changed.append(f)
             _trace(
                 "  file=%s -> dependency descriptor, reinstall + restart",
@@ -449,7 +460,7 @@ def shallow_classify(changed_files: list[str], repo_path: str = "") -> dict[str,
         if _requires_restart_path(f):
             restart_required.append(f)
             continue
-        if _is_dep_file(f):
+        if _is_active_dep_file(f, repo_path):
             deps_changed.append(f)
             continue
         if os.path.basename(f) == "__manifest__.py" and module:

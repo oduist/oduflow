@@ -56,6 +56,9 @@ The design deliberately does **not** offer to push imported addons into a
 user-supplied empty repo, and does not try to preserve both the exact Odoo.sh
 commit *and* updatability: a branch-based extra-addons model can give one or the
 other, and updatability (a reachable remote) is the more useful of the two.
+Addon wiring is strict by default so a template is not reported ready with
+missing module code. Operators may explicitly choose best-effort import when
+preserving the database/filestore is more important than addon completeness.
 
 ## How it works (macro)
 
@@ -84,8 +87,14 @@ other, and updatability (a reachable remote) is the more useful of the two.
   normal `update_extra_repo`), everything else is seeded by the new
   `create_local_repo`. Their `{name: branch}` is merged into the template's
   `extra_addons` metadata, so environments created from the template mount the
-  same addons-path Odoo.sh ran with. One bad addon is logged, never fatal — the
-  database/filestore is the critical artifact.
+  same addons-path Odoo.sh ran with. In the default **strict** policy, an
+  unusable declared addon keeps finalization retryable and fails rather than
+  producing an incomplete template. The import dialog also offers an explicit
+  **best-effort** policy: a failed remote uses an already staged local copy when
+  available, otherwise only that addon is skipped. Invalid manifests and
+  database, filestore, or metadata failures remain fatal in both policies.
+  Every fallback or skip is returned as a structured warning and printed by the
+  Odoo.sh client.
 - **Local (remote-less) extra-addons.** `create_local_repo` builds a real bare
   git repo with a single branch seeded from the uploaded files and drops a
   `.local` marker. The whole worktree / mount / `pull_and_apply` machinery is
@@ -129,6 +138,13 @@ other, and updatability (a reachable remote) is the more useful of the two.
 
 ## Evolution
 
+- **Selectable addon error policy (2026-07-23).** The import dialog gained a
+  disabled-by-default "Continue if some addons are unavailable" option. Its
+  `strict` / `best_effort` policy is bound to the short-lived import token and
+  applied at finalize, so retries can deliberately choose a different policy.
+  Strict mode protects template completeness; best-effort mode preserves a
+  costly database/filestore import while making every local fallback or skipped
+  addon explicit in the command output.
 - **Chunked large-payload upload (2026-07-04).** Deploying behind a Cloudflare
   Tunnel surfaced Cloudflare's 100 MB request-body cap: the ~114 MB SQL dump (and
   Enterprise/Themes tars, also >100 MB) were rejected at the edge with `413`

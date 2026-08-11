@@ -2877,7 +2877,7 @@ def pull_environment(
       path-only ``shallow_classify`` in live-mount mode.
     """
     from oduflow.git_analysis import (
-        _is_dep_file,
+        _is_active_dep_file,
         guardrail_warnings,
         merge_recommendations,
         recommend,
@@ -3023,7 +3023,7 @@ def pull_environment(
     # MAIN repo must reinstall apt/pip deps into the running container and restart.
     # Scoped to the main repo because the install helpers only read its repo_path;
     # applies to both explicit and auto modes (a prerequisite, not an agent action).
-    deps_changed = any(_is_dep_file(f) for f in main_changed_files)
+    deps_changed = any(_is_active_dep_file(f, repo_path) for f in main_changed_files)
 
     warnings: list[str] = []
     if explicit:

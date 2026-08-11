@@ -990,6 +990,36 @@ class TestPullEnvironmentLocalAndSharedExtraCheckouts:
         assert mock_apply.call_args.kwargs["repo_path"] == str(repo)
 
     @patch("oduflow.docker_ops.env_ops._apply_actions")
+    def test_shadowed_root_requirements_change_does_not_reinstall(
+        self, mock_apply, mock_docker_client, tmp_path
+    ):
+        repo = tmp_path / "repo"
+        (repo / ".oduflow").mkdir(parents=True)
+        (repo / ".oduflow" / "requirements.txt").write_text("preferred\n")
+        req = repo / "requirements.txt"
+        req.write_text("fallback\n")
+        team = TeamSettings(team_id="1", data_dir=str(tmp_path / "team"))
+        env_ops._write_local_snapshot(str(repo), "env", team)
+
+        old_stat = req.stat()
+        req.write_text("fallback\nunused-change\n")
+        os.utime(req, ns=(old_stat.st_atime_ns, old_stat.st_mtime_ns + 1_000_000))
+
+        container = MagicMock()
+        container.labels = {"oduflow.local_path": str(repo)}
+        mock_docker_client.containers.get.return_value = container
+        mock_apply.return_value = {
+            "action": "refresh",
+            "changed_files": ["requirements.txt"],
+            "message": "Files refreshed.",
+        }
+
+        env_ops.pull_environment(TEST_SETTINGS, team, "env")
+
+        assert mock_apply.call_args.kwargs["deps_changed"] is False
+        assert mock_apply.call_args.kwargs["do_restart"] is False
+
+    @patch("oduflow.docker_ops.env_ops._apply_actions")
     def test_local_failed_apply_does_not_advance_snapshot(
         self, mock_apply, mock_docker_client, tmp_path
     ):

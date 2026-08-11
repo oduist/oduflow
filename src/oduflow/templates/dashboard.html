@@ -1757,16 +1757,20 @@
           <label>Also bring over addons</label>
           <div class="hint" style="margin-top:0;">The standard Odoo modules ship with the image. These options download the rest of the Odoo.sh addons-path into extra-addons for this template.</div>
           <div class="check-row" style="margin-top:8px;">
-            <input type="checkbox" id="import-with-enterprise" disabled>
+            <input type="checkbox" id="import-with-enterprise" onchange="onImportAddonSelectionChange()" disabled>
             <label for="import-with-enterprise">Enterprise addons <span class="label-hint">— downloaded as a local repo (no remote)</span></label>
           </div>
           <div class="check-row" style="margin-top:6px;">
-            <input type="checkbox" id="import-with-themes" disabled>
+            <input type="checkbox" id="import-with-themes" onchange="onImportAddonSelectionChange()" disabled>
             <label for="import-with-themes">Themes <span class="label-hint">— downloaded as a local repo (no remote)</span></label>
           </div>
           <div class="check-row" style="margin-top:6px;">
-            <input type="checkbox" id="import-with-extra" disabled>
+            <input type="checkbox" id="import-with-extra" onchange="onImportAddonSelectionChange()" disabled>
             <label for="import-with-extra">Extra addons <span class="label-hint">— OCA and other repos; reachable ones stay updatable</span></label>
+          </div>
+          <div class="check-row" style="margin-top:10px;">
+            <input type="checkbox" id="import-best-effort" disabled>
+            <label for="import-best-effort">Continue if some addons are unavailable <span class="label-hint">— may create a template that cannot start until the missing modules are restored</span></label>
           </div>
         </div>
         <div class="form-actions">
@@ -1857,7 +1861,7 @@
   <span>RAM: <span class="sys-val" id="sys-ram">—</span></span>
   <span>Load: <span class="sys-val" id="sys-load">—</span></span>
   <span id="health-chips"></span>
-  <div class="min-dock" id="min-dock" aria-label="Minimized windows"></div>
+  <div class="min-dock" id="min-dock" role="group" aria-label="Minimized windows"></div>
 </div>
 
 <div class="modal-overlay" id="confirm-modal" onclick="cancelConfirm(event)">
@@ -2177,8 +2181,10 @@ function restorePanel(id) {
 }
 
 function closeMinimized(id) {
+  var returnFocus = _minimized[id] && _minimized[id].returnFocus;
   var closer = MODAL_CLOSERS[id];
   if (closer) closer();   // per-type closer drops the chip and tears down WS/term
+  if (returnFocus && document.contains(returnFocus)) returnFocus.focus();
 }
 
 document.querySelectorAll('.modal-overlay').forEach(function(overlay) {
@@ -3328,7 +3334,7 @@ function openImportOdooModal() {
   document.getElementById('import-odoo-command').textContent = '';
   document.getElementById('import-odoo-submit').disabled = false;
   document.getElementById('import-odoo-submit').textContent = 'Generate command';
-  ['import-with-enterprise', 'import-with-themes', 'import-with-extra'].forEach(function(id) {
+  ['import-with-enterprise', 'import-with-themes', 'import-with-extra', 'import-best-effort'].forEach(function(id) {
     var cb = document.getElementById(id);
     cb.checked = false;
     cb.disabled = true;
@@ -3347,6 +3353,20 @@ function onImportAckChange() {
     cb.disabled = !ack;
     if (!ack) cb.checked = false;
   });
+  if (!ack) {
+    document.getElementById('import-best-effort').checked = false;
+  }
+  onImportAddonSelectionChange();
+}
+
+function onImportAddonSelectionChange() {
+  var ack = document.getElementById('import-ack').checked;
+  var anySelected = ['import-with-enterprise', 'import-with-themes', 'import-with-extra'].some(function(id) {
+    return document.getElementById(id).checked;
+  });
+  var bestEffort = document.getElementById('import-best-effort');
+  bestEffort.disabled = !ack || !anySelected;
+  if (bestEffort.disabled) bestEffort.checked = false;
 }
 
 function closeImportOdooModal(event) {
@@ -3378,7 +3398,8 @@ async function submitImportOdoo() {
         template_name: name,
         with_enterprise: document.getElementById('import-with-enterprise').checked,
         with_themes: document.getElementById('import-with-themes').checked,
-        with_extra_addons: document.getElementById('import-with-extra').checked
+        with_extra_addons: document.getElementById('import-with-extra').checked,
+        addon_error_policy: document.getElementById('import-best-effort').checked ? 'best_effort' : 'strict'
       })
     });
     var data = await readResult(r);

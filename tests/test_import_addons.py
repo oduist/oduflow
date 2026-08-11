@@ -95,7 +95,10 @@ class TestWireImportedAddons:
         assert wired == {"themes": "17.0"}
 
     def test_existing_repo_is_referenced_not_recreated(self, team, tmp_path):
-        os.makedirs(os.path.join(team.shared_repos_dir, "enterprise"))
+        source = _make_repo_dir(tmp_path, top="existing-enterprise")
+        from oduflow.extra_addons import create_local_repo
+
+        create_local_repo(team, "enterprise", str(source), "18.0")
         staging = tmp_path / "staging"
         staging.mkdir()
         (staging / "addons.json").write_text(
@@ -103,3 +106,208 @@ class TestWireImportedAddons:
         )
         wired = system_ops._wire_imported_addons(team, str(staging), "18.0")
         assert wired == {"enterprise": "18.0"}
+
+    def test_existing_repo_without_requested_branch_fails(self, team, tmp_path):
+        source = _make_repo_dir(tmp_path, top="existing-enterprise")
+        from oduflow.errors import NotFoundError
+        from oduflow.extra_addons import create_local_repo
+
+        create_local_repo(team, "enterprise", str(source), "17.0")
+        staging = tmp_path / "staging"
+        staging.mkdir()
+        (staging / "addons.json").write_text(
+            json.dumps([{"name": "enterprise", "kind": "local", "branch": "18.0"}])
+        )
+        with pytest.raises(NotFoundError, match="Branch '18.0'"):
+            system_ops._wire_imported_addons(team, str(staging), "18.0")
+
+    def test_declared_addon_without_remote_or_files_fails(self, team, tmp_path):
+        from oduflow.errors import PrerequisiteNotMetError
+
+        staging = tmp_path / "staging"
+        staging.mkdir()
+        (staging / "addons.json").write_text(
+            json.dumps([{"name": "enterprise", "kind": "local", "branch": "18.0"}])
+        )
+        with pytest.raises(PrerequisiteNotMetError, match="no uploaded files"):
+            system_ops._wire_imported_addons(team, str(staging), "18.0")
+
+    def test_clone_success_with_wrong_branch_fails_loud(self, team, tmp_path):
+        """A successful clone whose branch is missing on the remote must NOT
+        silently fall back in strict mode. The bare repo is removed and the
+        branch error surfaces."""
+        from unittest.mock import patch
+
+        from oduflow import extra_addons
+        from oduflow.errors import NotFoundError
+
+        staging = tmp_path / "staging"
+        staging.mkdir()
+        # Provision BOTH local files and a remote URL: a too-broad except
+        # used to silently use the local files when the branch check failed.
+        local_src = staging / "addons" / "enterprise"
+        local_src.mkdir(parents=True)
+        (local_src / "__manifest__.py").write_text("{}")
+        (staging / "addons.json").write_text(
+            json.dumps(
+                [
+                    {
+                        "name": "enterprise",
+                        "kind": "remote",
+                        "origin_url": "https://example.com/enterprise.git",
+                        "branch": "18.0",
+                    }
+                ]
+            )
+        )
+
+        def fake_clone(*_args, **_kwargs):
+            os.makedirs(os.path.join(team.shared_repos_dir, "enterprise"))
+            return {"name": "enterprise"}
+
+        with (
+            patch.object(
+                extra_addons,
+                "clone_extra_repo",
+                side_effect=fake_clone,
+            ),
+            patch.object(
+                extra_addons,
+                "_resolve_branch_revision",
+                side_effect=NotFoundError("Branch '18.0' not found."),
+            ),
+        ):
+            with pytest.raises(NotFoundError, match="Branch '18.0'"):
+                system_ops._wire_imported_addons(team, str(staging), "18.0")
+
+        # The bare repo the clone created must be cleaned up so it cannot be
+        # referenced as if it were a fresh wiring of the correct branch.
+        assert not os.path.exists(os.path.join(team.shared_repos_dir, "enterprise"))
+
+    def test_best_effort_wrong_remote_branch_uses_local_copy(self, team, tmp_path):
+        from unittest.mock import patch
+
+        from oduflow import extra_addons
+        from oduflow.errors import NotFoundError
+
+        staging = tmp_path / "staging"
+        local_src = staging / "addons" / "enterprise"
+        local_src.mkdir(parents=True)
+        (local_src / "__manifest__.py").write_text("{}")
+        (staging / "addons.json").write_text(
+            json.dumps(
+                [
+                    {
+                        "name": "enterprise",
+                        "kind": "remote",
+                        "origin_url": "https://example.com/enterprise.git",
+                        "branch": "18.0",
+                    }
+                ]
+            )
+        )
+
+        def fake_clone(*_args, **_kwargs):
+            os.makedirs(os.path.join(team.shared_repos_dir, "enterprise"))
+            return {"name": "enterprise"}
+
+        warnings = []
+        with (
+            patch.object(extra_addons, "clone_extra_repo", side_effect=fake_clone),
+            patch.object(
+                extra_addons,
+                "_resolve_branch_revision",
+                side_effect=[
+                    NotFoundError("Branch '18.0' not found."),
+                    "a" * 40,
+                ],
+            ),
+        ):
+            wired = system_ops._wire_imported_addons(
+                team,
+                str(staging),
+                "18.0",
+                addon_error_policy="best_effort",
+                addon_warnings=warnings,
+            )
+
+        assert wired == {"enterprise": "18.0"}
+        assert is_local_repo(team, "enterprise")
+        assert warnings == [
+            {
+                "name": "enterprise",
+                "action": "used_local_copy",
+                "reason": "Branch '18.0' not found.",
+            }
+        ]
+
+    def test_best_effort_missing_addon_is_skipped(self, team, tmp_path):
+        staging = tmp_path / "staging"
+        staging.mkdir()
+        (staging / "addons.json").write_text(
+            json.dumps([{"name": "missing", "kind": "local", "branch": "18.0"}])
+        )
+        warnings = []
+
+        wired = system_ops._wire_imported_addons(
+            team,
+            str(staging),
+            "18.0",
+            addon_error_policy="best_effort",
+            addon_warnings=warnings,
+        )
+
+        assert wired == {}
+        assert warnings == [
+            {
+                "name": "missing",
+                "action": "skipped",
+                "reason": "Addon 'missing' has no uploaded files and no usable origin.",
+            }
+        ]
+
+    def test_strict_clone_failure_can_use_uploaded_copy_with_warning(
+        self, team, tmp_path
+    ):
+        from unittest.mock import patch
+
+        from oduflow import extra_addons
+
+        staging = tmp_path / "staging"
+        local_src = staging / "addons" / "oca"
+        local_src.mkdir(parents=True)
+        (local_src / "__manifest__.py").write_text("{}")
+        (staging / "addons.json").write_text(
+            json.dumps(
+                [
+                    {
+                        "name": "oca",
+                        "kind": "remote",
+                        "origin_url": "https://example.com/oca.git",
+                        "branch": "18.0",
+                    }
+                ]
+            )
+        )
+        warnings = []
+
+        with patch.object(
+            extra_addons,
+            "clone_extra_repo",
+            side_effect=RuntimeError("remote unavailable"),
+        ):
+            wired = system_ops._wire_imported_addons(
+                team,
+                str(staging),
+                "18.0",
+                addon_warnings=warnings,
+            )
+
+        assert wired == {"oca": "18.0"}
+        assert warnings == [
+            {
+                "name": "oca",
+                "action": "used_local_copy",
+                "reason": "remote unavailable",
+            }
+        ]

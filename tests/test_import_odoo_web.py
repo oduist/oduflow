@@ -9,6 +9,7 @@ from concurrent.futures import ThreadPoolExecutor
 from threading import Event, Lock
 from unittest.mock import patch
 
+import pytest
 from starlette.applications import Starlette
 from starlette.testclient import TestClient
 
@@ -59,6 +60,9 @@ def test_import_script_served(tmp_path):
     assert "PGDATABASE" in r.text
     assert "backup.daily" in r.text
     assert "finalize" in r.text
+    assert "curl --help all" in r.text
+    assert "urllib.parse.quote" in r.text
+    assert "Addon warnings" in r.text
 
 
 def test_token_command_contains_server_and_token(tmp_path):
@@ -469,19 +473,70 @@ def test_addon_remote_requires_origin(tmp_path):
 
 
 def test_import_token_flags_in_command(tmp_path):
-    client, _s, _t = _client(tmp_path)
+    from oduflow import import_tokens
+
+    client, settings, _team = _client(tmp_path)
     r = client.post(
         "/api/templates/import-token",
         json={
             "template_name": "zipfit",
             "with_enterprise": True,
             "with_extra_addons": True,
+            "addon_error_policy": "best_effort",
         },
     )
     data = r.json()
     assert "--with-enterprise" in data["command"]
     assert "--with-extra-addons" in data["command"]
     assert "--with-themes" not in data["command"]
+    _resolved_team, record = import_tokens.load_token(settings, data["token"])
+    assert record["addon_error_policy"] == "best_effort"
+
+
+def test_import_token_rejects_unknown_addon_policy(tmp_path):
+    client, _settings, _team = _client(tmp_path)
+
+    r = client.post(
+        "/api/templates/import-token",
+        json={
+            "template_name": "zipfit",
+            "addon_error_policy": "ignore_everything",
+        },
+    )
+
+    assert r.status_code == 400
+    assert "addon_error_policy" in r.json()["error"]
+
+
+def test_finalize_uses_addon_policy_stored_in_token(tmp_path):
+    client, _settings, team = _client(tmp_path)
+    r = client.post(
+        "/api/templates/import-token",
+        json={
+            "template_name": "zipfit",
+            "addon_error_policy": "best_effort",
+        },
+    )
+    token = r.json()["token"]
+    staging = team.get_import_staging_dir("zipfit")
+    os.makedirs(staging)
+    with open(os.path.join(staging, "metadata.json"), "w") as f:
+        f.write("{}")
+    with open(os.path.join(staging, "dump.sql.gz"), "wb") as f:
+        f.write(b"gz")
+
+    with patch.object(
+        system_ops,
+        "finalize_imported_template",
+        return_value={"template_name": "zipfit", "addon_warnings": []},
+    ) as finalize:
+        response = client.post(
+            "/api/templates/import/finalize",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+    assert response.status_code == 200
+    assert finalize.call_args.kwargs["addon_error_policy"] == "best_effort"
 
 
 def test_filestore_tar_zip_slip_is_skipped(tmp_path):
@@ -554,6 +609,47 @@ def test_existing_template_does_not_fake_resume(tmp_path):
     assert st["progress"]["manifest"] is False
     assert st["progress"]["dump"] is False
     assert st["progress"]["filestore_chunks"] == []
+
+
+def test_promoted_import_reports_live_artifacts_for_retry(tmp_path):
+    """After promotion, a fresh token must skip re-uploading live artifacts."""
+    client, _s, team = _client(tmp_path)
+    staging = team.get_import_staging_dir("zipfit")
+    os.makedirs(staging)
+    open(os.path.join(staging, ".promoted"), "w").close()
+    tpl_dir = team.get_template_dir("zipfit")
+    os.makedirs(os.path.join(tpl_dir, "filestore", "ab"))
+    with open(team.get_template_metadata_path("zipfit"), "w") as f:
+        f.write("{}")
+    with open(os.path.join(tpl_dir, "dump.sql.gz"), "wb") as f:
+        f.write(b"promoted")
+
+    token, _ = _mint(client, "zipfit")
+    st = client.get(
+        "/api/templates/import/status",
+        headers={"Authorization": f"Bearer {token}"},
+    ).json()
+
+    assert st["progress"]["manifest"] is True
+    assert st["progress"]["dump"] is True
+    assert st["progress"]["dump_bytes"] == len(b"promoted")
+    assert st["progress"]["filestore_chunks"] == ["ab"]
+
+
+def test_private_remote_addon_url_is_rejected(tmp_path):
+    client, _s, _team = _client(tmp_path)
+    token, _ = _mint(client, "zipfit")
+    r = client.post(
+        "/api/templates/import/addon-remote",
+        headers={"Authorization": f"Bearer {token}"},
+        json={
+            "name": "private",
+            "origin_url": "https://127.0.0.1/repo.git",
+            "branch": "18.0",
+        },
+    )
+    assert r.status_code == 400
+    assert "blocked address" in r.json()["error"]
 
 
 def test_corrupt_chunk_is_not_marked_complete(tmp_path):
@@ -713,6 +809,7 @@ def test_finalize_swaps_staging_into_template(tmp_path):
         )
 
     assert result["template_db"] == "tdb"
+    assert result["addon_warnings"] == []
     fs = team.get_template_filestore_path("zipfit")
     assert open(os.path.join(fs, "ab", "f"), "rb").read() == b"blob"
     assert not os.path.exists(os.path.join(fs, "ff"))  # old filestore replaced
@@ -723,3 +820,59 @@ def test_finalize_swaps_staging_into_template(tmp_path):
         == "18.0"
     )
     assert not os.path.exists(staging)  # staging cleaned up
+
+
+def test_finalize_can_retry_after_reload_failure_without_reupload(tmp_path):
+    """Promotion leaves a marker and live artifacts when DB reload fails."""
+    from contextlib import contextmanager
+    from unittest.mock import MagicMock
+
+    team = TeamSettings(team_id="1", data_dir=str(tmp_path / "team1"))
+    settings = Settings(base_data_dir=str(tmp_path), teams={"1": team})
+    staging = team.get_import_staging_dir("zipfit")
+    os.makedirs(os.path.join(staging, "filestore", "ab"))
+    with open(os.path.join(staging, "metadata.json"), "w") as f:
+        json.dump({"odoo_version": "18.0"}, f)
+    with open(os.path.join(staging, "dump.sql.gz"), "wb") as f:
+        f.write(b"gz")
+
+    remount = MagicMock(affected=[], failures=[])
+
+    @contextmanager
+    def fake_remount(*a, **kw):
+        yield remount
+
+    from oduflow.docker_ops import env_ops
+
+    reload_results = [
+        RuntimeError("temporary restore failure"),
+        {"template_db": "tdb", "restore_seconds": 2.0},
+    ]
+    with (
+        patch.object(system_ops, "get_client"),
+        patch.object(env_ops, "remount_template_overlays", fake_remount),
+        patch.object(system_ops, "get_odoo_uid_gid", return_value="101:101"),
+        patch.object(system_ops, "chown_recursive"),
+        patch.object(system_ops, "_update_template_sizes"),
+        patch.object(
+            system_ops, "reload_template", side_effect=reload_results
+        ) as reload,
+    ):
+        with pytest.raises(RuntimeError, match="temporary restore failure"):
+            system_ops.finalize_imported_template(
+                settings, team, "zipfit", staging_dir=staging
+            )
+
+        assert os.path.isfile(os.path.join(staging, ".promoted"))
+        assert not os.path.isfile(os.path.join(staging, "dump.sql.gz"))
+        assert os.path.isfile(
+            os.path.join(team.get_template_dir("zipfit"), "dump.sql.gz")
+        )
+
+        result = system_ops.finalize_imported_template(
+            settings, team, "zipfit", staging_dir=staging
+        )
+
+    assert result["template_db"] == "tdb"
+    assert reload.call_count == 2
+    assert not os.path.exists(staging)
