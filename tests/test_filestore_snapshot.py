@@ -171,6 +171,27 @@ def test_chown_walks_everything_after_a_full_copy(tmp_path):
     recursive.assert_called_once()
 
 
+def test_baseline_ownership_check_accepts_a_matching_baseline(tmp_path):
+    baseline = tmp_path / "baseline"
+    _write(str(baseline / "a"), "x")
+    info = os.stat(baseline)
+
+    assert system_ops._baselines_owned_by([str(baseline)], info.st_uid, info.st_gid)
+    assert system_ops._baselines_owned_by([str(tmp_path / "absent")], 0, 0)
+
+
+def test_baseline_ownership_check_rejects_a_foreign_uid(tmp_path):
+    # An env built on an Odoo image with a different uid: files hardlinked from
+    # the old baseline would keep the old owner, so the full walk is required.
+    baseline = tmp_path / "baseline"
+    _write(str(baseline / "a"), "x")
+    info = os.stat(baseline)
+
+    assert not system_ops._baselines_owned_by(
+        [str(baseline)], info.st_uid + 1, info.st_gid
+    )
+
+
 def test_chown_falls_back_to_container_on_permission_error(tmp_path):
     root = tmp_path / "filestore"
     _write(str(root / "a"), "x")

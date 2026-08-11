@@ -2497,6 +2497,36 @@ def _snapshot_filestore(
     ]
 
 
+def _baselines_owned_by(link_dests: list[str], uid: int, gid: int) -> bool:
+    """Whether the linkable baselines already carry the target ownership.
+
+    A hardlinked file keeps whatever ownership the publish that created it gave
+    it, so chowning only the transferred files is complete only while that
+    ownership still matches. It stops matching when a team moves to an Odoo
+    image with a different uid — rare, but then the whole tree has to be walked
+    or the old files would keep the previous uid forever.
+
+    Checking each baseline's root is enough: a mismatch forces the full walk,
+    which leaves root and contents consistent again.
+    """
+    for path in link_dests:
+        if not os.path.isdir(path):
+            continue
+        info = os.stat(path)
+        if info.st_uid != uid or info.st_gid != gid:
+            logger.info(
+                "Baseline %s is owned by %d:%d, not %d:%d; chowning the whole "
+                "template filestore",
+                path,
+                info.st_uid,
+                info.st_gid,
+                uid,
+                gid,
+            )
+            return False
+    return True
+
+
 def _chown_filestore(
     root: str,
     rel_paths: list[str] | None,
@@ -2673,11 +2703,12 @@ def publish_env_as_template(
 
             odoo_uid_gid = get_odoo_uid_gid(client, source_image)
             uid_str, gid_str = odoo_uid_gid.split(":")
+            uid, gid = int(uid_str), int(gid_str)
             _chown_filestore(
                 template_filestore_path,
-                transferred,
-                int(uid_str),
-                int(gid_str),
+                transferred if _baselines_owned_by(link_dests, uid, gid) else None,
+                uid,
+                gid,
                 client,
                 source_image,
             )
