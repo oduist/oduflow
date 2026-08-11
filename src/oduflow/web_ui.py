@@ -1650,7 +1650,8 @@ def _build_routes(
         Optional booleans ``with_enterprise`` / ``with_themes`` /
         ``with_extra_addons`` append the matching ``--with-*`` flags to the
         returned command so the checkboxes in the import dialog drive what the
-        Odoo.sh client downloads.
+        Odoo.sh client downloads. ``addon_error_policy`` is stored with the
+        token and controls strict versus best-effort addon wiring at finalize.
         """
         team = _get_ui_team(request)
         with_flags: list[str] = []
@@ -1672,7 +1673,15 @@ def _build_routes(
                 with_flags.append("--with-themes")
             if data.get("with_extra_addons"):
                 with_flags.append("--with-extra-addons")
-            record = import_tokens.create_token(team, template_name)
+            addon_error_policy = str(
+                data.get("addon_error_policy")
+                or import_tokens.ADDON_ERROR_POLICY_STRICT
+            )
+            record = import_tokens.create_token(
+                team,
+                template_name,
+                addon_error_policy=addon_error_policy,
+            )
         except ValueError as e:
             return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
         except Exception:
@@ -2140,6 +2149,10 @@ def _build_routes(
                 team,
                 template_name,
                 staging_dir=team.get_import_staging_dir(template_name),
+                addon_error_policy=str(
+                    record.get("addon_error_policy")
+                    or import_tokens.ADDON_ERROR_POLICY_STRICT
+                ),
             )
             import_tokens.invalidate(team, str(record["token"]))
             return JSONResponse({"ok": True, "result": result})

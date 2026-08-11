@@ -62,6 +62,7 @@ def test_import_script_served(tmp_path):
     assert "finalize" in r.text
     assert "curl --help all" in r.text
     assert "urllib.parse.quote" in r.text
+    assert "Addon warnings" in r.text
 
 
 def test_token_command_contains_server_and_token(tmp_path):
@@ -472,19 +473,70 @@ def test_addon_remote_requires_origin(tmp_path):
 
 
 def test_import_token_flags_in_command(tmp_path):
-    client, _s, _t = _client(tmp_path)
+    from oduflow import import_tokens
+
+    client, settings, _team = _client(tmp_path)
     r = client.post(
         "/api/templates/import-token",
         json={
             "template_name": "zipfit",
             "with_enterprise": True,
             "with_extra_addons": True,
+            "addon_error_policy": "best_effort",
         },
     )
     data = r.json()
     assert "--with-enterprise" in data["command"]
     assert "--with-extra-addons" in data["command"]
     assert "--with-themes" not in data["command"]
+    _resolved_team, record = import_tokens.load_token(settings, data["token"])
+    assert record["addon_error_policy"] == "best_effort"
+
+
+def test_import_token_rejects_unknown_addon_policy(tmp_path):
+    client, _settings, _team = _client(tmp_path)
+
+    r = client.post(
+        "/api/templates/import-token",
+        json={
+            "template_name": "zipfit",
+            "addon_error_policy": "ignore_everything",
+        },
+    )
+
+    assert r.status_code == 400
+    assert "addon_error_policy" in r.json()["error"]
+
+
+def test_finalize_uses_addon_policy_stored_in_token(tmp_path):
+    client, _settings, team = _client(tmp_path)
+    r = client.post(
+        "/api/templates/import-token",
+        json={
+            "template_name": "zipfit",
+            "addon_error_policy": "best_effort",
+        },
+    )
+    token = r.json()["token"]
+    staging = team.get_import_staging_dir("zipfit")
+    os.makedirs(staging)
+    with open(os.path.join(staging, "metadata.json"), "w") as f:
+        f.write("{}")
+    with open(os.path.join(staging, "dump.sql.gz"), "wb") as f:
+        f.write(b"gz")
+
+    with patch.object(
+        system_ops,
+        "finalize_imported_template",
+        return_value={"template_name": "zipfit", "addon_warnings": []},
+    ) as finalize:
+        response = client.post(
+            "/api/templates/import/finalize",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+    assert response.status_code == 200
+    assert finalize.call_args.kwargs["addon_error_policy"] == "best_effort"
 
 
 def test_filestore_tar_zip_slip_is_skipped(tmp_path):
@@ -757,6 +809,7 @@ def test_finalize_swaps_staging_into_template(tmp_path):
         )
 
     assert result["template_db"] == "tdb"
+    assert result["addon_warnings"] == []
     fs = team.get_template_filestore_path("zipfit")
     assert open(os.path.join(fs, "ab", "f"), "rb").read() == b"blob"
     assert not os.path.exists(os.path.join(fs, "ff"))  # old filestore replaced

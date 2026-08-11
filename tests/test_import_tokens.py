@@ -23,10 +23,35 @@ def test_create_and_load_roundtrip(tmp_path):
     settings = _settings(team)
     rec = import_tokens.create_token(team, "zipfit")
     assert rec["template_name"] == "zipfit"
+    assert rec["addon_error_policy"] == "strict"
     team2, rec2 = import_tokens.load_token(settings, rec["token"])
     assert team2.team_id == "1"
     assert rec2["token"] == rec["token"]
     assert rec2["template_name"] == "zipfit"
+    assert rec2["addon_error_policy"] == "strict"
+
+
+def test_best_effort_addon_policy_roundtrip(tmp_path):
+    team = _team(tmp_path)
+    settings = _settings(team)
+    rec = import_tokens.create_token(
+        team,
+        "zipfit",
+        addon_error_policy="best_effort",
+    )
+
+    _team2, loaded = import_tokens.load_token(settings, rec["token"])
+
+    assert loaded["addon_error_policy"] == "best_effort"
+
+
+def test_invalid_addon_policy_rejected(tmp_path):
+    with pytest.raises(ValueError, match="addon_error_policy"):
+        import_tokens.create_token(
+            _team(tmp_path),
+            "zipfit",
+            addon_error_policy="ignore_everything",
+        )
 
 
 def test_malformed_and_unknown_tokens_raise_not_found(tmp_path):

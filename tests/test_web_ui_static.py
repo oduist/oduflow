@@ -114,9 +114,18 @@ def test_minimized_window_dock_has_group_semantics_and_restores_focus(tmp_path):
     capture_at = body.find("returnFocus = _minimized")
     closer_at = body.find("closer()")
     focus_at = body.find("returnFocus.focus()")
-    assert (
-        0 <= capture_at < closer_at < focus_at
-    ), (
+    assert 0 <= capture_at < closer_at < focus_at, (
         f"closeMinimized statement order is wrong: "
         f"capture={capture_at}, closer={closer_at}, focus={focus_at}"
+    )
+
+
+def test_odoo_sh_import_exposes_best_effort_addon_policy(tmp_path):
+    dashboard = _client(tmp_path).get("/").text
+
+    assert 'id="import-best-effort" disabled' in dashboard
+    assert "Continue if some addons are unavailable" in dashboard
+    assert (
+        "addon_error_policy: document.getElementById('import-best-effort').checked "
+        "? 'best_effort' : 'strict'" in dashboard
     )

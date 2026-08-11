@@ -3069,7 +3069,12 @@ def extract_addon_dir(tar_path: str, addons_dir: str, name: str) -> int:
 
 
 def _wire_imported_addons(
-    team: TeamSettings, staging_dir: str, major_version: str
+    team: TeamSettings,
+    staging_dir: str,
+    major_version: str,
+    *,
+    addon_error_policy: str = "strict",
+    addon_warnings: list[dict[str, str]] | None = None,
 ) -> dict[str, str]:
     """Turn staged Odoo.sh addons into Oduflow extra-addons repos.
 
@@ -3078,10 +3083,25 @@ def _wire_imported_addons(
     origin (updatable via update_extra_repo); everything else is seeded as a
     local (remote-less) repo from ``addons/<name>/``. A repo that already exists
     is reused only when the requested branch exists. Every declared addon must
-    be usable; otherwise finalization remains retryable and fails rather than
-    creating a template with an incomplete addons path.
+    be usable in ``strict`` mode. ``best_effort`` uses a staged local fallback
+    when possible and otherwise skips only the failing addon, recording every
+    fallback or skip in ``addon_warnings``.
     """
     from oduflow import extra_addons
+
+    if addon_error_policy not in {"strict", "best_effort"}:
+        raise ValueError("addon_error_policy must be 'strict' or 'best_effort'.")
+    best_effort = addon_error_policy == "best_effort"
+    warnings = addon_warnings if addon_warnings is not None else []
+
+    def record_warning(name: str, action: str, reason: str) -> None:
+        warnings.append({"name": name, "action": action, "reason": reason})
+        logger.warning(
+            "Imported addon '%s': %s (%s)",
+            name,
+            action.replace("_", " "),
+            reason,
+        )
 
     manifest = os.path.join(staging_dir, "addons.json")
     if not os.path.isfile(manifest):
@@ -3116,21 +3136,32 @@ def _wire_imported_addons(
         # Already registered (e.g. a re-run, or the user added it manually):
         # reference it only if the requested branch is genuinely available.
         if os.path.isdir(repo_path):
-            extra_addons._resolve_branch_revision(repo_path, name, branch)
+            try:
+                extra_addons._resolve_branch_revision(repo_path, name, branch)
+            except Exception as exc:
+                if not best_effort:
+                    raise
+                record_warning(name, "skipped", str(exc))
+                continue
             wired[name] = branch
             logger.info("Extra repo '%s' already exists; referencing it", name)
             continue
 
         src_dir = os.path.join(addons_src, name)
+        local_fallback_reason = ""
         if kind == "remote" and origin_url:
             try:
                 extra_addons.clone_extra_repo(team, name, origin_url)
-            except Exception:
+            except Exception as exc:
                 # A failed clone may leave a partial bare repo. It belongs to
                 # this import attempt, so remove it before a retry or fallback.
                 shutil.rmtree(repo_path, ignore_errors=True)
                 if not os.path.isdir(src_dir):
+                    if best_effort:
+                        record_warning(name, "skipped", str(exc))
+                        continue
                     raise
+                local_fallback_reason = str(exc)
                 logger.warning(
                     "Clone of extra repo '%s' failed; using uploaded files",
                     name,
@@ -3138,23 +3169,43 @@ def _wire_imported_addons(
             else:
                 try:
                     extra_addons._resolve_branch_revision(repo_path, name, branch)
-                except Exception:
+                except Exception as exc:
                     # Clone succeeded but the requested branch is missing on
                     # the remote: the bare repo cannot serve this branch, so
-                    # discard it and let the caller fail loudly on the wrong
-                    # branch instead of silently masking the issue with local
-                    # files that the user did not request.
+                    # discard the repo created by this import attempt.
                     shutil.rmtree(repo_path, ignore_errors=True)
-                    raise
-                wired[name] = branch
-                continue
+                    if not best_effort:
+                        raise
+                    reason = str(exc)
+                    if not os.path.isdir(src_dir):
+                        record_warning(name, "skipped", reason)
+                        continue
+                    local_fallback_reason = reason
+                else:
+                    wired[name] = branch
+                    continue
         if not os.path.isdir(src_dir):
-            raise PrerequisiteNotMetError(
+            error = PrerequisiteNotMetError(
                 f"Addon '{name}' has no uploaded files and no usable origin."
             )
-        extra_addons.create_local_repo(team, name, src_dir, branch)
-        extra_addons._resolve_branch_revision(repo_path, name, branch)
+            if best_effort:
+                record_warning(name, "skipped", str(error))
+                continue
+            raise error
+        try:
+            extra_addons.create_local_repo(team, name, src_dir, branch)
+            extra_addons._resolve_branch_revision(repo_path, name, branch)
+        except Exception as exc:
+            if not best_effort:
+                raise
+            # No repo existed before this entry, so any partial target belongs
+            # to this import attempt and must not poison a later retry.
+            shutil.rmtree(repo_path, ignore_errors=True)
+            record_warning(name, "skipped", str(exc))
+            continue
         wired[name] = branch
+        if local_fallback_reason:
+            record_warning(name, "used_local_copy", local_fallback_reason)
 
     return wired
 
@@ -3164,6 +3215,8 @@ def finalize_imported_template(
     team: TeamSettings,
     template_name: str,
     staging_dir: str,
+    *,
+    addon_error_policy: str = "strict",
 ) -> dict[str, object]:
     """Promote a fully-staged push import into the live template and load it.
 
@@ -3257,7 +3310,14 @@ def finalize_imported_template(
     # created from it mount the same addons-path Odoo.sh ran with. Done after the
     # DB restore and before staging cleanup. Declared addons are part of the
     # template contract, so a missing repo/branch keeps the import retryable.
-    wired = _wire_imported_addons(team, staging_dir, major_version)
+    addon_warnings: list[dict[str, str]] = []
+    wired = _wire_imported_addons(
+        team,
+        staging_dir,
+        major_version,
+        addon_error_policy=addon_error_policy,
+        addon_warnings=addon_warnings,
+    )
     if wired:
         meta_path = team.get_template_metadata_path(template_name)
         try:
@@ -3282,6 +3342,7 @@ def finalize_imported_template(
         "affected_envs": remount.affected,
         "remount_failures": remount.failures,
         "extra_addons": wired,
+        "addon_warnings": addon_warnings,
     }
 
 

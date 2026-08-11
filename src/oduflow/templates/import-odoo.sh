@@ -462,4 +462,12 @@ if not d.get("ok"):
     print(">> ERROR:", d.get("error","unknown error")); sys.exit(1)
 r=d.get("result",{})
 print(">> Done — template ready:", r.get("template_name"))
-print("   DB:", r.get("template_db"), " restore:", r.get("restore_seconds"), "s")' "$RESULT_FILE"
+print("   DB:", r.get("template_db"), " restore:", r.get("restore_seconds"), "s")
+warnings = r.get("addon_warnings") or []
+if warnings:
+    print(">> Addon warnings:")
+    for warning in warnings:
+        name = warning.get("name") or "unknown"
+        action = warning.get("action") or "warning"
+        reason = warning.get("reason") or "No reason reported."
+        print("   WARNING:", name, "—", action, "—", reason)' "$RESULT_FILE"
