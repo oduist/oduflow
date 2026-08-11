@@ -671,21 +671,67 @@ def _destroy_traefik(
         pass
 
 
+def _exec_exit_code(
+    client: DockerClient,
+    container: Any,
+    cmd: list[str],
+    *,
+    timeout: float = 10.0,
+) -> int:
+    """Run *cmd* in *container* and return its exit code within *timeout*.
+
+    ``container.exec_run`` cannot be used where a hang must not be fatal:
+    docker-py reads the exec output off a socket whose timeout it deliberately
+    disables (``APIClient._disable_socket_timeout``), so an exec that never
+    finishes — a container wedged by a daemon restart, for instance — blocks the
+    caller forever. Starting the exec detached and polling ``exec_inspect``
+    keeps every Docker call under the client's own request timeout and makes the
+    wait genuinely bounded.
+
+    Raises ``TimeoutError`` when the command is still running at the deadline;
+    Docker API failures propagate as ``docker.errors.APIError``.
+    """
+    exec_id = client.api.exec_create(container.id, cmd)["Id"]
+    client.api.exec_start(exec_id, detach=True)
+    deadline = time.monotonic() + timeout
+    while True:
+        info = client.api.exec_inspect(exec_id)
+        if not info.get("Running"):
+            exit_code = info.get("ExitCode")
+            # A finished exec with no reported code is not a success.
+            return 1 if exit_code is None else int(exit_code)
+        if time.monotonic() >= deadline:
+            raise TimeoutError(
+                f"'{' '.join(cmd)}' in {container.name} did not finish "
+                f"within {timeout:.0f}s"
+            )
+        time.sleep(0.5)
+
+
 def _wait_pg_ready(
     client: DockerClient,
     settings: Settings,
     timeout: int = 30,
     *,
     container_name: str | None = None,
+    exec_timeout: float = 10.0,
 ) -> None:
     # container_name selects the PostgreSQL instance: the shared dev one by
     # default, or the production cluster (settings.prod_db_container).
     container = client.containers.get(container_name or settings.shared_db_container)
+    deadline = time.monotonic() + timeout
     for _ in range(timeout):
         try:
-            exit_code, _ = container.exec_run(["pg_isready", "-U", settings.db_user])
-            if exit_code == 0:
-                exit_code2, _ = container.exec_run(
+            ready = _exec_exit_code(
+                client,
+                container,
+                ["pg_isready", "-U", settings.db_user],
+                timeout=exec_timeout,
+            )
+            if ready == 0:
+                probe = _exec_exit_code(
+                    client,
+                    container,
                     [
                         "psql",
                         "-U",
@@ -694,9 +740,10 @@ def _wait_pg_ready(
                         "postgres",
                         "-tAc",
                         "SELECT 1;",
-                    ]
+                    ],
+                    timeout=exec_timeout,
                 )
-                if exit_code2 == 0:
+                if probe == 0:
                     return
         except docker.errors.APIError:
             # The DB container isn't running yet — still starting, or restarting
@@ -705,6 +752,12 @@ def _wait_pg_ready(
             # transient state crash the whole server startup (which systemd would
             # turn into a restart loop).
             pass
+        except TimeoutError as exc:
+            # A wedged exec is also just "not ready": retry, and let the loop's
+            # own deadline decide when to give up.
+            logger.warning("PostgreSQL readiness probe timed out: %s", exc)
+        if time.monotonic() >= deadline:
+            break
         time.sleep(1)
     raise PrerequisiteNotMetError(
         f"PostgreSQL ({container.name}) did not become ready within "

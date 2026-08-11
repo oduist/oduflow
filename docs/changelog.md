@@ -32,6 +32,23 @@
 
 ### Bug Fixes
 
+- **A wedged Docker call can no longer take the server down silently** — startup
+  runs migrations, `init_system` and quotas before the HTTP listener binds, and
+  docker-py disables the socket timeout while reading exec output, so a Docker
+  daemon restarting underneath Oduflow (typically `unattended-upgrades` letting
+  `needrestart` restart Oduflow in the same batch as `containerd`) could block
+  the start forever: an `active (running)` unit serving nothing, for hours. Four
+  changes close that hole. A startup watchdog aborts the process — after dumping
+  every thread's stack to the journal — when startup emits no log line for 15
+  minutes, so systemd restarts instead of waiting; the PostgreSQL readiness
+  probe now runs detached and polls `exec_inspect`, making its 30-second budget
+  real; startup first waits up to a minute for the daemon to answer; and
+  `oduflow systemd-install` now generates a unit ordered after
+  `containerd.service` with `Restart=always` and no start-rate limit, plus an
+  `/etc/needrestart/conf.d/oduflow.conf` override that keeps Oduflow out of
+  needrestart's automatic restart batches. Existing installs get the unit and
+  override by re-running `oduflow systemd-install`.
+
 - **`http_request_to_odoo` now requests the path you pass it** — the base URL was
   taken from `get_environment_info()["url"]`, which ends in `/web?debug=1`, so
   appending the path buried it in the query string and every request silently hit

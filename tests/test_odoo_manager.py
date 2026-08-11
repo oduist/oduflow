@@ -74,11 +74,16 @@ class TestInitSystem:
             if name == "oduflow-db":
                 c = MagicMock()
                 c.status = "running"
-                c.exec_run.return_value = (0, b"")
                 return c
             raise docker.errors.NotFound("nf")
 
         mock_docker_client.containers.get.side_effect = get_container
+        # Readiness probes run detached and are polled (see _exec_exit_code).
+        mock_docker_client.api.exec_create.return_value = {"Id": "exec-id"}
+        mock_docker_client.api.exec_inspect.return_value = {
+            "Running": False,
+            "ExitCode": 0,
+        }
 
         result = system_ops.init_system(TEST_SETTINGS)
 

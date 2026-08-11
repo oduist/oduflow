@@ -428,8 +428,28 @@ oduflow systemd-install
 This will:
 
 1. Generate a systemd unit file at `/etc/systemd/system/oduflow.service`
-2. Run `systemctl daemon-reload`
-3. Enable the service for auto-start on boot
+2. Write `/etc/needrestart/conf.d/oduflow.conf` (only if needrestart is installed)
+3. Run `systemctl daemon-reload`
+4. Enable the service for auto-start on boot
+
+The unit is ordered after `docker.service` and `containerd.service`, restarts
+always, and has no start-rate limit, so a host that upgrades Docker underneath
+Oduflow cannot leave the service parked in `failed`.
+
+The needrestart snippet excludes `oduflow.service` from needrestart's automatic
+restarts. Oduflow drives the Docker daemon; when `unattended-upgrades` restarts
+a library, needrestart would otherwise restart Oduflow in the same batch as
+containerd and Docker, and Oduflow's startup would race a daemon that is itself
+going down. With the exclusion in place, needrestart lists Oduflow as needing a
+manual restart instead:
+
+```bash
+systemctl restart oduflow
+```
+
+Already installed the service with an older Oduflow? Re-run
+`oduflow systemd-install` to refresh the unit and add the needrestart override,
+then `systemctl daemon-reload && systemctl restart oduflow`.
 
 ### Manage the service
 
@@ -453,4 +473,5 @@ systemctl restart oduflow
 oduflow systemd-uninstall
 ```
 
-This stops, disables, and removes the unit file.
+This stops, disables, and removes the unit file, along with the needrestart
+override.

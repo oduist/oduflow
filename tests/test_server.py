@@ -62,6 +62,7 @@ class TestCLIInitDestroy:
 
         with (
             patch.object(sys, "argv", ["oduflow", "-t", "http"]),
+            patch("oduflow.docker_ops.client.wait_for_docker") as mock_wait_for_docker,
             patch.object(server.migrations, "run_pending"),
             patch.object(server, "_ensure_initialized"),
             patch.object(server.quotas, "apply_all"),
@@ -72,6 +73,7 @@ class TestCLIInitDestroy:
 
         mock_stdio.assert_not_called()
         mock_http.assert_called_once_with()
+        mock_wait_for_docker.assert_called_once_with()
         assert server.settings_module.TRANSPORT == "http"
 
     @patch("oduflow.docker_ops.system_ops.destroy_system")

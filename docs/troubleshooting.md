@@ -42,6 +42,58 @@ journalctl -u oduflow -f
 
 ---
 
+## The server is "active" but nothing responds after a system upgrade
+
+`systemctl status oduflow` says `active (running)`, yet the dashboard, `/mcp`
+and `/healthz` all time out, and `journalctl -u oduflow` stops a few lines into
+startup — typically right after `Initializing system` — with no error.
+
+The cause is a Docker call that never returns. Startup (migrations,
+`init_system`, quotas) runs **before** the HTTP listener binds, and docker-py
+disables the socket timeout while reading exec output, so a daemon that is
+restarting underneath Oduflow can block a readiness probe indefinitely. The
+classic trigger: `unattended-upgrades` upgrades a library, and `needrestart`
+restarts `oduflow.service` in the same batch as `containerd` and `docker`.
+
+Current versions defend on three fronts, all applied by re-running
+`oduflow systemd-install`:
+
+- A **startup watchdog** aborts the process when startup emits no log line for
+  15 minutes, dumping every thread's stack to the journal first, so systemd
+  restarts the service instead of leaving it wedged.
+- The **unit** is ordered after `containerd.service`, uses `Restart=always`, and
+  has no start-rate limit.
+- A **needrestart override** (`/etc/needrestart/conf.d/oduflow.conf`) keeps
+  Oduflow out of automatic restart batches.
+
+Immediate recovery is a plain restart — it completes in seconds once the daemon
+is settled:
+
+```bash
+systemctl restart oduflow
+journalctl -u oduflow -f
+
+# Confirm the defenses are in place on this host:
+systemctl cat oduflow | grep -E 'After=|Restart='
+cat /etc/needrestart/conf.d/oduflow.conf
+```
+
+If the journal contains a `Startup made no progress for …s` line followed by
+thread stacks, that is the watchdog reporting where the start hung — include it
+in any bug report.
+
+If a start is legitimately slower than the window (a very slow link pulling
+images, say) and the watchdog keeps cutting it short, widen it — or set `0` to
+switch it off — via the environment, e.g. in a
+`systemctl edit oduflow` drop-in:
+
+```ini
+[Service]
+Environment=ODUFLOW_STARTUP_STALL_SECONDS=3600
+```
+
+---
+
 ## Disk full
 
 A full disk cascades: PostgreSQL cannot write and crash-loops, new
