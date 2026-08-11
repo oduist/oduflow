@@ -659,17 +659,26 @@ def _extract_sentinel(output: str, key: str) -> str | None:
 
 
 def _build_connect_as_user_script(user: str) -> str:
-    """Build the in-container script used by :func:`connect_as_user`."""
+    """Build the in-container script used by :func:`connect_as_user`.
+
+    An empty *user* resolves the database's admin through ``base.user_admin``
+    rather than a hardcoded id: the xml-id survives an archived or renamed admin,
+    where ``id = 2`` would produce a misleading "user not found".
+    """
     return f"""
 import traceback
 try:
     _sel = {user!r}
     Users = env['res.users'].sudo()
-    u = Users.search([('login', '=', _sel)], limit=1)
-    if not u and _sel.isdigit():
-        u = Users.search([('id', '=', int(_sel))], limit=1)
+    if not _sel:
+        _admin = env.ref('base.user_admin', raise_if_not_found=False)
+        u = _admin.sudo() if _admin else Users.browse()
+    else:
+        u = Users.search([('login', '=', _sel)], limit=1)
+        if not u and _sel.isdigit():
+            u = Users.search([('id', '=', int(_sel))], limit=1)
     if not u:
-        print('__ODUFLOW_ERR__NOTFOUND:' + _sel + '__END__')
+        print('__ODUFLOW_ERR__NOTFOUND:' + (_sel or 'admin (base.user_admin)') + '__END__')
     else:
         user_env = env(user=u.id)
         user = user_env['res.users'].browse(u.id)
@@ -761,12 +770,19 @@ def connect_as_user(
         cmd = (
             f"odoo shell --no-http --stop-after-init "
             f"--db_host={settings.shared_db_container} "
-            f"-r {creds['pg_user']} -w {creds['pg_password']} "
+            f"-r {creds['pg_user']} "
             f"--database={env_db} "
             f"< {script_path}"
         )
         logger.info("Minting session", extra={"env_name": env_name})
-        exit_code, output = container.exec_run(["sh", "-c", cmd], user="odoo")
+        # Password via PGPASSWORD (libpq reads it), never `-w` on the odoo CLI:
+        # that would expose it in the container's process argv. Minting is a hot
+        # path now that the odoo_* RPC tools re-mint per environment and user.
+        exit_code, output = container.exec_run(
+            ["sh", "-c", cmd],
+            user="odoo",
+            environment={"PGPASSWORD": creds["pg_password"]},
+        )
         output_str = (
             output.decode("utf-8") if isinstance(output, bytes) else str(output)
         )
@@ -940,7 +956,7 @@ def http_request_to_odoo(
     import urllib.request
     import urllib.error
 
-    from oduflow.docker_ops.env_ops import get_environment_info
+    from oduflow.docker_ops.env_ops import get_env_base_url
 
     # SSRF guard: `path` is appended to the environment's own base URL. Require a
     # single leading slash so it cannot rewrite the host — e.g. "@evil/..." would
@@ -953,8 +969,11 @@ def http_request_to_odoo(
             f"(got {path!r})."
         )
 
-    info = get_environment_info(settings, team, env_name)
-    base_url = info["url"]
+    # `get_env_base_url` returns scheme + host (+ port) with no path. The
+    # browsable URL from `get_environment_info` must NOT be used here: it ends in
+    # "/web?debug=1", so appending `path` buried it in the query string and every
+    # request silently hit "/web" instead of the requested path.
+    base_url, _cookie_domain = get_env_base_url(settings, team, env_name)
 
     url = f"{base_url}{path}"
     req_headers = dict(headers) if headers else {}

@@ -208,8 +208,10 @@ from deletion, since only stopped environments are ever deleted.
 automatically and prepend a short note to the response
 (`Note: environment was stopped; started it ...`): `pull_and_apply`, module
 installs/upgrades, `run_odoo_tests`, `run_odoo_shell`, `run_odoo_command`,
-file tools (`read/write/search_in_odoo`), `http_request_to_odoo` and
-`reset_admin_password`. Read-only and diagnostic tools never wake an
+the ORM tools (`odoo_search_read`, `odoo_create`, `odoo_write`, `odoo_unlink`,
+`odoo_call`, `odoo_schema`), file tools (`read/write/search_in_odoo`),
+`http_request_to_odoo` and `reset_admin_password`. Read-only and diagnostic
+tools never wake an
 environment: `run_db_query` and `list_installed_modules` go to the shared
 PostgreSQL, and `get_environment_logs` reads logs of stopped containers —
 useful when diagnosing why something died.

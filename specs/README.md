@@ -59,6 +59,7 @@ precursors).
 | [0038](0038-agent-chat-file-attachments.md) | 2026-07-22 | Agent Chat file attachments through persistent workspace resources |
 | [0039](0039-shared-immutable-extra-addons-checkouts.md) | 2026-07-22 | Shared immutable extra-addons checkouts for development environments |
 | [0040](0040-versioned-coder-image-contract.md) | 2026-07-22 | Immutable, release-coupled coder image tags replace the rolling runtime |
+| [0041](0041-structured-odoo-orm-tools.md) | 2026-08-02 | Structured Odoo ORM tools (`execute_kw` semantics) over the web JSON-RPC endpoint |
 
 ## Design docs
 

@@ -158,6 +158,7 @@ For OAuth-based MCP clients like Claude.ai Remote MCP, Oduflow runs its own OAut
 - `get_environment_logs` — retrieve container logs
 - `run_odoo_command` — execute shell commands inside the Odoo container
 - `run_odoo_shell` — execute Python code in the Odoo shell with full ORM access
+- `odoo_search_read` / `odoo_create` / `odoo_write` / `odoo_unlink` / `odoo_call` / `odoo_schema` — XML-RPC `execute_kw`-equivalent ORM tools. Structured JSON in and out, no Python to write; every one takes `as_user` (login or id, empty = the environment's admin) and runs in a real session for that user, so `ir.model.access` and `ir.rule` apply as they do in the web client. `odoo_call` handles other public methods (`read_group`, `name_search`, `action_*`, custom methods), while policy-visible `create`/`write`/`unlink` must use their dedicated tools; `odoo_schema` pages through models or returns `fields_get`. They hit the **running** server: edited Python is invisible until the environment restarts, and each call is its own committed transaction — use `run_odoo_shell` for a fresh registry, `sudo()`, private methods, a dry run, or multi-step atomicity
 - `read_file_in_odoo` — read a text file or list a directory inside the container (supports line ranges)
 - `write_file_in_odoo` — write a text file inside the container (CSV imports, scripts, configs)
 - `search_in_odoo` — search for a pattern (fixed-string grep) in files inside the container
@@ -198,7 +199,8 @@ sanitization scripts followed by project scripts from
 2. If not, call `create_environment` with `branch`, `template_name`, `repo_url`, and `odoo_image`
 3. Write code, `git push`, then call `pull_and_apply` (auto-detects what to do)
 4. Use `install_odoo_modules` / `run_odoo_tests` / `get_environment_logs` to verify
-5. Call `delete_environment` when the task is done
+5. Inspect and manipulate data with the `odoo_*` ORM tools — `odoo_schema` first to get the real field names, then `odoo_search_read`; add `as_user` to check what a given role can actually see or change
+6. Call `delete_environment` when the task is done
 
 ## Links
 

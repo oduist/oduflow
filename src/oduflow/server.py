@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import functools
+import json
 import logging
 import os
 import pathlib
@@ -27,6 +28,7 @@ from fastmcp.exceptions import ToolError
 from oduflow.docker_ops import (
     env_ops,
     odoo_ops,
+    odoo_rpc,
     production_ops,
     service_ops,
     service_presets,
@@ -2022,6 +2024,9 @@ def reset_admin_password(
     team = _resolve_team(ctx)
     woke = _wake_for_work(settings, team, env_name)
     result = odoo_ops.reset_admin_password(settings, team, env_name, new_password)
+    # Odoo derives a session's token from the user's password hash, so every
+    # cached session for this environment is now rejected server-side.
+    odoo_rpc.invalidate_sessions(team.team_id, env_name)
     return f"{woke}Admin password has been reset successfully.\nLogin: {result['login']}\nNew password: {new_password}"
 
 
@@ -2108,6 +2113,544 @@ def run_db_query(
         output = "\n".join(truncated)
 
     return _maybe_cache(output, "", "run_db_query", f"env={env_name}")
+
+
+# =============================================================================
+# MCP Tools — Odoo ORM (JSON-RPC)
+# =============================================================================
+#
+# execute_kw-equivalent access to the *running* Odoo server. Shared shape:
+#   - `as_user` (login or numeric id, empty = the environment's admin) makes the
+#     call run in a real session for that user, so ACLs and record rules apply.
+#   - JSON string arguments accept a Python literal too, because models emit one
+#     about as often as they emit JSON.
+#   - Odoo-side failures (AccessError, ValidationError, ...) are returned as
+#     text with the server traceback — they are answers, not tool failures.
+#   - Every call is its own committed transaction.
+
+
+def _rpc_user(as_user: str) -> str:
+    """Validate `as_user`, rejecting the superuser."""
+    value = (as_user or "").strip()
+    if value in {"1", "__system__"}:
+        raise ValueError(
+            "as_user cannot be the superuser (uid 1 / __system__): a web session "
+            "for it is not a real state. Use run_odoo_shell for sudo() access."
+        )
+    return value
+
+
+_ODOO_CALL_DEDICATED_MUTATIONS = frozenset({"create", "write", "unlink"})
+
+
+def _rpc_generic_method(method: str) -> str:
+    """Keep policy-visible CRUD mutations on their dedicated MCP tools."""
+    value = (method or "").strip()
+    if value in _ODOO_CALL_DEDICATED_MUTATIONS:
+        raise ValueError(
+            f"Method {value!r} must use its dedicated odoo_{value} tool so "
+            "tool-level mutation policy cannot be bypassed through odoo_call."
+        )
+    return value
+
+
+def _rpc_rows(rows: Any) -> str:
+    """Render ORM records as one compact JSON object per line."""
+    if not isinstance(rows, list) or not rows:
+        return json.dumps(rows, ensure_ascii=False, default=str)
+    inner = ",\n".join(
+        json.dumps(row, ensure_ascii=False, default=str, separators=(",", ":"))
+        for row in rows
+    )
+    return f"[\n{inner}\n]"
+
+
+def _rpc_response(
+    woke: str,
+    result: odoo_rpc.RpcResult,
+    header: str,
+    body: str,
+    tool: str,
+    source_args: str,
+) -> str:
+    """Format an RpcResult, prepending wake-up and session-mint notes."""
+    notes = woke
+    if result.minted:
+        notes += (
+            f"Note: minted a new Odoo session for {result.login} "
+            "(first call for this user in this environment).\n"
+        )
+    actor = result.login or "admin"
+    if not result.ok:
+        return _maybe_cache(
+            result.error_text(), f"{notes}Error (as {actor}).", tool, source_args
+        )
+    return _maybe_cache(body, f"{notes}{header}", tool, source_args)
+
+
+@mcp.tool()
+@handle_errors
+@with_env_lock
+def odoo_search_read(
+    env_name: str,
+    model: str,
+    domain: str = "[]",
+    fields: str = "",
+    limit: int = 80,
+    offset: int = 0,
+    order: str = "",
+    count_only: bool = False,
+    as_user: str = "",
+    context: str = "",
+    ctx: Context | None = None,
+) -> str:
+    """
+    Search and read Odoo records — the ORM equivalent of XML-RPC `search_read`.
+
+    Prefer this over run_odoo_shell for reading data: it is far faster, returns
+    JSON you can parse, and enforces the target user's access rights.
+
+    Common use cases:
+    - List records: model="res.partner", domain='[["customer_rank",">",0]]'
+    - Count only: count_only=True (runs search_count, ignores fields/limit)
+    - Check a user's visibility: as_user="portal@example.com"
+    - Include archived records: context='{"active_test": false}'
+
+    Always pass `fields` — reading every field pulls binary columns and blows up
+    the response.
+
+    These `odoo_*` tools talk to the live Odoo HTTP server, exactly like an
+    external RPC client. So edited Python code stays invisible until the
+    environment is restarted (`pull_and_apply` / `restart_environment`; XML views
+    do reload), and every call is its own committed transaction. Use
+    run_odoo_shell when you need a fresh registry, `sudo()`, private methods, a
+    rollback, or several steps in one transaction.
+
+    Args:
+        env_name: The name of the environment.
+        model: Technical model name (e.g. "res.partner").
+        domain: Odoo search domain as JSON (e.g. '[["state","=","sale"]]'). A
+            single bare leaf is accepted and wrapped for you.
+        fields: Comma-separated field names, or a JSON array. Empty reads every
+            field — avoid it.
+        limit: Maximum rows to return (default 80). Applied server-side.
+        offset: Rows to skip, for paging.
+        order: SQL-style ordering (e.g. "date_order desc, id").
+        count_only: Return only the number of matching records (search_count).
+        as_user: Login or numeric user id to run as. Empty = the environment's
+            admin. Access rights and record rules apply to that user.
+        context: JSON object added to the call context (e.g.
+            '{"lang": "fr_FR", "active_test": false}').
+    """
+    settings = _get_settings()
+    team = _resolve_team(ctx)
+    user = _rpc_user(as_user)
+    parsed_domain = odoo_rpc.parse_domain(domain)
+    parsed_context = odoo_rpc.parse_context(context)
+    woke = _wake_for_work(settings, team, env_name)
+
+    if count_only:
+        args: list[Any] = [parsed_domain]
+        kwargs: dict[str, Any] = {}
+        method = "search_count"
+    else:
+        parsed_fields = odoo_rpc.parse_fields(fields)
+        args = [parsed_domain, parsed_fields or []]
+        kwargs = {"limit": limit, "offset": offset}
+        if order:
+            kwargs["order"] = order
+        method = "search_read"
+    if parsed_context is not None:
+        kwargs["context"] = parsed_context
+
+    result = odoo_rpc.call_kw(
+        settings, team, env_name, model, method, args, kwargs, as_user=user
+    )
+    actor = result.login or "admin"
+    if not result.ok:
+        body, header = "", ""
+    elif count_only:
+        header = f"{model}: {result.value} records match (as {actor})."
+        body = str(result.value)
+    else:
+        rows = result.value if isinstance(result.value, list) else []
+        header = f"{model}: {len(rows)} rows (as {actor}, limit {limit})."
+        if limit and len(rows) == limit:
+            header += (
+                f" Exactly {limit} rows came back — there may be more; "
+                "raise limit or page with offset."
+            )
+        body = _rpc_rows(rows)
+    return _rpc_response(
+        woke,
+        result,
+        header,
+        body,
+        "odoo_search_read",
+        f"env={env_name}, model={model}",
+    )
+
+
+@mcp.tool()
+@handle_errors
+@with_env_lock
+def odoo_create(
+    env_name: str,
+    model: str,
+    values: str,
+    as_user: str = "",
+    context: str = "",
+    ctx: Context | None = None,
+) -> str:
+    """
+    Create Odoo records — the ORM equivalent of XML-RPC `create`.
+
+    `values` is a JSON object of field values, or a JSON array of such objects to
+    create several records in one call. Returns the new ids.
+
+    Committed on success: there is no dry run. For a rollback-on-purpose run, or
+    for several steps that must succeed or fail together, use run_odoo_shell.
+    If the call times out, verify with a read before retrying — a repeat can
+    create duplicates.
+
+    Args:
+        env_name: The name of the environment.
+        model: Technical model name (e.g. "res.partner").
+        values: JSON object of field values, or a JSON array of such objects.
+        as_user: Login or numeric user id to run as. Empty = the environment's
+            admin. Access rights and record rules apply to that user.
+        context: JSON object added to the call context.
+    """
+    settings = _get_settings()
+    team = _resolve_team(ctx)
+    user = _rpc_user(as_user)
+    parsed_values = odoo_rpc.parse_values(values, allow_list=True)
+    parsed_context = odoo_rpc.parse_context(context)
+    woke = _wake_for_work(settings, team, env_name)
+
+    kwargs: dict[str, Any] = {}
+    if parsed_context is not None:
+        kwargs["context"] = parsed_context
+    result = odoo_rpc.call_kw(
+        settings, team, env_name, model, "create", [parsed_values], kwargs, as_user=user
+    )
+    created = result.value if isinstance(result.value, list) else [result.value]
+    actor = result.login or "admin"
+    return _rpc_response(
+        woke,
+        result,
+        f"Created {model}: {len(created)} record(s) (as {actor}). Committed.",
+        json.dumps(result.value, ensure_ascii=False, default=str),
+        "odoo_create",
+        f"env={env_name}, model={model}",
+    )
+
+
+@mcp.tool()
+@handle_errors
+@with_env_lock
+def odoo_write(
+    env_name: str,
+    model: str,
+    ids: str,
+    values: str,
+    as_user: str = "",
+    context: str = "",
+    ctx: Context | None = None,
+) -> str:
+    """
+    Update Odoo records — the ORM equivalent of XML-RPC `write`.
+
+    `ids` accepts "42", "1,2,3" or "[1,2,3]"; `values` is a JSON object of field
+    values. Committed on success, with no dry run — use run_odoo_shell when you
+    need a rollback or one transaction across several steps.
+
+    Args:
+        env_name: The name of the environment.
+        model: Technical model name (e.g. "res.partner").
+        ids: Record ids: "42", "1,2,3" or "[1,2,3]".
+        values: JSON object of field values to set.
+        as_user: Login or numeric user id to run as. Empty = the environment's
+            admin. Access rights and record rules apply to that user.
+        context: JSON object added to the call context.
+    """
+    settings = _get_settings()
+    team = _resolve_team(ctx)
+    user = _rpc_user(as_user)
+    parsed_ids = odoo_rpc.parse_ids(ids)
+    parsed_values = odoo_rpc.parse_values(values)
+    parsed_context = odoo_rpc.parse_context(context)
+    woke = _wake_for_work(settings, team, env_name)
+
+    kwargs: dict[str, Any] = {}
+    if parsed_context is not None:
+        kwargs["context"] = parsed_context
+    result = odoo_rpc.call_kw(
+        settings,
+        team,
+        env_name,
+        model,
+        "write",
+        [parsed_ids, parsed_values],
+        kwargs,
+        as_user=user,
+    )
+    actor = result.login or "admin"
+    return _rpc_response(
+        woke,
+        result,
+        f"Wrote {model} ids {parsed_ids} (as {actor}). Committed.",
+        json.dumps(result.value, ensure_ascii=False, default=str),
+        "odoo_write",
+        f"env={env_name}, model={model}",
+    )
+
+
+@mcp.tool()
+@handle_errors
+@with_env_lock
+def odoo_unlink(
+    env_name: str,
+    model: str,
+    ids: str,
+    as_user: str = "",
+    context: str = "",
+    ctx: Context | None = None,
+) -> str:
+    """
+    Delete Odoo records — the ORM equivalent of XML-RPC `unlink`.
+
+    Destructive and committed immediately: the records are gone when this
+    returns, and there is no rollback. Confirm the target set with
+    odoo_search_read first. Archiving (`active = false` via odoo_write) is
+    usually what is actually wanted.
+
+    Args:
+        env_name: The name of the environment.
+        model: Technical model name (e.g. "res.partner").
+        ids: Record ids to delete: "42", "1,2,3" or "[1,2,3]".
+        as_user: Login or numeric user id to run as. Empty = the environment's
+            admin. Access rights and record rules apply to that user.
+        context: JSON object added to the call context.
+    """
+    settings = _get_settings()
+    team = _resolve_team(ctx)
+    user = _rpc_user(as_user)
+    parsed_ids = odoo_rpc.parse_ids(ids)
+    parsed_context = odoo_rpc.parse_context(context)
+    woke = _wake_for_work(settings, team, env_name)
+
+    kwargs: dict[str, Any] = {}
+    if parsed_context is not None:
+        kwargs["context"] = parsed_context
+    result = odoo_rpc.call_kw(
+        settings, team, env_name, model, "unlink", [parsed_ids], kwargs, as_user=user
+    )
+    actor = result.login or "admin"
+    return _rpc_response(
+        woke,
+        result,
+        f"Unlinked {model} ids {parsed_ids} (as {actor}). Committed — not recoverable.",
+        json.dumps(result.value, ensure_ascii=False, default=str),
+        "odoo_unlink",
+        f"env={env_name}, model={model}",
+    )
+
+
+@mcp.tool()
+@handle_errors
+@with_env_lock
+def odoo_call(
+    env_name: str,
+    model: str,
+    method: str,
+    ids: str = "",
+    args: str = "[]",
+    kwargs: str = "{}",
+    as_user: str = "",
+    context: str = "",
+    ctx: Context | None = None,
+) -> str:
+    """
+    Call a public Odoo model method — the XML-RPC `execute_kw` escape hatch.
+
+    Use it for everything the dedicated tools do not cover: read_group,
+    name_search, default_get, copy, message_post, action_confirm, and any method
+    a custom addon exposes. The CRUD mutations create/write/unlink are rejected
+    here so tool-level policy can control their dedicated odoo_* tools.
+
+    `ids` is prepended as the first positional argument, so
+    model="sale.order", method="action_confirm", ids="42" sends args=[[42]].
+    Leave `ids` empty for model-level methods (`@api.model`).
+
+    Private methods (leading underscore) are rejected — Odoo 19 refuses them
+    server-side as well. Use run_odoo_shell for those.
+
+    Common use cases:
+    - Group and aggregate: method="read_group",
+      args='[[], ["amount_total:sum"], ["partner_id"]]'
+    - Autocomplete lookup: method="name_search", kwargs='{"name": "Acme"}'
+    - Trigger business logic: method="action_confirm", ids="42"
+
+    Args:
+        env_name: The name of the environment.
+        model: Technical model name (e.g. "sale.order").
+        method: Public method name (e.g. "read_group", "action_confirm"). Use
+            odoo_create, odoo_write or odoo_unlink for those CRUD mutations.
+        ids: Record ids prepended as the first positional argument. Empty for
+            model-level methods.
+        args: JSON array of the remaining positional arguments.
+        kwargs: JSON object of keyword arguments.
+        as_user: Login or numeric user id to run as. Empty = the environment's
+            admin. Access rights and record rules apply to that user.
+        context: JSON object added to the call context.
+    """
+    settings = _get_settings()
+    team = _resolve_team(ctx)
+    user = _rpc_user(as_user)
+    method = _rpc_generic_method(method)
+    parsed_args = odoo_rpc.parse_json_arg(args, "args", [])
+    if not isinstance(parsed_args, list):
+        raise ValueError("args must be a JSON array of positional arguments.")
+    parsed_kwargs = odoo_rpc.parse_json_arg(kwargs, "kwargs", {})
+    if not isinstance(parsed_kwargs, dict):
+        raise ValueError("kwargs must be a JSON object of keyword arguments.")
+    if ids.strip():
+        parsed_args = [odoo_rpc.parse_ids(ids)] + parsed_args
+    parsed_context = odoo_rpc.parse_context(context)
+    if parsed_context is not None:
+        parsed_kwargs["context"] = parsed_context
+    woke = _wake_for_work(settings, team, env_name)
+
+    result = odoo_rpc.call_kw(
+        settings,
+        team,
+        env_name,
+        model,
+        method,
+        parsed_args,
+        parsed_kwargs,
+        as_user=user,
+    )
+    actor = result.login or "admin"
+    body = result.value
+    return _rpc_response(
+        woke,
+        result,
+        f"{model}.{method} returned (as {actor}). Committed.",
+        _rpc_rows(body)
+        if isinstance(body, list)
+        else json.dumps(body, ensure_ascii=False, default=str),
+        "odoo_call",
+        f"env={env_name}, model={model}, method={method}",
+    )
+
+
+@mcp.tool()
+@handle_errors
+@with_env_lock
+def odoo_schema(
+    env_name: str,
+    model: str = "",
+    name_filter: str = "",
+    attributes: str = "string,type,relation,required,readonly,selection",
+    as_user: str = "",
+    limit: int = 200,
+    offset: int = 0,
+    ctx: Context | None = None,
+) -> str:
+    """
+    Inspect the Odoo schema: list models, or describe one model's fields.
+
+    Leave `model` empty to list models whose technical or display name matches
+    `name_filter`. Set `model` to get its fields (XML-RPC `fields_get`),
+    optionally narrowed to field names matching `name_filter`.
+
+    Call this before writing a domain or a values dict — guessing field names is
+    the most common cause of an empty result set or a confusing error.
+
+    Args:
+        env_name: The name of the environment.
+        model: Technical model name (e.g. "sale.order"). Empty lists models.
+        name_filter: Substring filter — on model names when listing models, on
+            field names when describing a model.
+        attributes: Comma-separated field attributes to return. Odoo prunes them
+            server-side, so keeping this short keeps the response small. Pass an
+            empty string for every attribute.
+        as_user: Login or numeric id to inspect as (empty = admin). Field
+            visibility can differ per user.
+        limit: Maximum models to return when listing models (default 200; 0 = no
+            limit). Ignored when describing one model.
+        offset: Models to skip when listing models, for paging.
+    """
+    settings = _get_settings()
+    team = _resolve_team(ctx)
+    user = _rpc_user(as_user)
+    woke = _wake_for_work(settings, team, env_name)
+
+    if not model:
+        domain: list[Any] = []
+        if name_filter:
+            domain = [
+                "|",
+                ["model", "ilike", name_filter],
+                ["name", "ilike", name_filter],
+            ]
+        result = odoo_rpc.call_kw(
+            settings,
+            team,
+            env_name,
+            "ir.model",
+            "search_read",
+            [domain, ["model", "name", "transient"]],
+            {"limit": limit, "offset": offset, "order": "model"},
+            as_user=user,
+        )
+        rows = result.value if isinstance(result.value, list) else []
+        actor = result.login or "admin"
+        header = f"Models matching '{name_filter}': {len(rows)} (as {actor})."
+        if limit and len(rows) == limit:
+            header += (
+                f" Exactly {limit} models came back — there may be more; "
+                f"narrow name_filter or page with offset={offset + limit}."
+            )
+        return _rpc_response(
+            woke,
+            result,
+            header,
+            _rpc_rows(
+                [{k: r.get(k) for k in ("model", "name", "transient")} for r in rows]
+            ),
+            "odoo_schema",
+            f"env={env_name}, name_filter={name_filter}, limit={limit}, offset={offset}",
+        )
+
+    attribute_list = [a.strip() for a in attributes.split(",") if a.strip()]
+    result = odoo_rpc.call_kw(
+        settings,
+        team,
+        env_name,
+        model,
+        "fields_get",
+        [[], attribute_list],
+        {},
+        as_user=user,
+    )
+    actor = result.login or "admin"
+    fields_map = result.value if isinstance(result.value, dict) else {}
+    if name_filter:
+        needle = name_filter.lower()
+        fields_map = {k: v for k, v in fields_map.items() if needle in k.lower()}
+    return _rpc_response(
+        woke,
+        result,
+        f"{model}: {len(fields_map)} fields (as {actor}).",
+        json.dumps(
+            fields_map, ensure_ascii=False, default=str, indent=1, sort_keys=True
+        ),
+        "odoo_schema",
+        f"env={env_name}, model={model}",
+    )
 
 
 # =============================================================================

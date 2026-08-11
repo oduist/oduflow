@@ -1,6 +1,7 @@
 import json
 import os
 import tarfile
+from urllib.parse import urlsplit
 
 import pytest
 import docker
@@ -2691,3 +2692,82 @@ class TestFinalizeShellScript:
             "for i in range(3):\n    x = i\n"
             "__oduflow_cr__.commit()\n"
         )
+
+
+class TestOdooUrlComposition:
+    """The environment base URL must carry no path of its own.
+
+    `get_environment_info()["url"]` ends in "/web?debug=1"; composing a request
+    path onto it buried the path in the query string, so every call hit "/web".
+    """
+
+    @staticmethod
+    def _response(status=200, body=b"{}"):
+        response = MagicMock()
+        response.status = status
+        response.headers = {}
+        response.read.return_value = body
+        response.__enter__ = lambda self: self
+        response.__exit__ = lambda self, *exc: False
+        return response
+
+    @patch(
+        "oduflow.docker_ops.env_ops.get_env_base_url",
+        return_value=("http://localhost:50000", "localhost"),
+    )
+    @patch("urllib.request.urlopen")
+    def test_http_request_hits_the_requested_path(self, mock_open, mock_base):
+        mock_open.return_value = self._response()
+
+        odoo_ops.http_request_to_odoo(
+            TEST_SETTINGS, TEST_TEAM, "main", "/jsonrpc", method="POST", body="{}"
+        )
+
+        request = mock_open.call_args[0][0]
+        assert urlsplit(request.full_url).path == "/jsonrpc"
+        assert urlsplit(request.full_url).query == ""
+
+    @patch(
+        "oduflow.docker_ops.env_ops.get_env_base_url",
+        return_value=("http://localhost:50000", "localhost"),
+    )
+    @patch("urllib.request.urlopen")
+    def test_readiness_probes_web_health(self, mock_open, mock_base):
+        mock_open.return_value = self._response()
+
+        assert env_ops.wait_for_odoo_ready(TEST_SETTINGS, TEST_TEAM, "main") is True
+
+        url = mock_open.call_args[0][0]
+        assert urlsplit(url).path == "/web/health"
+
+
+class TestConnectAsUserCredentials:
+    @patch(
+        "oduflow.docker_ops.odoo_ops.load_credentials",
+        return_value={"pg_user": "u_1_main", "pg_password": "test-pw"},
+    )
+    @patch(
+        "oduflow.docker_ops.env_ops.get_env_base_url",
+        return_value=("https://main.example.com", "main.example.com"),
+    )
+    def test_password_passed_via_pgpassword_env(
+        self, mock_base_url, mock_load_creds, mock_docker_client
+    ):
+        container = MagicMock()
+        container.exec_run.return_value = (0, TestConnectAsUser._SHELL_OUTPUT)
+        mock_docker_client.containers.get.return_value = container
+
+        odoo_ops.connect_as_user(TEST_SETTINGS, TEST_TEAM, "main", "jane@acme.com")
+
+        shell_call = next(
+            call
+            for call in container.exec_run.call_args_list
+            if call.args[0][:2] == ["sh", "-c"]
+        )
+        cmd = shell_call.args[0][2]
+        assert "-r u_1_main" in cmd
+        # The session mint is a hot path for the odoo_* tools: the password must
+        # not land in the container's process argv.
+        assert "test-pw" not in cmd
+        assert "-w" not in cmd.split()
+        assert shell_call.kwargs["environment"] == {"PGPASSWORD": "test-pw"}
