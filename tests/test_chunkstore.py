@@ -3,6 +3,7 @@
 import datetime
 import os
 import random
+from unittest.mock import patch
 
 import pytest
 
@@ -502,3 +503,646 @@ class TestCountingStorage:
         storage = self._counting(tmp_path)
 
         assert storage.exists("absent") is False
+
+
+class TestChunkerParameters:
+    """Constructor validation and the size invariants it protects.
+
+    Every emitted chunk must be >= min_size (except the last of a stream) and
+    <= max_size: a chunker that can emit a 0-byte or oversized chunk breaks
+    both dedup and the restore-side buffer bound.
+    """
+
+    def test_min_size_must_be_positive(self):
+        with pytest.raises(ValueError, match="min_size"):
+            Chunker(b"seed", min_size=0, avg_size=4096, max_size=16384)
+
+    def test_min_size_of_one_is_accepted(self):
+        # The bound is `0 < min_size`, not `1 < min_size`.
+        Chunker(b"seed", min_size=1, avg_size=4096, max_size=16384)
+
+    def test_min_size_may_equal_avg_size(self):
+        Chunker(b"seed", min_size=4096, avg_size=4096, max_size=16384)
+
+    def test_avg_size_may_equal_max_size(self):
+        Chunker(b"seed", min_size=1024, avg_size=4096, max_size=4096)
+
+    def test_min_size_above_avg_size_is_rejected(self):
+        with pytest.raises(ValueError):
+            Chunker(b"seed", min_size=8192, avg_size=4096, max_size=16384)
+
+    def test_avg_size_above_max_size_is_rejected(self):
+        with pytest.raises(ValueError):
+            Chunker(b"seed", min_size=1024, avg_size=16384, max_size=4096)
+
+    @pytest.mark.parametrize("avg", [3000, 4095, 5000, 6144])
+    def test_non_power_of_two_avg_is_rejected(self, avg):
+        with pytest.raises(ValueError, match="power of two"):
+            Chunker(b"seed", min_size=1024, avg_size=avg, max_size=65536)
+
+    @pytest.mark.parametrize("avg", [1, 2, 1024, 4096])
+    def test_powers_of_two_are_accepted(self, avg):
+        Chunker(b"seed", min_size=1, avg_size=avg, max_size=65536)
+
+    def test_the_boundary_mask_is_avg_size_minus_one(self):
+        # A wrong mask changes the average chunk size, silently degrading the
+        # dedup ratio without any test failing.
+        assert Chunker(b"seed", min_size=1024, avg_size=4096, max_size=16384)._mask == (
+            4095
+        )
+
+    def test_no_chunk_is_smaller_than_min_size_except_the_last(self):
+        data = random.Random(7).randbytes(300_000)
+        chunks = _chunk_all(Chunker(b"seed", **SMALL), data)
+
+        assert all(len(c) >= SMALL["min_size"] for c in chunks[:-1])
+        assert chunks[-1]
+
+    def test_no_chunk_exceeds_max_size(self):
+        # Incompressible random data rarely hits a boundary naturally, so the
+        # forced cut at max_size is what bounds it.
+        data = random.Random(8).randbytes(300_000)
+        chunks = _chunk_all(Chunker(b"seed", **SMALL), data)
+
+        assert max(len(c) for c in chunks) <= SMALL["max_size"]
+
+    def test_uniform_input_stays_within_the_size_bounds(self):
+        # All-zero input gives the rolling hash nothing to vary, so the cut
+        # position is whatever the fixed window hash dictates — but it must
+        # still respect both bounds and lose no bytes.
+        chunks = _chunk_all(Chunker(b"seed", **SMALL), b"\x00" * 100_000)
+
+        assert all(SMALL["min_size"] <= len(c) <= SMALL["max_size"] for c in chunks[:-1])
+        assert sum(len(c) for c in chunks) == 100_000
+        assert b"".join(chunks) == b"\x00" * 100_000
+
+    def test_the_stream_is_reassembled_exactly(self):
+        data = random.Random(9).randbytes(250_000)
+        chunks = _chunk_all(Chunker(b"seed", **SMALL), data)
+
+        assert b"".join(chunks) == data
+
+    def test_an_empty_stream_emits_no_chunk(self):
+        assert _chunk_all(Chunker(b"seed", **SMALL), b"") == []
+
+    def test_input_shorter_than_min_size_is_one_chunk(self):
+        chunks = _chunk_all(Chunker(b"seed", **SMALL), b"x" * 100)
+
+        assert chunks == [b"x" * 100]
+
+    def test_flush_cuts_the_stream_at_the_call_site(self):
+        # Callers rely on this to reuse an unchanged file's chunks verbatim.
+        chunker = Chunker(b"seed", **SMALL)
+        first = list(chunker.update(b"a" * 500)) + list(chunker.flush())
+        second = list(chunker.update(b"b" * 500)) + list(chunker.flush())
+
+        assert first == [b"a" * 500]
+        assert second == [b"b" * 500]
+
+
+class TestDeriveTable:
+    def test_yields_exactly_256_entries(self):
+        # One entry per byte value; 255 or 257 would index out of range or
+        # leave a byte unmapped.
+        assert len(derive_table(b"seed")) == 256
+
+    def test_every_entry_is_a_64_bit_value(self):
+        assert all(0 <= v < 2**64 for v in derive_table(b"seed"))
+
+    def test_entries_are_distinct(self):
+        # A repeated entry would make two byte values interchangeable to the
+        # rolling hash, weakening the boundary distribution.
+        assert len(set(derive_table(b"seed"))) == 256
+
+    def test_different_seeds_give_unrelated_tables(self):
+        a, b = derive_table(b"seed-a"), derive_table(b"seed-b")
+
+        assert a != b
+        assert len(set(a) & set(b)) == 0
+
+    def test_the_same_seed_always_gives_the_same_table(self):
+        assert derive_table(b"seed") == derive_table(b"seed")
+
+    def test_the_first_entry_comes_from_counter_zero(self):
+        # Pins the counter start and the 8-byte little-endian slicing: any
+        # drift here silently re-chunks every existing storage.
+        import hashlib
+
+        block = hashlib.blake2b(
+            (0).to_bytes(8, "little"), key=b"seed", digest_size=64
+        ).digest()
+
+        table = derive_table(b"seed")
+        assert table[0] == int.from_bytes(block[0:8], "little")
+        assert table[7] == int.from_bytes(block[56:64], "little")
+
+    def test_the_ninth_entry_comes_from_counter_one(self):
+        import hashlib
+
+        block = hashlib.blake2b(
+            (1).to_bytes(8, "little"), key=b"seed", digest_size=64
+        ).digest()
+
+        assert derive_table(b"seed")[8] == int.from_bytes(block[0:8], "little")
+
+
+class TestChunkContainer:
+    def test_the_header_is_magic_version_flags(self):
+        blob = encode_chunk(b"payload")
+
+        assert blob[:4] == b"ODCK"
+        assert blob[4] == 1
+
+    def test_compressible_data_sets_the_zstd_flag(self):
+        blob = encode_chunk(b"a" * 10_000)
+
+        assert blob[5] & 0x01
+        assert len(blob) < 10_000
+
+    def test_incompressible_data_is_stored_raw(self):
+        data = random.Random(3).randbytes(2048)
+        blob = encode_chunk(data)
+
+        assert blob[5] == 0
+        assert blob[6:] == data
+
+    def test_a_truncated_blob_is_corrupt(self, tmp_path):
+        config = ensure_config(LocalStorage(str(tmp_path)))
+
+        for length in (0, 3, 5):
+            with pytest.raises(ChunkCorruptedError, match="magic"):
+                decode_chunk(b"ODCK12"[:length], config, "deadbeef")
+
+    def test_a_six_byte_header_is_long_enough(self, tmp_path):
+        # The check is `len < 6`; a header-only chunk of an empty payload is
+        # valid and must fail on the hash, not the length.
+        config = ensure_config(LocalStorage(str(tmp_path)))
+        blob = encode_chunk(b"")
+
+        assert len(blob) == 6
+        assert decode_chunk(blob, config, config.chunk_hash(b"")) == b""
+
+    def test_wrong_magic_is_corrupt(self, tmp_path):
+        config = ensure_config(LocalStorage(str(tmp_path)))
+        blob = b"XXXX" + encode_chunk(b"payload")[4:]
+
+        with pytest.raises(ChunkCorruptedError, match="magic"):
+            decode_chunk(blob, config, "deadbeef")
+
+    def test_an_unknown_version_is_refused(self, tmp_path):
+        config = ensure_config(LocalStorage(str(tmp_path)))
+        blob = bytearray(encode_chunk(b"payload"))
+        blob[4] = 99
+
+        with pytest.raises(ChunkCorruptedError, match="version"):
+            decode_chunk(bytes(blob), config, "deadbeef")
+
+    def test_the_reserved_encryption_flag_is_refused(self, tmp_path):
+        config = ensure_config(LocalStorage(str(tmp_path)))
+        blob = bytearray(encode_chunk(b"payload"))
+        blob[5] |= 0x02
+
+        with pytest.raises(ChunkCorruptedError, match="encrypted"):
+            decode_chunk(bytes(blob), config, "deadbeef")
+
+    def test_a_damaged_zstd_payload_is_corrupt(self, tmp_path):
+        config = ensure_config(LocalStorage(str(tmp_path)))
+        blob = bytearray(encode_chunk(b"a" * 10_000))
+        blob[10] ^= 0xFF
+
+        with pytest.raises(ChunkCorruptedError):
+            decode_chunk(bytes(blob), config, config.chunk_hash(b"a" * 10_000))
+
+
+class TestContentAddressing:
+    def test_the_hash_is_keyed_by_the_storage(self, tmp_path):
+        # Two storages must not produce the same chunk hash for the same
+        # bytes, or a listing would confirm known plaintext.
+        one = ensure_config(LocalStorage(str(tmp_path / "a")))
+        two = ensure_config(LocalStorage(str(tmp_path / "b")))
+
+        assert one.chunk_hash(b"payload") != two.chunk_hash(b"payload")
+
+    def test_the_id_is_derived_from_the_hash_not_the_content(self, tmp_path):
+        config = ensure_config(LocalStorage(str(tmp_path)))
+        digest = config.chunk_hash(b"payload")
+
+        assert config.chunk_id(digest) != digest
+        assert config.chunk_id(digest) == config.chunk_id(digest)
+
+    def test_keys_are_32_bytes(self, tmp_path):
+        config = ensure_config(LocalStorage(str(tmp_path)))
+
+        assert len(config.seed) == 32
+        assert len(config.hash_key) == 32
+        assert len(config.id_key) == 32
+
+    def test_a_new_storage_gets_fresh_keys(self, tmp_path):
+        one = ensure_config(LocalStorage(str(tmp_path / "a")))
+        two = ensure_config(LocalStorage(str(tmp_path / "b")))
+
+        assert one.seed != two.seed
+        assert one.hash_key != two.hash_key
+        assert one.id_key != two.id_key
+
+    def test_the_config_survives_a_reload(self, tmp_path):
+        storage = LocalStorage(str(tmp_path))
+        first = ensure_config(storage)
+
+        assert ensure_config(storage) == first
+
+
+class TestRetentionBoundaries:
+    """Retention decides what is deleted forever, so the age comparison and
+    the bucket arithmetic both need pinning."""
+
+    _NOW = datetime.datetime(2026, 7, 10, tzinfo=datetime.timezone.utc)
+
+    def _rev(self, revision: int, days: float):
+        return (revision, self._NOW - datetime.timedelta(days=days))
+
+    def test_a_revision_exactly_at_the_age_is_still_recent(self):
+        # The rule fires on `age_days > age`, so a 7-day-old revision under a
+        # 1:7 policy is kept unconditionally rather than thinned.
+        revs = [self._rev(1, 7), self._rev(2, 7.5), self._rev(3, 0)]
+
+        kept = select_revisions_to_keep(revs, parse_keep(["1:7"]), self._NOW)
+
+        assert 1 in kept
+
+    def test_two_revisions_on_the_same_old_day_collapse_to_one(self):
+        # Both are 8 days old (past the 7-day age) and fall on the same
+        # calendar day, so the 1-day interval keeps exactly one.
+        revs = [self._rev(1, 8.5), self._rev(2, 8.9), self._rev(3, 0)]
+
+        kept = select_revisions_to_keep(revs, parse_keep(["1:7"]), self._NOW)
+
+        assert len(kept & {1, 2}) == 1
+        assert 3 in kept
+
+    def test_an_empty_revision_list_keeps_nothing(self):
+        assert select_revisions_to_keep([], parse_keep(["1:7"]), self._NOW) == set()
+
+    def test_without_any_rule_everything_is_kept(self):
+        revs = [self._rev(1, 900), self._rev(2, 0)]
+
+        assert select_revisions_to_keep(revs, [], self._NOW) == {1, 2}
+
+    def test_the_oldest_matching_rule_wins(self):
+        # 0:365 must beat 1:7 for a 400-day-old revision, dropping it rather
+        # than thinning it to one per day.
+        revs = [self._rev(1, 400), self._rev(2, 401), self._rev(3, 0)]
+
+        kept = select_revisions_to_keep(
+            revs, parse_keep(["1:7", "0:365"]), self._NOW
+        )
+
+        assert kept == {3}
+
+    def test_a_wider_interval_never_keeps_more_revisions(self):
+        # Buckets are absolute epoch windows, so the exact survivors depend on
+        # where the dates fall — but widening the interval can only thin more.
+        revs = [self._rev(i, 10 + i * 1.3) for i in range(12)]
+
+        counts = [
+            len(select_revisions_to_keep(revs, parse_keep([f"{i}:7"]), self._NOW))
+            for i in (1, 3, 7, 30)
+        ]
+
+        assert counts == sorted(counts, reverse=True)
+        assert counts[-1] < counts[0]
+
+    def test_thinning_only_touches_revisions_past_the_age(self):
+        # Six revisions in one recent day: none is older than 7 days, so the
+        # 1-day interval must not collapse them.
+        revs = [self._rev(i, 1 + i * 0.1) for i in range(6)]
+
+        kept = select_revisions_to_keep(revs, parse_keep(["1:7"]), self._NOW)
+
+        assert len(kept) == 6
+
+
+class TestParseIso:
+    def test_a_naive_timestamp_is_read_as_utc(self):
+        # Revision timestamps decide retention; reading a naive one as
+        # host-local time would shift every deadline by the UTC offset.
+        from oduflow.chunkstore.prune import _parse_iso
+
+        parsed = _parse_iso("2026-03-01T12:00:00")
+
+        assert parsed.tzinfo is datetime.timezone.utc
+        assert parsed.hour == 12
+
+    def test_an_explicit_offset_is_preserved(self):
+        from oduflow.chunkstore.prune import _parse_iso
+
+        parsed = _parse_iso("2026-03-01T14:00:00+02:00")
+
+        assert parsed.astimezone(datetime.timezone.utc).hour == 12
+
+
+class TestRestoreDetails:
+    def _restore_roundtrip(self, storage, tmp_path, spec):
+        src = tmp_path / "src"
+        _make_tree(str(src), spec)
+        chunkstore.backup(str(src), storage, "erp")
+        dst = tmp_path / "dst"
+        info = chunkstore.restore(storage, "erp", None, str(dst))
+        return src, dst, info
+
+    def test_the_byte_count_matches_the_tree(self, small_config_storage, tmp_path):
+        spec = {"a.bin": b"x" * 1000, "b.bin": b"y" * 2500}
+
+        _, _, info = self._restore_roundtrip(small_config_storage, tmp_path, spec)
+
+        assert info["bytes"] == 3500
+        assert info["files"] == 2
+
+    def test_an_empty_file_is_restored_without_reading_a_chunk(
+        self, small_config_storage, tmp_path
+    ):
+        # size == 0 must skip the chunk range entirely; a mutant reading
+        # chunk 0 would corrupt the file with foreign bytes.
+        _, dst, info = self._restore_roundtrip(
+            small_config_storage, tmp_path, {"empty.txt": b"", "other.bin": b"z" * 500}
+        )
+
+        assert (dst / "empty.txt").read_bytes() == b""
+        assert info["bytes"] == 500
+
+    def test_a_missing_snapshot_raises(self, small_config_storage, tmp_path):
+        with pytest.raises(FileNotFoundError, match="No revisions"):
+            chunkstore.restore(
+                small_config_storage, "never-backed-up", None, str(tmp_path / "dst")
+            )
+
+    def test_an_explicit_revision_is_honoured(self, small_config_storage, tmp_path):
+        src = tmp_path / "src"
+        _make_tree(str(src), {"a.txt": b"first"})
+        chunkstore.backup(str(src), small_config_storage, "erp")
+        with open(src / "a.txt", "wb") as f:
+            f.write(b"second")
+        chunkstore.backup(str(src), small_config_storage, "erp")
+
+        dst = tmp_path / "dst"
+        info = chunkstore.restore(small_config_storage, "erp", 1, str(dst))
+
+        assert info["revision"] == 1
+        assert (dst / "a.txt").read_bytes() == b"first"
+
+    def test_a_path_escaping_the_target_is_refused(
+        self, small_config_storage, tmp_path
+    ):
+        # A tampered revision must not be able to write outside target_dir.
+        from oduflow.chunkstore.backup import load_revision
+        from oduflow.chunkstore.format import ensure_config as _ensure
+
+        src = tmp_path / "src"
+        _make_tree(str(src), {"a.txt": b"payload"})
+        chunkstore.backup(str(src), small_config_storage, "erp")
+
+        config = _ensure(small_config_storage)
+        _meta, files, _hashes, _lengths = load_revision(
+            small_config_storage, config, "erp", 1
+        )
+        files[0]["path"] = "../escaped.txt"
+
+        with (
+            patch(
+                "oduflow.chunkstore.restore.load_revision",
+                return_value=(_meta, files, _hashes, _lengths),
+            ),
+            pytest.raises(ValueError, match="escapes target dir"),
+        ):
+            chunkstore.restore(small_config_storage, "erp", 1, str(tmp_path / "dst"))
+
+        assert not (tmp_path / "escaped.txt").exists()
+
+
+class TestBackupMetadata:
+    """The revision file is the backup's index: wrong counters or chunk spans
+    mean a restore that silently produces different bytes."""
+
+    def _meta(self, storage, snapshot_id, revision):
+        import json as _json
+
+        key = f"snapshots/{snapshot_id}/{revision}"
+        return _json.loads(storage.get(key).decode())
+
+    def test_the_schema_version_is_recorded(self, small_config_storage, tmp_path):
+        src = tmp_path / "src"
+        _make_tree(str(src), {"a.txt": b"x"})
+        chunkstore.backup(str(src), small_config_storage, "erp")
+
+        assert self._meta(small_config_storage, "erp", 1)["version"] == 1
+
+    def test_counters_match_the_tree(self, small_config_storage, tmp_path):
+        src = tmp_path / "src"
+        _make_tree(str(src), {"a.bin": b"x" * 700, "b.bin": b"y" * 300})
+
+        result = chunkstore.backup(str(src), small_config_storage, "erp")
+
+        assert result.files == 2
+        assert result.total_bytes == 1000
+        assert result.unchanged_files == 0
+        meta = self._meta(small_config_storage, "erp", 1)
+        assert meta["files"] == 2
+        assert meta["total_bytes"] == 1000
+
+    def test_an_empty_file_gets_a_zero_length_chunk_span(
+        self, small_config_storage, tmp_path
+    ):
+        # sc/so/ec/eo must all be 0 so restore writes nothing; any non-zero
+        # value would splice in a neighbouring file's bytes.
+        from oduflow.chunkstore.backup import load_revision
+        from oduflow.chunkstore.format import ensure_config as _ensure
+
+        src = tmp_path / "src"
+        _make_tree(str(src), {"empty.txt": b"", "other.bin": b"z" * 5000})
+        chunkstore.backup(str(src), small_config_storage, "erp")
+
+        config = _ensure(small_config_storage)
+        _meta, files, _h, _l = load_revision(small_config_storage, config, "erp", 1)
+        empty = next(f for f in files if f["path"] == "empty.txt")
+
+        assert (empty["sc"], empty["so"], empty["ec"], empty["eo"]) == (0, 0, 0, 0)
+        assert empty["size"] == 0
+
+    def test_unchanged_files_are_counted_on_the_second_revision(
+        self, small_config_storage, tmp_path
+    ):
+        src = tmp_path / "src"
+        _make_tree(str(src), {f"f{i}.bin": bytes([i]) * 5000 for i in range(4)})
+        chunkstore.backup(str(src), small_config_storage, "erp")
+        with open(src / "f1.bin", "wb") as f:
+            f.write(b"changed" * 800)
+
+        result = chunkstore.backup(str(src), small_config_storage, "erp")
+
+        assert result.unchanged_files == 3
+        assert result.files == 4
+
+    def test_an_unchanged_empty_file_still_counts_as_unchanged(
+        self, small_config_storage, tmp_path
+    ):
+        # Zero-size files take the early-return path, which has its own
+        # unchanged_count increment.
+        src = tmp_path / "src"
+        _make_tree(str(src), {"empty.txt": b"", "a.bin": b"x" * 100})
+        chunkstore.backup(str(src), small_config_storage, "erp")
+
+        result = chunkstore.backup(str(src), small_config_storage, "erp")
+
+        assert result.unchanged_files == 2
+
+    def test_entries_are_sorted_by_path(self, small_config_storage, tmp_path):
+        # Restore reconstructs in path order and relies on consecutive small
+        # files sharing chunks; unsorted entries break the one-slot cache.
+        from oduflow.chunkstore.backup import load_revision
+        from oduflow.chunkstore.format import ensure_config as _ensure
+
+        src = tmp_path / "src"
+        _make_tree(str(src), {"z.bin": b"z", "a.bin": b"a", "m/n.bin": b"n"})
+        chunkstore.backup(str(src), small_config_storage, "erp")
+
+        config = _ensure(small_config_storage)
+        _meta, files, _h, _l = load_revision(small_config_storage, config, "erp", 1)
+        paths = [f["path"] for f in files]
+
+        assert paths == sorted(paths)
+
+    def test_an_explicit_prev_revision_is_used_as_the_base(
+        self, small_config_storage, tmp_path
+    ):
+        src = tmp_path / "src"
+        _make_tree(str(src), {"a.bin": b"x" * 5000})
+        chunkstore.backup(str(src), small_config_storage, "erp")
+        chunkstore.backup(str(src), small_config_storage, "erp")
+
+        result = chunkstore.backup(
+            str(src), small_config_storage, "erp", prev_revision=1
+        )
+
+        assert result.unchanged_files == 1
+
+    def test_an_unknown_prev_revision_falls_back_to_a_full_backup(
+        self, small_config_storage, tmp_path
+    ):
+        # Not to "the latest": an explicitly requested base that does not
+        # exist must not silently become an incremental against something else.
+        src = tmp_path / "src"
+        _make_tree(str(src), {"a.bin": b"x" * 5000})
+        chunkstore.backup(str(src), small_config_storage, "erp")
+
+        result = chunkstore.backup(
+            str(src), small_config_storage, "erp", prev_revision=99
+        )
+
+        assert result.unchanged_files == 0
+
+    def test_revision_numbers_increment_from_one(
+        self, small_config_storage, tmp_path
+    ):
+        src = tmp_path / "src"
+        _make_tree(str(src), {"a.txt": b"x"})
+
+        first = chunkstore.backup(str(src), small_config_storage, "erp")
+        second = chunkstore.backup(str(src), small_config_storage, "erp")
+
+        assert (first.revision, second.revision) == (1, 2)
+        assert list_revisions(small_config_storage, "erp") == [1, 2]
+
+    def test_a_missing_source_directory_raises(self, small_config_storage, tmp_path):
+        with pytest.raises(FileNotFoundError, match="source_dir"):
+            chunkstore.backup(str(tmp_path / "nope"), small_config_storage, "erp")
+
+
+class TestPruneCounters:
+    """PruneResult is what the dashboard and the scheduler log; an off-by-one
+    there is how a broken prune looks healthy."""
+
+    def _aged_backup(self, storage, src, snapshot_id, days):
+        import json as _json
+
+        result = chunkstore.backup(str(src), storage, snapshot_id)
+        key = f"snapshots/{snapshot_id}/{result.revision}"
+        meta = _json.loads(storage.get(key).decode())
+        meta["created_at"] = (
+            datetime.datetime.now(datetime.timezone.utc)
+            - datetime.timedelta(days=days)
+        ).isoformat()
+        storage.put(key, _json.dumps(meta).encode())
+        return result
+
+    def test_a_clean_store_reports_all_zeroes(self, small_config_storage, tmp_path):
+        src = tmp_path / "src"
+        _make_tree(str(src), {"a.bin": b"x" * 5000})
+        chunkstore.backup(str(src), small_config_storage, "erp")
+
+        result = chunkstore.prune(small_config_storage, keep=parse_keep(["1:7"]))
+
+        assert result.deleted_revisions == []
+        assert result.deleted_chunks == 0
+        assert result.resurrected_chunks == 0
+
+    def test_dropping_one_revision_fossilizes_its_unique_chunks(
+        self, small_config_storage, tmp_path
+    ):
+        rng = random.Random(21)
+        storage = small_config_storage
+        src = tmp_path / "src"
+        _make_tree(str(src), {"a.bin": rng.randbytes(30_000)})
+        self._aged_backup(storage, src, "erp", 400)
+        with open(src / "a.bin", "wb") as f:
+            f.write(rng.randbytes(30_000))
+        chunkstore.backup(str(src), storage, "erp")
+
+        result = chunkstore.prune(storage, keep=parse_keep(["0:365"]))
+
+        assert result.deleted_revisions == ["erp/1"]
+        assert result.fossilized_chunks > 0
+        assert result.collections_written == 1
+
+    def _fossilize(self, storage, src, rng):
+        """Leave one aged collection of fossils behind, then move the latest
+        revision forward so only maturity blocks the sweep."""
+        _make_tree(str(src), {"a.bin": rng.randbytes(30_000)})
+        self._aged_backup(storage, src, "erp", 400)
+        with open(src / "a.bin", "wb") as f:
+            f.write(rng.randbytes(30_000))
+        chunkstore.backup(str(src), storage, "erp")
+        first = chunkstore.prune(storage, keep=parse_keep(["0:365"]))
+        with open(src / "a.bin", "ab") as f:
+            f.write(b"more")
+        chunkstore.backup(str(src), storage, "erp")
+        return first
+
+    def test_a_fresh_collection_is_not_swept(self, small_config_storage, tmp_path):
+        # Fossils must age past _COLLECTION_MIN_AGE before deletion, so a
+        # concurrent restore cannot lose a chunk mid-read.
+        storage = small_config_storage
+        first = self._fossilize(storage, tmp_path / "src", random.Random(22))
+
+        second = chunkstore.prune(storage, keep=parse_keep(["0:365"]))
+
+        assert first.fossilized_chunks > 0
+        assert second.deleted_chunks == 0
+        assert second.collections_deleted == 0
+
+    def test_a_matured_collection_is_swept(self, small_config_storage, tmp_path):
+        storage = small_config_storage
+        first = self._fossilize(storage, tmp_path / "src", random.Random(23))
+        later = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(
+            hours=2
+        )
+
+        second = chunkstore.prune(storage, keep=parse_keep(["0:365"]), now=later)
+
+        assert first.fossilized_chunks > 0
+        assert second.deleted_chunks == first.fossilized_chunks
+        assert second.collections_deleted == 1
+        assert not [k for k in storage.list("chunks/") if k.endswith(".fsl")]
+
+    def test_prune_without_a_policy_is_refused(self, small_config_storage):
+        with pytest.raises(ValueError, match="keep or keep_revisions"):
+            chunkstore.prune(small_config_storage)
