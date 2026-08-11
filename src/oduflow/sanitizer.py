@@ -29,8 +29,13 @@ def _detect_odoo_major_from_container(
     # including registries with ports (registry:5000/acme/odoo-ee:15.0).
     reference = image.split("@", 1)[0]
     leaf = reference.rsplit("/", 1)[-1]
-    tag = leaf.rsplit(":", 1)[1] if ":" in leaf else ""
-    match = re.match(r"(\d+)(?:\.\d+)?(?:$|[-_])", tag)
+    has_tag = ":" in leaf
+    tag = leaf.rsplit(":", 1)[1] if has_tag else ""
+    repository = reference.rsplit(":", 1)[0] if has_tag else reference
+    is_odoo_image = (
+        re.search(r"(?:^|[/_-])odoo(?:$|[/_-])", repository, re.I) is not None
+    )
+    match = re.match(r"(\d+)(?:\.\d+)?(?:$|[-_])", tag) if is_odoo_image else None
     if not match:
         # Also accept versioned repository names such as acme/odoo-15.
         match = re.search(r"odoo[-_:/]?(\d+)(?:\.\d+)?(?:$|[-_])", reference, re.I)

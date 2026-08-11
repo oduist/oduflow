@@ -9,7 +9,6 @@ from pathlib import Path
 
 import pytest
 
-
 _ROOT = Path(__file__).parents[1]
 _CHAT_JS = _ROOT / "src" / "oduflow" / "templates" / "static" / "chat.js"
 _ACP_JS = _ROOT / "src" / "oduflow" / "templates" / "static" / "acp-client.js"
