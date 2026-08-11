@@ -11,7 +11,6 @@ from oduflow.docker_ops import system_ops
 from oduflow.errors import PrerequisiteNotMetError
 from oduflow.settings import Settings, TeamSettings
 
-
 HASH_60 = "609e7ca59cc05bf0de7233c6781a381b742a2931"
 HASH_61 = "61dde68eefc2d6823b1243e482f522de8f9a8f32"
 

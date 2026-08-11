@@ -89,9 +89,13 @@ port = 8000
 
 [team.1]
 hostname = "localhost"
-auth_token = "your-secret-token"   # MCP auth (empty = disabled)
-ui_password = "your-ui-password"   # Web UI auth (empty = disabled)
+auth_token = "your-secret-token"   # MCP Bearer token
+ui_password = "your-ui-password"   # Web UI password for user admin
 ```
+
+HTTP mode refuses empty MCP or dashboard credentials unless
+`[server].allow_insecure_http = true` is set explicitly. Use that escape hatch
+only behind another authenticating proxy.
 
 See [Installation — Configuration Reference](installation.md#configuration-reference) for all options.
 

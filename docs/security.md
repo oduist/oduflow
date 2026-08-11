@@ -135,12 +135,17 @@ an environment also rotates its token.
 
 ## Web Dashboard Auth
 
-The web dashboard and REST API use HTTP Basic authentication with a **separate** password:
+The browser login form creates a signed, seven-day HTTP-only session cookie.
+The REST API also accepts HTTP Basic authentication. Both use a **separate**
+password:
 
 - **Username**: `admin`
 - **Password**: value of `ui_password` from `oduflow.toml`
 
-This is independent from the MCP Bearer token (`auth_token`). Credentials are compared using `hmac.compare_digest` to prevent timing attacks.
+This is independent from the MCP Bearer token (`auth_token`). Credentials are
+compared using `hmac.compare_digest` to prevent timing attacks. State-changing
+cookie-auth requests and WebSocket handshakes are additionally checked for a
+same-origin `Origin`/`Referer` to prevent CSRF.
 
 Fresh configs get a generated `ui_password` for `[team.1]` on first startup.
 Older HTTP configs with an empty `ui_password` are also auto-filled on startup

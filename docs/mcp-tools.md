@@ -22,7 +22,7 @@ All tools are accessible via MCP clients (Cursor, Cline, Amp, etc.) and the CLI 
 | `run_odoo_tests` | ✓ | Run Odoo tests for specific modules |
 | `get_environment_logs` | | Retrieve recent container logs |
 | `run_odoo_command` | ✓ | Execute an arbitrary shell command inside the Odoo container |
-| `run_odoo_shell` | ✓ | Execute Python code in the Odoo shell context with full ORM access |
+| `run_odoo_shell` | ✓ | Execute Python code in the Odoo shell context with full ORM access; `auto_commit=True` commits successful writes, while `False` leaves the shell transaction uncommitted |
 | `odoo_search_read` | ✓ | Search and read records (XML-RPC `search_read`/`search_count`) as any user, with ACLs and record rules applied |
 | `odoo_create` | ✓ | Create one or many records (XML-RPC `create`). Committed immediately |
 | `odoo_write` | ✓ | Update records (XML-RPC `write`). Committed immediately |
@@ -34,7 +34,7 @@ All tools are accessible via MCP clients (Cursor, Cline, Amp, etc.) and the CLI 
 | `search_in_odoo` | | Search for a pattern (fixed-string grep) in files inside the Odoo container |
 | `http_request_to_odoo` | | Make an HTTP request to the running Odoo instance (test controllers, JSON-RPC, REST) |
 | `list_installed_modules` | | List Odoo modules and their states with name/state filtering |
-| `run_db_query` | ✓ | Execute a SQL query against the environment's PostgreSQL database |
+| `run_db_query` | ✓ | Execute SQL against the environment's PostgreSQL database; supports `output_format="csv"` or `"json"` and caps returned rows with `max_rows` (default `100`) |
 | `reset_admin_password` | ✓ | Reset the admin user password in the Odoo database (default: "test") |
 | `connect_as_user` | ✓ | Mint a passwordless Odoo login session for a user (by login or id) and return the `session_id` cookie + URL — hand to Playwright to skip the login form and test as any role (incl. portal) |
 | `read_output` | | Read from a cached tool output by ID (paginate, grep, errors, tail) |
@@ -75,9 +75,34 @@ All tools are accessible via MCP clients (Cursor, Cline, Amp, etc.) and the CLI 
 | `list_extra_repos` | | List all cloned extra addons repositories |
 | `update_extra_repo` | ✓ | Fetch latest changes from the remote for an extra addons repository |
 | `delete_extra_repo` | ✓ | Delete a cloned extra addons repository |
+| **Production Hosting** | | Requires `[production].enabled = true` |
+| `create_production` | ✓ | Provision a long-lived production with its own domain and the dedicated production PostgreSQL cluster; optionally seed it from a template |
+| `list_productions` | | List productions with status, domain, deployed commit, and auto-update state |
+| `get_production_info` | | Detailed status, configuration, deployed commit, deploy history, and backup information |
+| `start_production` | ✓ | Start a stopped production |
+| `stop_production` | ✓ | Stop a production, taking it offline |
+| `restart_production` | ✓ | Restart a production's Odoo container |
+| `set_production_auto_update` | ✓ | Enable or disable GitHub push webhook deployments |
+| `update_production` | ✓ | Deploy pulled commits with explicit/automatic actions, health verification, and automatic code rollback on failure |
+| `rollback_production` | ✓ | Roll production code back to a selected commit and restart it; does not roll back the database |
+| `production_deploys` | | Read deploy history, including actions, modules, trigger, and rollback status |
+| `production_logs` | | Read production Odoo logs with line, substring, and level filtering |
+| `snapshot_production` | ✓ | Create an S3 snapshot containing the database, deduplicated filestore, and deployed commit |
+| `list_production_snapshots` | | List S3 snapshots; `refresh=True` bypasses the cached index |
+| `restore_production` | ✓ | Restore one production's database and filestore; requires its name in `confirm` |
+| `production_backup_status` | | Inspect snapshot schedules, WAL archiving, base backups, and S3 reachability |
+| `set_production_backup_schedule` | ✓ | Set a production's daily snapshot time (`HH:MM`) or disable it with `off` |
+| `prune_production_backups` | ✓ | Apply configured snapshot and chunk-store retention immediately |
+| `restore_cluster_pitr` | ✓ | ⚠️ Restore the entire production PostgreSQL cluster from WAL-G; requires `confirm="RESTORE-CLUSTER"` |
+| `delete_production` | ✓ | Remove a production; requires its name in `confirm`, and preserves its database unless `drop_database=True` |
 | **Agent Instructions** | | |
 | `get_agent_instructions` | | Get AI agent instructions for using Oduflow MCP tools |
 | `get_odoo_development_guide` | | Get Odoo development standards guide for a specific version (15–19) |
 
 !!! info "Locking"
     Tools marked with ✓ acquire a per-branch or per-team lock. Operations on different branches run in parallel. If another operation on the **same branch** (or team, for team-level tools) is already in progress, the call is rejected with `BusyError`.
+
+The exact current signature and defaults for every tool are also available from
+`oduflow list` (`oduflow list --verbose` adds descriptions). The production
+workflow and disaster-recovery consequences are covered in
+[Production Hosting](production.md).

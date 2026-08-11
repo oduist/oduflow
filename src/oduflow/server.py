@@ -22,9 +22,11 @@ try:
 except Exception:  # pragma: no cover - authlib internals may change
     pass
 
-from fastmcp import FastMCP, Context
+from fastmcp import Context, FastMCP
 from fastmcp.exceptions import ToolError
 
+from oduflow import activity, git_ops, migrations, production_registry, quotas, reaper
+from oduflow import settings as settings_module
 from oduflow.docker_ops import (
     env_ops,
     odoo_ops,
@@ -36,11 +38,9 @@ from oduflow.docker_ops import (
     volume_file_ops,
     volume_ops,
 )
-from oduflow import activity, git_ops, migrations, production_registry, quotas, reaper
-from oduflow import settings as settings_module
 from oduflow.errors import FlowError, NotFoundError, PrerequisiteNotMetError
 from oduflow.locking import LockManager
-from oduflow.output_cache import OutputCache, CachedOutput
+from oduflow.output_cache import CachedOutput, OutputCache
 from oduflow.settings import Settings, TeamSettings, find_toml
 
 logger = logging.getLogger("oduflow")
@@ -4025,8 +4025,8 @@ def _ensure_initialized(settings: Settings) -> None:
     )
 
 
-def _run_upgrade(settings: Settings) -> None:
-    """Overwrite bundled agent guides and sanitize scripts with latest versions."""
+def _run_upgrade(settings: Settings, *, force: bool = False) -> None:
+    """Overwrite bundled files, optionally without an interactive prompt."""
     import pathlib
     import shutil
 
@@ -4120,11 +4120,12 @@ def _run_upgrade(settings: Settings) -> None:
     print("  press Ctrl+C NOW and back them up before proceeding.")
     print()
 
-    try:
-        input("  Press Enter to continue or Ctrl+C to abort... ")
-    except KeyboardInterrupt:
-        print("\n\nAborted. No files were changed.")
-        return
+    if not force:
+        try:
+            input("  Press Enter to continue or Ctrl+C to abort... ")
+        except KeyboardInterrupt:
+            print("\n\nAborted. No files were changed.")
+            return
 
     # --- Overwrite ---
     count = 0
@@ -4711,7 +4712,7 @@ def _run_call(argv: list[str]) -> None:
 
 def _get_version() -> str:
     """Return the installed package version."""
-    from importlib.metadata import version, PackageNotFoundError
+    from importlib.metadata import PackageNotFoundError, version
 
     try:
         return version("oduflow")
@@ -4743,9 +4744,14 @@ def _run_cli() -> None:
 
     # --- System commands ---
     sub.add_parser("destroy", help="Destroy all shared infrastructure")
-    sub.add_parser(
+    p_upgrade = sub.add_parser(
         "upgrade",
         help="Overwrite bundled agent guides and sanitize scripts with the latest version",
+    )
+    p_upgrade.add_argument(
+        "--force",
+        action="store_true",
+        help="overwrite changed bundled files without prompting",
     )
 
     # --- Template commands (need --team) ---
@@ -5021,7 +5027,7 @@ def _run_cli() -> None:
         return
 
     if args.command == "upgrade":
-        _run_upgrade(_settings)
+        _run_upgrade(_settings, force=args.force)
         return
 
     if args.command == "reload-template":

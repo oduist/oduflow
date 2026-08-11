@@ -87,8 +87,7 @@ class TestServiceNaming:
     def test_accepts_docker_safe_names(self, good):
         assert validate_service_name(good) == good
         assert (
-            get_service_container_name(good, "oduflow-", "1")
-            == f"oduflow-1-svc-{good}"
+            get_service_container_name(good, "oduflow-", "1") == f"oduflow-1-svc-{good}"
         )
 
     @pytest.mark.parametrize(

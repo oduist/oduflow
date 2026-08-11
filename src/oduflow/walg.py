@@ -30,17 +30,16 @@ Debian-based ``postgres:*`` images, not ``-alpine`` variants.
 
 from __future__ import annotations
 
+import datetime as _dt
 import hashlib
 import json
 import logging
 import os
 import re
-import datetime as _dt
 import tarfile
 import tempfile
 import time
 import urllib.request
-
 from typing import Any
 
 from oduflow.errors import ExternalCommandError, PrerequisiteNotMetError

@@ -2,8 +2,8 @@ import logging
 import os
 import re
 import subprocess
-from urllib.parse import ParseResult, urlparse
 from typing import Any
+from urllib.parse import ParseResult, urlparse
 
 from oduflow.errors import ExternalCommandError, FlowError
 from oduflow.naming import redact_url_credentials, sanitize_repo_url
@@ -234,8 +234,8 @@ def list_credentials(cred_file: str) -> list[dict[str, Any]]:
 
 
 def validate_credential(host: str, username: str, cred_file: str) -> str:
+    from urllib.error import HTTPError, URLError
     from urllib.request import Request, urlopen
-    from urllib.error import URLError, HTTPError
 
     if not os.path.exists(cred_file):
         return "invalid"

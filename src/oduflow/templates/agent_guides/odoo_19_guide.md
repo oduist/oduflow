@@ -96,9 +96,12 @@ from openupgradelib import openupgrade
 
 @openupgrade.migrate()
 def migrate(env, version):
-    if not version:        # fresh install — nothing to port
+    if not version:  # fresh install — nothing to port
         return
-    openupgrade.rename_fields(env, [
-        ("library.book", "library_book", "isbn_code", "isbn"),
-    ])
+    openupgrade.rename_fields(
+        env,
+        [
+            ("library.book", "library_book", "isbn_code", "isbn"),
+        ],
+    )
 ```

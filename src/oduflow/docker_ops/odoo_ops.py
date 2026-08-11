@@ -6,7 +6,6 @@ import secrets
 from typing import Any
 
 import docker
-
 from oduflow.docker_ops.client import get_client
 from oduflow.env_credentials import load_credentials
 from oduflow.errors import ExternalCommandError, NotFoundError
@@ -794,9 +793,7 @@ def connect_as_user(
                     f"User '{err[len('NOTFOUND:') :]}' not found in environment "
                     f"'{env_name}'. Pass an existing login or numeric user id."
                 )
-            raise ExternalCommandError(
-                "odoo shell (connect_as_user)", exit_code, err
-            )
+            raise ExternalCommandError("odoo shell (connect_as_user)", exit_code, err)
 
         sid = _extract_sentinel(output_str, "SID")
         if not sid:
@@ -815,17 +812,13 @@ def connect_as_user(
 
         from oduflow.docker_ops.env_ops import get_env_base_url
 
-        base_url, cookie_domain = get_env_base_url(
-            settings, team, env_name, container
-        )
+        base_url, cookie_domain = get_env_base_url(settings, team, env_name, container)
         expires_at = (
             datetime.datetime.now(datetime.timezone.utc)
             + datetime.timedelta(seconds=ttl)
         ).strftime("%Y-%m-%dT%H:%M:%SZ")
 
-        logger.info(
-            "Connected as user", extra={"env_name": env_name, "login": login}
-        )
+        logger.info("Connected as user", extra={"env_name": env_name, "login": login})
         return {
             "sid": sid,
             "login": login,
@@ -953,8 +946,8 @@ def http_request_to_odoo(
 ) -> dict[str, Any]:
     """Make an HTTP request to the running Odoo instance."""
     import json  # noqa: F401
-    import urllib.request
     import urllib.error
+    import urllib.request
 
     from oduflow.docker_ops.env_ops import get_env_base_url
 

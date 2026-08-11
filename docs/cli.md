@@ -25,7 +25,7 @@ Shared infrastructure (Docker network, PostgreSQL, team directories) is initiali
 
 **stdio mode** — the server communicates over stdin/stdout. The MCP client starts the process directly; no network port is needed. Ideal for local clients like Claude Desktop, Windsurf, etc.
 
-**HTTP mode** — starts a persistent HTTP server on `http://0.0.0.0:8000` by default. Exposes the MCP endpoint at `/mcp`, a Web Dashboard at `/`, and a REST API at `/api/`. Supports Bearer token authentication for MCP and Basic auth for the dashboard.
+**HTTP mode** — starts a persistent HTTP server on `http://0.0.0.0:8000` by default. Exposes the MCP endpoint at `/mcp`, a Web Dashboard at `/`, and a REST API at `/api/`. MCP uses Bearer tokens; the dashboard uses a form/session cookie, while API clients may also use HTTP Basic auth.
 
 Configuration is loaded from `oduflow.toml` (see [Installation](installation.md#configuration-reference)).
 See [Quick Start](quick-start.md) for MCP client configuration examples for both modes.
@@ -35,7 +35,22 @@ See [Quick Start](quick-start.md) for MCP client configuration examples for both
 ```bash
 # Destroy all shared infrastructure (requires no active environments)
 oduflow destroy
+
+# Refresh deployed files bundled with the installed Oduflow version
+oduflow upgrade
+
+# Refresh non-interactively (for scripts and automated deployments)
+oduflow upgrade --force
 ```
+
+`oduflow upgrade` compares and interactively refreshes the system
+`postgresql.conf` plus each team's `odoo.conf`, agent guides, and bundled
+sanitize script. It prints the affected paths and asks for confirmation before
+overwriting them. A deployed file whose first line is exactly `# KEEP` is left
+unchanged. This command is separate from upgrading the Python package (for
+example, `uv tool upgrade oduflow`). Pass `--force` to accept the listed
+overwrites without reading from the terminal; the warning and affected-file
+list are still printed, and `# KEEP` files are still preserved.
 
 ## Template Commands
 

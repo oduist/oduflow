@@ -1,9 +1,10 @@
-import pytest
-import docker
 from unittest.mock import MagicMock, patch
 
+import pytest
+
+import docker
 from oduflow.docker_ops import volume_file_ops
-from oduflow.docker_ops.volume_file_ops import _safe_path, _MOUNT_POINT
+from oduflow.docker_ops.volume_file_ops import _MOUNT_POINT, _safe_path
 from oduflow.errors import ConflictError, NotFoundError
 from oduflow.settings import Settings, TeamSettings
 

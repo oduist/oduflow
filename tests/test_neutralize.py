@@ -10,7 +10,6 @@ from __future__ import annotations
 from unittest.mock import MagicMock
 
 import docker as _docker
-
 from oduflow import sanitizer
 from oduflow.naming import get_db_name, get_resource_name
 

@@ -1,8 +1,8 @@
 from unittest.mock import MagicMock, patch
 
-import docker
 import pytest
 
+import docker
 from oduflow import production_registry
 from oduflow.docker_ops import system_ops
 from oduflow.settings import Settings, TeamSettings

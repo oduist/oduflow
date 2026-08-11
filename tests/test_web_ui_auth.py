@@ -23,7 +23,8 @@ from starlette.testclient import TestClient
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
 from oduflow import web_ui
-from oduflow.licensing import LicenseInfo, TYPE_INDIVIDUAL, TYPE_UNLICENSED
+from oduflow.licensing import TYPE_INDIVIDUAL, TYPE_UNLICENSED, LicenseInfo
+from oduflow.locking import LockManager
 from oduflow.settings import Settings, TeamSettings
 from oduflow.web_ui import (
     _AUTH_COOKIE,
@@ -33,7 +34,6 @@ from oduflow.web_ui import (
     _make_ui_token,
     mount_web_ui,
 )
-from oduflow.locking import LockManager
 
 _PW = "s3cret"
 

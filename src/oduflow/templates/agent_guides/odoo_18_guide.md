@@ -27,7 +27,7 @@ Quick orientation for an agent about to author or refactor a module on 18.0.
   ```python
   status = fields.Selection(
       selection_add=[("archived", "Archived")],
-      ondelete={"archived": "set default"},   # or "cascade", "set null", a callable
+      ondelete={"archived": "set default"},  # or "cascade", "set null", a callable
   )
   ```
 
@@ -50,6 +50,7 @@ Quick orientation for an agent about to author or refactor a module on 18.0.
   @api.model
   def create(self, vals):
       return super().create(vals)
+
 
   # 18.0
   @api.model_create_multi
@@ -113,9 +114,12 @@ from openupgradelib import openupgrade
 
 @openupgrade.migrate()
 def migrate(env, version):
-    if not version:        # fresh install — nothing to port
+    if not version:  # fresh install — nothing to port
         return
-    openupgrade.rename_fields(env, [
-        ("library.book", "library_book", "isbn_code", "isbn"),
-    ])
+    openupgrade.rename_fields(
+        env,
+        [
+            ("library.book", "library_book", "isbn_code", "isbn"),
+        ],
+    )
 ```

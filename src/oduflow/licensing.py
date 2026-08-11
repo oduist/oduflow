@@ -79,8 +79,8 @@ def get_license_path(etc_dir: str | None = None) -> str:
 
 
 def _verify_license_text(raw: str) -> LicenseInfo:
-    from cryptography.hazmat.primitives.asymmetric import padding, rsa
     from cryptography.hazmat.primitives import hashes
+    from cryptography.hazmat.primitives.asymmetric import padding, rsa
     from cryptography.hazmat.primitives.serialization import load_pem_public_key
 
     raw = raw.strip()

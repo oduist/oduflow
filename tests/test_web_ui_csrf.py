@@ -19,7 +19,7 @@ from starlette.routing import Route, Router
 from starlette.testclient import TestClient
 
 from oduflow.settings import Settings, TeamSettings
-from oduflow.web_ui import BasicAuthMiddleware, _AUTH_USER, _is_cross_origin
+from oduflow.web_ui import _AUTH_USER, BasicAuthMiddleware, _is_cross_origin
 
 _PW = "s3cret"
 
@@ -38,7 +38,9 @@ def test_is_cross_origin_rejects_foreign_origin():
 
 
 def test_is_cross_origin_referer_fallback():
-    assert _is_cross_origin(_headers(host="h", referer="https://evil.example/x")) is True
+    assert (
+        _is_cross_origin(_headers(host="h", referer="https://evil.example/x")) is True
+    )
     assert _is_cross_origin(_headers(host="h", referer="https://h/dash")) is False
 
 

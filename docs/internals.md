@@ -10,29 +10,27 @@
                      │  MCP (stdio or Streamable HTTP)
 ┌────────────────────▼─────────────────────────────┐
 │  server.py — FastMCP transport layer             │
-│  • MCP tool definitions (54 tools)               │
+│  • Public MCP tool definitions                    │
 │  • Per-branch / per-team / system locking        │
 │  • Unified error handler (FlowError → ToolError) │
 │  • Web UI mount (Starlette)                      │
-│  • Bearer token auth (MCP) / Basic auth (Web UI) │
+│  • Bearer auth (MCP) / session+Basic auth (UI)   │
 │  • Team resolution (token → Host → default)      │
 └────────────────────┬─────────────────────────────┘
                      │
-     ┌───────────────┼───────────────────┐
-     │               │                   │
-     ▼               ▼                   ▼
- system_ops      env_ops             service_ops
- (init/destroy/  (create/delete/     (create/delete/
-  template mgmt)  start/stop/         update/list/
-                  restart/list/       logs)
-                  pull/exec)
-     │               │                   │
-     │               ▼                   │
-     │           odoo_ops                │
-     │           (install/upgrade/       │
-     │            test/logs/exec)        │
-     │               │                   │
-     └───────────────┼───────────────────┘
+     ┌───────────────┼───────────────────┬────────────────────┐
+     │               │                   │                    │
+     ▼               ▼                   ▼                    ▼
+ system_ops      env_ops             service_ops       production_ops
+ (infrastructure (dev environment    (services,        (production deploy,
+  + templates)    lifecycle/sync)     presets/volumes)  rollback/lifecycle)
+     │               │                                        │
+     │               ▼                                        ▼
+     │           odoo_ops                              backup_ops / WAL-G
+     │           (modules, tests,                      (snapshots, retention,
+     │            shell, ORM, SQL)                      cluster PITR)
+     │               │                                        │
+     └───────────────┴────────────────────────────────────────┘
                      │
               Docker SDK (docker-py)
                      │
@@ -72,13 +70,19 @@ src/oduflow/
   git_ops.py           # Git clone, pull, credential management, manifest parsing
   git_analysis.py      # Classify changed files → install / upgrade / restart / refresh
   port_registry.py     # Stable port allocation with JSON persistence
-  web_ui.py            # Starlette-based dashboard, REST API, Basic auth middleware
+  web_ui.py            # Starlette dashboard, REST/WS API, session+Basic auth middleware
   extra_addons.py      # Extra addon repo management (clone, worktree, odoo.conf generation)
   env_credentials.py   # Per-environment PostgreSQL credentials
   sanitizer.py         # DB sanitization (SQL/Python scripts)
   sync.py              # Sync template data from S3 or local path (aws s3 sync / rsync)
   licensing.py         # License verification and installation (RSA signatures)
   systemd.py           # Systemd service install/uninstall
+  production_registry.py # Per-team production metadata and deploy history
+  backup_ops.py        # Production snapshot/restore orchestration
+  backup_scheduler.py  # Scheduled snapshots, base backups, and retention
+  walg.py              # WAL-G archive/base-backup/PITR integration
+  chunkstore/          # Deduplicated filestore snapshot engine
+  agent_sessions.py    # Hosted-agent conversation selection/history
 
   docker_ops/
     client.py           # docker.from_env() wrapper + UID/GID auto-detection
@@ -86,9 +90,12 @@ src/oduflow/
                         # save_env_as_template / delete_template / list_templates
     env_ops.py          # create / delete / start / stop / restart / update / list / status / pull /
                         # apt/pip auto-install / filestore overlay mount
-    odoo_ops.py         # install / upgrade / test / logs / shell / search / run_command
+    production_ops.py   # production create/deploy/rollback/lifecycle
+    odoo_ops.py         # install / upgrade / test / logs / shell / ORM / SQL / search / run_command
     service_ops.py      # create / delete / update / list / logs for auxiliary services
     service_presets.py  # Save / restore / list / delete service preset configurations
+    volume_ops.py       # Managed Docker volume lifecycle
+    volume_file_ops.py  # Read/write/search/delete files in managed volumes
     stats.py            # Container and system CPU/RAM stats (parallel collection)
 
   templates/
@@ -98,7 +105,7 @@ src/oduflow/
     dashboard.html        # Web dashboard UI (single-page application)
     favicon.ico           # Dashboard favicon
     agent_guides/         # AI agent guides (copied to team data dirs on init)
-      agent_guide.md      # Main agent instructions for Oduflow MCP tools
+      agent_instructions.md # Main agent instructions for Oduflow MCP tools
       odoo_15_guide.md    # Odoo 15 development standards
       odoo_16_guide.md    # Odoo 16 development standards
       odoo_17_guide.md    # Odoo 17 development standards
@@ -179,7 +186,7 @@ Oduflow uses a granular `LockManager` (`locking.py`) with per-branch and per-tea
 |---|---|---|
 | **Per-branch** | One operation per branch at a time | `create_environment`, `delete_environment`, `install_odoo_modules`, `pull_and_apply` |
 | **Per-team** | One team-level operation at a time | `add_extra_repo`, `setup_repo_auth`, `create_service` |
-| **System** | One system operation at a time | `init`, `destroy` |
+| **System/cluster** | Cross-environment infrastructure operation | startup initialization, `destroy`, production cluster PITR |
 
 Operations on **different branches** run in parallel. If a lock cannot be acquired, the tool immediately returns `BusyError` (no queuing).
 
@@ -201,12 +208,20 @@ MCP clients receive errors as `ToolError` with a descriptive message. REST API c
 
 ## PostgreSQL Tuning
 
-The bundled `postgresql.conf` is optimized for a 2 vCPU / 4 GB RAM development server:
+At first system initialization Oduflow detects CPU/RAM from Docker (then host
+stats, with a conservative fallback) and generates `postgresql.conf`. The dev
+profile is deliberately lean for many single-user Odoo containers:
 
-- **1 GB shared buffers** (25% of RAM)
-- **16 MB work_mem** per query
-- **256 MB maintenance_work_mem** for VACUUM and CREATE INDEX
-- **WAL tuning**: 512 MB–2 GB WAL size, 15-minute checkpoint timeout
-- **Aggressive autovacuum**: 30s naptime, 5% scale factor
-- **Slow query logging**: queries over 1 second
-- **HDD-optimized**: random_page_cost=4.0, effective_io_concurrency=2
+- `shared_buffers` is about 10% of RAM, floored at 128 MB and capped at 1 GB.
+- `work_mem` is derived from the 100-connection ceiling and clamped to 4–16 MB.
+- Parallel workers and autovacuum workers scale conservatively with CPU count.
+- Planner costs assume SSD storage; statements slower than one second are logged.
+
+The generated file starts with `# KEEP`, so `oduflow upgrade` preserves it. To
+regenerate it from current resources, remove the deployed file, restart Oduflow,
+then restart the shared PostgreSQL container.
+
+Production uses a separate, independently generated profile in its dedicated
+cluster: roughly 20% of RAM for `shared_buffers` (512 MB–8 GB), a 200-connection
+ceiling, more parallelism, and WAL archiving hooks for WAL-G. See
+[Production Hosting](production.md).

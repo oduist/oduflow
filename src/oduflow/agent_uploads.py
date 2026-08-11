@@ -7,11 +7,10 @@ import os
 import re
 import secrets
 import tarfile
-from typing import BinaryIO, Any
+from typing import Any, BinaryIO
 from urllib.parse import quote
 
 import docker
-
 from oduflow.docker_ops.client import get_client
 from oduflow.errors import FlowError, NotFoundError
 from oduflow.naming import (

@@ -37,7 +37,6 @@ from typing import Any, Callable
 
 import docker
 from docker import DockerClient
-
 from oduflow.docker_ops.client import chown_recursive, get_client, get_odoo_uid_gid
 from oduflow.docker_ops.stats import default_env_limits
 from oduflow.docker_ops.system_ops import (

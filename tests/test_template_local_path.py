@@ -15,11 +15,10 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from fastmcp.exceptions import ToolError
+from tool_helpers import call_tool as _call_tool  # noqa: E402
 
 from oduflow.docker_ops.system_ops import _source_env_metadata
 from oduflow.settings import Settings, TeamSettings
-
-from tool_helpers import call_tool as _call_tool  # noqa: E402
 
 
 def _make_env(tmp_path, allow_local_path: bool = True):

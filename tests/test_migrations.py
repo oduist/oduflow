@@ -211,9 +211,10 @@ class TestTeamScopedNamesMigration:
 
 class TestResourceLimitsMigration:
     def test_updates_env_containers_only(self, monkeypatch):
+        from unittest.mock import MagicMock
+
         from oduflow.migrations import _migrate_env_resource_limits
         from oduflow.settings import TeamSettings
-        from unittest.mock import MagicMock
 
         env = MagicMock()
         env.labels = {
@@ -242,9 +243,10 @@ class TestResourceLimitsMigration:
         svc.update.assert_not_called()
 
     def test_update_failure_is_logged_not_fatal(self, monkeypatch):
+        from unittest.mock import MagicMock
+
         from oduflow.migrations import _migrate_env_resource_limits
         from oduflow.settings import TeamSettings
-        from unittest.mock import MagicMock
 
         env = MagicMock()
         env.labels = {

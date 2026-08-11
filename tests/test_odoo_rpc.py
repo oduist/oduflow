@@ -5,9 +5,9 @@ import json
 import tarfile
 import threading
 import time
+from unittest.mock import MagicMock, patch
 
 import pytest
-from unittest.mock import MagicMock, patch
 
 from oduflow.docker_ops import odoo_rpc
 from oduflow.errors import ExternalCommandError

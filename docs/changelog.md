@@ -4,6 +4,11 @@
 
 ### Features
 
+- **Non-interactive bundled-file upgrades** — `oduflow upgrade --force` prints
+  the usual overwrite warning and affected paths but proceeds without waiting
+  for terminal input, enabling unattended deployments while continuing to
+  preserve files marked with `# KEEP`.
+
 - **Structured Odoo ORM tools** — six new MCP tools give agents the semantics of
   standard Odoo XML-RPC `execute_kw` without writing Python: `odoo_search_read`,
   `odoo_create`, `odoo_write`, `odoo_unlink`, `odoo_call` (public model methods
@@ -30,6 +35,16 @@
   `/web`. Both this tool and the environment readiness probe now build on the
   path-free `get_env_base_url`, making `wait_for_odoo_ready` check the real
   `/web/health` instead of passing because the login page rendered.
+
+### Documentation & Testing
+
+- **Documentation re-audited against the public code surface** — the CLI, MCP,
+  REST/WebSocket, TOML, production, ORM, authentication, and PostgreSQL-tuning
+  references now match the implementation. The separate `oduflow upgrade` step
+  is documented, and invalid named-option examples for `oduflow call` were
+  corrected. `llms-full.txt` is now generated from every current manual page,
+  with tests preventing undocumented commands, tools, routes, settings, or
+  stale LLM output.
 
 ## v1.68.1
 
@@ -222,7 +237,7 @@
 
 ### Documentation
 
-- **Docs synced with code** — a documentation audit corrected several drifts: the retired "PolyForm Noncommercial 1.0.0" license name → BUSL-1.1 in `llms.txt`/`llms-full.txt`; `auto_delete_hours` default corrected to `0` (opt-in) across pages; the removed `oduflow init` command/flag dropped; `[server].allow_local_path`, `allow_insecure_http` and `[routing].hostname` documented; and the v1.61.0 coding-agent feature fully documented (new `docs/agent.md`, installation/web-api pages, `llms.txt`/`llms-full.txt`). (#101, #102)
+- **Docs synced with code** — a documentation audit corrected several drifts: the retired "PolyForm Noncommercial 1.0.0" license name → BUSL-1.1 in `llms.txt`/`llms-full.txt`; `auto_delete_hours` default corrected to `0` (opt-in) across pages; `[server].allow_local_path`, `allow_insecure_http` and `[routing].hostname` documented; and the v1.61.0 coding-agent feature fully documented (new `docs/agent.md`, installation/web-api pages, `llms.txt`/`llms-full.txt`). (#101, #102)
 
 ## v1.61.0
 
@@ -476,7 +491,7 @@
 ### Features
 
 - **Move repo-level `odoo.conf` to `.oduflow/odoo.conf`** — per-repo Odoo config is now read from `<repo>/.oduflow/odoo.conf` instead of the repo root
-- **Auto-initialize on startup** — `oduflow` automatically runs initialization (system setup, Docker check) on first start, removing the need for a separate `oduflow init` step ([34e42fa](https://github.com/oduist/oduflow/commit/34e42fa), [f33dfe6](https://github.com/oduist/oduflow/commit/f33dfe6))
+- **Auto-initialize on startup** — `oduflow` automatically runs system setup and the Docker check on first start ([34e42fa](https://github.com/oduist/oduflow/commit/34e42fa), [f33dfe6](https://github.com/oduist/oduflow/commit/f33dfe6))
 - **MCP tools refinement** — output cache for long-running tool results, 7 new MCP tools, 3 enhanced tools; renamed `exec_in_odoo` to `run_odoo_command` ([44810aa](https://github.com/oduist/oduflow/commit/44810aa))
 - **Include odoo.conf in upgrade** — module upgrades now apply odoo.conf changes, skipping files that haven't changed ([f69bc2f](https://github.com/oduist/oduflow/commit/f69bc2f))
 - **Show template database name** in `list-templates` output ([c816229](https://github.com/oduist/oduflow/commit/c816229))
@@ -547,7 +562,7 @@
 
 ### Refactoring
 
-- **TOML-based configuration** — replace `.env` with `oduflow.toml`; `oduflow init` auto-bootstraps default config ([ad3b382](https://github.com/oduist/oduflow/commit/ad3b382))
+- **TOML-based configuration** — replace `.env` with `oduflow.toml`; first launch auto-bootstraps the default config ([ad3b382](https://github.com/oduist/oduflow/commit/ad3b382))
 - **Merge `external_host` and `base_domain` into per-team `hostname`** ([ad3b382](https://github.com/oduist/oduflow/commit/ad3b382))
 - **Rename `ODUFLOW_HOME` → `ODUFLOW_DATA_DIR`** with instance subdirectories ([52224cb](https://github.com/oduist/oduflow/commit/52224cb))
 - **Move odoo.conf and odoo_sanitize** from `etc/` to instance data directory ([dbfc969](https://github.com/oduist/oduflow/commit/dbfc969))

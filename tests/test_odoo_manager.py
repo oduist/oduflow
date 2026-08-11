@@ -1,13 +1,13 @@
 import json
 import os
 import tarfile
+from unittest.mock import MagicMock, patch
 from urllib.parse import urlsplit
 
 import pytest
-import docker
-from unittest.mock import MagicMock, patch
 
-from oduflow.docker_ops import system_ops, env_ops, odoo_ops
+import docker
+from oduflow.docker_ops import env_ops, odoo_ops, system_ops
 from oduflow.errors import ConflictError, NotFoundError, PrerequisiteNotMetError
 from oduflow.settings import DEFAULT_AGENT_IMAGE, Settings, TeamSettings
 

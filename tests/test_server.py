@@ -1,11 +1,12 @@
 import logging
 import sys
 import time
+from dataclasses import replace
 from unittest.mock import patch
 
 import pytest
-
 from fastmcp.exceptions import ToolError
+
 from oduflow.settings import Settings, TeamSettings
 
 TEST_TEAM = TeamSettings(
@@ -82,6 +83,72 @@ class TestCLIInitDestroy:
         }
         _run_destroy(TEST_SETTINGS)
         mock_destroy.assert_called_once_with(TEST_SETTINGS)
+
+    def test_cli_upgrade_force(self):
+        from oduflow import server
+
+        with (
+            patch.object(sys, "argv", ["oduflow", "upgrade", "--force"]),
+            patch.object(server, "_get_settings", return_value=TEST_SETTINGS),
+            patch.object(server, "_run_upgrade") as mock_upgrade,
+        ):
+            server._run_cli()
+
+        mock_upgrade.assert_called_once_with(TEST_SETTINGS, force=True)
+
+
+class TestCLIUpgrade:
+    @staticmethod
+    def _settings_with_changed_guide(tmp_path, monkeypatch):
+        from oduflow import server
+
+        package_dir = tmp_path / "package"
+        bundled_guides = package_dir / "templates" / "agent_guides"
+        bundled_guides.mkdir(parents=True)
+        (bundled_guides / "guide.md").write_text("bundled\n", encoding="utf-8")
+        monkeypatch.setattr(server, "__file__", str(package_dir / "server.py"))
+
+        team_dir = tmp_path / "team"
+        deployed_guides = team_dir / "agent_guides"
+        deployed_guides.mkdir(parents=True)
+        deployed_guide = deployed_guides / "guide.md"
+        deployed_guide.write_text("custom content\n", encoding="utf-8")
+        team = replace(
+            TEST_TEAM,
+            data_dir=str(team_dir),
+            port_registry_path=str(team_dir / "ports.json"),
+        )
+        settings = replace(
+            TEST_SETTINGS,
+            base_data_dir=str(tmp_path),
+            etc_dir=str(tmp_path / "conf"),
+            teams={"1": team},
+        )
+        return server, settings, deployed_guide
+
+    def test_upgrade_prompts_by_default(self, tmp_path, monkeypatch):
+        server, settings, deployed_guide = self._settings_with_changed_guide(
+            tmp_path, monkeypatch
+        )
+        prompt = patch("builtins.input", return_value="")
+
+        with prompt as mock_input:
+            server._run_upgrade(settings)
+
+        mock_input.assert_called_once_with(
+            "  Press Enter to continue or Ctrl+C to abort... "
+        )
+        assert deployed_guide.read_text(encoding="utf-8") == "bundled\n"
+
+    def test_upgrade_force_skips_prompt(self, tmp_path, monkeypatch):
+        server, settings, deployed_guide = self._settings_with_changed_guide(
+            tmp_path, monkeypatch
+        )
+
+        with patch("builtins.input", side_effect=AssertionError("unexpected prompt")):
+            server._run_upgrade(settings, force=True)
+
+        assert deployed_guide.read_text(encoding="utf-8") == "bundled\n"
 
 
 class TestImportTemplateFromOdoo:
@@ -448,6 +515,7 @@ def _get_tool_fn(tool_name: str):
     """Get a sync-callable wrapper for a registered MCP tool."""
     import asyncio
     import inspect
+
     from oduflow.server import mcp
 
     fn = mcp._tool_manager._tools[tool_name].fn

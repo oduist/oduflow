@@ -41,7 +41,7 @@ The same applies to `readonly` and `required` — set them inline
   ```python
   class LibraryBook(models.Model):
       _name = "library.book"
-      _rec_names_search = ["title", "isbn"]   # searched automatically
+      _rec_names_search = ["title", "isbn"]  # searched automatically
   ```
 
 - Control the display label by overriding **`_compute_display_name()`** — on 17 the
@@ -92,9 +92,12 @@ from openupgradelib import openupgrade
 
 @openupgrade.migrate()
 def migrate(env, version):
-    if not version:        # fresh install — nothing to port
+    if not version:  # fresh install — nothing to port
         return
-    openupgrade.rename_fields(env, [
-        ("library.book", "library_book", "isbn_code", "isbn"),
-    ])
+    openupgrade.rename_fields(
+        env,
+        [
+            ("library.book", "library_book", "isbn_code", "isbn"),
+        ],
+    )
 ```

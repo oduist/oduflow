@@ -348,11 +348,40 @@ oduflow call run_odoo_command feature-login "python3 -c 'import odoo; print(odoo
 # Install a package as root
 oduflow call run_odoo_command feature-login "pip3 install phonenumbers" root
 
-# Debug database
-oduflow call run_odoo_command feature-login "psql -h oduflow-db -U odoo -d oduflow_feature-login -c 'SELECT count(*) FROM res_partner;'"
+# Query the environment database directly
+oduflow call run_db_query feature-login "SELECT count(*) FROM res_partner"
 ```
 
 The `user` parameter defaults to `odoo`. Use `root` for privileged operations (installing packages, modifying system files).
+
+## ORM and Database Operations
+
+For structured record access, prefer the six `odoo_*` tools over hand-written
+shell snippets. They call the running Odoo server through its dataset API and
+therefore enforce the same access rights and record rules as the web client:
+
+```bash
+# Discover fields first
+oduflow call odoo_schema '{"env_name":"feature-login","model":"res.partner"}'
+
+# Search as the environment admin (the default)
+oduflow call odoo_search_read '{"env_name":"feature-login","model":"res.partner","domain":[["customer_rank",">",0]],"fields":["name","email"],"limit":20}'
+
+# Verify what another user can see
+oduflow call odoo_search_read '{"env_name":"feature-login","model":"sale.order","as_user":"sales@example.com","fields":["name","amount_total"]}'
+```
+
+`odoo_create`, `odoo_write`, and `odoo_unlink` commit immediately;
+`odoo_unlink` is destructive. `odoo_call` covers other public model methods,
+while `odoo_schema` lists models or returns `fields_get`. Each call is a separate
+transaction. Edited Python code is not visible to these tools until the serving
+Odoo process has restarted.
+
+Use `run_odoo_shell` when you need a fresh registry, `sudo()`, private methods,
+or a multi-step transaction. Successful shell writes are committed by default;
+pass `auto_commit=false` for a dry run whose transaction is left uncommitted.
+Use `run_db_query` for direct SQL; it supports CSV (default) or JSON output and
+returns at most 100 rows by default (`max_rows` changes the cap).
 
 ## Interactive Terminal
 

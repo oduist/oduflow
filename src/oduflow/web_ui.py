@@ -1,5 +1,4 @@
 from __future__ import annotations
-from typing import Any
 
 import asyncio
 import base64
@@ -16,9 +15,12 @@ import socket
 import tempfile
 import threading
 import time
+from collections.abc import Callable
+from typing import Any
 from urllib.parse import quote, urlsplit
 
 from itsdangerous import BadData, URLSafeTimedSerializer
+from starlette.applications import Starlette
 from starlette.datastructures import Headers
 from starlette.exceptions import HTTPException
 from starlette.requests import ClientDisconnect, HTTPConnection, Request
@@ -28,13 +30,19 @@ from starlette.responses import (
     RedirectResponse,
     Response,
 )
-from starlette.applications import Starlette
 from starlette.routing import BaseRoute, Route, WebSocketRoute
 from starlette.types import ASGIApp, Receive, Scope, Send
 from starlette.websockets import WebSocket
 
-from collections.abc import Callable
-
+from oduflow import (
+    activity,
+    agent_config,
+    agent_uploads,
+    connect_tokens,
+    git_ops,
+    import_tokens,
+    production_registry,
+)
 from oduflow.docker_ops import (
     env_ops,
     odoo_ops,
@@ -44,13 +52,6 @@ from oduflow.docker_ops import (
     system_ops,
     volume_ops,
 )
-from oduflow import activity
-from oduflow import agent_config
-from oduflow import agent_uploads
-from oduflow import connect_tokens
-from oduflow import git_ops
-from oduflow import import_tokens
-from oduflow import production_registry
 from oduflow.docker_ops.odoo_ops import get_environment_logs
 from oduflow.docker_ops.stats import (
     get_container_stats,
@@ -60,10 +61,10 @@ from oduflow.docker_ops.stats import (
     refresh_team_storage,
 )
 from oduflow.errors import BusyError, FlowError, NotFoundError
+from oduflow.licensing import get_license_info, install_license_from_text
 from oduflow.locking import LockManager
 from oduflow.naming import validate_template_name
 from oduflow.settings import Settings, TeamSettings
-from oduflow.licensing import get_license_info, install_license_from_text
 
 logger = logging.getLogger("oduflow")
 
@@ -2949,7 +2950,7 @@ def _build_routes(
         try:
             import docker as _docker
             from oduflow.docker_ops.client import get_client as _get_client
-            from oduflow.naming import get_resource_name, get_db_name
+            from oduflow.naming import get_db_name, get_resource_name
 
             settings = get_settings()
             team = _get_ui_team(websocket)
@@ -3498,13 +3499,13 @@ def _build_routes(
                 pass
 
         try:
-            import docker as _docker
             from docker.utils.socket import (
                 STDERR,
                 next_frame_header,
                 read_exactly,
             )
 
+            import docker as _docker
             from oduflow.docker_ops.client import get_client as _get_client
             from oduflow.naming import (
                 get_agent_checkout_dir,

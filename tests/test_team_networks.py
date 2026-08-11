@@ -1,7 +1,6 @@
 from unittest.mock import MagicMock, patch
 
 import docker
-
 from oduflow.docker_ops.system_ops import ensure_team_network
 from oduflow.migrations import _migrate_per_team_networks
 from oduflow.naming import get_team_network_name

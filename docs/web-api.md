@@ -4,113 +4,184 @@
 
 ![Web Dashboard — Agent Guides](img/agent_guides.png)
 
-When running in HTTP mode, a web dashboard is available at the server root (`http://<host>:<port>/`). It provides:
+HTTP mode serves the dashboard at `/`. It manages environments, templates,
+services, volumes, extra addons, credentials, licenses, usage/quotas, and—when
+enabled—coding agents and productions. Environment cards also expose logs,
+Odoo/SQL terminals, Connect As, notes, protection, scoped MCP access, and
+save-as-template actions.
 
-- **Environment list** with status indicators (running / stopped / partial)
-- **Environment actions**: Start / Stop / Restart / Update / Recreate / Protect / Delete
-- **Environment creation** form (branch, repo URL, Odoo image, template, extra addons, environment variables)
-- **Environment protection** — toggle to prevent accidental deletion
-- **Live log viewer** for each environment
-- **Interactive terminal** — WebSocket-based Odoo Python shell directly in the browser
-- **Container and system resource stats** (CPU, RAM, load average)
-- **Service management** — create, update, restart, delete, and view logs for auxiliary services
-- **Extra addons management** — clone, pull, protect, and delete extra addon repositories
-- **Git credential management** — list, add, delete, and validate stored git credentials
-- **Template listing** — view available template profiles with their status
-- **License management** — view current license and activate license keys
-- **Coding agent** (opt-in, per team) — **Agent CLI** (the agent's terminal in the browser) and **Agent Chat** (a structured ACP chat) for each environment, when `agent_enabled` is set for the team. Hidden for live-mount (`local_path`) environments. See [Coding Agent](agent.md)
+## Authentication and responses
 
-## REST API Endpoints
+Dashboard API routes use the authenticated UI session (user `admin`, password
+from `[team.*].ui_password`). The login form creates an HTTP-only session
+cookie; HTTP Basic credentials are also accepted. State-changing cookie-auth
+requests and all WebSocket handshakes are protected by Origin/Referer checks.
+This authentication is separate from MCP Bearer authentication.
 
-All endpoints return JSON with an `ok` field. Authentication via HTTP Basic auth when `ui_password` is set in `oduflow.toml` (user: `admin`, password: the configured value). This is separate from the MCP Bearer token auth (`auth_token`).
+Most REST handlers return JSON containing `ok`. Three public surfaces use their
+own security model:
 
-### Environments
+- `/healthz` is unauthenticated and contains no secrets.
+- `/api/webhooks/github` verifies `X-Hub-Signature-256` against the production
+  webhook secret.
+- Odoo.sh import ingest routes require a short-lived Bearer import token. The
+  token-minting endpoint remains UI-authenticated.
+
+`/oduflow-connect` is a one-time, token-authenticated browser redirect rather
+than a JSON API. Production routes are registered only when
+`[production].enabled = true`.
+
+## Environment endpoints
 
 | Method | Endpoint | Description |
 |---|---|---|
-| `GET` | `/api/environments` | List all environments |
-| `POST` | `/api/environments/create` | Create a new environment (JSON body: `env_name`, `repo_url`, `odoo_image`, `template_name`, `extra_addons`, `auto_install_modules`, `env_vars`, `git_user`) |
+| `GET` | `/api/environments` | List environments |
+| `POST` | `/api/environments/create` | Create an environment. Body: `env_name`, optional `repo_url`, `odoo_image`, `template_name`, `extra_addons`, `auto_install_modules`, `env_vars`, `git_user` |
 | `POST` | `/api/environments/{branch}/start` | Start an environment |
 | `POST` | `/api/environments/{branch}/stop` | Stop an environment |
-| `POST` | `/api/environments/{branch}/restart` | Restart an environment |
-| `POST` | `/api/environments/{branch}/update` | Re-create the container, preserving DB and filestore (JSON body, all optional: `env_vars`, `odoo_image`) |
-| `POST` | `/api/environments/{branch}/sync` | Pull latest code and auto-install/upgrade/restart |
-| `POST` | `/api/environments/{branch}/recreate` | Recreate an environment (delete + create with the same parameters) |
-| `POST` | `/api/environments/{branch}/delete` | Delete an environment |
-| `GET` | `/api/environments/{branch}/logs?n=200` | Get environment logs |
-| `POST` | `/api/environments/{branch}/protect` | Protect environment from deletion |
-| `POST` | `/api/environments/{branch}/unprotect` | Remove protection from environment |
-| `POST` | `/api/environments/{branch}/storage/refresh` | Recompute the environment's DB size and workspace disk size (cached; served via `/api/stats` and `/api/usage`) |
-| `WebSocket` | `/api/environments/{branch}/terminal` | Interactive Odoo Python shell via WebSocket (used by the Web Dashboard terminal) |
+| `POST` | `/api/environments/{branch}/restart` | Restart its Odoo container |
+| `POST` | `/api/environments/{branch}/sync` | Pull and automatically apply code changes |
+| `POST` | `/api/environments/{branch}/update` | Recreate the container while preserving DB and filestore. Optional body: `env_vars`, `odoo_image` |
+| `POST` | `/api/environments/{branch}/recreate` | Delete and recreate with the recorded parameters |
+| `POST` | `/api/environments/{branch}/delete` | Delete the environment |
+| `GET` | `/api/environments/{branch}/logs?n=200&container=` | Read environment logs; optionally select a container |
+| `POST` | `/api/environments/{branch}/protect` | Protect from stop/delete |
+| `POST` | `/api/environments/{branch}/unprotect` | Remove protection |
+| `POST` | `/api/environments/{branch}/note` | Store the body `note` on the environment |
+| `POST` | `/api/environments/{branch}/storage/refresh` | Refresh cached DB/workspace sizes |
+| `GET` | `/api/environments/{branch}/mcp-access` | Return the scoped MCP URL and per-environment token |
+| `GET` | `/api/environments/{branch}/users` | List internal and portal users for Connect As |
+| `POST` | `/api/environments/{branch}/connect-as` | Mint an Odoo session for body `user` and return URL/cookie details |
+| `GET` | `/api/environments/{branch}/connect-open?user=` | Mint a session and redirect toward the environment login handoff |
+| `POST` | `/api/environments/{branch}/save-as-template` | Save the environment under body `template_name`; the UI never overwrites an existing template |
 
-### Services
+Branch parameters use Starlette's `path` converter internally, so names that
+contain `/` are accepted and URL-decoded as one environment name.
+
+## Environment WebSockets
+
+| Protocol | Endpoint | Description |
+|---|---|---|
+| `WebSocket` | `/api/environments/{branch}/terminal` | Interactive `odoo shell` terminal |
+| `WebSocket` | `/api/environments/{branch}/sql` | Interactive `psql` terminal using the environment-scoped DB role |
+| `WebSocket` | `/api/environments/{branch}/agent` | Hosted Agent CLI PTY |
+| `WebSocket` | `/api/environments/{branch}/agent-acp` | Hosted Agent Chat ACP relay |
+
+## Templates and Odoo.sh import
 
 | Method | Endpoint | Description |
 |---|---|---|
-| `GET` | `/api/services` | List all managed services |
-| `POST` | `/api/services/create` | Create a service. Pass either `port` or Traefik `routes: [{path, port, strip_prefix}]`, plus optional `hostname`, `env_vars`, `host_mode`, volumes and capabilities |
-| `POST` | `/api/services/{name}/update` | Pull latest image and/or change settings. `routes` fully replaces the route list; `routes: []` plus `port` returns to catch-all mode |
+| `GET` | `/api/templates` | List template profiles |
+| `POST` | `/api/templates/{name}/delete` | Delete a template |
+| `POST` | `/api/templates/{name}/rename` | Rename it; body: `new_name` |
+| `POST` | `/api/templates/import-token` | UI-authenticated: mint a 15-minute Odoo.sh import token |
+| `GET` | `/api/templates/import/status` | Import-token authenticated: report resumable upload progress |
+| `POST` | `/api/templates/import/manifest` | Upload template metadata |
+| `POST` | `/api/templates/import/dump` | Stream/chunk the compressed SQL dump |
+| `POST` | `/api/templates/import/filestore` | Upload one atomic filestore hash-directory archive |
+| `POST` | `/api/templates/import/addon` | Stream/chunk one private addon archive |
+| `POST` | `/api/templates/import/addon-remote` | Register an addon repo that the server can clone |
+| `POST` | `/api/templates/import/finalize` | Validate staged data and atomically publish/restore the template |
+| `GET` | `/import-odoo.sh` | Download the token-authenticated Odoo.sh import client |
+
+Ingest endpoints accept the import token only in `Authorization: Bearer ...`,
+not in the URL. See [Template Management](templates.md) for the supported import
+workflow.
+
+## Services, presets, and volumes
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `GET` | `/api/services` | List services |
+| `POST` | `/api/services/create` | Create a service with either catch-all `port` or restricted Traefik `routes`, plus optional image/runtime settings |
+| `POST` | `/api/services/{name}/update` | Pull/change settings and recreate safely; `env_vars`, `volumes`, and `routes` are full replacements when supplied |
 | `POST` | `/api/services/{name}/restart` | Restart a service |
 | `POST` | `/api/services/{name}/delete` | Delete a service |
-| `GET` | `/api/services/{name}/logs?n=200` | Get service logs |
+| `GET` | `/api/services/{name}/logs?n=200` | Read service logs |
+| `GET` | `/api/service-presets` | List saved presets |
+| `POST` | `/api/service-presets/restore` | Restore a preset; body: `name` plus optional runtime overrides |
+| `POST` | `/api/service-presets/{name}/delete` | Delete a preset |
+| `GET` | `/api/volumes` | List managed volumes and service usage |
+| `POST` | `/api/volumes/create` | Create a volume; body: `name`, optional `description` |
+| `POST` | `/api/volumes/{name}/delete` | Delete an unused volume |
 
-### Service Presets
-
-| Method | Endpoint | Description |
-|---|---|---|
-| `GET` | `/api/service-presets` | List saved service presets |
-| `POST` | `/api/service-presets/restore` | Restore a service configuration, including its single port or restricted HTTP routes |
-| `POST` | `/api/service-presets/{name}/delete` | Delete a saved service preset |
-
-### System
+## Extra addons and credentials
 
 | Method | Endpoint | Description |
 |---|---|---|
-| `GET` | `/api/stats` | Container CPU/RAM stats + system metrics + cached per-environment DB/disk sizes |
-| `GET` | `/api/usage` | Cached team storage usage (per environment + team totals) and the team's quotas — the read side for external billing/quota tooling |
-| `POST` | `/api/usage/refresh` | Recompute storage for every environment plus team totals (heavy: walks every workspace); returns the same payload as `GET /api/usage` |
-| `GET` | `/api/templates` | List available template profiles |
+| `GET` | `/api/extra-repos` | List extra-addon repositories |
+| `POST` | `/api/extra-repos/add` | Add one; body: `name`, `repo_url`, optional `git_user` |
+| `POST` | `/api/extra-repos/{name}/pull` | Fetch remote changes |
+| `POST` | `/api/extra-repos/{name}/protect` | Protect from deletion |
+| `POST` | `/api/extra-repos/{name}/unprotect` | Remove protection |
+| `POST` | `/api/extra-repos/{name}/delete` | Delete the repository and unused cached revisions |
+| `GET` | `/api/credentials` | List stored credential identities (not secrets) |
+| `POST` | `/api/credentials/add` | Store credentials embedded in body `repo_url` |
+| `POST` | `/api/credentials/delete` | Delete by body `host` and `username` |
+| `POST` | `/api/credentials/validate` | Validate by body `host` and `username` |
 
-### Extra Addons
-
-| Method | Endpoint | Description |
-|---|---|---|
-| `GET` | `/api/extra-repos` | List all cloned extra addons repositories |
-| `POST` | `/api/extra-repos/add` | Clone an extra addons repo (JSON body: `name`, `repo_url`, `git_user`) |
-| `POST` | `/api/extra-repos/{name}/pull` | Fetch latest changes from the remote for an extra repo |
-| `POST` | `/api/extra-repos/{name}/protect` | Protect an extra repo from deletion |
-| `POST` | `/api/extra-repos/{name}/unprotect` | Remove protection from an extra repo |
-| `POST` | `/api/extra-repos/{name}/delete` | Delete a cloned extra addons repository |
-
-### Credentials
+## System, licensing, and guides
 
 | Method | Endpoint | Description |
 |---|---|---|
-| `GET` | `/api/credentials` | List all stored git credentials |
-| `POST` | `/api/credentials/add` | Store git credentials for a repository (JSON body: `repo_url`) |
-| `POST` | `/api/credentials/delete` | Delete a stored credential (JSON body: `host`, `username`) |
-| `POST` | `/api/credentials/validate` | Validate a stored credential (JSON body: `host`, `username`) |
+| `GET` | `/api/stats` | Container/system metrics plus cached environment storage |
+| `GET` | `/api/usage` | Cached per-environment and team storage/quotas |
+| `POST` | `/api/usage/refresh` | Recompute all team storage usage; potentially expensive |
+| `GET` | `/healthz` | Public health report; returns `200` when healthy, `503` when degraded |
+| `GET` | `/api/license` | License information |
+| `POST` | `/api/license/activate` | Activate body `key` |
+| `GET` | `/api/agent-guides` | List available agent guides |
+| `GET` | `/api/agent-guides/{filename}` | Read a guide |
 
-### Licensing
+## Coding agent endpoints
 
-| Method | Endpoint | Description |
-|---|---|---|
-| `GET` | `/api/license` | Get current license information |
-| `POST` | `/api/license/activate` | Activate a license key (JSON body: `key`) |
-
-### Agent Guides
-
-| Method | Endpoint | Description |
-|---|---|---|
-| `GET` | `/api/agent-guides` | List all available agent guides |
-| `GET` | `/api/agent-guides/{filename}` | Get content of a specific agent guide |
-
-### Coding Agent
-
-The per-team coding agent (see [Coding Agent](agent.md)) exposes one status endpoint and two WebSocket surfaces. Available only when `agent_enabled` is set for the team.
+These endpoints and the WebSocket surfaces are useful only for teams with
+`agent_enabled = true`; the dashboard hides agent actions for live-mounted
+environments.
 
 | Method | Endpoint | Description |
 |---|---|---|
-| `GET` | `/api/agent` | Whether the coding agent is enabled for the team and its default type (`claude` / `codex`) |
-| `WebSocket` | `/api/environments/{branch}/agent` | **Agent CLI** — the agent's interactive TUI, bridged from a PTY `docker exec` in the team's agent container (used by the dashboard console) |
-| `WebSocket` | `/api/environments/{branch}/agent-acp` | **Agent Chat** — a line-framed relay to the agent's ACP adapter (`claude-agent-acp` / `codex-acp`), rendered by the browser chat client with per-environment conversation history |
+| `GET` | `/api/agent` | Agent enablement and effective default (`claude` or `codex`) |
+| `GET` | `/api/environments/{branch}/agent-acp/info?type=` | ACP working directory, selected/recent sessions, and attachment limits |
+| `POST` | `/api/environments/{branch}/agent-acp/session` | Select, title, or clear the current session for body `type` |
+| `POST` | `/api/environments/{branch}/agent-acp/attachments?name=` | Stream an attachment into the agent checkout |
+| `DELETE` | `/api/environments/{branch}/agent-acp/attachments/{upload_id}` | Delete an unsent attachment |
+
+## Production endpoints
+
+These routes exist only when production hosting is enabled. Destructive restore
+and delete operations require explicit confirmation in their JSON body.
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `GET` | `/api/productions` | List productions and return webhook/backup state |
+| `POST` | `/api/productions/create` | Create a production from repository/image/domain settings, optionally a template |
+| `GET` | `/api/productions/backup-status` | Team backup, WAL-G, base-backup, and S3 health |
+| `GET` | `/api/productions/{name}` | Detailed production information |
+| `POST` | `/api/productions/{name}/start` | Start |
+| `POST` | `/api/productions/{name}/stop` | Stop |
+| `POST` | `/api/productions/{name}/restart` | Restart |
+| `POST` | `/api/productions/{name}/update` | Start an asynchronous deploy; returns `202` |
+| `POST` | `/api/productions/{name}/rollback?to_commit=` | Roll code back to a commit |
+| `POST` | `/api/productions/{name}/auto-update` | Set body `enabled` for webhook deploys |
+| `GET` | `/api/productions/{name}/logs?lines=200` | Read up to 2,000 log lines |
+| `GET` | `/api/productions/{name}/deploys` | Read recent deploy history |
+| `POST` | `/api/productions/{name}/delete` | Delete; body `confirm` must equal name, optional `drop_database` |
+| `GET` | `/api/productions/{name}/snapshots?refresh=true` | List S3 snapshots, optionally bypassing cache |
+| `POST` | `/api/productions/{name}/snapshot` | Take a snapshot now |
+| `POST` | `/api/productions/{name}/restore` | Restore body `snapshot_id`; body `confirm` must equal name |
+| `POST` | `/api/productions/{name}/backup-schedule` | Set body `schedule` to `HH:MM` or `off` |
+| `POST` | `/api/webhooks/github` | Public HMAC-authenticated GitHub push webhook |
+
+See [Production Hosting](production.md) for deploy, rollback, backup, and PITR
+semantics.
+
+## Browser routes
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `GET` | `/` | Dashboard application |
+| `GET`, `POST` | `/login` | UI login form |
+| `POST` | `/logout` | Clear the UI session |
+| `GET` | `/oduflow-connect?token=` | One-time environment-host login handoff; sets Odoo `session_id` and redirects to `/web` |
+| `GET` | `/favicon.ico`, `/logo.png`, `/static/{filename}` | Packaged dashboard assets |
