@@ -1250,8 +1250,13 @@ def _build_routes(
             )
 
     def api_templates(request: Request) -> JSONResponse:
+        team = _get_ui_team(request)
         try:
-            templates = system_ops.list_templates(get_settings(), _get_ui_team(request))
+            locks.acquire_team(team.team_id)
+        except BusyError as e:
+            return _error_response(e)
+        try:
+            templates = system_ops.list_templates(get_settings(), team)
             return JSONResponse({"ok": True, "templates": templates})
         except FlowError as e:
             return _error_response(e)
@@ -1260,6 +1265,8 @@ def _build_routes(
             return JSONResponse(
                 {"ok": False, "error": "Internal server error."}, status_code=500
             )
+        finally:
+            locks.release_team(team.team_id)
 
     def api_template_delete(request: Request) -> JSONResponse:
         name = request.path_params["name"]

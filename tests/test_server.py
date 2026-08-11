@@ -971,6 +971,21 @@ class TestEnvLock:
             _locks.release_env("main")
 
 
+class TestTemplateListLock:
+    @patch("oduflow.docker_ops.system_ops.list_templates")
+    def test_busy_raises_tool_error_without_listing(self, mock_list):
+        import oduflow.server
+
+        locks = oduflow.server._locks
+        locks.acquire_team("1")
+        try:
+            with pytest.raises(ToolError, match="Another team-level operation"):
+                _call_tool("list_templates")
+        finally:
+            locks.release_team("1")
+        mock_list.assert_not_called()
+
+
 class TestListServicePresetsTool:
     @patch("oduflow.docker_ops.service_presets.list_presets")
     def test_list_shows_all_fields(self, mock_list):

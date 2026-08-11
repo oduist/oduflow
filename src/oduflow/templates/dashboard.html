@@ -3374,8 +3374,12 @@ async function submitTemplateSettings() {
   var editor = document.getElementById('template-metadata-editor');
   var errEl = document.getElementById('template-settings-error');
   var btn = document.getElementById('template-settings-submit');
+  var name = _templateSettingsName;
+  var revision = _templateSettingsRevision;
+  var token = _templateSettingsLoadToken;
+  var content = editor.value;
   try {
-    var parsed = JSON.parse(editor.value);
+    var parsed = JSON.parse(content);
     if (!parsed || Array.isArray(parsed) || typeof parsed !== 'object') {
       throw new Error('Template metadata must be a JSON object.');
     }
@@ -3390,31 +3394,35 @@ async function submitTemplateSettings() {
   btn.disabled = true;
   btn.textContent = 'Saving...';
   try {
-    var r = await fetch(API_TEMPLATES + '/' + encodeURIComponent(_templateSettingsName) + '/metadata', {
+    var r = await fetch(API_TEMPLATES + '/' + encodeURIComponent(name) + '/metadata', {
       method: 'PUT',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({
-        content: editor.value,
-        revision: _templateSettingsRevision
+        content: content,
+        revision: revision
       })
     });
     var data = await r.json();
+    if (token !== _templateSettingsLoadToken || name !== _templateSettingsName) return;
     if (data.ok) {
       editor.value = data.content;
       _templateSettingsRevision = data.revision;
-      showToast('Template "' + _templateSettingsName + '" settings saved');
-      hideModal('template-settings-modal');
+      showToast('Template "' + name + '" settings saved');
+      closeTemplateSettingsModal();
       await loadTemplates();
     } else {
       errEl.textContent = data.error || 'Failed to save template settings';
       errEl.style.display = 'block';
     }
   } catch (e) {
+    if (token !== _templateSettingsLoadToken || name !== _templateSettingsName) return;
     errEl.textContent = 'Connection error: ' + e.message;
     errEl.style.display = 'block';
   } finally {
-    btn.disabled = false;
-    btn.textContent = 'Save settings';
+    if (token === _templateSettingsLoadToken && name === _templateSettingsName) {
+      btn.disabled = false;
+      btn.textContent = 'Save settings';
+    }
   }
 }
 

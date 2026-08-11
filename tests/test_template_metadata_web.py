@@ -127,6 +127,18 @@ def test_template_metadata_update_busy_keeps_foreign_lock(tmp_path):
         locks.release_team("1")
 
 
+def test_template_list_busy_keeps_foreign_lock(tmp_path):
+    client, locks = _client(tmp_path)
+    locks.acquire_team("1")
+    try:
+        response = client.get("/api/templates")
+        assert response.status_code == 409
+        with pytest.raises(BusyError):
+            locks.acquire_team("1")
+    finally:
+        locks.release_team("1")
+
+
 def test_template_metadata_get_rejects_invalid_or_missing_template(tmp_path):
     client, _ = _client(tmp_path)
 
