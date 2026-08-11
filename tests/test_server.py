@@ -7,6 +7,7 @@ from unittest.mock import patch
 import pytest
 from fastmcp.exceptions import ToolError
 
+from oduflow.po_tools import PoSummary
 from oduflow.settings import Settings, TeamSettings
 
 TEST_TEAM = TeamSettings(
@@ -1565,3 +1566,274 @@ class TestResetAdminPasswordDropsSessions:
         _get_tool_fn("reset_admin_password")(env_name="main")
 
         assert ("1", "main", "") not in odoo_rpc._SESSIONS
+
+
+class TestTranslationTools:
+    """The two i18n tools, at the layer that turns backend data into a report."""
+
+    _SUMMARY = PoSummary(
+        entries=311,
+        translated=301,
+        untranslated=10,
+        by_type={"model": 161, "model_terms": 82, "code": 68},
+        no_reference=0,
+        no_module_comment=0,
+        untranslated_msgids=["Active", "Company"],
+    )
+
+    def _export_result(self, **overrides):
+        base = {
+            "module": "mymod",
+            "lang": "",
+            "filename": "mymod.pot",
+            "content": 'msgid "Budget Ceiling"\nmsgstr ""\n',
+            "summary": self._SUMMARY,
+            "module_dir": "/mnt/extra-addons/mymod",
+            "written_path": "/mnt/extra-addons/mymod/i18n/mymod.pot",
+            "host_path": "/home/dev/veles/mymod/i18n/mymod.pot",
+            "read_only_mount": False,
+        }
+        base.update(overrides)
+        return base
+
+    @patch("oduflow.docker_ops.env_ops.ensure_running", return_value=False)
+    @patch("oduflow.docker_ops.odoo_ops.export_module_translations")
+    def test_export_reports_counts_and_where_the_file_landed(
+        self, mock_export, mock_ensure
+    ):
+        mock_export.return_value = self._export_result()
+        result = _get_tool_fn("export_module_translations")(
+            env_name="main", module="mymod"
+        )
+
+        assert "Terms: 311" in result
+        assert "model_terms" in result and "82" in result
+        assert "code" in result and "68" in result
+        assert "/mnt/extra-addons/mymod/i18n/mymod.pot" in result
+        assert "/home/dev/veles/mymod/i18n/mymod.pot" in result
+        # The catalogue itself must never be inlined into the response.
+        assert "Budget Ceiling" not in result
+        mock_export.assert_called_once_with(
+            TEST_SETTINGS, TEST_TEAM, "main", "mymod", ""
+        )
+
+    @patch("oduflow.docker_ops.env_ops.ensure_running", return_value=False)
+    @patch("oduflow.docker_ops.odoo_ops.export_module_translations")
+    def test_export_offers_a_download_url_when_the_web_ui_is_up(
+        self, mock_export, mock_ensure
+    ):
+        import oduflow.server
+
+        mock_export.return_value = self._export_result()
+        oduflow.server._web_bind = ("0.0.0.0", 8000)
+        try:
+            result = _get_tool_fn("export_module_translations")(
+                env_name="main", module="mymod"
+            )
+        finally:
+            oduflow.server._web_bind = None
+
+        # 0.0.0.0 is not a name anything can dial.
+        assert "http://localhost:8000/oduflow-artifact?token=" in result
+
+    def test_port_mode_download_uses_the_configured_public_hostname(self):
+        import oduflow.server
+
+        remote_team = replace(TEST_TEAM, hostname="oduflow.example.com")
+        oduflow.server._web_bind = ("0.0.0.0", 8000)
+        try:
+            url = oduflow.server._artifact_url(
+                TEST_SETTINGS, remote_team, "download-token"
+            )
+        finally:
+            oduflow.server._web_bind = None
+
+        assert url == (
+            "http://oduflow.example.com:8000/oduflow-artifact?token=download-token"
+        )
+
+    @patch("oduflow.docker_ops.env_ops.ensure_running", return_value=False)
+    @patch("oduflow.docker_ops.odoo_ops.export_module_translations")
+    def test_export_without_web_ui_falls_back_to_the_host_path(
+        self, mock_export, mock_ensure
+    ):
+        # Under stdio there is no server to download from — but Oduflow and the
+        # agent share a machine there, so the host path is the better answer.
+        mock_export.return_value = self._export_result()
+        result = _get_tool_fn("export_module_translations")(
+            env_name="main", module="mymod"
+        )
+        assert "oduflow-artifact" not in result
+        assert "Host path: /home/dev/veles/mymod/i18n/mymod.pot" in result
+
+    @patch("oduflow.docker_ops.env_ops.ensure_running", return_value=False)
+    @patch("oduflow.docker_ops.odoo_ops.export_module_translations")
+    def test_export_warns_when_no_code_terms_were_found(self, mock_export, mock_ensure):
+        # The exporter finds these by reading the module's sources off
+        # addons_path, so an empty count points at an addons_path problem
+        # rather than at a module with no messages.
+        summary = replace(self._SUMMARY, by_type={"model": 161})
+        mock_export.return_value = self._export_result(summary=summary)
+        result = _get_tool_fn("export_module_translations")(
+            env_name="main", module="mymod"
+        )
+        assert "no `code:` terms were exported" in result
+        assert "addons_path" in result
+
+    @patch("oduflow.docker_ops.env_ops.ensure_running", return_value=False)
+    @patch("oduflow.docker_ops.odoo_ops.export_module_translations")
+    def test_export_explains_a_read_only_extra_addons_mount(
+        self, mock_export, mock_ensure
+    ):
+        mock_export.return_value = self._export_result(
+            module_dir="/mnt/extra-addons-enterprise/mymod",
+            written_path="",
+            host_path="",
+            read_only_mount=True,
+        )
+        result = _get_tool_fn("export_module_translations")(
+            env_name="main", module="mymod"
+        )
+        assert "mounted read-only" in result
+        assert "Host path:" in result
+        path = result.split("Host path: ", 1)[1].split("  ", 1)[0]
+        with open(path, "rb") as artifact:
+            assert artifact.read() == b'msgid "Budget Ceiling"\nmsgstr ""\n'
+
+    @patch("oduflow.docker_ops.env_ops.ensure_running", return_value=False)
+    @patch("oduflow.docker_ops.odoo_ops.export_module_translations")
+    def test_export_materializes_core_module_artifact_under_stdio(
+        self, mock_export, mock_ensure
+    ):
+        mock_export.return_value = self._export_result(
+            module_dir="",
+            written_path="",
+            host_path="",
+            read_only_mount=False,
+        )
+
+        result = _get_tool_fn("export_module_translations")(
+            env_name="main", module="mymod"
+        )
+
+        assert "Core Odoo modules" in result
+        assert "Host path:" in result
+
+    @patch("oduflow.docker_ops.env_ops.ensure_running", return_value=False)
+    @patch("oduflow.docker_ops.odoo_ops.export_module_translations")
+    def test_export_surfaces_backend_errors(self, mock_export, mock_ensure):
+        from oduflow.errors import PrerequisiteNotMetError
+
+        mock_export.side_effect = PrerequisiteNotMetError(
+            "Module 'mymod' is 'uninstalled', not installed."
+        )
+        with pytest.raises(ToolError, match="not installed"):
+            _get_tool_fn("export_module_translations")(env_name="main", module="mymod")
+
+    @patch("oduflow.docker_ops.env_ops.ensure_running", return_value=False)
+    @patch("oduflow.docker_ops.odoo_ops.translation_status")
+    def test_status_shouts_about_a_po_that_imports_to_nothing(
+        self, mock_status, mock_ensure
+    ):
+        empty = PoSummary(0, 0, 0, {}, 0, 0, [])
+        broken = PoSummary(
+            entries=311,
+            translated=311,
+            untranslated=0,
+            by_type={},
+            no_reference=311,
+            no_module_comment=4,
+            untranslated_msgids=[],
+        )
+        mock_status.return_value = {
+            "module": "mymod",
+            "module_dir": "/mnt/extra-addons/mymod",
+            "template": self._SUMMARY,
+            "active_langs": ["en_US", "pl_PL"],
+            "langs": [
+                {
+                    "lang": "pl_PL",
+                    "active": True,
+                    "database": empty,
+                    "file_path": "/mnt/extra-addons/mymod/i18n/pl_PL.po",
+                    "file": broken,
+                    "import_effective": broken,
+                    "metadata_template_path": "",
+                    "diff": {"missing": ["Active"], "stale": ["Old string"]},
+                }
+            ],
+        }
+        result = _get_tool_fn("translation_status")(env_name="main", module="mymod")
+
+        assert "311 entries have no '#:' reference" in result
+        assert "ZERO translations" in result
+        assert "4 entries have no '#. module:' comment" in result
+        assert "In database:  0 translated" in result
+        assert "Active" in result
+        assert "Old string" in result
+        mock_status.assert_called_once_with(
+            TEST_SETTINGS, TEST_TEAM, "main", "mymod", None
+        )
+
+    @patch("oduflow.docker_ops.env_ops.ensure_running", return_value=False)
+    @patch("oduflow.docker_ops.odoo_ops.translation_status")
+    def test_status_does_not_warn_when_sibling_pot_supplies_metadata(
+        self, mock_status, mock_ensure
+    ):
+        empty = PoSummary(0, 0, 0, {}, 0, 0, [])
+        raw = PoSummary(1, 1, 0, {}, 1, 1, [])
+        effective = PoSummary(1, 1, 0, {"model": 1}, 0, 0, [])
+        mock_status.return_value = {
+            "module": "mymod",
+            "module_dir": "/mnt/extra-addons/mymod",
+            "template": self._SUMMARY,
+            "active_langs": ["en_US", "pl_PL"],
+            "langs": [
+                {
+                    "lang": "pl_PL",
+                    "active": True,
+                    "database": empty,
+                    "file_path": "/mnt/extra-addons/mymod/i18n/pl.po",
+                    "file": raw,
+                    "import_effective": effective,
+                    "metadata_template_path": (
+                        "/mnt/extra-addons/mymod/i18n/mymod.pot"
+                    ),
+                    "diff": {"missing": [], "stale": []},
+                }
+            ],
+        }
+
+        result = _get_tool_fn("translation_status")(env_name="main", module="mymod")
+
+        assert "Import metadata: merged from" in result
+        assert "imports these as ZERO" not in result
+        assert "abort the import" not in result
+
+    @patch("oduflow.docker_ops.env_ops.ensure_running", return_value=False)
+    @patch("oduflow.docker_ops.odoo_ops.translation_status")
+    def test_status_says_so_when_a_language_is_not_activated(
+        self, mock_status, mock_ensure
+    ):
+        mock_status.return_value = {
+            "module": "mymod",
+            "module_dir": "/mnt/extra-addons/mymod",
+            "template": self._SUMMARY,
+            "active_langs": ["en_US"],
+            "langs": [{"lang": "ru_RU", "active": False, "file_path": ""}],
+        }
+        result = _get_tool_fn("translation_status")(
+            env_name="main", module="mymod", langs="ru_RU"
+        )
+
+        assert "NOT activated" in result
+        mock_status.assert_called_once_with(
+            TEST_SETTINGS, TEST_TEAM, "main", "mymod", ["ru_RU"]
+        )
+
+    def test_translation_tools_in_scoped_allowlist(self):
+        from oduflow.scoped_access import SCOPED_ALLOWLIST
+
+        # Part of the per-environment dev loop, like install/upgrade_odoo_modules.
+        assert "export_module_translations" in SCOPED_ALLOWLIST
+        assert "translation_status" in SCOPED_ALLOWLIST

@@ -161,6 +161,8 @@ For OAuth-based MCP clients like Claude.ai Remote MCP, Oduflow runs its own OAut
 - `update_environment` — re-create the container preserving DB and filestore (optional `odoo_image` switches image, `env_vars` replaces container environment variables)
 - `install_odoo_modules` — install Odoo modules
 - `upgrade_odoo_modules` — upgrade Odoo modules
+- `export_module_translations` — export a module's .pot/.po translation catalogue
+- `translation_status` — check what translations actually loaded, and lint the .po files
 - `run_odoo_tests` — run Odoo tests for specific modules
 - `pull_and_apply` — pull latest code and auto-install/upgrade/restart as needed
 - `get_environment_logs` — retrieve container logs

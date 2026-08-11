@@ -57,6 +57,8 @@ SCOPED_ALLOWLIST = frozenset(
         "pull_and_apply",
         "install_odoo_modules",
         "upgrade_odoo_modules",
+        "export_module_translations",
+        "translation_status",
         "run_odoo_tests",
         "run_odoo_shell",
         "run_odoo_command",

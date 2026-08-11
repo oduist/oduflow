@@ -20,6 +20,8 @@ All tools are accessible via MCP clients (Cursor, Cline, Amp, etc.) and the CLI 
 | `install_odoo_modules` | ✓ | Install Odoo modules (`-i`) |
 | `upgrade_odoo_modules` | ✓ | Upgrade Odoo modules (`-u`) |
 | `run_odoo_tests` | ✓ | Run Odoo tests for specific modules |
+| `export_module_translations` | ✓ | Export a module's `.pot`/`.po` with Odoo's own exporter, write it into the module's `i18n/`, and return a summary plus an HTTP download URL or local temporary path |
+| `translation_status` | ✓ | Compare a module's terms, database translations and committed `.po` files, including the sibling-POT metadata merge Odoo performs before import |
 | `get_environment_logs` | | Retrieve recent container logs |
 | `run_odoo_command` | ✓ | Execute an arbitrary shell command inside the Odoo container |
 | `run_odoo_shell` | ✓ | Execute Python code in the Odoo shell context with full ORM access; `auto_commit=True` commits successful writes, while `False` leaves the shell transaction uncommitted |

@@ -184,7 +184,7 @@ Oduflow uses a granular `LockManager` (`locking.py`) with per-branch and per-tea
 
 | Lock Level | Scope | Example Operations |
 |---|---|---|
-| **Per-branch** | One operation per branch at a time | `create_environment`, `delete_environment`, `install_odoo_modules`, `pull_and_apply` |
+| **Per-branch** | One operation per branch at a time | `create_environment`, `delete_environment`, `install_odoo_modules`, `pull_and_apply`, `export_module_translations` |
 | **Per-team** | One team-level operation at a time | `add_extra_repo`, `setup_repo_auth`, `create_service` |
 | **System/cluster** | Cross-environment infrastructure operation | startup initialization, `destroy`, production cluster PITR |
 

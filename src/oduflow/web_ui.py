@@ -38,6 +38,7 @@ from oduflow import (
     activity,
     agent_config,
     agent_uploads,
+    artifact_tokens,
     connect_tokens,
     git_ops,
     import_tokens,
@@ -102,6 +103,9 @@ _PUBLIC_PATHS = frozenset(
         # Cross-subdomain Connect As landing: reached on an ENV host (no
         # dashboard session there), authenticated by its own one-time token.
         "/oduflow-connect",
+        # Generated-artifact download: fetched by an agent with curl, which has
+        # no dashboard session. Its one-time token is the sole credential.
+        "/oduflow-artifact",
     }
 )
 _PUBLIC_PREFIXES = ("/static/",)
@@ -2944,6 +2948,28 @@ def _build_routes(
         )
         return response
 
+    async def api_artifact_download(request: Request) -> Response:
+        """Serve a file an MCP tool generated inside an environment, once.
+
+        This is the way an artifact reaches an agent without passing through its
+        context window: the tool stashes the bytes and hands back a URL, the
+        agent pipes it straight to disk. There is no dashboard session on the
+        agent side, so the one-time token in the query string is the credential.
+        """
+        artifact = artifact_tokens.consume(request.query_params.get("token") or "")
+        if artifact is None:
+            return Response(
+                "Download link is invalid, expired, or already used.",
+                status_code=404,
+                media_type="text/plain",
+            )
+        filename, content = artifact
+        return Response(
+            content,
+            media_type="application/octet-stream",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+
     async def ws_terminal(websocket: WebSocket) -> None:
         branch = websocket.path_params["branch"]
         await websocket.accept()
@@ -4303,6 +4329,7 @@ def _build_routes(
         # Served on an env host (routed here by Traefik's PathPrefix router);
         # public + token-authenticated. See api_connect_land.
         Route("/oduflow-connect", api_connect_land, methods=["GET"]),
+        Route("/oduflow-artifact", api_artifact_download, methods=["GET"]),
         Route("/api/environments/{branch:path}/update", api_update, methods=["POST"]),
         Route(
             "/api/environments/{branch:path}/recreate", api_recreate, methods=["POST"]

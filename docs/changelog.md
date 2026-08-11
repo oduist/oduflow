@@ -27,6 +27,9 @@
   masked tool error. `run_odoo_shell` remains the escape hatch for a fresh
   registry, `sudo()`, private methods, dry runs and multi-step transactions.
 
+- **Module translation tooling** — two new MCP tools cover the i18n loop. `export_module_translations` runs Odoo's own exporter with the environment's real addons path (so `_()` and `_lt()` messages are picked up along with database terms), writes the `.pot`/`.po` into the module's `i18n/` directory under Odoo's own filename rule, and returns a per-type summary rather than the file. `translation_status` lines up the module's terms, the translations actually stored in the database, and the committed `.po` files — reporting the two ways Odoo can fail silently: entries without a `#:` reference import as zero translations without a warning, and entries without a `#. module:` comment abort the import. When a sibling `<module>.pot` exists, status models Odoo's automatic metadata merge before judging either defect. Both tools accept Odoo locale modifiers such as `sr@latin`, handle catalogues up to their documented 5 MB limit, reject partial failed exports, and work across Odoo 15 through 19 — including 19's replacement of the `--i18n-*` options with the `odoo i18n` subcommand — with no dependency on the `ir.translation` model removed in 16.
+- **One-time artifact download links** — files an MCP tool generates inside an environment can now leave it without passing through the agent's context window. Over HTTP the tool returns a single-use `/oduflow-artifact` URL (10-minute TTL) using the configured public hostname; under stdio it returns the checkout path or materializes a private process-lifetime temporary file when the source is a read-only/core module.
+
 ### Bug Fixes
 
 - **`http_request_to_odoo` now requests the path you pass it** — the base URL was
@@ -45,6 +48,7 @@
   corrected. `llms-full.txt` is now generated from every current manual page,
   with tests preventing undocumented commands, tools, routes, settings, or
   stale LLM output.
+- **Record the translation tooling decision** — specs/0042 documents why the tools build on Odoo's own exporter instead of a hand-rolled term extractor, why one export primitive answers both "what is translatable" and "what actually loaded" across Odoo majors, and why retrieving a generated file needed a new one-time-token route.
 
 ## v1.68.1
 
