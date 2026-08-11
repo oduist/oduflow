@@ -2323,6 +2323,93 @@ def _source_env_metadata(settings: Settings, labels: dict[str, Any]) -> dict[str
     return metadata
 
 
+def _snapshot_filestore(
+    source: str, dest: str, *, link_dests: list[str]
+) -> list[str] | None:
+    """Materialise *source* at *dest*, reusing files from *link_dests*.
+
+    *source* is the environment's merged filestore (for an overlay env, the
+    fuse-overlayfs mount: template baseline plus the environment's own upper
+    deltas, whiteouts already applied). Copying it wholesale copies the entire
+    baseline again, which is almost always the bulk of the data and almost
+    always unchanged.
+
+    Each ``--link-dest`` directory lets rsync hardlink instead of copy any file
+    that already matches there, so only the environment's actual deltas hit the
+    disk. Sharing inodes is safe here: Odoo filestore entries are content
+    addressed (the name is the checksum) and never rewritten in place, and the
+    baseline being linked against is replaced by this snapshot moments later —
+    ``rmtree`` only drops one name, the inode survives through the new link.
+
+    Returns the paths rsync transferred, relative to *dest*, or None when the
+    whole tree was copied (in which case every file needs its ownership fixed).
+    """
+    if os.path.exists(dest):
+        shutil.rmtree(dest)
+
+    def _full_copy(reason: str) -> None:
+        # Never silent: falling back here costs exactly the full-size copy this
+        # function exists to avoid, so it must be visible in the logs.
+        logger.warning("Filestore snapshot fell back to a full copy: %s", reason)
+        shutil.copytree(source, dest)
+
+    if not shutil.which("rsync"):
+        _full_copy("rsync not found on PATH")
+        return None
+
+    cmd = ["rsync", "-a", "--delete", "--out-format=%n"]
+    for link_dest in link_dests:
+        if os.path.isdir(link_dest):
+            # Relative paths would be resolved against dest, not the cwd.
+            cmd.append(f"--link-dest={os.path.abspath(link_dest)}")
+    cmd += [source.rstrip("/") + "/", dest.rstrip("/") + "/"]
+
+    os.makedirs(dest, exist_ok=True)
+    result = subprocess.run(cmd, capture_output=True)
+    if result.returncode != 0:
+        shutil.rmtree(dest, ignore_errors=True)
+        _full_copy(
+            f"rsync exited {result.returncode}: "
+            f"{result.stderr.decode('utf-8', errors='replace').strip()}"
+        )
+        return None
+
+    return [
+        line
+        for line in result.stdout.decode("utf-8", errors="replace").splitlines()
+        if line and not line.startswith("deleting ")
+    ]
+
+
+def _chown_filestore(
+    root: str,
+    rel_paths: list[str] | None,
+    uid: int,
+    gid: int,
+    client: DockerClient,
+    image: str,
+) -> None:
+    """Give *root* to *uid*:*gid*, touching only *rel_paths* when they are known.
+
+    Files hardlinked from the previous baseline already carry the right
+    ownership — they are the very inodes a previous publish chowned — so only
+    the files rsync actually transferred need fixing. With *rel_paths* None
+    (full copy fallback) the whole tree is walked as before.
+    """
+    if rel_paths is None:
+        chown_recursive(root, uid, gid, client, image)
+        return
+    try:
+        os.chown(root, uid, gid)
+        for rel in rel_paths:
+            target = os.path.join(root, rel)
+            if _is_within_directory(root, target) and os.path.lexists(target):
+                os.chown(target, uid, gid)
+    except PermissionError:
+        # macOS and other non-root hosts: fall back to the container-based chown.
+        chown_recursive(root, uid, gid, client, image)
+
+
 def publish_env_as_template(
     settings: Settings,
     team: TeamSettings,
@@ -2392,26 +2479,36 @@ def publish_env_as_template(
     )
     source_is_overlay = os.path.isdir(branch_merged) and os.path.ismount(branch_merged)
 
+    source_template = ""
+    try:
+        sc = client.containers.get(source_container)
+        source_was_running = sc.status == "running"
+        source_image = sc.image.tags[0] if sc.image.tags else "odoo:19.0"
+        source_template = sc.labels.get("oduflow.template", "") or ""
+    except (docker.errors.NotFound, IndexError):
+        source_was_running = False
+        source_image = "odoo:19.0"
+
     # Snapshot the source env's merged filestore while it is still mounted.
+    # Link against the baseline the env is currently mounted on (where nearly
+    # every file matches) and against the template being published into, which
+    # differ when an env from one template is published under a new name.
+    link_dests = [
+        team.get_template_filestore_path(name)
+        for name in dict.fromkeys(filter(None, (source_template, template_name)))
+    ]
     snapshot_dir: str | None = None
+    transferred: list[str] | None = None
     if os.path.isdir(branch_merged):
         snapshot_dir = branch_merged + "_snapshot"
-        if os.path.exists(snapshot_dir):
-            shutil.rmtree(snapshot_dir)
-        shutil.copytree(branch_merged, snapshot_dir)
+        transferred = _snapshot_filestore(
+            branch_merged, snapshot_dir, link_dests=link_dests
+        )
         logger.info("Snapshot of filestore created for env %s", env_name)
     else:
         logger.warning(
             "Branch filestore %s not found, skipping filestore update", branch_merged
         )
-
-    try:
-        sc = client.containers.get(source_container)
-        source_was_running = sc.status == "running"
-        source_image = sc.image.tags[0] if sc.image.tags else "odoo:19.0"
-    except (docker.errors.NotFound, IndexError):
-        source_was_running = False
-        source_image = "odoo:19.0"
 
     with env_ops.remount_template_overlays(
         client,
@@ -2437,15 +2534,26 @@ def publish_env_as_template(
             os.makedirs(os.path.dirname(template_filestore_path), exist_ok=True)
             try:
                 os.rename(snapshot_dir, template_filestore_path)
-            except OSError:
+            except OSError as exc:
+                # Both paths live under the team data dir, so this should be a
+                # free rename. Anything else (separate mounts, mismatched XFS
+                # project IDs) degrades to a full-size copy — say so loudly
+                # instead of quietly paying for it.
+                logger.warning(
+                    "Could not move the filestore snapshot into place (%s); "
+                    "copying %s instead",
+                    exc,
+                    snapshot_dir,
+                )
                 shutil.copytree(snapshot_dir, template_filestore_path)
                 shutil.rmtree(snapshot_dir)
             logger.info("Template filestore replaced from env %s", env_name)
 
             odoo_uid_gid = get_odoo_uid_gid(client, source_image)
             uid_str, gid_str = odoo_uid_gid.split(":")
-            chown_recursive(
+            _chown_filestore(
                 template_filestore_path,
+                transferred,
                 int(uid_str),
                 int(gid_str),
                 client,
