@@ -1,5 +1,5 @@
 # Oduflow — Agentic Odoo Development
-Version: 3
+Version: 4
 
 ## What is Oduflow
 
@@ -76,7 +76,7 @@ In live-mount mode, you as the agent must track the intent of your own edits. If
 |---|---|
 | `install_odoo_modules(env_name, modules)` | Install modules for the first time (`odoo -i`). Comma-separated list, e.g. `"sale,crm"`. **Returns full output including any errors directly in the response.** |
 | `upgrade_odoo_modules(env_name, modules)` | Force-upgrade modules (`odoo -u`). Usually handled by `pull_and_apply`. **Returns full output including any errors directly in the response.** |
-| `run_odoo_tests(env_name, modules)` | Run Odoo tests (`--test-enable`) for specific modules. **Returns full test output directly in the response.** |
+| `run_odoo_tests(env_name, modules, test_tags?, upgrade?)` | Run Odoo tests (`--test-enable`) for specific modules. **Returns full test output directly in the response.** Narrow a run with `test_tags="/my_module:TestClass.test_method"` instead of re-running a whole module. `upgrade=False` skips the `-u` for a fast re-run — but Odoo then collects **only `post_install` tests**, so a plain `TransactionCase` (at_install by default) reports "0 tests"; re-run with the default `upgrade=True` if a class you expect does not appear. With `upgrade=False`, positive tags must name a requested module (`slow/my_module`); exclusion-only tags such as `-slow` are scoped automatically. |
 | `list_installed_modules(env_name, name_filter?, state_filter?)` | List Odoo modules with name/state filtering. Default: installed modules only. |
 
 ### Translations (i18n)
@@ -142,7 +142,7 @@ first when reading or changing data. `run_odoo_shell` stays the escape hatch.
 |---|---|
 | `get_environment_logs(env_name, n_lines?, grep?, level?)` | Logs from the **running Odoo server** (main container process). Use `grep` for substring filtering, `level` for "ERROR"/"WARNING"/"CRITICAL". Does **NOT** contain output from install/upgrade/test operations. |
 | `read_file_in_odoo(env_name, path, read_range?)` | Read a text file or list a directory inside the container. Use to inspect Odoo source code, addon structure, config files. Supports `read_range="START:END"` for large files. **Prefer this over `run_odoo_command` with `cat`/`ls`.** |
-| `run_odoo_command(env_name, command, user?)` | Run shell commands inside the container. Use `user="root"` for privileged ops (pip install, apt). Useful for debugging, running Odoo shell commands. For reading files, prefer `read_file_in_odoo` instead |
+| `run_odoo_command(env_name, command, user?, shell?)` | Run shell commands inside the container. Runs through `sh -c`, so pipes, redirections, `&&`, `cd x && y` and `$VAR` behave as written. Pass `shell=False` for exact argv semantics (metacharacters stay literal). Use `user="root"` for privileged ops (pip install, apt). For reading files, prefer `read_file_in_odoo` instead |
 
 **When to use which:**
 - After `pull_and_apply` / `install_odoo_modules` / `upgrade_odoo_modules` / `run_odoo_tests` → **read the tool response** for errors
@@ -176,7 +176,7 @@ Extra addons repositories (Odoo Enterprise, OCA, your own shared addons) are clo
 | `restore_service(name)` | Recreate a service from its saved preset after deletion (volumes, host_mode, cap_add, env are all preserved) |
 | `list_service_presets` | List saved service presets (configurations that can be restored after a service is deleted) |
 | `delete_service_preset(name)` | Remove a saved service preset |
-| `run_service_command(name, command, user?)` | Execute a shell command inside a service container. Default user is `root`. Output is cached if large — use `read_output` for drill-down |
+| `run_service_command(name, command, user?, shell?)` | Execute a shell command inside a service container. Default user is `root`. Runs through `sh -c` like `run_odoo_command`; `shell=False` for exact argv (or for an image that ships no shell). Output is cached if large — use `read_output` for drill-down |
 
 > **Connecting to a service from Odoo:** use the container name reported as `Container:` / `Internal hostname:` by `create_service` and `get_service_info` — that is the exact DNS name (`oduflow-{team}-svc-{name}`) resolvable from Odoo and every other container on the team network. There is no shorter alias, and the `URL:` line is the *external* Traefik/host address, not the internal one. Host-mode services are not on the team network — reach them via `host.docker.internal`.
 
@@ -201,7 +201,7 @@ Extra addons repositories (Odoo Enterprise, OCA, your own shared addons) are clo
 
 | Tool | When to use |
 |---|---|
-| `list_templates` | List available database template profiles |
+| `list_templates` | List available database template profiles, including `Source=<branch> @ <commit> @ snapshot <date>` — the code each database snapshot was taken from (see "Template ↔ Code Lineage") |
 | `import_template_from_odoo(odoo_url, master_pwd, db_name?, template_name?, without_filestore=False)` | Import a template from a running Odoo instance via its database manager API. Set `without_filestore=True` for a database-only PostgreSQL custom dump. Requires explicit user permission |
 | `save_as_template(env_name, reset_env_changes=False)` | Make a branch the new template baseline. Other overlay environments on this template are remounted against the new baseline, **keeping their filestore changes by default** (non-destructive); `reset_env_changes=True` discards them. The source env is always reset. Requires explicit user permission |
 | `refresh_template(template_name, reset_env_changes=False)` | Re-apply a template's current filestore to live overlay environments, keeping their changes (non-destructive); `reset_env_changes=True` resets them to the template baseline. Use after the template filestore changed on disk or to re-sync a skipped env. Requires explicit user permission |
@@ -309,7 +309,7 @@ The environment container runs **remotely** and has access only to the git repos
 
 ### General
 - **One task = one branch = one environment.**
-- Mutexed tools (create, delete, install, upgrade, pull, test, exec) reject concurrent calls with `BusyError` — retry after a short delay.
+- Mutexed tools (create, delete, install, upgrade, pull, test, exec) reject concurrent calls with `BusyError` — retry after a short delay. The message names the operation holding the lock and how long it has held it (`pull_and_apply, running for 4m12s`), so read it before reacting: the lock is held by work that is **still running server-side**, including when your own earlier call timed out client-side. Wait for it; do not restart or recreate the environment to "clear" it.
 - `run_odoo_command` runs as `odoo` by default. Use `user="root"` for package installation or system operations.
 - Database is accessible from inside the container: `psql -h oduflow-db -U odoo -d oduflow_{env_name}`.
 
@@ -366,6 +366,26 @@ Notes:
 - In live-mount mode, you as the agent must track the intent of your own edits. If you add/change fields, models, `_inherit`/`_name`, manifest `data`/`depends`, security/data XML, `ir.cron`, mail templates, `i18n/*.po` translations, or anything loaded into the database, call `pull_and_apply(..., upgrade="module")`. If you add a new module, call `install="module"`. Use `restart=True` only for Python logic changes that do not require registry/schema/data updates.
 - Git is optional in live-mount mode. Commit whenever you want for your own workflow; Oduflow does not require commits, create commits, or read Git state to apply local changes.
 - With `repo_url` mode, use the normal remote workflow: edit locally, commit, push, then call `pull_and_apply` so the managed clone can pull the pushed commits.
+
+---
+
+## Template ↔ Code Lineage
+
+> ⚠️ **A template database is a snapshot of a branch at a moment in time. Your checkout can sit on either side of it.**
+
+The environment you get is a *new* database cloned from the template plus *your* branch's code. Those two are snapshots of the same lineage taken at different times, and they drift in both directions. Check which case you are in **before the first `pull_and_apply`** — `create_environment` reports it, and `list_templates` shows each template's `Source=<branch> @ <commit>`.
+
+| Where your branch sits | What that means | What to do |
+|---|---|---|
+| **Behind / diverged** — your branch does not contain the template's snapshot commit (branched off an older commit) | The database already holds views, records and constraints written by newer code your branch lacks. Any upgrade validates *old* code against *new* data and fails | **Merge the template's source branch** (typically `prod`/`main`) into your branch, push, then `pull_and_apply` |
+| **Ahead** — your branch contains the snapshot commit plus later commits | The database predates your code. Schema/data changes since the snapshot are not in it | Apply the exact arguments reported by Oduflow, e.g. `pull_and_apply(install="new_module", upgrade="a,b,c")`, dependencies before dependents. New modules require `install=`; existing modules with schema/data drift require `upgrade=`. Modules whose manifest version was **not** bumped are never picked up automatically — name them yourself |
+| **Aligned** | Nothing to reconcile | Proceed normally |
+
+**Symptoms and their meaning:**
+- `column ... does not exist` / `External ID not found` during an upgrade → you are **ahead**; find the module that owns the missing column or xmlid and add it to `upgrade=`.
+- A `ParseError` or validation error on a view/method the branch does not define → you are **behind**; merge the source branch.
+
+**Never recreate the environment to fix either case.** The template is the same, so the drift comes straight back — and you lose the environment's data. This is the same rule as the migrations section below: reconcile with the reported install/upgrade action, not with a fresh environment.
 
 ---
 

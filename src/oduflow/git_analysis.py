@@ -574,6 +574,117 @@ def merge_recommendations(recs: Iterable[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def template_lineage(
+    repo_path: str,
+    template_commit: str,
+    template_branch: str = "",
+) -> dict[str, Any]:
+    """Compare a checkout against the commit its template database came from.
+
+    A template database and a branch checkout are two snapshots of one lineage,
+    and they diverge in both directions:
+
+    * the checkout is **ahead** — the database predates the code, so existing
+      modules whose schema/data changed need an explicit ``-u`` and newly added
+      modules need ``-i``. The classic symptom is ``column ... does not exist``
+      for a field that exists in the code but not yet in the template's database.
+    * the checkout is **behind or diverged** — the database already holds views
+      and records written by newer code, and upgrading against the older branch
+      fails validation. The fix is to merge the template's source branch first,
+      never to recreate the environment (the template would be the same).
+
+    Returns ``{status, message, modules_to_install, modules_to_upgrade}`` where
+    status is one of ``unknown`` (no usable provenance — always safe to ignore),
+    ``aligned``, ``ahead`` or ``diverged``.
+    """
+    from oduflow import git_ops
+
+    unknown: dict[str, Any] = {
+        "status": "unknown",
+        "message": "",
+        "modules_to_install": [],
+        "modules_to_upgrade": [],
+    }
+    if not template_commit or not git_ops.is_git_repository(repo_path):
+        return unknown
+    if not git_ops.commit_exists(repo_path, template_commit):
+        # Deleted source branch, different repository, or unavailable fetch —
+        # the comparison is simply unavailable, which is not a problem to report.
+        return unknown
+
+    short = template_commit[:8]
+    branch_hint = f" (branch '{template_branch}')" if template_branch else ""
+
+    try:
+        head = git_ops.rev_parse(repo_path)
+    except Exception:  # noqa: BLE001 - lineage info is advisory, never fatal
+        return unknown
+
+    if head == template_commit:
+        return {
+            "status": "aligned",
+            "message": "",
+            "modules_to_install": [],
+            "modules_to_upgrade": [],
+        }
+
+    if not git_ops.is_ancestor(repo_path, template_commit, head):
+        merge_hint = template_branch or "the template's source branch"
+        return {
+            "status": "diverged",
+            "message": (
+                f"This branch does not contain the template's snapshot commit "
+                f"{short}{branch_hint}. The database is newer than the code, so "
+                f"upgrades can fail against data written by code this branch does "
+                f"not have. Merge {merge_hint} into this branch before the first "
+                f"pull_and_apply."
+            ),
+            "modules_to_install": [],
+            "modules_to_upgrade": [],
+        }
+
+    try:
+        changed = git_ops.diff_names(repo_path, template_commit, head)
+    except Exception:  # noqa: BLE001 - advisory only
+        return unknown
+    if not changed:
+        return {
+            "status": "aligned",
+            "message": "",
+            "modules_to_install": [],
+            "modules_to_upgrade": [],
+        }
+
+    rec = recommend(changed, repo_path, template_commit)
+    to_install = sorted(set(rec.get("modules_to_install", [])))
+    to_upgrade = sorted(set(rec.get("modules_to_upgrade", [])))
+    modules = sorted(set(to_install) | set(to_upgrade))
+    if not modules:
+        return {
+            "status": "ahead",
+            "message": "",
+            "modules_to_install": [],
+            "modules_to_upgrade": [],
+        }
+    action_args = []
+    if to_install:
+        action_args.append(f'install="{",".join(to_install)}"')
+    if to_upgrade:
+        action_args.append(f'upgrade="{",".join(to_upgrade)}"')
+    return {
+        "status": "ahead",
+        "message": (
+            f"This branch is ahead of the template snapshot {short}{branch_hint}: "
+            f"schema/data changed in {', '.join(modules)}. Apply them explicitly "
+            f"with pull_and_apply({', '.join(action_args)}) — list "
+            "dependencies before dependents; modules whose version was not bumped "
+            "are not upgraded automatically."
+        ),
+        "modules_to_install": to_install,
+        "modules_to_upgrade": to_upgrade,
+    }
+
+
 def guardrail_warnings(
     recommended: dict[str, Any],
     to_install: list[str],

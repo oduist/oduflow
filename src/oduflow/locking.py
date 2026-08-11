@@ -8,8 +8,36 @@ resource are serialised.
 from __future__ import annotations
 
 import threading
+import time
 
 from oduflow.errors import BusyError
+
+
+def _format_age(seconds: float) -> str:
+    """Human-readable duration for a lock that is still held ('4m12s')."""
+    total = int(seconds)
+    if total < 60:
+        return f"{total}s"
+    if total < 3600:
+        return f"{total // 60}m{total % 60:02d}s"
+    return f"{total // 3600}h{(total % 3600) // 60:02d}m"
+
+
+class _Holder:
+    """Which operation took a lock, and when."""
+
+    __slots__ = ("operation", "acquired_at")
+
+    def __init__(self, operation: str) -> None:
+        self.operation = operation
+        self.acquired_at = time.monotonic()
+
+    def describe(self) -> str:
+        """' (pull_and_apply, running for 4m12s)' — empty when unknown."""
+        age = _format_age(time.monotonic() - self.acquired_at)
+        if self.operation:
+            return f" ({self.operation}, running for {age})"
+        return f" (running for {age})"
 
 
 class LockManager:
@@ -21,6 +49,12 @@ class LockManager:
         self._active_team_locks: set[str] = set()
         self._env_lock_teams: dict[str, str] = {}
         self._active_env_counts_by_team: dict[str, int] = {}
+        # A rejected caller cannot tell "still running" from "stuck". Record who
+        # holds each lock and since when, so BusyError can say it (issue: agents
+        # read a bare "in progress" as a stale lock and reach for restarts).
+        self._env_holders: dict[str, _Holder] = {}
+        self._team_holders: dict[str, _Holder] = {}
+        self._system_holder: _Holder | None = None
         self._system_lock = threading.Lock()
         self._map_lock = threading.Lock()  # protects dict access
 
@@ -32,11 +66,22 @@ class LockManager:
                 self._env_locks[env_name] = threading.Lock()
             return self._env_locks[env_name]
 
-    def acquire_env(self, env_name: str, team_id: str | None = None) -> None:
+    def _env_holder_hint(self, env_name: str) -> str:
+        holder = self._env_holders.get(env_name)
+        return holder.describe() if holder else ""
+
+    def _team_holder_hint(self, team_id: str) -> str:
+        holder = self._team_holders.get(team_id)
+        return holder.describe() if holder else ""
+
+    def acquire_env(
+        self, env_name: str, team_id: str | None = None, operation: str = ""
+    ) -> None:
         with self._map_lock:
             if team_id is not None and team_id in self._active_team_locks:
                 raise BusyError(
-                    f"Another team-level operation (team '{team_id}') is in progress. "
+                    f"Another team-level operation (team '{team_id}')"
+                    f"{self._team_holder_hint(team_id)} is in progress. "
                     "Try again later."
                 )
             if env_name not in self._env_locks:
@@ -44,21 +89,35 @@ class LockManager:
             lock = self._env_locks[env_name]
             if not lock.acquire(blocking=False):
                 raise BusyError(
-                    f"Another operation on environment '{env_name}' is in progress. "
-                    "Try again later."
+                    f"Another operation on environment '{env_name}'"
+                    f"{self._env_holder_hint(env_name)} is in progress. "
+                    "It is still running server-side — wait for it to finish "
+                    "rather than restarting the environment."
                 )
+            self._env_holders[env_name] = _Holder(operation)
             if team_id is not None:
                 self._env_lock_teams[env_name] = team_id
                 self._active_env_counts_by_team[team_id] = (
                     self._active_env_counts_by_team.get(team_id, 0) + 1
                 )
 
-    def acquire_env_blocking(self, env_name: str, timeout: float) -> bool:
+    def acquire_env_blocking(
+        self, env_name: str, timeout: float, operation: str = ""
+    ) -> bool:
         """Blocking acquire with a timeout — webhook-triggered production
         deploys queue behind a running one instead of dropping the push.
         Returns False when the timeout expires (caller skips the run)."""
         lock = self._get_env_lock(env_name)
-        return lock.acquire(blocking=True, timeout=timeout)
+        acquired = lock.acquire(blocking=True, timeout=timeout)
+        if acquired:
+            with self._map_lock:
+                self._env_holders[env_name] = _Holder(operation)
+        return acquired
+
+    def describe_env_holder(self, env_name: str) -> str:
+        """Holder hint for callers that report contention without raising."""
+        with self._map_lock:
+            return self._env_holder_hint(env_name)
 
     def release_env(self, env_name: str) -> None:
         with self._map_lock:
@@ -69,6 +128,7 @@ class LockManager:
                 lock.release()
             except RuntimeError:
                 return
+            self._env_holders.pop(env_name, None)
             team_id = self._env_lock_teams.pop(env_name, None)
             if team_id is not None:
                 count = self._active_env_counts_by_team.get(team_id, 0) - 1
@@ -85,21 +145,32 @@ class LockManager:
                 self._team_locks[team_id] = threading.Lock()
             return self._team_locks[team_id]
 
-    def acquire_team(self, team_id: str) -> None:
+    def acquire_team(self, team_id: str, operation: str = "") -> None:
         with self._map_lock:
             if team_id not in self._team_locks:
                 self._team_locks[team_id] = threading.Lock()
             lock = self._team_locks[team_id]
-            if (
-                team_id in self._active_team_locks
-                or self._active_env_counts_by_team.get(team_id, 0) > 0
-                or not lock.acquire(blocking=False)
-            ):
+            if team_id in self._active_team_locks or not lock.acquire(blocking=False):
                 raise BusyError(
-                    f"Another team-level operation (team '{team_id}') is in progress. "
+                    f"Another team-level operation (team '{team_id}')"
+                    f"{self._team_holder_hint(team_id)} is in progress. "
                     "Try again later."
                 )
+            if self._active_env_counts_by_team.get(team_id, 0) > 0:
+                # An environment-level operation is running under this team: a
+                # team-wide operation would race it. Give the lock back.
+                lock.release()
+                busy = ", ".join(
+                    f"'{env}'{self._env_holder_hint(env)}"
+                    for env, tid in sorted(self._env_lock_teams.items())
+                    if tid == team_id
+                )
+                raise BusyError(
+                    f"An environment operation in team '{team_id}' is in "
+                    f"progress: {busy}. Try again later."
+                )
             self._active_team_locks.add(team_id)
+            self._team_holders[team_id] = _Holder(operation)
 
     def release_team(self, team_id: str) -> None:
         with self._map_lock:
@@ -107,6 +178,7 @@ class LockManager:
             if lock is None:
                 return
             self._active_team_locks.discard(team_id)
+            self._team_holders.pop(team_id, None)
             try:
                 lock.release()
             except RuntimeError:
@@ -114,11 +186,17 @@ class LockManager:
 
     # -- system lock --
 
-    def acquire_system(self) -> None:
+    def acquire_system(self, operation: str = "") -> None:
         if not self._system_lock.acquire(blocking=False):
-            raise BusyError("A system-level operation is in progress. Try again later.")
+            holder = self._system_holder
+            hint = holder.describe() if holder else ""
+            raise BusyError(
+                f"A system-level operation{hint} is in progress. Try again later."
+            )
+        self._system_holder = _Holder(operation)
 
     def release_system(self) -> None:
+        self._system_holder = None
         try:
             self._system_lock.release()
         except RuntimeError:
