@@ -152,6 +152,55 @@ read the container logs.
 
 ---
 
+## An environment runs out of database connections
+
+Two different limits produce two different errors — read the message before
+changing anything.
+
+**`psycopg2.pool.PoolError: The Connection Pool Is Full`** — the *environment*
+hit its own `db_maxconn` (default `8`). Raise it for that container and
+restart it:
+
+```bash
+# 1. Read the current config
+oduflow call read_file_in_odoo '{"env_name": "feature-login", "path": "/etc/odoo/odoo.conf"}'
+
+# 2. Write it back with a higher db_maxconn (the write replaces the whole file)
+oduflow call write_file_in_odoo '{"env_name": "feature-login", "path": "/etc/odoo/odoo.conf", "content": "[options]\n...\ndb_maxconn = 16\n", "user": "odoo"}'
+
+# 3. Odoo reads the config only at startup
+oduflow call restart_environment feature-login
+```
+
+The edit lives in the container's writable layer: it survives restarts and
+`pull_and_apply`, but is lost when the container is recreated
+(`update_environment`) or when the repository's `.oduflow/odoo.conf` changes
+and is reapplied.
+
+**`FATAL: sorry, too many clients already`** — the *shared PostgreSQL* hit
+`max_connections`. Raising `db_maxconn` makes this worse. Stop idle
+environments, or raise `max_connections` in the cluster config and restart it:
+
+```bash
+docker exec oduflow-db psql -U odoo -c \
+  "SELECT count(*), datname FROM pg_stat_activity GROUP BY datname ORDER BY 1 DESC;"
+$EDITOR /etc/oduflow/postgresql.conf     # or ~/.oduflow/conf/postgresql.conf
+docker restart oduflow-db
+```
+
+To change the default for **all** of a team's environments instead of one
+container, edit the team's `odoo.conf` in its data directory
+(`<data_dir>/team_<id>/odoo.conf`, seeded from the bundled template at init).
+Existing containers keep their current config until they are recreated
+(`update_environment`) or their config is reapplied. A single repository can
+override everything for its own environments with `.oduflow/odoo.conf`.
+
+Budget the two limits together: `max_connections` must cover `db_maxconn` ×
+the number of environments you expect to run at once, plus headroom for
+productions and maintenance connections.
+
+---
+
 ## Agent Chat: Claude returns `401 Invalid bearer token`
 
 The ACP session may open successfully and fail only on the first prompt:
