@@ -185,6 +185,11 @@ class Settings:
     port: int = 8000
     trace: bool = False
     disable_telemetry: bool = False
+    # Undocumented, off by default: lets the coding agents working against this
+    # instance report friction with the Oduflow MCP tools themselves. While
+    # off, the submit_agent_feedback tool is not even listed. See
+    # oduflow.agent_feedback.
+    agent_feedback: bool = False
     allow_local_path: bool = True
     # Allow starting the HTTP transport with no MCP authentication. Off by
     # default so /mcp is never served unauthenticated by accident (#37); set
@@ -577,6 +582,7 @@ class Settings:
             port=int(server.get("port", 8000)),
             trace=trace,
             disable_telemetry=bool(server.get("disable_telemetry", False)),
+            agent_feedback=bool(server.get("agent_feedback", False)),
             allow_local_path=bool(server.get("allow_local_path", True)),
             allow_insecure_http=bool(server.get("allow_insecure_http", False)),
             routing_mode=routing_mode,

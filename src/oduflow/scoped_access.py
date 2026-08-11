@@ -51,6 +51,9 @@ SCOPED_ALLOWLIST = frozenset(
     {
         "get_agent_instructions",
         "get_odoo_development_guide",
+        # Present only while the hidden [server] agent_feedback option is on;
+        # otherwise the tool is disabled and never reaches this allowlist.
+        "submit_agent_feedback",
         "read_output",
         "get_environment_info",
         "get_environment_logs",

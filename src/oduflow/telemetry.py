@@ -12,7 +12,10 @@ _ENDPOINT = "https://oduflow.dev/usage"
 _TIMEOUT = 5
 # Optional shared marker. Must match the server's USAGE_TELEMETRY_TOKEN. Only a
 # speed bump against random scanners — this code is open source. Empty = disabled.
-_TELEMETRY_TOKEN = "5ae286c3f9a162c178577659db75f78259b01942f12ec357929f73e0a222c707"
+# Shared with oduflow.agent_feedback, which posts to the same origin behind the
+# same header.
+SHARED_TOKEN = "5ae286c3f9a162c178577659db75f78259b01942f12ec357929f73e0a222c707"
+_TELEMETRY_TOKEN = SHARED_TOKEN
 
 
 def _get_instance_id(etc_dir: str) -> tuple[str, bool]:

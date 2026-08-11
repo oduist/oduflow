@@ -1040,22 +1040,32 @@ def get_agent_instructions(ctx: Context | None = None) -> str:
             "---\n\n"
         )
 
+    def _guide_body() -> str:
+        for name in ("agent_instructions.md", "agent_skill.md", "agent_guide.md"):
+            skill_path = os.path.join(team.data_dir, "agent_guides", name)
+            if os.path.isfile(skill_path):
+                with open(skill_path, "r", encoding="utf-8") as f:
+                    return _mode_preface() + f.read()
+        for name in ("agent_instructions.md", "agent_skill.md", "agent_guide.md"):
+            bundled = (
+                pathlib.Path(__file__).resolve().parent
+                / "templates"
+                / "agent_guides"
+                / name
+            )
+            if bundled.is_file():
+                return _mode_preface() + bundled.read_text(encoding="utf-8")
+        return "Agent skill not found."
+
     team = _resolve_team(ctx)
-    for name in ("agent_instructions.md", "agent_skill.md", "agent_guide.md"):
-        skill_path = os.path.join(team.data_dir, "agent_guides", name)
-        if os.path.isfile(skill_path):
-            with open(skill_path, "r", encoding="utf-8") as f:
-                return _mode_preface() + f.read()
-    for name in ("agent_instructions.md", "agent_skill.md", "agent_guide.md"):
-        bundled = (
-            pathlib.Path(__file__).resolve().parent
-            / "templates"
-            / "agent_guides"
-            / name
-        )
-        if bundled.is_file():
-            return _mode_preface() + bundled.read_text(encoding="utf-8")
-    return "Agent skill not found."
+    guide = _guide_body()
+    # The feedback section ships nowhere on disk — it exists only while the
+    # (undocumented) [server] agent_feedback option is on.
+    if _get_settings().agent_feedback:
+        from oduflow import agent_feedback as feedback_mod
+
+        guide = guide.rstrip() + "\n\n" + feedback_mod.INSTRUCTIONS_SECTION
+    return guide
 
 
 @mcp.tool()
@@ -1095,6 +1105,69 @@ def get_odoo_development_guide(version: str, ctx: Context | None = None) -> str:
     if available:
         return f"No development guide found for Odoo {version}. Available versions: {', '.join(sorted(available))}"
     return f"No development guide found for Odoo {version}."
+
+
+@mcp.tool(enabled=False)
+@handle_errors
+def submit_agent_feedback(
+    category: str,
+    tools: str,
+    suggestion: str,
+    ctx: Context | None = None,
+) -> str:
+    """
+    Report anonymous feedback about the Oduflow MCP tools once a task is finished.
+
+    Call this at most once per task, and only when the tools themselves caused
+    friction or something was missing. Never include names, paths, hostnames,
+    repositories, credentials or any of the user's business data — the report
+    leaves the machine.
+
+    Args:
+        category: One of "friction", "missing_tool", "unclear_error", "docs".
+        tools: Oduflow tool names involved, comma-separated.
+        suggestion: One short English paragraph — what happened and what would have helped.
+    """
+    from oduflow import agent_feedback as feedback_mod
+
+    normalized = category.strip().lower()
+    if normalized not in feedback_mod.CATEGORIES:
+        raise ToolError(
+            f"category must be one of: {', '.join(feedback_mod.CATEGORIES)}"
+        )
+
+    settings = _get_settings()
+    team = _resolve_team(ctx)
+
+    # Identifiers that look like ordinary words and so cannot be caught by a
+    # generic pattern — redact them by name.
+    known: set[str] = {team.team_id, team.hostname}
+    try:
+        known.update(
+            str(env.get("env_name", ""))
+            for env in env_ops.list_environments(settings, team)
+        )
+    except Exception:
+        pass
+
+    # This field is structurally separate from the scrubbed suggestion, so
+    # restrict it to registered MCP names rather than letting arbitrary
+    # identifiers leave the instance under the guise of tool names.
+    registered_tools = set(
+        getattr(getattr(mcp, "_tool_manager", None), "_tools", {}) or {}
+    )
+    payload = feedback_mod.build_payload(
+        category=normalized,
+        tools=feedback_mod.normalize_tools(tools, registered_tools),
+        suggestion=feedback_mod.scrub(suggestion, tuple(n for n in known if n)),
+        version=_get_version(),
+        instance_id=_instance_id,
+    )
+    if not payload["suggestion"]:
+        raise ToolError("suggestion is required")
+
+    feedback_mod.send(payload)
+    return "Feedback submitted anonymously. Thanks."
 
 
 # =============================================================================
@@ -4274,10 +4347,28 @@ def delete_production(
 # =============================================================================
 
 
+def _apply_agent_feedback(settings: Settings) -> None:
+    """Expose ``submit_agent_feedback`` only while the hidden option is on.
+
+    Registered disabled, so by default the tool is absent from ``list_tools``
+    and calling it answers "Unknown tool". Enabling also appends a one-liner to
+    the MCP instructions every client receives in the initialize handshake.
+    """
+    if not settings.agent_feedback:
+        return
+    from oduflow import agent_feedback as feedback_mod
+
+    submit_agent_feedback.enable()
+    if feedback_mod.MCP_HINT not in (mcp.instructions or ""):
+        mcp.instructions = f"{mcp.instructions}\n\n{feedback_mod.MCP_HINT}".strip()
+    logger.info("Agent feedback enabled (submit_agent_feedback exposed)")
+
+
 def _ensure_initialized(settings: Settings) -> None:
     """Ensure shared infrastructure and per-team directories exist (idempotent)."""
     from oduflow import prereqs
 
+    _apply_agent_feedback(settings)
     _copy_bundled_configs()
     prereqs.ensure_fuse_overlayfs()
     system_ops.init_system(settings)
