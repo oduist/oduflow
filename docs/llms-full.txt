@@ -886,16 +886,44 @@ team_{ID}/
 
 ### Configuration file overrides
 
-On startup, Oduflow copies the bundled `postgresql.conf` and `odoo.conf` to the config directory (if they don't already exist). These files take **priority** over the bundled defaults — edit them to customize PostgreSQL tuning or Odoo settings globally:
+On first startup, Oduflow generates `postgresql.conf` from one host-wide
+resource plan and copies the bundled `odoo.conf` if it does not exist. These
+files take **priority** over the bundled defaults — edit them to customize
+PostgreSQL tuning or Odoo settings globally:
 
 ```
 /etc/oduflow/             (or ~/.oduflow/conf/)
   oduflow.toml            ← main configuration file
-  postgresql.conf         ← custom PostgreSQL tuning (used by oduflow-db)
+  postgresql.conf         ← dev PostgreSQL tuning (used by oduflow-db)
+  postgresql-prod.conf    ← production PostgreSQL tuning (created lazily)
   odoo.conf               ← custom Odoo defaults (used by new environments)
   license.key             ← license file (optional)
   traefik/                ← Traefik dynamic configuration (auto-generated)
 ```
+
+The resource plan considers `[production].enabled`. With production disabled,
+the lean dev PostgreSQL profile targets about 10% of host RAM for
+`shared_buffers` (128 MB–1 GB). With production enabled, the planner budgets
+the host as a whole: dev PostgreSQL targets 5% (128–512 MB), production
+PostgreSQL targets 20% (512 MB–8 GB), production Odoo worker sizing gets a 45%
+RAM budget, and 20% stays reserved for the OS and other services. CPU values
+are concurrency ceilings, not Docker reservations.
+
+Generated configs contain an `ODUFLOW-TUNE` fingerprint. Oduflow warns when
+CPU, RAM, or the production mode no longer matches that fingerprint, but never
+rewrites or restarts PostgreSQL during a normal startup or package upgrade.
+Preview and explicitly apply a new plan with:
+
+```bash
+oduflow retune-postgres          # plan + unified diff; writes nothing
+oduflow retune-postgres --apply  # backup/write and stage managed configs
+```
+
+`--apply` refuses a custom config unless `--force` is also given. Existing
+files are backed up with a UTC timestamp. For each existing production it also
+regenerates the derived `odoo.conf` and stages it inside the Odoo container.
+Restart the PostgreSQL and Odoo containers listed by the command to activate
+the new database and worker settings.
 
 If a repository contains an `odoo.conf` in its `.oduflow/` directory (`<repo>/.oduflow/odoo.conf`), it takes priority over both the bundled and system-level versions for that specific environment.
 
@@ -1951,6 +1979,15 @@ container and then its dedicated PostgreSQL container without deleting any
 container, volume, database, filestore, or registry data. Re-enabling starts
 PostgreSQL first and then starts all managed production Odoo containers.
 
+Enabling production also changes the unified host resource plan. New configs
+coordinate dev PostgreSQL, production PostgreSQL, and production Odoo workers
+instead of letting each profile size itself against the whole host. Existing
+configs are not silently replaced: after changing `enabled`, run
+`oduflow retune-postgres` to inspect the new plan, then
+`oduflow retune-postgres --apply`. The apply step also stages regenerated
+worker settings in every existing production Odoo container; restart the
+PostgreSQL and Odoo containers it lists.
+
 ## Creating a production
 
 ```text
@@ -2890,7 +2927,20 @@ oduflow upgrade
 
 # Refresh non-interactively (for scripts and automated deployments)
 oduflow upgrade --force
+
+# Preview the unified host resource plan and managed config diffs
+oduflow retune-postgres
+
+# Back up and write configs; stage production Odoo configs in containers
+oduflow retune-postgres --apply
 ```
+
+`retune-postgres` accounts for `[production].enabled` and does not restart
+containers. For existing productions, `--apply` also regenerates `odoo.conf`
+with the planned worker count and copies it into the container; the command
+then lists every PostgreSQL and Odoo container that should be restarted. It
+refuses to replace a custom PostgreSQL config unless `--apply --force` is
+given. See [PostgreSQL resource planning](installation.md#configuration-file-overrides).
 
 `oduflow upgrade` compares and interactively refreshes the system
 `postgresql.conf` plus each team's `odoo.conf`, agent guides, and bundled
@@ -3919,23 +3969,30 @@ MCP clients receive errors as `ToolError` with a descriptive message. REST API c
 
 ## PostgreSQL Tuning
 
-At first system initialization Oduflow detects CPU/RAM from Docker (then host
-stats, with a conservative fallback) and generates `postgresql.conf`. The dev
-profile is deliberately lean for many single-user Odoo containers:
+`resource_plan.py` computes one deterministic host-wide budget from CPU/RAM
+detected from Docker (then host stats, with a conservative fallback) plus
+`[production].enabled`. The dev PostgreSQL, production PostgreSQL, and
+production Odoo renderers consume that plan rather than independently claiming
+the host. The dev profile remains deliberately lean for many single-user Odoo
+containers:
 
-- `shared_buffers` is about 10% of RAM, floored at 128 MB and capped at 1 GB.
+- In dev-only mode, `shared_buffers` is about 10% of RAM, floored at 128 MB and
+  capped at 1 GB; production mode coordinates 5% dev + 20% production targets.
 - `work_mem` is derived from the 100-connection ceiling and clamped to 4–16 MB.
 - Parallel workers and autovacuum workers scale conservatively with CPU count.
 - Planner costs assume SSD storage; statements slower than one second are logged.
 
-The generated file starts with `# KEEP`, so `oduflow upgrade` preserves it. To
-regenerate it from current resources, remove the deployed file, restart Oduflow,
-then restart the shared PostgreSQL container.
-
-Production uses a separate, independently generated profile in its dedicated
-cluster: roughly 20% of RAM for `shared_buffers` (512 MB–8 GB), a 200-connection
-ceiling, more parallelism, and WAL archiving hooks for WAL-G. See
+Production keeps its separate 200-connection profile, parallelism, and WAL-G
+archiving hooks while taking its memory/CPU inputs from the same plan. The plan
+also assigns a 45% RAM budget to production Odoo worker sizing. See
 [Production Hosting](production.md).
+
+Generated configs carry a planner-version fingerprint. Startup reports stale
+managed configs but preserves the `# KEEP` contract; `retune-postgres` is the
+explicit preview/apply boundary because several PostgreSQL settings require a
+restart and operator-authored configs must never be silently replaced. Applying
+the plan also stages regenerated worker settings in existing production Odoo
+containers, while leaving every restart under operator control.
 
 ---
 

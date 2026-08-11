@@ -1200,19 +1200,27 @@ def _prod_pg_conf_path(settings: Settings) -> str:
 
 def _ensure_prod_pg_conf(settings: Settings) -> str:
     """Auto-generate the production postgresql.conf once (``# KEEP`` contract:
-    an existing file is never rewritten — delete it to regenerate)."""
+    an existing file is never rewritten; use ``retune-postgres`` explicitly)."""
     path = _prod_pg_conf_path(settings)
     if os.path.isfile(path):
+        _warn_stale_prod_pg_conf(settings, path)
         return path
     from oduflow import prod_tune
     from oduflow.pg_tune import detect_resources
+    from oduflow.resource_plan import build_resource_plan
 
     res = detect_resources()
+    plan = build_resource_plan(
+        res["total_ram_mb"],
+        res["cpu_count"],
+        production_enabled=True,
+    )
     content = prod_tune.generate_prod_postgresql_conf(
         res["total_ram_mb"],
         res["cpu_count"],
         source=res["source"],
         oduflow_version=_get_oduflow_version(),
+        plan=plan,
     )
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
@@ -1224,6 +1232,40 @@ def _ensure_prod_pg_conf(settings: Settings) -> str:
         int(res["total_ram_mb"]),
     )
     return path
+
+
+def _warn_stale_prod_pg_conf(settings: Settings, path: str) -> None:
+    """Warn when the managed production config predates the current plan."""
+    try:
+        from oduflow.pg_tune import detect_resources
+        from oduflow.resource_plan import (
+            build_resource_plan,
+            tune_marker,
+            tune_status,
+        )
+
+        with open(path, encoding="utf-8", errors="replace") as f:
+            content = f.read()
+        res = detect_resources()
+        plan = build_resource_plan(
+            res["total_ram_mb"],
+            res["cpu_count"],
+            production_enabled=True,
+        )
+        status = tune_status(content, tune_marker(plan, "production"))
+        if status in {"stale", "legacy"}:
+            logger.warning(
+                "Auto-generated production PostgreSQL config %s is %s for "
+                "the current host resource plan; run `oduflow "
+                "retune-postgres` to preview the update",
+                path,
+                status,
+            )
+    except Exception:
+        logger.debug(
+            "Could not check production PostgreSQL tuning fingerprint",
+            exc_info=True,
+        )
 
 
 def _ensure_prod_pg_container(
@@ -1244,6 +1286,9 @@ def _ensure_prod_pg_container(
         db_container = client.containers.get(settings.prod_db_container)
         if db_container.status != "running":
             db_container.start()
+        conf_path = _prod_pg_conf_path(settings)
+        if os.path.isfile(conf_path):
+            _warn_stale_prod_pg_conf(settings, conf_path)
         return
     except docker.errors.NotFound:
         pass

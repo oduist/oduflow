@@ -27,6 +27,7 @@ class TestStructure:
     def test_first_line_is_keep_marker(self):
         conf = pg_tune.generate_postgresql_conf(8192, 4)
         assert conf.splitlines()[0] == "# KEEP"
+        assert conf.splitlines()[1].startswith("# ODUFLOW-TUNE ")
 
     def test_every_setting_line_is_key_value(self):
         conf = pg_tune.generate_postgresql_conf(8192, 4)
@@ -73,6 +74,18 @@ class TestMemoryScaling:
         cfg = _parse(pg_tune.generate_postgresql_conf(32768, 16))
         # shared_buffers capped at 1024MB -> /2 = 512 -> capped to 256
         assert _mb(cfg["maintenance_work_mem"]) == 256
+
+    def test_production_enabled_uses_combined_host_plan(self):
+        cfg = _parse(
+            pg_tune.generate_postgresql_conf(
+                8192,
+                4,
+                production_enabled=True,
+            )
+        )
+        assert _mb(cfg["shared_buffers"]) == 410
+        assert _mb(cfg["effective_cache_size"]) == 819
+        assert cfg["max_worker_processes"] == "2"
 
 
 class TestParallelism:

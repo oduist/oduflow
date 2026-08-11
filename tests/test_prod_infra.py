@@ -1,3 +1,4 @@
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -219,6 +220,21 @@ class TestProdPgContainer:
         ):
             system_ops.ensure_prod_infra(client, settings)
         stopped.start.assert_called_once()
+        client.containers.run.assert_not_called()
+
+    def test_existing_container_still_checks_managed_config(self, settings):
+        client = MagicMock()
+        running = MagicMock()
+        running.status = "running"
+        client.containers.get.return_value = running
+        conf_path = system_ops._prod_pg_conf_path(settings)
+        Path(conf_path).parent.mkdir(parents=True)
+        Path(conf_path).write_text("# KEEP\n")
+
+        with patch.object(system_ops, "_warn_stale_prod_pg_conf") as warn_stale:
+            system_ops._ensure_prod_pg_container(client, settings, {})
+
+        warn_stale.assert_called_once_with(settings, conf_path)
         client.containers.run.assert_not_called()
 
 

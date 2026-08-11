@@ -26,6 +26,7 @@ class TestProdPostgresConf:
     def test_first_line_is_keep_marker(self):
         conf = prod_tune.generate_prod_postgresql_conf(8192, 4)
         assert conf.splitlines()[0] == "# KEEP"
+        assert conf.splitlines()[1].startswith("# ODUFLOW-TUNE ")
 
     def test_archiving_enabled_with_noop_command(self):
         # archive_mode needs a PG restart to toggle, so it must ship enabled;
@@ -52,9 +53,9 @@ class TestProdPostgresConf:
 
 class TestOdooWorkerSettings:
     def test_standard_formula(self):
-        # 4 CPU, plenty of RAM: workers = 2*4+1 = 9 but capped at 8 by default.
+        # Unified plan gives Odoo 75% of 4 CPU: workers = 2*3+1 = 7.
         opts = prod_tune.compute_odoo_worker_settings(4, 32768)
-        assert opts["workers"] == "8"
+        assert opts["workers"] == "7"
         assert opts["max_cron_threads"] == "1"
         assert opts["proxy_mode"] == "True"
         assert opts["list_db"] == "False"

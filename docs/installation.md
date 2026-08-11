@@ -338,16 +338,44 @@ team_{ID}/
 
 ### Configuration file overrides
 
-On startup, Oduflow copies the bundled `postgresql.conf` and `odoo.conf` to the config directory (if they don't already exist). These files take **priority** over the bundled defaults — edit them to customize PostgreSQL tuning or Odoo settings globally:
+On first startup, Oduflow generates `postgresql.conf` from one host-wide
+resource plan and copies the bundled `odoo.conf` if it does not exist. These
+files take **priority** over the bundled defaults — edit them to customize
+PostgreSQL tuning or Odoo settings globally:
 
 ```
 /etc/oduflow/             (or ~/.oduflow/conf/)
   oduflow.toml            ← main configuration file
-  postgresql.conf         ← custom PostgreSQL tuning (used by oduflow-db)
+  postgresql.conf         ← dev PostgreSQL tuning (used by oduflow-db)
+  postgresql-prod.conf    ← production PostgreSQL tuning (created lazily)
   odoo.conf               ← custom Odoo defaults (used by new environments)
   license.key             ← license file (optional)
   traefik/                ← Traefik dynamic configuration (auto-generated)
 ```
+
+The resource plan considers `[production].enabled`. With production disabled,
+the lean dev PostgreSQL profile targets about 10% of host RAM for
+`shared_buffers` (128 MB–1 GB). With production enabled, the planner budgets
+the host as a whole: dev PostgreSQL targets 5% (128–512 MB), production
+PostgreSQL targets 20% (512 MB–8 GB), production Odoo worker sizing gets a 45%
+RAM budget, and 20% stays reserved for the OS and other services. CPU values
+are concurrency ceilings, not Docker reservations.
+
+Generated configs contain an `ODUFLOW-TUNE` fingerprint. Oduflow warns when
+CPU, RAM, or the production mode no longer matches that fingerprint, but never
+rewrites or restarts PostgreSQL during a normal startup or package upgrade.
+Preview and explicitly apply a new plan with:
+
+```bash
+oduflow retune-postgres          # plan + unified diff; writes nothing
+oduflow retune-postgres --apply  # backup/write and stage managed configs
+```
+
+`--apply` refuses a custom config unless `--force` is also given. Existing
+files are backed up with a UTC timestamp. For each existing production it also
+regenerates the derived `odoo.conf` and stages it inside the Odoo container.
+Restart the PostgreSQL and Odoo containers listed by the command to activate
+the new database and worker settings.
 
 If a repository contains an `odoo.conf` in its `.oduflow/` directory (`<repo>/.oduflow/odoo.conf`), it takes priority over both the bundled and system-level versions for that specific environment.
 
