@@ -3,7 +3,7 @@
 **Status:** Adopted
 **Type:** Architecture — agent runtime capability and trust model
 **First introduced:** this change (2026-07-21), branch `litnimax/codex-agent-env-key`
-**Key code today:** `docker/agent/Dockerfile`; `docker/agent/entrypoint.sh`; `docker/agent/clone-env.sh`; `_wire_codex_acp_mcp`, `ws_agent_console`, and `ws_agent_acp` in `web_ui.py`; `_ensure_agent_container` in `docker_ops/env_ops.py`
+**Key code today:** `docker/agent/Dockerfile`; `docker/agent/entrypoint.sh`; `docker/agent/clone-env.sh`; `_wire_client_acp_mcp`, `ws_agent_console`, and `ws_agent_acp` in `web_ui.py`; `_ensure_agent_container` in `docker_ops/env_ops.py`
 
 ## Context
 
@@ -23,9 +23,9 @@ Codex approval boundary adds friction without separating a different principal.
 
 The published coder image includes a pinned Agent Browser CLI/MCP package and
 Debian Chromium. Agent Browser is configured as a local stdio MCP with all of
-its tools for both Claude and Codex. Every console/chat exec sets a profile name
-derived from the environment slug, preventing two environments in the same
-team container from sharing a browser daemon or session accidentally.
+its tools for Claude, Codex, and OpenCode. Every console/chat exec sets a
+profile name derived from the environment slug, preventing two environments in
+the same team container from sharing a browser daemon or session accidentally.
 
 Codex runs without interactive approval requests or a nested process sandbox:
 Agent CLI passes `--dangerously-bypass-approvals-and-sandbox`; Codex ACP starts
@@ -69,5 +69,8 @@ blocks; Oduflow does not weaken that outer profile to make a nested sandbox run.
 
 ## History
 
+- 2026-07-24 — extended the same browser and container-boundary trust model to
+  OpenCode: Agent CLI uses auto approval, native ACP uses `permission = allow`,
+  and both receive the environment-specific Agent Browser profile.
 - 2026-07-21 — adopted built-in Agent Browser MCP, per-environment browser
   profiles, and non-interactive Codex approval policy.

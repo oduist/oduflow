@@ -3,8 +3,8 @@
 Oduflow can host a **coding agent** for a team: an opt-in feature where the
 client grows their Odoo by chatting with an AI agent directly from the browser
 dashboard. Oduflow runs one agent container per team
-(`oduist/oduflow-coder`, running Claude Code + OpenAI Codex) and exposes two
-front-ends for every environment.
+(`oduist/oduflow-coder`, running Claude Code + OpenAI Codex + OpenCode) and
+exposes two front-ends for every environment.
 
 !!! note "Hosting feature — off by default"
     The coding agent is for **hosted** deployments. A local developer already
@@ -38,9 +38,10 @@ server** (`pull_and_apply`, `run_odoo_tests`, etc.) — the same closed loop a
 remote MCP client uses.
 
 The image also includes **Agent Browser MCP** backed by Debian Chromium. It is
-wired automatically into both Claude and Codex with the complete Agent Browser
-tool set. Each environment gets a separate browser profile, while browser data
-persists with the team's agent HOME volume across container recreation.
+wired automatically into Claude, Codex, and OpenCode with the complete Agent
+Browser tool set. Each environment gets a separate browser profile, while
+browser data persists with the team's agent HOME volume across container
+recreation.
 
 Lifecycle is automatic: the container is created on startup for each enabled
 team and removed for disabled ones; `create_environment` adds the environment's
@@ -58,21 +59,23 @@ enablement and credentials live in the `[team.*]` sections:
 ```toml
 # Deployment-wide (optional)
 [agent]
-image = "oduist/oduflow-coder:0.2.3"
+image = "oduist/oduflow-coder:0.3.0"
 # claude_model = ""     # optional Claude model override; empty = CLI default
 # codex_model = ""      # optional Codex model override; empty = CLI default
+# opencode_model = ""   # optional provider/model override; empty = OpenCode default
 
 [team.1]
 hostname = "localhost"
 auth_token = "…"
 agent_enabled = true    # turn the coding agent on for this team
-agent_default = "claude"  # "claude" | "codex" — which agent opens by default
+agent_default = "claude"  # "claude" | "codex" | "opencode"
 
 # Provider credentials injected into the team's agent container
 [team.1.agent_env]
 CLAUDE_CODE_OAUTH_TOKEN = ""   # Claude subscription token (`claude setup-token`); outranks the API key
 ANTHROPIC_API_KEY = ""         # Claude API key (used when no OAuth token)
 OPENAI_API_KEY = ""            # Codex API key
+OPENCODE_API_KEY = ""          # OpenCode Zen; other providers use their own variables
 ```
 
 The default coder image is an immutable versioned tag coupled to this Oduflow
@@ -94,6 +97,15 @@ around a token is not sent to Anthropic. A configured environment credential
 always overrides the persisted interactive login; if Anthropic rejects it,
 Agent Chat fails closed with mode-specific recovery guidance instead of silently
 trying another account or billing method.
+
+OpenCode is provider-neutral. Any provider environment variable can be placed
+under `[team.X.agent_env]`; `OPENCODE_API_KEY` is the standard OpenCode Zen
+credential and is also inherited from the server environment in single-team
+deployments. Alternatively, open **Agent CLI** and run `opencode auth login`;
+the resulting provider credentials live on the team's persistent HOME volume
+and survive container recreation. OpenCode's runtime self-update is disabled,
+so its executable changes only when Oduflow moves to a new immutable coder
+image.
 
 See the [`[agent]`](installation.md#agent-settings) and
 [per-team](installation.md#per-team-settings) settings tables for the full
@@ -119,7 +131,7 @@ reference.
   only in single-team deployments; with several teams, each team sets its own
   keys in `[team.X.agent_env]` so an operator credential never leaks to
   tenants.
-- **Sandbox and approvals.** Both agents run approval-free — the security
+- **Sandbox and approvals.** All three agents run approval-free — the security
   boundary is the unprivileged `agent` user inside the per-team Docker
   container, not per-tool prompts. Codex CLI uses
   `--dangerously-bypass-approvals-and-sandbox` and Codex ACP starts in
@@ -127,8 +139,10 @@ reference.
   Agent CLI console runs `claude --dangerously-skip-permissions`, and Agent
   Chat's ACP adapter (`claude-agent-acp`) starts in `bypassPermissions`, seeded
   via the container's user-tier `~/.claude/settings.json`
-  (`permissions.defaultMode`). So installed MCP tools run without interactive
-  permission prompts for either agent.
+  (`permissions.defaultMode`). OpenCode CLI uses `--auto`; both CLI and its
+  native `opencode acp` runtime receive a high-precedence session config with
+  `permission = "allow"`. So installed MCP tools run without interactive
+  permission prompts for any hosted agent.
 
 ## Limitations
 
@@ -142,7 +156,7 @@ reference.
   the history entry.
 
 The published image contains redistributable open-source software: Codex CLI,
-Codex ACP and Agent Browser are Apache-2.0, and Debian Chromium includes its
-upstream component license notices. Claude Code and its adapter are installed
-at first container start onto the persistent home volume — downloaded directly
-from npm by the end user's container.
+Codex ACP and Agent Browser are Apache-2.0, OpenCode is MIT, and Debian Chromium
+includes its upstream component license notices. Claude Code and its adapter
+are installed at first container start onto the persistent home volume —
+downloaded directly from npm by the end user's container.

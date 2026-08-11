@@ -10,8 +10,9 @@
 The dashboard already streams two `WebSocket ↔ docker exec` consoles per
 environment (Odoo shell, psql) rendered with xterm.js. Odusphere-cli built on
 that same bridge a full coding-agent surface: a per-installation agent
-container (Claude Code + OpenAI Codex in one image) whose interactive CLI opens
-in a browser terminal, plus a structured **ACP chat** (Agent Client Protocol,
+container (now Claude Code + OpenAI Codex + OpenCode in one image) whose
+interactive CLI opens in a browser terminal, plus a structured **ACP chat**
+(Agent Client Protocol,
 JSON-RPC over stdio, bridged to the browser over the same WebSocket pattern)
 with durable per-environment conversations. This change ports that capability.
 
@@ -38,8 +39,9 @@ WebSocket↔`docker exec` bridge:
 - **Agent CLI** (`ws_agent_console`): the agent's own TUI in xterm.js, exec'd
   with a PTY at the environment's checkout.
 - **Agent Chat** (`ws_agent_acp`): a TTY-less, line-framed relay to the agent's
-  ACP adapter (`claude-agent-acp` / `codex-acp`), rendered by a vendored,
-  framework-free browser client (`acp-client.js` + `chat.js`). A current
+  ACP runtime (`claude-agent-acp` / `codex-acp` / native `opencode acp`),
+  rendered by a vendored, framework-free browser client (`acp-client.js` +
+  `chat.js`). A current
   session and bounded recent history per (environment, agent) are persisted;
   any selected conversation resumes via ACP `session/load`. Chats minimize to
   a dock so several run in parallel.
@@ -66,7 +68,8 @@ leaked session credential grants only the ADR-0028 dev-loop allowlist on the
 one environment the session already controls.
 
 **Configuration lives in `oduflow.toml`, not in the dashboard.** Per team:
-`agent_enabled` (default **false**), `agent_default` (claude | codex) and the
+`agent_enabled` (default **false**), `agent_default` (claude | codex | opencode)
+and the
 `[team.X.agent_env]` table (provider credentials + custom vars injected into
 the container). The global `[agent]` section holds only deployment-wide bits
 (image, optional model overrides). There is no runtime editing and no Agents
@@ -146,8 +149,20 @@ id and does not inspect Claude Code or Codex transcript files. This keeps the
 integration independent of private CLI storage formats; it also means Codex
 history loading remains best-effort while its adapter matures.
 
+OpenCode was later added as a third first-class runtime. Its MIT-licensed CLI is
+baked into the immutable coder image, Agent CLI receives a high-precedence
+session-only config with approval-free permissions and scoped MCP placeholders,
+and Agent Chat uses native `opencode acp`. Because OpenCode supports
+client-provided HTTP/SSE MCP servers, its ACP sessions share the same
+session-open injection used by Codex. The browser client accepts both the
+legacy ACP `models` response and modern `configOptions`, selecting the matching
+model-change method per session.
+
 ## History
 
+- 2026-07-24 — added OpenCode as a third hosted agent with CLI and native ACP
+  chat, generic provider authentication, Agent Browser, scoped Oduflow MCP,
+  modern ACP model options, and isolated conversation history.
 - 2026-07-22 — replaced the rolling coder-image tag and manual runtime epoch
   with the immutable, release-coupled image contract in
   [[0040-versioned-coder-image-contract]].
@@ -186,6 +201,7 @@ history loading remains best-effort while its adapter matures.
   API-key auth was also adapted to current Codex releases by materializing
   persistent `auth.json` through `codex login --with-api-key` at startup.
 - 2026-07-21 — added the built-in Agent Browser MCP and Chromium runtime for
-  both Claude and Codex, with per-environment browser profiles. Codex CLI and
+  Claude and Codex (later extended to OpenCode), with per-environment browser
+  profiles. Codex CLI and
   ACP sessions now run non-interactively without approval prompts or a nested
   process sandbox; see [[0037-built-in-agent-browser-and-noninteractive-codex]].

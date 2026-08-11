@@ -84,3 +84,12 @@ def test_feedback_modal_is_registered_for_escape_key(tmp_path):
 
     assert dashboard.status_code == 200
     assert re.search(r"'feedback-modal':\s*closeFeedbackModal", dashboard.text)
+
+
+def test_dashboard_accepts_opencode_default_and_labels_it(tmp_path):
+    dashboard = _client(tmp_path).get("/")
+
+    assert dashboard.status_code == 200
+    assert "data.default === 'opencode'" in dashboard.text
+    assert "(agentType === 'opencode' ? 'OpenCode' : 'Claude')" in dashboard.text
+    assert "var CHAT_V = '6'" in dashboard.text

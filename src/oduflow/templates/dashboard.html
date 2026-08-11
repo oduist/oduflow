@@ -5036,7 +5036,8 @@ async function doDeleteExtraRepo(name) {
 // The coding agent is configured per team in oduflow.toml ([team.X] agent_*
 // keys) and is off by default — it is a hosting feature. The dashboard only
 // needs to know whether it is enabled (to show the Agent Chat / Agent CLI
-// actions) and the default agent type (claude | codex) for opens without an
+// actions) and the default agent type (claude | codex | opencode) for opens
+// without an
 // explicit type. One-shot fetch at boot; cards re-render once it lands.
 window.ODU_AGENT_ENABLED = false;
 window.ODU_AGENT_DEFAULT = 'claude';
@@ -5049,7 +5050,7 @@ async function refreshAgentInfo() {
     var enabled = !!data.enabled;
     var changed = enabled !== window.ODU_AGENT_ENABLED;
     window.ODU_AGENT_ENABLED = enabled;
-    if (data.default === 'claude' || data.default === 'codex') {
+    if (data.default === 'claude' || data.default === 'codex' || data.default === 'opencode') {
       window.ODU_AGENT_DEFAULT = data.default;
     }
     // The first environments render may have raced this fetch; redraw so the
@@ -5255,7 +5256,7 @@ function ensureChatAssets() {
   // chat.js and acp-client.js are an interdependent pair of our own code; bump
   // this shared CHAT_V whenever either one changes (see AGENTS.md). One version
   // busts both at once, preventing a stale chat.js/acp-client.js mismatch.
-  var CHAT_V = '5';
+  var CHAT_V = '6';
   _chatAssets = Promise.all([
     loadScript('/static/marked.min.js'),
     loadScript('/static/acp-client.js?v=' + CHAT_V)
@@ -5431,7 +5432,8 @@ async function openAgentConsole(branch, agentType) {
     showToast('Failed to load terminal assets: ' + e.message, true);
     return;
   }
-  var label = agentType === 'codex' ? 'Codex' : 'Claude';
+  var label = agentType === 'codex' ? 'Codex' :
+    (agentType === 'opencode' ? 'OpenCode' : 'Claude');
   document.getElementById('agent-title').textContent = 'Agent · ' + label + ' — ' + branch;
   showModal('agent-modal');
 

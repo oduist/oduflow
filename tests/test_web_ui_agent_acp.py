@@ -254,6 +254,28 @@ def test_specific_claude_auth_errors_are_recognized(provider_message):
     )
 
 
+def test_opencode_auth_error_gets_recovery_guidance():
+    original = {
+        "jsonrpc": "2.0",
+        "id": 4,
+        "error": {
+            "code": -32000,
+            "message": "Authentication required: provider authentication required",
+            "data": {"providerId": "anthropic"},
+        },
+    }
+
+    annotated = json.loads(
+        _annotate_acp_auth_error(json.dumps(original), "opencode", "interactive", "9")
+    )
+
+    assert annotated["error"]["code"] == original["error"]["code"]
+    assert annotated["error"]["data"] == original["error"]["data"]
+    assert "Oduflow OpenCode authentication guidance:" in annotated["error"]["message"]
+    assert "opencode auth login" in annotated["error"]["message"]
+    assert "[team.9.agent_env]" in annotated["error"]["message"]
+
+
 @pytest.mark.parametrize(
     ("frame", "agent_type"),
     [
@@ -291,9 +313,19 @@ def test_specific_claude_auth_errors_are_recognized(provider_message):
             ),
             "codex",
         ),
+        (
+            json.dumps(
+                {
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "error": {"code": -32603, "message": "Model quota exhausted"},
+                }
+            ),
+            "opencode",
+        ),
     ],
 )
-def test_non_claude_auth_failures_are_unchanged(frame, agent_type):
+def test_unrecognized_auth_failures_are_unchanged(frame, agent_type):
     assert _annotate_acp_auth_error(frame, agent_type, "setup_token", "1") == frame
 
 
@@ -308,3 +340,13 @@ def test_auth_guidance_is_not_appended_twice():
     once = _annotate_acp_auth_error(frame, "claude", "setup_token", "1")
 
     assert _annotate_acp_auth_error(once, "claude", "setup_token", "1") == once
+
+    opencode = json.dumps(
+        {
+            "jsonrpc": "2.0",
+            "id": 2,
+            "error": {"code": -32000, "message": "provider authentication required"},
+        }
+    )
+    once = _annotate_acp_auth_error(opencode, "opencode", "interactive", "1")
+    assert _annotate_acp_auth_error(once, "opencode", "interactive", "1") == once

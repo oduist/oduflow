@@ -12,9 +12,10 @@
 # alive.
 #
 # LICENSING: the published image contains redistributable open-source software.
-# Codex CLI, codex-acp and agent-browser are Apache-2.0; ruff is MIT/Apache-2.0;
-# Debian's Chromium package carries its upstream BSD-style/component licenses and
-# preserves the corresponding notices under /usr/share/doc. Claude Code
+# Codex CLI, codex-acp and agent-browser are Apache-2.0; OpenCode is MIT; ruff is
+# MIT/Apache-2.0; Debian's Chromium package carries its upstream
+# BSD-style/component licenses and preserves the corresponding notices under
+# /usr/share/doc. Claude Code
 # (@anthropic-ai/claude-code) and its ACP adapter are PROPRIETARY-adjacent
 # (Anthropic Commercial Terms; the adapter pulls Anthropic's closed SDK), so
 # they are NOT part of the published image: entrypoint.sh npm-installs them at
@@ -28,7 +29,7 @@
 
 FROM node:24-bookworm-slim
 
-ARG CODER_VERSION=0.2.3
+ARG CODER_VERSION=0.3.0
 LABEL org.opencontainers.image.title="oduflow-coder" \
       org.opencontainers.image.version="${CODER_VERSION}" \
       org.opencontainers.image.source="https://github.com/oduist/oduflow"
@@ -71,17 +72,22 @@ RUN usermod --login agent --home /home/agent --move-home --shell /bin/bash node 
 #   - OpenAI Codex CLI + its ACP (Agent Client Protocol) adapter;
 #   - agent-browser, including its stdio MCP server. Pin the browser package so
 #     its MCP surface is deterministic; current releases require Node >= 24.
+# MIT component:
+#   - OpenCode, including its native `opencode acp` server. The coder image is
+#     immutable, and Oduflow disables OpenCode's runtime self-update per session.
 # NOTE: the Codex ACP bridge package is still settling (published
 # `@agentclientprotocol/codex-acp`, `@zed-industries/codex-acp` on GitHub, and an
 # emerging native `codex --acp`). Confirm the working one at build time.
 RUN npm install -g \
         @openai/codex \
         @agentclientprotocol/codex-acp \
+        opencode-ai \
         agent-browser@0.32.3 \
     && npm cache clean --force
 
 # Agent auth + sessions live under HOME (mounted from the persistent home
-# volume: ~/.claude.json, ~/.claude/ incl. projects/ = sessions, ~/.codex/).
+# volume: ~/.claude.json, ~/.claude/ incl. projects/ = sessions, ~/.codex/,
+# ~/.config/opencode and ~/.local/share/opencode).
 # Per-env checkouts live under /workspace (persistent workspace volume) at
 # /workspace/<slug>. Config dirs are pinned under HOME explicitly so they land
 # on the volume regardless of each CLI's default resolution. The npm prefix

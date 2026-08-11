@@ -4,6 +4,7 @@
 
 ### Features
 
+- **OpenCode hosted agent** — OpenCode joins Claude Code and Codex as a full Agent CLI and Agent Chat runtime. The new immutable coder image includes the MIT-licensed `opencode` CLI and native ACP server; OpenCode gets generic provider authentication, an optional `provider/model` override, approval-free execution inside the existing container boundary, per-environment Agent Browser, scoped Oduflow MCP, modern ACP model selection, and isolated conversation history.
 - **Non-interactive bundled-file upgrades** — `oduflow upgrade --force` prints
   the usual overwrite warning and affected paths but proceeds without waiting
   for terminal input, enabling unattended deployments while continuing to

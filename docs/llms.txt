@@ -66,7 +66,8 @@ auto_delete_hours = 0                 # auto-delete N hours after stop; 0 disabl
 
 # Per-team coding agent (dashboard Agent Chat / Agent CLI); opt-in, off by default.
 # [agent]
-# image = "oduist/oduflow-coder:0.2.3"
+# image = "oduist/oduflow-coder:0.3.0"
+# opencode_model = ""               # optional provider/model override
 
 [team.1]
 hostname = "localhost"
@@ -74,11 +75,12 @@ auth_token = ""                       # auto-filled in fresh configs; HTTP MCP B
 ui_password = ""                      # auto-filled in fresh configs; Web UI password for admin
 port_range = [50000, 50100]           # port range for Odoo containers
 # agent_enabled = false               # enable the per-team coding agent (Agent Chat / Agent CLI)
-# agent_default = "claude"            # "claude" | "codex" — default agent for consoles/chats
+# agent_default = "claude"            # "claude" | "codex" | "opencode"
 # [team.1.agent_env]                  # provider credentials injected into the agent container
 # CLAUDE_CODE_OAUTH_TOKEN = ""
 # ANTHROPIC_API_KEY = ""
 # OPENAI_API_KEY = ""
+# OPENCODE_API_KEY = ""               # OpenCode Zen; arbitrary provider vars work
 ```
 
 ### First launch
@@ -208,7 +210,7 @@ feature is enabled; public `/healthz` reports dev/prod infrastructure health.
 
 ## Coding Agent (hosting)
 
-An opt-in, per-team hosting feature: Oduflow runs one coding-agent container per team (`oduist/oduflow-coder`, Claude Code + OpenAI Codex) and exposes two dashboard surfaces — **Agent CLI** (the agent's TUI in the browser) and **Agent Chat** (a browser ACP chat with per-environment conversation history). The agent edits its own git checkout, `git push`es, and drives the environment through the Oduflow MCP server with a scoped per-environment token. A built-in Agent Browser MCP and Chromium provide browser automation to both agents, with one persistent profile per environment. Codex runs installed MCP methods without interactive approval prompts. It is off by default; enable it per team with `agent_enabled` and set provider credentials under `[team.X.agent_env]`. The agent UI is hidden for live-mount (`local_path`) environments.
+An opt-in, per-team hosting feature: Oduflow runs one coding-agent container per team (`oduist/oduflow-coder`, Claude Code + OpenAI Codex + OpenCode) and exposes two dashboard surfaces — **Agent CLI** (the agent's TUI in the browser) and **Agent Chat** (a browser ACP chat with per-environment conversation history). The agent edits its own git checkout, `git push`es, and drives the environment through the Oduflow MCP server with a scoped per-environment token. A built-in Agent Browser MCP and Chromium provide browser automation to all three agents, with one persistent profile per environment. Hosted agents run installed MCP methods without interactive approval prompts. OpenCode supports arbitrary provider environment variables or persistent `opencode auth login`. It is off by default; enable it per team with `agent_enabled` and set provider credentials under `[team.X.agent_env]`. The agent UI is hidden for live-mount (`local_path`) environments.
 
 ## Database Sanitization
 
