@@ -272,6 +272,44 @@ push → pull_and_apply → read the response for errors → fix if errors → r
 ```
 Do NOT call `get_environment_logs` after `pull_and_apply` — the errors are already in the response. Use `get_environment_logs` only to check the **running server** (e.g., runtime errors during request handling).
 
+### Out of Database Connections
+
+Symptoms — in `get_environment_logs` or in a tool response:
+`psycopg2.pool.PoolError: The Connection Pool Is Full`, connections timing
+out, or requests hanging during a heavy import or a parallel test run.
+
+That means this environment hit its own `db_maxconn` ceiling (default `8`).
+Raise it for this container yourself — no user confirmation needed:
+
+1. `read_file_in_odoo(env_name, "/etc/odoo/odoo.conf")` — read the current config.
+2. Raise `db_maxconn` (8 → 16) and leave every other line untouched.
+3. `write_file_in_odoo(env_name, "/etc/odoo/odoo.conf", <full new content>, user="odoo")`
+   — the write replaces the whole file, so send the complete config back.
+4. `restart_environment(env_name)` — Odoo reads the config only at startup.
+
+Then continue with the work that hit the limit.
+
+Scope and limits:
+
+- **Raise it once.** 16 is enough for any single-user environment; 32 is the
+  hard ceiling. If the pool error comes back after one bump, `db_maxconn` is
+  not the problem — the code is leaking cursors or opening connections in a
+  loop. Investigate that instead of raising the number again.
+- The change is **local to this container** — it does not affect other
+  environments and does not change the shared PostgreSQL instance.
+- The shared PostgreSQL accepts a limited number of connections in total, and
+  every other environment on the host draws from the same pool. If the error
+  is `FATAL: sorry, too many clients already` (PostgreSQL side, not the Odoo
+  pool), raising `db_maxconn` makes it **worse**: report it to the user and
+  suggest stopping idle environments instead.
+- The edit lives in the container's writable layer. It survives
+  `restart_environment` and a normal `pull_and_apply`, but is lost when the
+  container is recreated (`update_environment`) or when the repo's
+  `.oduflow/odoo.conf` changes and gets reapplied. A permanent fix belongs in
+  the repository's `.oduflow/odoo.conf`, or — for the whole team — in the
+  team's own `odoo.conf` on the server, which only the operator can edit. Say
+  so and let the user decide; do not change it yourself.
+
 ### Teardown
 
 Environments are **disposable test sandboxes**, not long-lived installations.
@@ -309,7 +347,7 @@ The environment container runs **remotely** and has access only to the git repos
 
 **If you need to change code** — in **git mode**, do it locally, then `git commit` → `git push` → `pull_and_apply`. In **live-mount mode** (env created with `local_path`), edit the files in that local directory directly and call `pull_and_apply` — no commit/push required (the directory is bind-mounted live into the container). Either way, never edit code *inside* the container.
 
-**Non-standard operations** (e.g., `apt install`, `pip install`, modifying system configs) are possible but **require explicit user confirmation** before proceeding — explain what you want to do and why.
+**Non-standard operations** (e.g., `apt install`, `pip install`, modifying system configs) are possible but **require explicit user confirmation** before proceeding — explain what you want to do and why. The one sanctioned exception is raising `db_maxconn` in `/etc/odoo/odoo.conf` when the connection pool is exhausted — see [Out of Database Connections](#out-of-database-connections).
 
 ### Searching Odoo Source Code
 - If Odoo Community or Enterprise source repositories are available **locally** (cloned to your machine), prefer using your native search tools (Grep, Glob, Read) over `search_in_odoo` — local search is faster and doesn't require a running environment.

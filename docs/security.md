@@ -212,7 +212,9 @@ On startup, an `iptables ACCEPT` rule is automatically added for the `oduflow-ne
 
 The bundled `odoo.conf` template includes these security settings:
 
-- `admin_passwd` set to a random value (prevents database manager access)
 - `list_db = False` (hides database selector)
 - `without_demo = all` (no demo data)
 - `max_cron_threads = 0` (disables cron in dev environments)
+
+A repository that ships its own `.oduflow/odoo.conf` replaces the template
+entirely and is responsible for these settings itself.
