@@ -1,0 +1,38 @@
+name: Bug report
+description: Something in Oduflow does not work as documented
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. If you opened this from the Oduflow dashboard or
+        from a coding agent, the fields below are already filled in — review
+        them (and remove anything you would rather not publish) before
+        submitting.
+  - type: textarea
+    id: details
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what happened instead.
+      placeholder: |
+        Steps:
+        1. ...
+
+        Expected: ...
+        Actual: ...
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs or errors
+      description: Command output, tool responses, or `oduflow` / container logs.
+      render: text
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Oduflow version and deployment details.
+      render: text
+    validations:
+      required: true

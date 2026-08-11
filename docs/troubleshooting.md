@@ -315,3 +315,28 @@ oduflow call run_odoo_tests '{"env_name": "my-branch", "modules": "my_module"}'
 
 Then narrow the failing asset with `get_environment_logs` and by disabling the
 suspect module's assets.
+
+---
+
+## Reporting a bug or sending feedback
+
+If none of the above helps — or Oduflow itself is at fault — file an issue on
+[github.com/oduist/oduflow](https://github.com/oduist/oduflow/issues).
+
+Three ways to get there, all producing a prefilled issue form:
+
+- **Dashboard** — the **Feedback** action in the header. Pick the kind (bug,
+  feature request, feedback), describe it, and press *Open on GitHub*.
+- **Coding agent** — ask your agent to report it; the `report_issue` MCP tool
+  returns the same prefilled link for you to open.
+- **CLI** — `oduflow call report_issue '{"kind": "bug", "details": "..."}'`.
+
+In every case Oduflow only *builds the link*: it holds no GitHub credentials
+and never files anything on your behalf. You submit it from your own GitHub
+account and can edit it first — which matters, because the report reaches
+maintainers under your name and stays public.
+
+Attached automatically: Oduflow version, Python version, platform, transport
+and routing mode. Never attached: hostnames, team names, repository URLs,
+branch or database names. Add logs yourself where they help, and check them for
+secrets before submitting.

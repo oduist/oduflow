@@ -214,6 +214,7 @@ Extra addons repositories (Odoo Enterprise, OCA, your own shared addons) are clo
 |---|---|
 | `get_odoo_development_guide(version)` | Fetch Odoo development standards and constraints for a specific Odoo version (15–19). Read it before writing or refactoring module code |
 | `get_agent_instructions` | Re-fetch this instruction document (the one you are reading) — e.g. after a context reset |
+| `report_issue(details, kind="feedback", title?)` | Build a prefilled `github.com/oduist/oduflow` issue link when the user hits a bug **in Oduflow itself**, wants a feature, or has feedback about the tool — not for bugs in their own Odoo code. It files nothing: show the returned link and let the user submit it from their own GitHub account. Never put hostnames, repo URLs, branch/database names, credentials, or customer data in the text |
 
 ---
 

@@ -1171,6 +1171,57 @@ def submit_agent_feedback(
 
 
 # =============================================================================
+# MCP Tools — Feedback
+# =============================================================================
+
+
+@mcp.tool()
+@handle_errors
+def report_issue(
+    details: str,
+    kind: str = "feedback",
+    title: str = "",
+    ctx: Context | None = None,
+) -> str:
+    """
+    Build a link that lets the user file an issue about Oduflow itself on GitHub.
+
+    Use this when the user hits a bug in Oduflow, wants a feature, or wants to
+    send feedback about the tool — not for problems in their own Odoo code.
+    The tool does NOT create the issue: it returns a prefilled link to the
+    oduist/oduflow issue form. Show the link to the user and let them submit it
+    from their own GitHub account, so the report is attributable to them and
+    they can edit it first.
+
+    Oduflow version, Python version, platform, transport and routing mode are
+    attached automatically. Never put hostnames, repository URLs, branch or
+    database names, credentials, or customer data into the text.
+
+    Args:
+        details: The report body — what happened, what was expected, or the feedback.
+        kind: One of "bug", "feature", "feedback" (default). Selects the issue form and its labels.
+        title: Optional one-line summary used as the issue title.
+    """
+    from oduflow import feedback
+
+    normalized = kind.strip().lower()
+    if normalized not in feedback.KINDS:
+        raise ToolError(
+            f"Unknown kind '{kind}'. Use one of: {', '.join(sorted(feedback.KINDS))}."
+        )
+    if not details.strip():
+        raise ToolError("details is required — describe the issue or the feedback.")
+
+    url = feedback.build_issue_url(
+        kind=normalized,
+        title=title,
+        details=details,
+        settings=_get_settings(),
+    )
+    return feedback.report_issue_message(url, normalized)
+
+
+# =============================================================================
 # MCP Tools — Template management
 # =============================================================================
 

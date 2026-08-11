@@ -212,6 +212,7 @@ def _tools():
             {"properties": {"env_name": {}, "install": {}}, "required": ["env_name"]},
         ),
         _FakeTool("get_agent_instructions", {"properties": {}}),
+        _FakeTool("report_issue", {"properties": {"details": {}}}),
         _FakeTool("delete_environment", {"properties": {"env_name": {}}}),
     ]
 
@@ -245,6 +246,7 @@ def test_list_full_mode_unchanged(monkeypatch):
     assert [t.name for t in result] == [
         "pull_and_apply",
         "get_agent_instructions",
+        "report_issue",
         "delete_environment",
     ]
 
@@ -252,7 +254,11 @@ def test_list_full_mode_unchanged(monkeypatch):
 def test_list_scoped_filters_and_strips(monkeypatch):
     _scope(monkeypatch, "main", None)
     result = _run(_middleware().on_list_tools(object(), _list_next))
-    assert [t.name for t in result] == ["pull_and_apply", "get_agent_instructions"]
+    assert [t.name for t in result] == [
+        "pull_and_apply",
+        "get_agent_instructions",
+        "report_issue",
+    ]
     pa = next(t for t in result if t.name == "pull_and_apply")
     assert "env_name" not in pa.parameters["properties"]
     assert pa.parameters["required"] == []
@@ -272,9 +278,10 @@ def test_call_scoped_injects_env(monkeypatch):
     assert res[0] == "called"
 
 
-def test_call_scoped_no_env_param_not_injected(monkeypatch):
+@pytest.mark.parametrize("tool_name", ["get_agent_instructions", "report_issue"])
+def test_call_scoped_no_env_param_not_injected(monkeypatch, tool_name):
     _scope(monkeypatch, "main", None)
-    ctx = _Ctx("get_agent_instructions", {})
+    ctx = _Ctx(tool_name, {})
     _run(_middleware().on_call_tool(ctx, _call_next))
     assert "env_name" not in ctx.message.arguments
 

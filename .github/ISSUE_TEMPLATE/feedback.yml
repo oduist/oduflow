@@ -1,0 +1,21 @@
+name: Feedback
+description: Share how Oduflow works for you — rough edges, confusing docs, anything
+labels: ["feedback"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        No format required. Half-formed impressions are welcome; they are how
+        rough edges get found.
+  - type: textarea
+    id: details
+    attributes:
+      label: Your feedback
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Oduflow version and deployment details.
+      render: text

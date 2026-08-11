@@ -192,6 +192,7 @@ For OAuth-based MCP clients like Claude.ai Remote MCP, Oduflow runs its own OAut
 - `add_extra_repo` / `list_extra_repos` / `update_extra_repo` / `delete_extra_repo` — manage extra addons repositories
 - `get_agent_instructions` — get AI agent instructions for using Oduflow
 - `get_odoo_development_guide` — get Odoo development standards guide for a specific version (15–19)
+- `report_issue` — build a prefilled GitHub issue link so the user can report an Oduflow bug, request a feature, or send feedback from their own account
 
 ## Production Hosting
 
@@ -2593,6 +2594,12 @@ enabled—coding agents and productions. Environment cards also expose logs,
 Odoo/SQL terminals, Connect As, notes, protection, scoped MCP access, and
 save-as-template actions.
 
+The header's **Feedback** action opens a prefilled issue form on
+`github.com/oduist/oduflow`. Oduflow holds no GitHub credentials and files
+nothing itself: it builds the link with the description and a short
+version/platform/transport block, then the user reviews and submits it from
+their own GitHub account.
+
 ## Authentication and responses
 
 Dashboard API routes use the authenticated UI session (user `admin`, password
@@ -2715,6 +2722,7 @@ workflow.
 | `GET` | `/healthz` | Public health report; returns `200` when healthy, `503` when degraded |
 | `GET` | `/api/license` | License information |
 | `POST` | `/api/license/activate` | Activate body `key` |
+| `POST` | `/api/feedback/link` | Build a prefilled `github.com/oduist/oduflow` issue URL. Body: required `details`; optional `kind` (`bug`, `feature`, or `feedback`) and `title` |
 | `GET` | `/api/agent-guides` | List available agent guides |
 | `GET` | `/api/agent-guides/{filename}` | Read a guide |
 
@@ -2875,6 +2883,8 @@ All tools are accessible via MCP clients (Cursor, Cline, Amp, etc.) and the CLI 
 | **Agent Instructions** | | |
 | `get_agent_instructions` | | Get AI agent instructions for using Oduflow MCP tools |
 | `get_odoo_development_guide` | | Get Odoo development standards guide for a specific version (15–19) |
+| **Feedback** | | |
+| `report_issue` | | Build a prefilled link for the user to file a bug, feature request, or feedback about Oduflow on GitHub |
 
 !!! info "Locking"
     Tools marked with ✓ acquire a per-branch or per-team lock. Operations on different branches run in parallel. If another operation on the **same branch** (or team, for team-level tools) is already in progress, the call is rejected with `BusyError`. The rejection names the operation holding the lock and how long it has held it (e.g. *"Another operation on environment 'main' (pull_and_apply, running for 4m12s) is in progress"*), so a long install is distinguishable from a hung one. A lock is released when its operation finishes — including when the client that started it timed out and stopped waiting, which is why restarting the environment is the wrong response.
@@ -4315,6 +4325,31 @@ oduflow call run_odoo_tests '{"env_name": "my-branch", "modules": "my_module"}'
 
 Then narrow the failing asset with `get_environment_logs` and by disabling the
 suspect module's assets.
+
+---
+
+## Reporting a bug or sending feedback
+
+If none of the above helps — or Oduflow itself is at fault — file an issue on
+[github.com/oduist/oduflow](https://github.com/oduist/oduflow/issues).
+
+Three ways to get there, all producing a prefilled issue form:
+
+- **Dashboard** — the **Feedback** action in the header. Pick the kind (bug,
+  feature request, feedback), describe it, and press *Open on GitHub*.
+- **Coding agent** — ask your agent to report it; the `report_issue` MCP tool
+  returns the same prefilled link for you to open.
+- **CLI** — `oduflow call report_issue '{"kind": "bug", "details": "..."}'`.
+
+In every case Oduflow only *builds the link*: it holds no GitHub credentials
+and never files anything on your behalf. You submit it from your own GitHub
+account and can edit it first — which matters, because the report reaches
+maintainers under your name and stays public.
+
+Attached automatically: Oduflow version, Python version, platform, transport
+and routing mode. Never attached: hostnames, team names, repository URLs,
+branch or database names. Add logs yourself where they help, and check them for
+secrets before submitting.
 
 ---
 

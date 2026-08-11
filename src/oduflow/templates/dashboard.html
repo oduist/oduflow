@@ -142,6 +142,15 @@
   :root[data-theme="light"] .brand-lockup img { filter: brightness(0); }
   .brand-copy { display: flex; flex-direction: column; gap: 1px; }
   header h1 { font-size: var(--text-xl); font-weight: 600; line-height: 1.05; }
+  /* Machine artifact, so mono per The Console Voice Rule — and small enough to
+     sit inside the headline without competing with it. */
+  .brand-version {
+    font-family: var(--font-mono);
+    font-size: var(--text-2xs);
+    font-weight: 400;
+    color: var(--text-dim);
+    vertical-align: 2px;
+  }
   .brand-byline {
     color: var(--text-dim);
     font-size: var(--text-2xs);
@@ -164,6 +173,10 @@
     font-weight: 500;
     padding: 6px 8px;
     border-radius: var(--radius-sm);
+    background: none;
+    border: none;
+    font-family: inherit;
+    cursor: pointer;
   }
   .docs-link:hover { color: var(--accent); }
   #theme-toggle {
@@ -1141,6 +1154,17 @@
   }
   .tab-toolbar { display: flex; justify-content: flex-end; gap: 8px; margin-bottom: 12px; }
   .hint { font-size: var(--text-xs); color: var(--text-dim); margin-top: 4px; }
+  .fb-diagnostics {
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    color: var(--text-dim);
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 8px 10px;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
   .label-hint { color: var(--text-dim); font-weight: 400; }
   .check-row { display: flex; align-items: center; gap: 8px; }
   .check-row label { margin-bottom: 0; cursor: pointer; }
@@ -1241,13 +1265,14 @@
   <div class="brand-lockup">
     <img src="/logo.png" alt="Oduflow logo">
     <div class="brand-copy">
-      <h1>Oduflow</h1>
+      <h1>Oduflow <span class="brand-version">v__ODUFLOW_VERSION__</span></h1>
       <div class="brand-byline">a product by <a href="https://oduist.com" target="_blank" rel="noopener">Oduist</a></div>
     </div>
   </div>
   <button id="license-badge" class="license-badge" style="display:none"></button>
   <div class="actions">
     <a class="docs-link" href="https://docs.oduflow.dev" target="_blank" rel="noopener" title="Open the Oduflow documentation">Docs &#8599;</a>
+    <button type="button" class="docs-link" onclick="openFeedbackModal()" title="Report a bug, request a feature, or send feedback on GitHub">Feedback &#8599;</button>
     <button id="theme-toggle" type="button" onclick="cycleTheme()" aria-label="Theme"></button>
     <label class="auto-label" for="refresh-interval">Auto-refresh
       <input type="number" id="refresh-interval" value="60" min="5" step="5"
@@ -1409,6 +1434,46 @@
       <div class="form-actions">
         <button class="btn" onclick="closeCreateModal()">Cancel</button>
         <button class="btn-create" id="cr-submit" onclick="submitCreate()">Create</button>
+      </div>
+    </div>
+  </div>
+</div>
+<div class="modal-overlay" id="feedback-modal" onclick="closeFeedbackModal(event)">
+  <div class="modal modal-md">
+    <div class="modal-header">
+      <h2>Send feedback</h2>
+      <button class="modal-close" onclick="closeFeedbackModal()" aria-label="Close">&times;</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-error" id="feedback-error"></div>
+      <div class="form-group">
+        <label for="fb-kind">Kind</label>
+        <select id="fb-kind">
+          <option value="bug">Bug report</option>
+          <option value="feature">Feature request</option>
+          <option value="feedback" selected>Feedback</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label for="fb-title">Summary</label>
+        <input type="text" id="fb-title" placeholder="One line — becomes the issue title">
+      </div>
+      <div class="form-group">
+        <label for="fb-details">Details</label>
+        <textarea id="fb-details" rows="5" placeholder="What you did, what you expected, what happened instead."></textarea>
+      </div>
+      <div class="form-group">
+        <label for="fb-diagnostics">Attached environment</label>
+        <pre id="fb-diagnostics" class="fb-diagnostics">__ODUFLOW_DIAGNOSTICS__</pre>
+        <div class="hint">
+          Opens the issue form on github.com/oduist/oduflow prefilled with the
+          text above. It is filed from your own GitHub account, and nothing is
+          submitted until you review it there and press Create.
+        </div>
+      </div>
+      <div class="form-actions">
+        <button class="btn" onclick="closeFeedbackModal()">Cancel</button>
+        <button class="btn-create" id="fb-submit" onclick="submitFeedback()">Open on GitHub</button>
       </div>
     </div>
   </div>
@@ -3757,6 +3822,69 @@ function closeCreateModal(event) {
   hideModal('create-modal');
 }
 
+// --- Feedback: prefilled GitHub issue, filed by the user's own account ---
+function openFeedbackModal() {
+  document.getElementById('fb-kind').value = 'feedback';
+  document.getElementById('fb-title').value = '';
+  document.getElementById('fb-details').value = '';
+  var errEl = document.getElementById('feedback-error');
+  errEl.style.display = 'none';
+  errEl.textContent = '';
+  var btn = document.getElementById('fb-submit');
+  btn.disabled = false;
+  btn.textContent = 'Open on GitHub';
+  showModal('feedback-modal');
+  document.getElementById('fb-details').focus();
+}
+
+function closeFeedbackModal(event) {
+  if (event && event.target !== event.currentTarget) return;
+  hideModal('feedback-modal');
+}
+
+async function submitFeedback() {
+  var details = document.getElementById('fb-details').value.trim();
+  var errEl = document.getElementById('feedback-error');
+  if (!details) {
+    errEl.textContent = 'Describe what you would like to report.';
+    errEl.style.display = 'block';
+    return;
+  }
+  errEl.style.display = 'none';
+  var btn = document.getElementById('fb-submit');
+  btn.disabled = true;
+  btn.textContent = 'Opening...';
+  // The link is built server-side (single source of truth for the issue forms
+  // and the length budget), so open the tab synchronously here — after the
+  // await, a popup blocker would swallow it. Passing 'noopener' as a window
+  // feature would return null instead of the handle, so drop the opener on the
+  // handle itself; a null tab here means the popup was blocked.
+  var tab = window.open('about:blank', '_blank');
+  if (tab) tab.opener = null;
+  try {
+    var r = await fetch('/api/feedback/link', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        kind: document.getElementById('fb-kind').value,
+        title: document.getElementById('fb-title').value.trim(),
+        details: details,
+      })
+    });
+    var d = await readResult(r);
+    if (!d.ok) throw new Error(d.error || 'Could not build the issue link.');
+    if (tab) { tab.location = d.url; } else { window.location.href = d.url; }
+    hideModal('feedback-modal');
+  } catch (e) {
+    if (tab) tab.close();
+    errEl.textContent = e.message;
+    errEl.style.display = 'block';
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Open on GitHub';
+  }
+}
+
 async function submitCreate() {
   var branch = document.getElementById('cr-branch').value.trim();
   var repo = document.getElementById('cr-repo').value.trim();
@@ -5385,6 +5513,7 @@ window.addEventListener('resize', function() {
 var MODAL_CLOSERS = {
   'sync-result-modal': closeSyncResult,
   'create-modal': closeCreateModal,
+  'feedback-modal': closeFeedbackModal,
   'logs-modal': closeLogsModal,
   'svc-info-modal': closeServiceInfo,
   'console-modal': closeConsole,
