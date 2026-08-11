@@ -1,4 +1,6 @@
-from unittest.mock import call, patch
+from unittest.mock import MagicMock, call, mock_open, patch
+
+import pytest
 
 from oduflow import quotas
 from oduflow.settings import Settings, TeamSettings
@@ -116,3 +118,167 @@ class TestApplyAll:
         monkeypatch.setattr(quotas, "apply_team_disk_quota", apply_one)
         quotas.apply_all(settings)
         assert applied == ["2"]
+
+    def test_quota_of_one_gb_is_enforced(self, tmp_path, monkeypatch):
+        # `disk_quota_gb > 0` selects the teams to enforce; 1 GB is the smallest
+        # real quota and must not be treated as "unset".
+        monkeypatch.setattr(quotas, "quota_support", lambda s: (True, "/srv"))
+        with patch.object(quotas, "_xfs_quota") as xfs:
+            quotas.apply_all(_settings(tmp_path, quota_gb=1))
+
+        assert call("/srv", "limit -p bhard=1g 1001") in xfs.call_args_list
+
+    def test_teams_without_a_quota_are_filtered_out(self, tmp_path, monkeypatch):
+        quota_team = TeamSettings(
+            team_id="1", data_dir=str(tmp_path / "team_1"), disk_quota_gb=5
+        )
+        free_team = TeamSettings(
+            team_id="2",
+            data_dir=str(tmp_path / "team_2"),
+            disk_quota_gb=0,
+            port_range_start=50100,
+            port_range_end=50200,
+        )
+        settings = Settings(
+            base_data_dir=str(tmp_path), teams={"1": quota_team, "2": free_team}
+        )
+        monkeypatch.setattr(quotas, "quota_support", lambda s: (True, "/srv"))
+        applied = []
+        monkeypatch.setattr(
+            quotas,
+            "apply_team_disk_quota",
+            lambda s, team, mp: applied.append(team.team_id),
+        )
+
+        quotas.apply_all(settings)
+
+        assert applied == ["1"]
+
+
+class TestReadMounts:
+    def test_parses_proc_mounts(self):
+        content = (
+            "/dev/sda1 / ext4 rw,relatime 0 0\n"
+            "/dev/sdb1 /srv xfs rw,prjquota 0 0\n"
+        )
+        with patch("builtins.open", mock_open(read_data=content)) as opened:
+            mounts = quotas._read_mounts()
+
+        opened.assert_called_once_with("/proc/mounts")
+        assert mounts == [
+            ("/", "ext4", "rw,relatime"),
+            ("/srv", "xfs", "rw,prjquota"),
+        ]
+
+    def test_short_lines_are_ignored(self):
+        content = "garbage\n/dev/sdb1 /srv xfs rw 0 0\nalso bad\n"
+        with patch("builtins.open", mock_open(read_data=content)):
+            assert quotas._read_mounts() == [("/srv", "xfs", "rw")]
+
+    def test_four_fields_are_enough(self):
+        # device, mountpoint, fstype, options — the dump/pass columns at the
+        # end are optional as far as this parser is concerned.
+        content = "/dev/sda1 / ext4 rw\n/dev/sdb1 /srv xfs\n"
+        with patch("builtins.open", mock_open(read_data=content)):
+            assert quotas._read_mounts() == [("/", "ext4", "rw")]
+
+    def test_absent_proc_mounts_yields_empty_list(self):
+        # macOS and other non-Linux hosts have no /proc/mounts at all.
+        with patch("builtins.open", side_effect=OSError("no /proc")):
+            assert quotas._read_mounts() == []
+
+
+class TestFindMount:
+    def _mounts(self, monkeypatch, mounts):
+        monkeypatch.setattr(quotas, "_read_mounts", lambda: mounts)
+
+    def test_picks_the_longest_matching_mountpoint(self, monkeypatch):
+        self._mounts(
+            monkeypatch,
+            [
+                ("/", "ext4", "rw"),
+                ("/srv", "ext4", "rw"),
+                ("/srv/oduflow", "xfs", "rw,prjquota"),
+            ],
+        )
+
+        assert quotas._find_mount("/srv/oduflow/team_1") == (
+            "/srv/oduflow",
+            "xfs",
+            "rw,prjquota",
+        )
+
+    def test_longest_match_wins_regardless_of_order(self, monkeypatch):
+        # /proc/mounts is not sorted; the deepest mountpoint must win even when
+        # it is listed first.
+        self._mounts(
+            monkeypatch,
+            [("/srv/oduflow", "xfs", "rw,prjquota"), ("/", "ext4", "rw")],
+        )
+
+        assert quotas._find_mount("/srv/oduflow/team_1")[0] == "/srv/oduflow"
+
+    def test_exact_mountpoint_match(self, monkeypatch):
+        self._mounts(monkeypatch, [("/", "ext4", "rw"), ("/srv", "xfs", "rw")])
+
+        assert quotas._find_mount("/srv") == ("/srv", "xfs", "rw")
+
+    def test_sibling_prefix_is_not_a_match(self, monkeypatch):
+        # /srv-backup must not match the /srv mount just because the string
+        # starts with it — the separator is what makes it a child path.
+        self._mounts(monkeypatch, [("/", "ext4", "rw"), ("/srv", "xfs", "rw")])
+
+        assert quotas._find_mount("/srv-backup/data") == ("/", "ext4", "rw")
+
+    def test_root_mount_matches_everything(self, monkeypatch):
+        self._mounts(monkeypatch, [("/", "ext4", "rw")])
+
+        assert quotas._find_mount("/anywhere/at/all") == ("/", "ext4", "rw")
+
+    def test_no_mounts_yields_none(self, monkeypatch):
+        self._mounts(monkeypatch, [])
+
+        assert quotas._find_mount("/srv") is None
+
+
+class TestXfsQuotaInvocation:
+    def test_builds_the_expected_command(self, monkeypatch):
+        seen = {}
+
+        def _run(argv, **kwargs):
+            seen["argv"] = argv
+            seen["kwargs"] = kwargs
+            return MagicMock(returncode=0, stderr="")
+
+        monkeypatch.setattr(quotas.subprocess, "run", _run)
+
+        quotas._xfs_quota("/srv", "limit -p bhard=10g 1001")
+
+        assert seen["argv"] == [
+            "xfs_quota",
+            "-x",
+            "-c",
+            "limit -p bhard=10g 1001",
+            "/srv",
+        ]
+        assert seen["kwargs"]["capture_output"] is True
+        assert seen["kwargs"]["timeout"] == 60
+
+    def test_nonzero_exit_raises_with_stderr(self, monkeypatch):
+        monkeypatch.setattr(
+            quotas.subprocess,
+            "run",
+            lambda *a, **kw: MagicMock(returncode=1, stderr="  not a mount point \n"),
+        )
+
+        with pytest.raises(RuntimeError, match="not a mount point"):
+            quotas._xfs_quota("/srv", "limit -p bhard=10g 1001")
+
+    def test_success_is_silent(self, monkeypatch):
+        monkeypatch.setattr(
+            quotas.subprocess,
+            "run",
+            lambda *a, **kw: MagicMock(returncode=0, stderr=""),
+        )
+
+        assert quotas._xfs_quota("/srv", "print") is None

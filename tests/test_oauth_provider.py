@@ -505,3 +505,112 @@ class TestOduflowOAuthProvider:
         hdr = dict(start["headers"])[b"www-authenticate"].decode()
         assert "team-a.example.com" in hdr  # unchanged
         assert "evil.com" not in hdr
+
+
+class TestRedirectUriValidation:
+    """The redirect_uri is where the authorization code is delivered, so an
+    over-permissive check hands the code to an attacker."""
+
+    def _client(self):
+        return _run(OduflowOAuthProvider(_settings()).get_client("team_1"))
+
+    @pytest.mark.parametrize(
+        "uri",
+        [
+            "javascript://claude.ai/%0aalert(1)",
+            "data://text/html,<script>",
+            "vbscript://x",
+            "file://localhost/etc/passwd",
+        ],
+    )
+    def test_dangerous_schemes_are_refused(self, uri):
+        from mcp.shared.auth import InvalidRedirectUriError
+        from pydantic import AnyUrl
+
+        with pytest.raises(InvalidRedirectUriError, match="not allowed"):
+            self._client().validate_redirect_uri(AnyUrl(uri))
+
+    @pytest.mark.parametrize("host", ["localhost", "127.0.0.1", "[::1]"])
+    def test_cleartext_http_is_allowed_only_on_loopback(self, host):
+        from pydantic import AnyUrl
+
+        uri = f"http://{host}:8976/cb"
+        assert str(self._client().validate_redirect_uri(AnyUrl(uri))) == uri
+
+    @pytest.mark.parametrize(
+        "host", ["evil.example", "claude.ai", "127.0.0.2", "localhost.evil.example"]
+    )
+    def test_cleartext_http_elsewhere_is_refused(self, host):
+        from mcp.shared.auth import InvalidRedirectUriError
+        from pydantic import AnyUrl
+
+        with pytest.raises(InvalidRedirectUriError, match="loopback"):
+            self._client().validate_redirect_uri(AnyUrl(f"http://{host}/cb"))
+
+    def test_https_to_any_host_is_allowed(self):
+        from pydantic import AnyUrl
+
+        assert self._client().validate_redirect_uri(AnyUrl("https://evil.example/cb"))
+
+    def test_a_custom_app_scheme_is_allowed(self):
+        # Native IDE clients register their own scheme (cursor://, vscode://).
+        from pydantic import AnyUrl
+
+        assert self._client().validate_redirect_uri(AnyUrl("cursor://callback/oauth"))
+
+    def test_omitting_the_uri_falls_back_to_the_first_registered_one(self):
+        client = self._client()
+
+        assert client.redirect_uris
+        assert client.validate_redirect_uri(None) == client.redirect_uris[0]
+
+
+class TestForwardedSchemeHost:
+    """Behind Traefik the advertised OAuth URLs come from forwarded headers;
+    getting them wrong makes discovery point at an unreachable origin."""
+
+    def _call(self, headers, fallback=None):
+        from oduflow.oauth_provider import _forwarded_scheme_host
+
+        raw = [(k.encode(), v.encode()) for k, v in headers.items()]
+        return _forwarded_scheme_host(raw, fallback)
+
+    def test_the_forwarded_host_wins_over_the_host_header(self):
+        assert self._call(
+            {"host": "internal:8000", "x-forwarded-host": "erp.example.com"}
+        ) == ("https", "erp.example.com")
+
+    def test_the_host_header_is_used_when_nothing_is_forwarded(self):
+        assert self._call({"host": "erp.example.com"}) == ("https", "erp.example.com")
+
+    def test_the_forwarded_proto_is_reflected(self):
+        assert self._call({"host": "h", "x-forwarded-proto": "http"})[0] == "http"
+
+    def test_only_the_first_hop_is_taken(self):
+        # A proxy chain appends; the client-facing hop is first.
+        scheme, host = self._call(
+            {
+                "x-forwarded-host": "erp.example.com, internal",
+                "x-forwarded-proto": "https, http",
+            }
+        )
+
+        assert (scheme, host) == ("https", "erp.example.com")
+
+    def test_the_fallback_scheme_applies_only_without_a_forwarded_proto(self):
+        assert self._call({"host": "h"}, fallback="http")[0] == "http"
+        assert self._call({"host": "h", "x-forwarded-proto": "https"}, "http")[0] == (
+            "https"
+        )
+
+    def test_https_is_the_last_resort(self):
+        # Never downgrade to http when nothing says otherwise.
+        assert self._call({"host": "h"})[0] == "https"
+
+    def test_header_names_are_matched_case_insensitively(self):
+        assert self._call({"Host": "erp.example.com", "X-Forwarded-Proto": "HTTP"}) == (
+            ("http", "erp.example.com")
+        )
+
+    def test_no_headers_at_all_yields_an_empty_host(self):
+        assert self._call({}) == ("https", "")

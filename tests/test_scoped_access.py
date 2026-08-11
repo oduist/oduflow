@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import tempfile
+from types import SimpleNamespace
 
 import pytest
 from fastmcp.exceptions import ToolError
@@ -421,3 +422,145 @@ def test_mcp_access_endpoint_unknown_env(monkeypatch):
     resp = _ui_client(settings).get("/api/environments/ghost/mcp-access")
     data = resp.json()
     assert data["ok"] is False
+
+
+# --- request/token env extraction ------------------------------------------
+
+
+class TestScopedEnvFromRequest:
+    """Reads the env out of the ASGI scope set by ``ScopedEnvASGI``."""
+
+    def test_returns_the_scoped_env(self, monkeypatch):
+        request = SimpleNamespace(scope={scoped_access.SCOPE_KEY: "feature/x"})
+        monkeypatch.setattr(
+            "fastmcp.server.dependencies.get_http_request", lambda: request
+        )
+
+        assert scoped_access.scoped_env_from_request() == "feature/x"
+
+    def test_returns_none_for_an_unscoped_request(self, monkeypatch):
+        monkeypatch.setattr(
+            "fastmcp.server.dependencies.get_http_request",
+            lambda: SimpleNamespace(scope={}),
+        )
+
+        assert scoped_access.scoped_env_from_request() is None
+
+    def test_outside_a_request_context_is_not_an_error(self, monkeypatch):
+        # Called from the CLI or a background thread there is no request.
+        def _boom():
+            raise RuntimeError("no active request")
+
+        monkeypatch.setattr("fastmcp.server.dependencies.get_http_request", _boom)
+
+        assert scoped_access.scoped_env_from_request() is None
+
+
+class TestEnvFromAccessToken:
+    """Reads the bound env out of a per-env token's scopes."""
+
+    def _token(self, scopes):
+        return SimpleNamespace(scopes=scopes)
+
+    def test_returns_the_env_the_token_is_bound_to(self, monkeypatch):
+        monkeypatch.setattr(
+            "fastmcp.server.dependencies.get_access_token",
+            lambda: self._token(["oduflow_env:feature/x"]),
+        )
+
+        assert scoped_access.env_from_access_token() == "feature/x"
+
+    def test_the_env_scope_is_found_among_others(self, monkeypatch):
+        monkeypatch.setattr(
+            "fastmcp.server.dependencies.get_access_token",
+            lambda: self._token(["openid", "oduflow_env:main", "profile"]),
+        )
+
+        assert scoped_access.env_from_access_token() == "main"
+
+    def test_a_team_token_carries_no_env(self, monkeypatch):
+        monkeypatch.setattr(
+            "fastmcp.server.dependencies.get_access_token",
+            lambda: self._token(["openid"]),
+        )
+
+        assert scoped_access.env_from_access_token() is None
+
+    def test_no_scopes_at_all(self, monkeypatch):
+        monkeypatch.setattr(
+            "fastmcp.server.dependencies.get_access_token",
+            lambda: self._token(None),
+        )
+
+        assert scoped_access.env_from_access_token() is None
+
+    def test_no_token(self, monkeypatch):
+        monkeypatch.setattr(
+            "fastmcp.server.dependencies.get_access_token", lambda: None
+        )
+
+        assert scoped_access.env_from_access_token() is None
+
+    def test_outside_an_authenticated_context_is_not_an_error(self, monkeypatch):
+        def _boom():
+            raise RuntimeError("no auth context")
+
+        monkeypatch.setattr("fastmcp.server.dependencies.get_access_token", _boom)
+
+        assert scoped_access.env_from_access_token() is None
+
+    def test_an_empty_env_scope_yields_an_empty_string(self, monkeypatch):
+        # decide() treats "" as falsy, so this stays a full-access token
+        # rather than silently binding to an env named "".
+        monkeypatch.setattr(
+            "fastmcp.server.dependencies.get_access_token",
+            lambda: self._token(["oduflow_env:"]),
+        )
+
+        assert scoped_access.env_from_access_token() == ""
+
+
+# --- ASGI path rewriting boundaries ----------------------------------------
+
+
+class TestScopedEnvPath:
+    _asgi = scoped_access.ScopedEnvASGI
+
+    def test_the_env_is_everything_after_the_prefix(self):
+        assert self._asgi._scoped_env("/mcp/feature/x") == "feature/x"
+
+    def test_the_bare_prefix_is_not_a_scoped_path(self):
+        # "/mcp/" carries no env name; treating it as one would scope the
+        # request to an environment called "".
+        assert self._asgi._scoped_env("/mcp/") is None
+
+    def test_the_root_endpoint_is_not_scoped(self):
+        assert self._asgi._scoped_env("/mcp") is None
+
+    def test_an_unrelated_path_is_not_scoped(self):
+        assert self._asgi._scoped_env("/api/environments") is None
+        assert self._asgi._scoped_env("/mcpx/main") is None
+
+    def test_a_single_character_env_is_scoped(self):
+        assert self._asgi._scoped_env("/mcp/a") == "a"
+
+
+class TestWellKnownPath:
+    _asgi = scoped_access.ScopedEnvASGI
+
+    def _prefix(self) -> str:
+        return self._asgi._WELL_KNOWN_PREFIX
+
+    def test_a_scoped_resource_path_maps_back_to_mcp(self):
+        assert self._asgi._well_known(f"{self._prefix()}/mcp/main") == (
+            f"{self._prefix()}/mcp"
+        )
+
+    def test_the_bare_scoped_prefix_is_not_rewritten(self):
+        assert self._asgi._well_known(f"{self._prefix()}/mcp/") is None
+
+    def test_the_unscoped_resource_path_is_not_rewritten(self):
+        assert self._asgi._well_known(f"{self._prefix()}/mcp") is None
+
+    def test_an_unrelated_well_known_path_is_not_rewritten(self):
+        assert self._asgi._well_known("/.well-known/openid-configuration") is None

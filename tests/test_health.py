@@ -165,3 +165,125 @@ class TestCollectHealth:
             first_calls = getter.call_count
             health.collect_health(settings)  # cached
             assert getter.call_count == first_calls
+
+    def test_expired_cache_is_refreshed(self, settings, monkeypatch):
+        client = _client(
+            {"oduflow-db": True, "oduflow-prod-db": True, "oduflow-traefik": True}
+        )
+        clock = {"now": 1000.0}
+        monkeypatch.setattr(health.time, "monotonic", lambda: clock["now"])
+
+        with patch(
+            "oduflow.docker_ops.client.get_client", return_value=client
+        ) as getter:
+            health.collect_health(settings, force=True)
+            calls_after_first = getter.call_count
+
+            clock["now"] += health._CACHE_TTL_SECONDS - 0.1
+            health.collect_health(settings)
+            assert getter.call_count == calls_after_first  # still inside the TTL
+
+            clock["now"] += 0.2  # now past the TTL
+            health.collect_health(settings)
+            assert getter.call_count > calls_after_first
+
+    def test_cache_expires_exactly_at_the_ttl(self, settings, monkeypatch):
+        # The check is `age < TTL`, so an age of exactly TTL is already stale.
+        client = _client(
+            {"oduflow-db": True, "oduflow-prod-db": True, "oduflow-traefik": True}
+        )
+        clock = {"now": 1000.0}
+        monkeypatch.setattr(health.time, "monotonic", lambda: clock["now"])
+
+        with patch(
+            "oduflow.docker_ops.client.get_client", return_value=client
+        ) as getter:
+            health.collect_health(settings, force=True)
+            calls_after_first = getter.call_count
+
+            clock["now"] += health._CACHE_TTL_SECONDS
+            health.collect_health(settings)
+            assert getter.call_count > calls_after_first
+
+    def test_force_bypasses_a_fresh_cache(self, settings, monkeypatch):
+        client = _client(
+            {"oduflow-db": True, "oduflow-prod-db": True, "oduflow-traefik": True}
+        )
+        monkeypatch.setattr(health.time, "monotonic", lambda: 1000.0)
+
+        with patch(
+            "oduflow.docker_ops.client.get_client", return_value=client
+        ) as getter:
+            health.collect_health(settings, force=True)
+            calls_after_first = getter.call_count
+            health.collect_health(settings, force=True)
+            assert getter.call_count > calls_after_first
+
+    def test_empty_cache_is_never_served(self, settings, monkeypatch):
+        # A zero timestamp with no stored result must not be mistaken for a
+        # fresh entry: the very first call has to do real work.
+        client = _client(
+            {"oduflow-db": True, "oduflow-prod-db": True, "oduflow-traefik": True}
+        )
+        monkeypatch.setattr(health.time, "monotonic", lambda: 0.0)
+
+        with patch("oduflow.docker_ops.client.get_client", return_value=client):
+            result = health.collect_health(settings)
+
+        assert result["checks"]  # real checks ran, not an empty cached value
+
+
+class TestDiskCheck:
+    def _disk(self, settings, total, used, free):
+        with patch(
+            "shutil.disk_usage", return_value=MagicMock(total=total, used=used, free=free)
+        ):
+            return health._check_disk(settings)
+
+    def test_warn_threshold_is_inclusive(self, settings):
+        # Exactly DISK_WARN_PERCENT must already warn, one below must not.
+        at_threshold = self._disk(settings, 100, health.DISK_WARN_PERCENT, 100)
+        assert at_threshold["percent"] == health.DISK_WARN_PERCENT
+        assert at_threshold["status"] == "warn"
+
+        below = self._disk(settings, 100, health.DISK_WARN_PERCENT - 1, 100)
+        assert below["status"] == "ok"
+
+    def test_percent_is_used_over_total(self, settings):
+        assert self._disk(settings, 200, 50, 150)["percent"] == 25
+
+    def test_the_configured_data_dir_is_the_one_measured(self, settings):
+        # Not the filesystem root: a data dir on a separate volume is exactly
+        # the case where the two differ.
+        with patch(
+            "shutil.disk_usage", return_value=MagicMock(total=100, used=10, free=90)
+        ) as disk_usage:
+            health._check_disk(settings)
+
+        disk_usage.assert_called_once_with(settings.base_data_dir)
+
+    def test_root_is_measured_when_no_data_dir_is_configured(self):
+        empty = Settings(base_data_dir="", teams={})
+        with patch(
+            "shutil.disk_usage", return_value=MagicMock(total=100, used=10, free=90)
+        ) as disk_usage:
+            health._check_disk(empty)
+
+        disk_usage.assert_called_once_with("/")
+
+    def test_free_space_is_reported_in_gib(self, settings):
+        result = self._disk(settings, 100 * 1024**3, 25 * 1024**3, 75 * 1024**3)
+        assert result["free_gb"] == 75.0
+
+    def test_free_space_is_rounded_to_one_decimal(self, settings):
+        # 1.25 GiB free -> 1.2 (banker's rounding), not 1.25 or 1.3.
+        result = self._disk(settings, 10 * 1024**3, 0, int(1.25 * 1024**3))
+        assert result["free_gb"] == 1.2
+
+    def test_unreadable_path_reports_error_with_zero_percent(self, settings):
+        with patch("shutil.disk_usage", side_effect=OSError("gone")):
+            result = health._check_disk(settings)
+
+        assert result["status"] == "error"
+        assert result["percent"] == 0
+        assert "gone" in result["detail"]

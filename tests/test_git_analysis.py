@@ -1,3 +1,4 @@
+import itertools
 import os
 import textwrap
 
@@ -910,3 +911,225 @@ class TestTemplateLineage:
         result = template_lineage(self._repo(tmp_path), "snapshot1", "prod")
         assert result["status"] == "ahead"
         assert result["message"] == ""
+
+
+class TestModuleScoping:
+    """Files that belong to no module must never produce a module action.
+
+    ``_get_module_name`` returns None for a repo-root file. Every classifier
+    branch guards on that; dropping the guard would add ``None`` to the module
+    lists and send an unusable ``-u None`` to Odoo.
+    """
+
+    def test_root_level_py_with_fields_stays_restart(self, tmp_path):
+        # A repo-root .py cannot belong to a module even if it defines fields.
+        (tmp_path / "conftest.py").write_text("x = fields.Char()\n")
+
+        result = classify_changes(["conftest.py"], str(tmp_path))
+
+        assert result["action"] == "restart"
+        assert result["modules_to_upgrade"] == []
+        assert result["details"]["py_changed"] is True
+
+    def test_root_level_po_is_ignored(self, tmp_path):
+        result = classify_changes(["messages.po"], str(tmp_path))
+
+        assert result["action"] == "refresh"
+        assert result["modules_to_upgrade"] == []
+        assert result["details"]["i18n_changed"] == []
+
+    def test_root_level_security_xml_is_hot_reload_only(self, tmp_path):
+        result = classify_changes(["security.xml"], str(tmp_path))
+
+        assert result["action"] == "refresh"
+        assert result["modules_to_upgrade"] == []
+
+    def test_root_level_manifest_is_ignored(self, tmp_path):
+        (tmp_path / "__manifest__.py").write_text("{'name': 'x'}")
+
+        result = classify_changes(["__manifest__.py"], str(tmp_path))
+
+        assert result["modules_to_install"] == []
+        assert result["modules_to_upgrade"] == []
+
+    def test_shallow_classify_ignores_root_level_files(self):
+        assert shallow_classify(["messages.po"], "/tmp")["modules_to_upgrade"] == []
+        assert shallow_classify(["security.xml"], "/tmp")["modules_to_upgrade"] == []
+        assert shallow_classify(["__manifest__.py"], "/tmp")["modules_to_upgrade"] == []
+
+
+class TestInstallSupersedesUpgrade:
+    """A module being installed is never also listed for upgrade.
+
+    Install already loads everything; listing the same module twice would make
+    Odoo run an upgrade right after the install.
+    """
+
+    def _new_module(self, tmp_path):
+        module = tmp_path / "sale"
+        (module / "security").mkdir(parents=True)
+        (module / "i18n").mkdir()
+        (module / "__manifest__.py").write_text(
+            "{'name': 'Sale', 'version': '17.0.1.0.0'}"
+        )
+        (module / "security" / "groups.xml").write_text("<odoo/>")
+        (module / "i18n" / "ru.po").write_text("msgid \"\"\n")
+        return module
+
+    def test_security_xml_in_a_new_module_stays_install_only(self, tmp_path):
+        from unittest.mock import patch
+
+        self._new_module(tmp_path)
+        files = ["sale/__manifest__.py", "sale/security/groups.xml"]
+
+        # No previous manifest -> the module is new -> install.
+        with patch("subprocess.run", side_effect=Exception("no such ref")):
+            result = classify_changes(files, str(tmp_path))
+
+        assert result["action"] == "install"
+        assert result["modules_to_install"] == ["sale"]
+        assert result["modules_to_upgrade"] == []
+
+    def test_order_of_files_does_not_matter(self, tmp_path):
+        # The security XML is classified before the manifest here, so the
+        # install is only known later; the final subtraction must still win.
+        from unittest.mock import patch
+
+        self._new_module(tmp_path)
+        files = ["sale/security/groups.xml", "sale/__manifest__.py"]
+
+        with patch("subprocess.run", side_effect=Exception("no such ref")):
+            result = classify_changes(files, str(tmp_path))
+
+        assert result["action"] == "install"
+        assert result["modules_to_upgrade"] == []
+
+
+class TestManifestChangeDetection:
+    def _module(self, tmp_path, manifest: str):
+        module = tmp_path / "sale"
+        module.mkdir(parents=True)
+        (module / "__manifest__.py").write_text(manifest)
+        return "sale/__manifest__.py"
+
+    def _classify(self, tmp_path, rel_path, old_manifest):
+        from unittest.mock import patch
+
+        with patch("subprocess.run") as run:
+            run.return_value = type("R", (), {"stdout": old_manifest})()
+            return classify_changes([rel_path], str(tmp_path))
+
+    def test_every_file_bearing_key_triggers_an_upgrade(self, tmp_path):
+        # data/demo/assets/qweb all list files Odoo loads at upgrade time.
+        for key in ("data", "demo", "assets", "qweb"):
+            module_root = tmp_path / key
+            module_root.mkdir()
+            (module_root / "sale").mkdir()
+            (module_root / "sale" / "__manifest__.py").write_text(
+                f"{{'name': 'Sale', 'version': '1.0', '{key}': ['a.xml', 'b.xml']}}"
+            )
+            from unittest.mock import patch
+
+            old = f"{{'name': 'Sale', 'version': '1.0', '{key}': ['a.xml']}}"
+            with patch("subprocess.run") as run:
+                run.return_value = type("R", (), {"stdout": old})()
+                result = classify_changes(["sale/__manifest__.py"], str(module_root))
+
+            assert result["action"] == "upgrade", key
+            assert result["modules_to_upgrade"] == ["sale"], key
+
+    def test_cosmetic_manifest_edit_needs_no_action(self, tmp_path):
+        rel = self._module(
+            tmp_path, "{'name': 'Sale', 'version': '1.0', 'author': 'New Author'}"
+        )
+        result = self._classify(
+            tmp_path, rel, "{'name': 'Sale', 'version': '1.0', 'author': 'Old Author'}"
+        )
+
+        assert result["action"] == "refresh"
+        assert result["modules_to_upgrade"] == []
+        assert result["modules_to_install"] == []
+
+    def test_unparsable_new_manifest_falls_back_to_upgrade(self, tmp_path):
+        # Better to upgrade needlessly than to skip a real schema change.
+        rel = self._module(tmp_path, "{'name': 'Sale', this is not python")
+        result = self._classify(tmp_path, rel, "{'name': 'Sale', 'version': '1.0'}")
+
+        assert result["action"] == "upgrade"
+        assert result["modules_to_upgrade"] == ["sale"]
+
+    def test_manifest_deleted_from_the_worktree_is_skipped(self, tmp_path):
+        # The file is in the changed list but no longer on disk (deleted).
+        (tmp_path / "sale").mkdir()
+        result = self._classify(
+            tmp_path, "sale/__manifest__.py", "{'name': 'Sale', 'version': '1.0'}"
+        )
+
+        assert result["modules_to_upgrade"] == []
+        assert result["modules_to_install"] == []
+
+    def test_version_bump_triggers_upgrade_even_when_lists_match(self, tmp_path):
+        rel = self._module(
+            tmp_path, "{'name': 'Sale', 'version': '1.1', 'data': ['a.xml']}"
+        )
+        result = self._classify(
+            tmp_path, rel, "{'name': 'Sale', 'version': '1.0', 'data': ['a.xml']}"
+        )
+
+        assert result["action"] == "upgrade"
+
+
+class TestMergeRecommendationPriority:
+    def test_full_priority_order(self):
+        # none < refresh < restart < upgrade < install
+        order = ["none", "refresh", "restart", "upgrade", "install"]
+        for lower, higher in itertools.pairwise(order):
+            merged = merge_recommendations([{"action": lower}, {"action": higher}])
+            assert merged["action"] == higher, (lower, higher)
+
+    def test_unknown_action_ranks_below_every_known_one(self):
+        # An unrecognised action maps to 0, below "refresh". Listed first so a
+        # wrong default cannot hide behind max()'s first-wins tie-breaking.
+        merged = merge_recommendations(
+            [{"action": "something-new"}, {"action": "refresh"}]
+        )
+        assert merged["action"] == "refresh"
+
+    def test_falsy_recommendations_are_dropped(self):
+        merged = merge_recommendations([None, {}, {"action": "restart"}])
+        assert merged["action"] == "restart"
+
+    def test_detail_lists_are_unioned_and_sorted(self):
+        merged = merge_recommendations(
+            [
+                {"action": "refresh", "details": {"xml_hot": ["b.xml", "a.xml"]}},
+                {"action": "refresh", "details": {"xml_hot": ["a.xml", "c.xml"]}},
+            ]
+        )
+        assert merged["details"]["xml_hot"] == ["a.xml", "b.xml", "c.xml"]
+
+    def test_none_detail_lists_do_not_break_the_merge(self):
+        merged = merge_recommendations(
+            [
+                {"action": "refresh", "details": {"xml_hot": None}},
+                {"action": "refresh", "details": {"xml_hot": ["a.xml"]}},
+            ]
+        )
+        assert merged["details"]["xml_hot"] == ["a.xml"]
+
+    def test_restart_required_is_ored_across_units(self):
+        merged = merge_recommendations(
+            [
+                {"action": "refresh", "details": {"restart_required": []}},
+                {"action": "refresh", "details": {"restart_required": [".oduflow/odoo.conf"]}},
+            ]
+        )
+        assert merged["details"]["restart_required"] is True
+
+        neither = merge_recommendations(
+            [
+                {"action": "refresh", "details": {"restart_required": []}},
+                {"action": "refresh", "details": {}},
+            ]
+        )
+        assert neither["details"]["restart_required"] is False

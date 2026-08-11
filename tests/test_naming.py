@@ -255,3 +255,120 @@ class TestProdNaming:
             "oduflow-2-prod-erp-odoo"
         )
         assert get_workspace_path(env, "/data/ws") == "/data/ws/prod-erp"
+
+
+class TestValidateDomain:
+    def test_normalizes_case_whitespace_and_trailing_dot(self):
+        from oduflow.naming import validate_domain
+
+        assert validate_domain("  ERP.Example.COM.  ") == "erp.example.com"
+
+    @pytest.mark.parametrize(
+        "bad",
+        [
+            "",
+            "   ",
+            ".",
+            "https://erp.example.com",
+            "erp.example.com:8069",
+            "erp.example.com/path",
+            "*.example.com",
+            "erp example.com",
+        ],
+    )
+    def test_rejects_non_hostnames(self, bad):
+        from oduflow.naming import validate_domain
+
+        with pytest.raises(ValueError, match="Invalid domain"):
+            validate_domain(bad)
+
+    def test_length_boundary_is_253(self):
+        # A 253-char FQDN is the DNS maximum and must be accepted; 254 must not.
+        from oduflow.naming import validate_domain
+
+        # 63 + 63 + 63 + 61 chars + 3 dots = 253 (63 is the per-label maximum).
+        longest = ".".join(["a" * 63, "a" * 63, "a" * 63, "a" * 61])
+        assert len(longest) == 253
+        assert validate_domain(longest) == longest
+
+        too_long = longest + "a"
+        assert len(too_long) == 254
+        with pytest.raises(ValueError, match="Invalid domain"):
+            validate_domain(too_long)
+
+    def test_trailing_dot_is_stripped_before_the_length_check(self):
+        # The root dot is not part of the name, so a 253-char name written as an
+        # absolute FQDN (254 chars incl. the dot) is still valid.
+        from oduflow.naming import validate_domain
+
+        absolute = ".".join(["a" * 63, "a" * 63, "a" * 63, "a" * 61]) + "."
+        assert len(absolute) == 254
+        assert validate_domain(absolute) == absolute.rstrip(".")
+
+
+class TestSanitizeRepoUrl:
+    def test_strips_userinfo_but_keeps_host_and_port(self):
+        from oduflow.naming import sanitize_repo_url
+
+        assert (
+            sanitize_repo_url("https://user:pat@git.example.com:8443/acme/repo.git")
+            == "https://git.example.com:8443/acme/repo.git"
+        )
+
+    def test_at_sign_inside_the_password_is_still_fully_stripped(self):
+        # A PAT or password may itself contain '@'; only the LAST '@' separates
+        # userinfo from the host, so everything before it must go.
+        from oduflow.naming import sanitize_repo_url
+
+        assert (
+            sanitize_repo_url("https://user:p@ss@git.example.com/acme/repo.git")
+            == "https://git.example.com/acme/repo.git"
+        )
+
+    def test_url_without_credentials_is_untouched(self):
+        from oduflow.naming import sanitize_repo_url
+
+        url = "https://git.example.com/acme/repo.git"
+        assert sanitize_repo_url(url) == url
+
+    def test_empty_input_passes_through(self):
+        from oduflow.naming import sanitize_repo_url
+
+        assert sanitize_repo_url("") == ""
+
+
+class TestRedactUrlCredentials:
+    """Guards the scrubber applied to git stderr before it reaches an agent."""
+
+    def test_redacts_credentials_embedded_in_free_text(self):
+        from oduflow.naming import redact_url_credentials
+
+        text = (
+            "fatal: could not read from "
+            "https://user:ghp_secret@github.com/acme/repo.git\n"
+        )
+        redacted = redact_url_credentials(text)
+
+        assert "ghp_secret" not in redacted
+        assert "user" not in redacted
+        assert "https://***@github.com/acme/repo.git" in redacted
+
+    def test_redacts_every_occurrence(self):
+        from oduflow.naming import redact_url_credentials
+
+        text = "a https://u:p1@host/x b ssh://u:p2@host/y"
+        redacted = redact_url_credentials(text)
+
+        assert "p1" not in redacted and "p2" not in redacted
+        assert redacted == "a https://***@host/x b ssh://***@host/y"
+
+    def test_leaves_credential_free_urls_alone(self):
+        from oduflow.naming import redact_url_credentials
+
+        text = "cloning https://github.com/acme/repo.git"
+        assert redact_url_credentials(text) == text
+
+    def test_empty_input_passes_through(self):
+        from oduflow.naming import redact_url_credentials
+
+        assert redact_url_credentials("") == ""

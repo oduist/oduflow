@@ -92,6 +92,13 @@ def _load(path: str) -> dict[str, dict[str, Any]]:
     try:
         with open(path) as f:
             data = json.load(f)
+        if not isinstance(data, dict):
+            # Valid JSON but the wrong shape (a truncated write leaving `null`,
+            # a hand-edit). Without this guard `.items()` raises AttributeError
+            # out of the caller — and activity tracking must never break the
+            # operation it rides on.
+            logger.warning("Ignoring malformed activity file %s", path)
+            return {}
         return {k: dict(v) for k, v in data.items() if isinstance(v, dict)}
     except (json.JSONDecodeError, ValueError, OSError) as e:
         logger.warning("Could not load activity file %s: %s", path, e)

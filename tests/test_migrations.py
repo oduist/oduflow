@@ -1,4 +1,5 @@
 import json
+from unittest.mock import MagicMock
 import os
 
 import pytest
@@ -260,3 +261,78 @@ class TestResourceLimitsMigration:
         monkeypatch.setattr("oduflow.docker_ops.client.get_client", lambda: client)
 
         _migrate_env_resource_limits(Settings(teams={"1": TeamSettings(team_id="1")}))
+
+
+class TestTraefikYmlConfigMigration:
+    """Recreate Traefik when it still mounts the rejected ``.json`` config.
+
+    ``_ensure_traefik`` never rewrites an existing container's args, so a
+    stale container would keep serving with a dynamic config Traefik refuses
+    to load. The migration removes it; system init recreates it.
+    """
+
+    _OLD = "--providers.file.filename=/etc/traefik/dynamic/oduflow.json"
+    _NEW = "--providers.file.filename=/etc/traefik/dynamic/oduflow.yml"
+
+    def _run(self, monkeypatch, container, routing_mode="traefik"):
+        import docker as _docker
+
+        from oduflow.migrations import _migrate_traefik_yml_config
+
+        client = MagicMock()
+        if container is None:
+            client.containers.get.side_effect = _docker.errors.NotFound("nope")
+        else:
+            client.containers.get.return_value = container
+        monkeypatch.setattr("oduflow.docker_ops.client.get_client", lambda: client)
+        settings = Settings(routing_mode=routing_mode)
+        _migrate_traefik_yml_config(settings)
+        return client
+
+    def _container(self, cmd):
+        container = MagicMock()
+        container.attrs = {"Config": {"Cmd": cmd}}
+        return container
+
+    def test_stale_json_container_is_removed(self, monkeypatch):
+        container = self._container(["traefik", self._OLD])
+
+        self._run(monkeypatch, container)
+
+        container.stop.assert_called_once()
+        container.remove.assert_called_once()
+
+    def test_already_migrated_container_is_left_alone(self, monkeypatch):
+        container = self._container(["traefik", self._NEW])
+
+        self._run(monkeypatch, container)
+
+        container.stop.assert_not_called()
+        container.remove.assert_not_called()
+
+    def test_container_without_a_cmd_is_left_alone(self, monkeypatch):
+        container = MagicMock()
+        container.attrs = {}
+
+        self._run(monkeypatch, container)
+
+        container.remove.assert_not_called()
+
+    def test_null_cmd_is_left_alone(self, monkeypatch):
+        # Docker reports Cmd as null, not [], for some images.
+        container = self._container(None)
+
+        self._run(monkeypatch, container)
+
+        container.remove.assert_not_called()
+
+    def test_port_mode_skips_docker_entirely(self, monkeypatch):
+        container = self._container(["traefik", self._OLD])
+
+        client = self._run(monkeypatch, container, routing_mode="port")
+
+        client.containers.get.assert_not_called()
+        container.remove.assert_not_called()
+
+    def test_absent_traefik_is_not_an_error(self, monkeypatch):
+        self._run(monkeypatch, None)  # must not raise

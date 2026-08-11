@@ -544,6 +544,25 @@ class TestBackupSettings:
         with pytest.raises(ValueError, match="requires all of"):
             Settings.from_toml(self._toml(tmp_path, '[backup]\nbucket = "b"\n'))
 
+    @pytest.mark.parametrize(
+        "body",
+        [
+            '[backup]\nbucket = "b"\naccess_key = "ak"\n',
+            '[backup]\nbucket = "b"\nsecret_key = "sk"\n',
+            '[backup]\naccess_key = "ak"\nsecret_key = "sk"\n',
+            '[backup]\naccess_key = "ak"\n',
+            '[backup]\nsecret_key = "sk"\n',
+            '[backup]\nbucket = "b"\naccess_key = "ak"\nsecret_key = "  "\n',
+            '[backup]\nbucket = "  "\naccess_key = "ak"\nsecret_key = "sk"\n',
+        ],
+    )
+    def test_every_missing_credential_is_rejected(self, tmp_path, body):
+        # All three of bucket/access_key/secret_key are required together; any
+        # one of them missing (or blank) must fail loudly rather than silently
+        # disable backups.
+        with pytest.raises(ValueError, match="requires all of"):
+            Settings.from_toml(self._toml(tmp_path, body))
+
     def test_bad_snapshot_time_rejected_by_validate(self, tmp_path):
         s = Settings.from_toml(
             self._toml(
@@ -575,3 +594,139 @@ class TestBackupSettings:
             )
         )
         assert s.backup.prefix == "my/prefix"
+
+
+class TestDirectoryResolution:
+    """Where Oduflow puts its data and config when the TOML says nothing.
+
+    Both resolvers memoize into a module global. The probing (``os.access``)
+    must happen exactly once, and the cached value must be the one returned on
+    every later call — an inverted cache check re-probes forever or, worse,
+    returns the unset global.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _reset_caches(self):
+        from oduflow import settings as settings_mod
+
+        settings_mod._cached_data_dir = None
+        settings_mod._cached_etc_dir = None
+        yield
+        settings_mod._cached_data_dir = None
+        settings_mod._cached_etc_dir = None
+
+    def test_explicit_data_dir_wins_and_is_not_cached(self, monkeypatch):
+        from oduflow import settings as settings_mod
+
+        monkeypatch.setattr(settings_mod.os, "access", lambda *a: False)
+
+        assert settings_mod._resolve_data_dir("/explicit") == "/explicit"
+        # An explicit value must not poison the cache for later default lookups.
+        assert settings_mod._cached_data_dir is None
+
+    def test_data_dir_uses_srv_when_parent_is_writable(self, monkeypatch):
+        from oduflow import settings as settings_mod
+
+        monkeypatch.setattr(settings_mod.os, "access", lambda path, mode: path == "/srv")
+
+        assert settings_mod._resolve_data_dir("") == "/srv/oduflow"
+
+    def test_data_dir_uses_existing_writable_srv_oduflow(self, monkeypatch):
+        from oduflow import settings as settings_mod
+
+        monkeypatch.setattr(
+            settings_mod.os, "access", lambda path, mode: path == "/srv/oduflow"
+        )
+        monkeypatch.setattr(
+            settings_mod.os.path, "isdir", lambda path: path == "/srv/oduflow"
+        )
+
+        assert settings_mod._resolve_data_dir("") == "/srv/oduflow"
+
+    def test_data_dir_needs_both_isdir_and_write_access_for_the_fallback_probe(
+        self, monkeypatch
+    ):
+        # /srv is not writable and /srv/oduflow exists but is read-only ->
+        # neither branch qualifies, so the home directory is used.
+        from oduflow import settings as settings_mod
+
+        monkeypatch.setattr(settings_mod.os, "access", lambda path, mode: False)
+        monkeypatch.setattr(settings_mod.os.path, "isdir", lambda path: True)
+        monkeypatch.setattr(settings_mod.os.path, "expanduser", lambda p: "/home/me")
+
+        assert settings_mod._resolve_data_dir("") == "/home/me/.oduflow/data"
+
+    def test_data_dir_falls_back_to_home(self, monkeypatch):
+        from oduflow import settings as settings_mod
+
+        monkeypatch.setattr(settings_mod.os, "access", lambda *a: False)
+        monkeypatch.setattr(settings_mod.os.path, "isdir", lambda path: False)
+        monkeypatch.setattr(settings_mod.os.path, "expanduser", lambda p: "/home/me")
+
+        assert settings_mod._resolve_data_dir("") == "/home/me/.oduflow/data"
+
+    def test_data_dir_is_probed_once_and_then_served_from_cache(self, monkeypatch):
+        from oduflow import settings as settings_mod
+
+        calls = []
+
+        def _access(path, mode):
+            calls.append(path)
+            return path == "/srv"
+
+        monkeypatch.setattr(settings_mod.os, "access", _access)
+
+        first = settings_mod._resolve_data_dir("")
+        probes_after_first = len(calls)
+        second = settings_mod._resolve_data_dir("")
+
+        assert first == second == "/srv/oduflow"
+        assert probes_after_first > 0
+        assert len(calls) == probes_after_first  # no re-probing
+
+    def test_etc_dir_uses_etc_oduflow_when_writable(self, monkeypatch):
+        from oduflow import settings as settings_mod
+
+        monkeypatch.setattr(
+            settings_mod.os, "access", lambda path, mode: path == "/etc/oduflow"
+        )
+
+        assert settings_mod._resolve_etc_dir() == "/etc/oduflow"
+
+    def test_etc_dir_accepts_a_writable_parent(self, monkeypatch):
+        # /etc/oduflow does not exist yet, but /etc is writable, so it can be
+        # created there.
+        from oduflow import settings as settings_mod
+
+        monkeypatch.setattr(
+            settings_mod.os, "access", lambda path, mode: path == "/etc"
+        )
+
+        assert settings_mod._resolve_etc_dir() == "/etc/oduflow"
+
+    def test_etc_dir_falls_back_to_home(self, monkeypatch):
+        from oduflow import settings as settings_mod
+
+        monkeypatch.setattr(settings_mod.os, "access", lambda *a: False)
+        monkeypatch.setattr(settings_mod.os.path, "expanduser", lambda p: "/home/me")
+
+        assert settings_mod._resolve_etc_dir() == "/home/me/.oduflow/conf"
+
+    def test_etc_dir_is_probed_once_and_then_served_from_cache(self, monkeypatch):
+        from oduflow import settings as settings_mod
+
+        calls = []
+
+        def _access(path, mode):
+            calls.append(path)
+            return path == "/etc/oduflow"
+
+        monkeypatch.setattr(settings_mod.os, "access", _access)
+
+        first = settings_mod._resolve_etc_dir()
+        probes_after_first = len(calls)
+        second = settings_mod._resolve_etc_dir()
+
+        assert first == second == "/etc/oduflow"
+        assert probes_after_first > 0
+        assert len(calls) == probes_after_first  # no re-probing

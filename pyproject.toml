@@ -70,6 +70,64 @@ ignore_missing_imports = true
 # `import docker` resolve to site-packages.
 namespace_packages = false
 
+# Mutation testing (`mutmut run`). Scoped to the pure-logic modules: the Docker
+# orchestration layer (server.py, web_ui.py, docker_ops/) is exercised through
+# mocks in the unit suite, so mutants there mostly time out or survive without
+# telling us anything about test quality.
+[tool.mutmut]
+source_paths = ["src/oduflow"]
+only_mutate = [
+    "src/oduflow/naming.py",
+    "src/oduflow/git_analysis.py",
+    "src/oduflow/port_registry.py",
+    "src/oduflow/prod_tune.py",
+    "src/oduflow/pg_tune.py",
+    "src/oduflow/sanitizer.py",
+    "src/oduflow/quotas.py",
+    "src/oduflow/health.py",
+    "src/oduflow/settings.py",
+    "src/oduflow/production_registry.py",
+    "src/oduflow/env_credentials.py",
+    "src/oduflow/import_tokens.py",
+    "src/oduflow/licensing.py",
+    "src/oduflow/scoped_access.py",
+    "src/oduflow/agent_sessions.py",
+    "src/oduflow/oauth_token_store.py",
+    "src/oduflow/activity.py",
+    "src/oduflow/migrations.py",
+    "src/oduflow/webhooks.py",
+    "src/oduflow/s3_client.py",
+    "src/oduflow/reaper.py",
+    "src/oduflow/chunkstore/chunker.py",
+    "src/oduflow/chunkstore/format.py",
+    "src/oduflow/chunkstore/storage.py",
+    "src/oduflow/chunkstore/backup.py",
+    "src/oduflow/chunkstore/restore.py",
+    "src/oduflow/chunkstore/prune.py",
+    "src/oduflow/oauth_provider.py",
+    "src/oduflow/git_ops.py",
+    "src/oduflow/locking.py",
+    "src/oduflow/env_tokens.py",
+    "src/oduflow/output_cache.py",
+    "src/oduflow/mcp_log_filters.py",
+    "src/oduflow/telemetry.py",
+    "src/oduflow/url_safety.py",
+    "src/oduflow/connect_tokens.py",
+    "src/oduflow/prereqs.py",
+    "src/oduflow/agent_config.py",
+    "src/oduflow/errors.py",
+    # Deliberately NOT mutated: systemd.py has no tests (so every mutant would
+    # be an uninformative "no tests") and its code writes to
+    # /etc/systemd/system and shells out to `systemctl stop/disable`.
+]
+pytest_add_cli_args_test_selection = ["tests/"]
+# Docker-backed tests can't run against the mutant tree, and `heavyweight` is
+# already excluded by the pytest addopts.
+pytest_add_cli_args = ["-m", "not integration and not heavyweight"]
+# mutmut copies only *.py into mutants/; these paths carry package data and repo
+# files that tests read (bundled oduflow.toml, dashboard assets, coder Dockerfile).
+also_copy = ["src/oduflow/templates", "docker"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src", "tests"]

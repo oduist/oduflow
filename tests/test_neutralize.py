@@ -51,6 +51,51 @@ class TestNeutralizeEnvironment:
         assert any("Skipped" in line and "Odoo 15" in line for line in logs)
         assert not any("WARNING" in line for line in logs)
 
+    def test_odoo_16_is_the_first_version_that_neutralizes(self):
+        # 15 is the last release without the native CLI command; 16 must run it.
+        # Guards the `major <= 15` boundary from both sides.
+        container = MagicMock()
+        container.labels = {"oduflow.image": "odoo:16.0"}
+        container.exec_run.return_value = (0, b"Neutralization finished")
+        client = MagicMock()
+        client.containers.get.return_value = container
+
+        logs = sanitizer.neutralize_environment(
+            client, _settings(), _team(), "feature/foo"
+        )
+
+        assert _neutralize_cmd(container) is not None
+        assert not any("Skipped" in line for line in logs)
+
+    def test_odoo_14_is_also_skipped(self):
+        container = MagicMock()
+        container.labels = {"oduflow.image": "odoo:14.0"}
+        client = MagicMock()
+        client.containers.get.return_value = container
+
+        logs = sanitizer.neutralize_environment(
+            client, _settings(), _team(), "feature/foo"
+        )
+
+        container.exec_run.assert_not_called()
+        assert any("Skipped" in line for line in logs)
+
+    def test_unknown_version_still_attempts_neutralize(self):
+        # No usable image label -> major is None -> do not skip. Neutralizing
+        # and failing is safer than silently leaving a live database.
+        container = MagicMock()
+        container.labels = {}
+        container.exec_run.return_value = (0, b"Neutralization finished")
+        client = MagicMock()
+        client.containers.get.return_value = container
+
+        logs = sanitizer.neutralize_environment(
+            client, _settings(), _team(), "feature/foo"
+        )
+
+        assert _neutralize_cmd(container) is not None
+        assert not any("Skipped" in line for line in logs)
+
     def test_runs_neutralize_command_in_container(self):
         container = MagicMock()
         container.exec_run.return_value = (0, b"Neutralization finished")
