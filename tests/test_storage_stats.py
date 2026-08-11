@@ -2,6 +2,7 @@ import os
 from unittest.mock import patch
 
 from oduflow.docker_ops.stats import (
+    _dir_size_bytes,
     read_storage_cache,
     refresh_env_storage,
     refresh_team_storage,
@@ -32,6 +33,17 @@ def _make_workspace(team: TeamSettings, env: str, overlay: bool) -> str:
 
 def test_read_cache_missing(tmp_path):
     assert read_storage_cache(_team(tmp_path)) == {"envs": {}, "team": None}
+
+
+def test_directory_size_counts_hardlinked_template_files_once(tmp_path):
+    first = tmp_path / "templates" / "base" / "filestore" / "aa" / "blob"
+    second = tmp_path / "templates" / "derived" / "filestore" / "aa" / "blob"
+    first.parent.mkdir(parents=True)
+    second.parent.mkdir(parents=True)
+    first.write_bytes(b"x" * 4096)
+    os.link(first, second)
+
+    assert _dir_size_bytes(str(tmp_path)) == 4096
 
 
 @patch("oduflow.docker_ops.stats.get_client", return_value=None)

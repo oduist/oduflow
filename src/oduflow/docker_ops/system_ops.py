@@ -1364,25 +1364,28 @@ def _staged_db_dump(
 
     if exchange is None:
         host_path = f"{dest_path}.staged"
-        _stream_exec_to_file(
-            client, db_container, [*dump_cmd, db_name], host_path, tool="pg_dump"
-        )
     else:
         host_dir, container_dir = exchange
         os.makedirs(host_dir, exist_ok=True)
         name = f"{db_name}-{uuid.uuid4().hex}.pgdump"
         host_path = os.path.join(host_dir, name)
         container_path = f"{container_dir}/{name}"
-        exit_code, output = db_container.exec_run(
-            [*dump_cmd, "-f", container_path, db_name]
-        )
-        if exit_code != 0:
-            with contextlib.suppress(OSError):
-                os.remove(host_path)
-            msg = output.decode("utf-8") if isinstance(output, bytes) else str(output)
-            raise ExternalCommandError("pg_dump", exit_code, msg)
 
     try:
+        if container_path is None:
+            _stream_exec_to_file(
+                client, db_container, [*dump_cmd, db_name], host_path, tool="pg_dump"
+            )
+        else:
+            exit_code, output = db_container.exec_run(
+                [*dump_cmd, "-f", container_path, db_name]
+            )
+            if exit_code != 0:
+                msg = (
+                    output.decode("utf-8") if isinstance(output, bytes) else str(output)
+                )
+                raise ExternalCommandError("pg_dump", exit_code, msg)
+
         yield host_path, container_path
         try:
             os.replace(host_path, dest_path)
@@ -1913,12 +1916,16 @@ def reload_template(
     template_name: str,
     dump_path: str | None = None,
     container_dump_path: str | None = None,
+    *,
+    persist_dump: bool = True,
 ) -> dict[str, Any]:
     """Rebuild the template database from its dump.
 
     ``container_dump_path`` names a dump the PostgreSQL container can already
     read (staged in the pg_exchange mount), skipping the copy into its writable
     layer. The caller owns that file; only dumps copied in here are cleaned up.
+    ``persist_dump=False`` lets a caller install its staged file atomically after
+    this restore succeeds instead of making a second full-size copy here.
     """
     client = get_client()
     tpl_db = get_template_db_name(template_name, team.team_id)
@@ -2129,7 +2136,7 @@ def reload_template(
 
         logger.info("Verified %d tables in restored database %s", num_tables, tpl_db)
 
-        if dump_path:
+        if dump_path and persist_dump:
             tpl_dir = team.get_template_dir(template_name)
             os.makedirs(tpl_dir, exist_ok=True)
             base = "dump.sql" if use_psql else "dump.pgdump"
@@ -2600,8 +2607,9 @@ def publish_env_as_template(
     # half-published template behind. Ownership is stripped at restore time
     # (pg_restore --no-owner in reload_template), NOT here: --no-owner is ignored
     # by pg_dump for the -Fc archive format.
-    dump_path = team.get_template_sql_path(template_name)
-    os.makedirs(os.path.dirname(dump_path), exist_ok=True)
+    template_dir = team.get_template_dir(template_name)
+    dump_path = os.path.join(template_dir, "dump.pgdump")
+    os.makedirs(template_dir, exist_ok=True)
 
     logger.info("Dumping branch database %s", env_db)
     with _staged_db_dump(client, settings, team, env_db, dump_path) as (
@@ -2615,7 +2623,17 @@ def publish_env_as_template(
             template_name=template_name,
             dump_path=staged_dump,
             container_dump_path=container_dump,
+            persist_dump=False,
         )
+
+    # A publish always produces an uncompressed custom-format archive. Keep the
+    # previous dump until the restore and atomic install above have both
+    # succeeded, then remove any obsolete format left by an older template.
+    for old_name in ("dump.sql", "dump.sql.gz", "dump.pgdump.gz"):
+        old_path = os.path.join(template_dir, old_name)
+        if os.path.isfile(old_path):
+            os.remove(old_path)
+            logger.info("Removed old dump %s", old_path)
 
     # ------------------------------------------------------------------
     # 3-7. Swap the template's lower filestore non-destructively (issue #2).

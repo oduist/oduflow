@@ -194,6 +194,32 @@ def test_staged_dump_reports_pg_dump_failure(tmp_path):
     assert not dest.exists()
 
 
+def test_staged_dump_cleans_partial_file_when_docker_exec_raises(tmp_path):
+    settings, team = _settings(tmp_path), _team(tmp_path)
+    host_dir = tmp_path / "pg_exchange" / "team_7"
+    host_dir.mkdir(parents=True)
+    client, container = _client([{"Destination": "/exchange"}])
+    dest = tmp_path / "templates" / "prod" / "dump.pgdump"
+    dest.parent.mkdir(parents=True)
+
+    def _disconnect_after_writing(cmd, **kwargs):
+        target = cmd[cmd.index("-f") + 1]
+        with open(host_dir / os.path.basename(target), "w") as fh:
+            fh.write("partial dump")
+        raise docker.errors.APIError("daemon connection lost")
+
+    container.exec_run.side_effect = _disconnect_after_writing
+
+    with pytest.raises(docker.errors.APIError, match="connection lost"):
+        with system_ops._staged_db_dump(
+            client, settings, team, "oduflow_7_main", str(dest)
+        ):
+            pytest.fail("body must not run after Docker exec fails")
+
+    assert not dest.exists()
+    assert list(host_dir.iterdir()) == []
+
+
 # --------------------------------------------------------------------------
 # reload_template
 # --------------------------------------------------------------------------
@@ -235,3 +261,39 @@ def test_reload_skips_the_container_copy_for_an_already_readable_dump(tmp_path):
     assert restore[-1] == "/exchange/team_7/staged.pgdump"
     # The staged dump belongs to the caller; only copies made here are removed.
     assert not [cmd for cmd in cmds if cmd[:2] == ["rm", "-f"]]
+
+
+def test_reload_does_not_persist_a_dump_owned_by_the_staging_context(tmp_path):
+    team = _team(tmp_path)
+    staged = tmp_path / "pg_exchange" / "team_7" / "staged.pgdump"
+    staged.parent.mkdir(parents=True)
+    staged.write_bytes(b"PGDMP")
+
+    db_container = MagicMock()
+    db_container.exec_run.return_value = (0, b"")
+    client = MagicMock()
+    client.containers.get.return_value = db_container
+
+    with (
+        patch.object(system_ops, "get_client", return_value=client),
+        patch.object(system_ops, "_wait_pg_ready"),
+        patch.object(system_ops, "_exec_sql", return_value="5"),
+        patch.object(system_ops, "_db_exists", return_value=False),
+        patch.object(system_ops, "_is_text_dump", return_value=False),
+        patch.object(
+            system_ops, "ensure_team_tablespace", return_value="oduflow_team_7"
+        ),
+        patch.object(system_ops, "_update_template_sizes"),
+        patch.object(system_ops.shutil, "copy2") as copy_dump,
+    ):
+        system_ops.reload_template(
+            Settings(),
+            team,
+            template_name="prod",
+            dump_path=str(staged),
+            container_dump_path="/exchange/team_7/staged.pgdump",
+            persist_dump=False,
+        )
+
+    copy_dump.assert_not_called()
+    assert not os.path.exists(team.get_template_sql_path("prod"))

@@ -336,16 +336,23 @@ def _write_storage_cache(team: TeamSettings, cache: dict[str, Any]) -> None:
 
 
 def _dir_size_bytes(path: str, skip_dirs: set[str] | None = None) -> int:
-    """Sum file sizes under ``path``, pruning any directory in ``skip_dirs``."""
+    """Sum file sizes under ``path``, counting each hardlinked inode once."""
     skip = skip_dirs or set()
+    seen: set[tuple[int, int]] = set()
     total = 0
     for dirpath, dirnames, filenames in os.walk(path, onerror=lambda e: None):
         dirnames[:] = [d for d in dirnames if os.path.join(dirpath, d) not in skip]
         for name in filenames:
             try:
-                total += os.lstat(os.path.join(dirpath, name)).st_size
+                info = os.lstat(os.path.join(dirpath, name))
             except OSError:
                 continue
+            if info.st_nlink > 1:
+                inode = (info.st_dev, info.st_ino)
+                if inode in seen:
+                    continue
+                seen.add(inode)
+            total += info.st_size
     return total
 
 

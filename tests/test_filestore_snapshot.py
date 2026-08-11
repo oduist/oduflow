@@ -217,7 +217,13 @@ def _fake_pg_dump(client, container, cmd, dest_path, *, tool):
     return 5
 
 
-def _publish(tmp_path, *, env_template: str, target_template: str):
+def _publish(
+    tmp_path,
+    *,
+    env_template: str,
+    target_template: str,
+    existing_dump_name: str | None = None,
+):
     """Drive publish_env_as_template over a real on-disk filestore layout."""
     import contextlib
 
@@ -234,6 +240,11 @@ def _publish(tmp_path, *, env_template: str, target_template: str):
     for root in (baseline, merged):
         _write(os.path.join(root, "aa", "unchanged"), "same")
     _write(os.path.join(merged, "cc", "added"), "new in the env")
+    if existing_dump_name:
+        _write(
+            os.path.join(team.get_template_dir(target_template), existing_dump_name),
+            "old dump",
+        )
 
     container = MagicMock()
     container.status = "exited"
@@ -256,7 +267,7 @@ def _publish(tmp_path, *, env_template: str, target_template: str):
         patch.object(system_ops, "check_db_quota"),
         patch.object(system_ops, "_wait_pg_ready"),
         patch.object(system_ops, "_stream_exec_to_file", side_effect=_fake_pg_dump),
-        patch.object(system_ops, "reload_template"),
+        patch.object(system_ops, "reload_template") as reload_db,
         patch.object(system_ops, "get_odoo_uid_gid", return_value="101:102"),
         patch.object(system_ops, "chown_recursive"),
         patch.object(system_ops.os, "chown"),
@@ -272,11 +283,11 @@ def _publish(tmp_path, *, env_template: str, target_template: str):
             settings, team, env_name, target_template, overwrite=True
         )
 
-    return team, snapshot, baseline, merged
+    return team, snapshot, baseline, merged, reload_db
 
 
 def test_publish_links_against_the_environments_own_baseline(tmp_path):
-    team, snapshot, baseline, merged = _publish(
+    team, snapshot, baseline, merged, _reload_db = _publish(
         tmp_path, env_template="prod", target_template="prod"
     )
 
@@ -288,7 +299,7 @@ def test_publish_links_against_the_environments_own_baseline(tmp_path):
 def test_publish_ignores_the_none_template_sentinel(tmp_path):
     # An env created without a template is labelled "none" (env_ops._env_labels);
     # that is a sentinel, not a template directory to link against.
-    team, snapshot, _baseline, _merged = _publish(
+    team, snapshot, _baseline, _merged, _reload_db = _publish(
         tmp_path, env_template="none", target_template="prod"
     )
 
@@ -300,7 +311,7 @@ def test_publish_ignores_the_none_template_sentinel(tmp_path):
 def test_publish_links_against_both_source_and_target_templates(tmp_path):
     # Publishing an env under a NEW template name: its own baseline holds the
     # matching files, the target template is where a re-baseline would match.
-    team, snapshot, baseline, _merged = _publish(
+    team, snapshot, baseline, _merged, _reload_db = _publish(
         tmp_path, env_template="base", target_template="prod"
     )
 
@@ -308,3 +319,19 @@ def test_publish_links_against_both_source_and_target_templates(tmp_path):
         baseline,
         team.get_template_filestore_path("prod"),
     ]
+
+
+def test_publish_installs_one_canonical_dump_after_restore(tmp_path):
+    team, _snapshot, _baseline, _merged, reload_db = _publish(
+        tmp_path,
+        env_template="base",
+        target_template="prod",
+        existing_dump_name="dump.sql.gz",
+    )
+
+    template_dir = team.get_template_dir("prod")
+    with open(os.path.join(template_dir, "dump.pgdump")) as dump:
+        assert dump.read() == "PGDMP"
+    assert not os.path.exists(os.path.join(template_dir, "dump.sql.gz"))
+    assert reload_db.call_args.kwargs["persist_dump"] is False
+    assert reload_db.call_args.kwargs["dump_path"].endswith("dump.pgdump.staged")
