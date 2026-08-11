@@ -30,7 +30,7 @@ In live-mount mode, you as the agent must track the intent of your own edits. If
 5. pull_and_apply — Pull changes; errors/tracebacks are returned directly in the response
 6. If errors in response → fix code → go to step 4
 7. run_odoo_tests            — Run Odoo tests for the changed modules
-8. delete_environment          — Tear down when done
+8. delete_environment          — Tear down when done; environments are disposable and cheap to recreate
 ```
 
 ---
@@ -44,7 +44,7 @@ In live-mount mode, you as the agent must track the intent of your own edits. If
 4. pull_and_apply             — Pass install/upgrade/restart explicitly when your edits require it
 5. If errors in response → fix code → repeat from step 4
 6. run_odoo_tests             — Run Odoo tests for the changed modules
-7. delete_environment         — Tear down when done
+7. delete_environment         — Tear down when done; environments are disposable and cheap to recreate
 ```
 
 ---
@@ -273,8 +273,24 @@ push → pull_and_apply → read the response for errors → fix if errors → r
 Do NOT call `get_environment_logs` after `pull_and_apply` — the errors are already in the response. Use `get_environment_logs` only to check the **running server** (e.g., runtime errors during request handling).
 
 ### Teardown
-- Only call `delete_environment` when the task is **Done** or **Cancelled**.
-- Do **not** recreate an environment to fix errors without user consent.
+
+Environments are **disposable test sandboxes**, not long-lived installations.
+They exist so you can verify your code, and they are cheap to recreate — a new
+one is provisioned from a template in seconds.
+
+- When the task is **Done** or **Cancelled** and you are confident the
+  environment will not be needed again, call `delete_environment` as the final
+  step of your work. Deleting is the normal, expected end of a task — not an
+  exception.
+- Do not hesitate to delete. Nothing is lost that matters: if the environment
+  turns out to be needed later, call `create_environment` again and continue.
+- Keep it only for a concrete reason — the user still needs the URL for manual
+  testing, the work continues in a later session, or the environment holds test
+  data that cannot be reproduced. If it must survive idle timeouts, call
+  `protect_environment`.
+- Never delete mid-task. Do **not** delete and recreate an environment to fix
+  errors or to apply migrations without user consent (see "Database Migrations
+  Workflow") — that is a different situation, and it is still forbidden.
 
 ### Container Is Read-Only for Code
 
