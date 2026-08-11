@@ -2645,9 +2645,15 @@ def publish_env_as_template(
     # Link against the baseline the env is currently mounted on (where nearly
     # every file matches) and against the template being published into, which
     # differ when an env from one template is published under a new name.
+    # An env created without a template carries the literal "none" label
+    # (env_ops._env_labels), which is a sentinel, not a template to link against.
+    candidates = (
+        source_template if source_template != "none" else "",
+        template_name,
+    )
     link_dests = [
         team.get_template_filestore_path(name)
-        for name in dict.fromkeys(filter(None, (source_template, template_name)))
+        for name in dict.fromkeys(filter(None, candidates))
     ]
     snapshot_dir: str | None = None
     transferred: list[str] | None = None

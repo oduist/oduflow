@@ -285,6 +285,18 @@ def test_publish_links_against_the_environments_own_baseline(tmp_path):
     assert _tree(published) == _tree(merged)
 
 
+def test_publish_ignores_the_none_template_sentinel(tmp_path):
+    # An env created without a template is labelled "none" (env_ops._env_labels);
+    # that is a sentinel, not a template directory to link against.
+    team, snapshot, _baseline, _merged = _publish(
+        tmp_path, env_template="none", target_template="prod"
+    )
+
+    assert snapshot.call_args.kwargs["link_dests"] == [
+        team.get_template_filestore_path("prod")
+    ]
+
+
 def test_publish_links_against_both_source_and_target_templates(tmp_path):
     # Publishing an env under a NEW template name: its own baseline holds the
     # matching files, the target template is where a re-baseline would match.
