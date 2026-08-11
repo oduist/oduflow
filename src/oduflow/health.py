@@ -63,6 +63,20 @@ def _check_traefik(client: Any, settings: Settings) -> dict[str, Any]:
     return {"status": "ok", "detail": ""}
 
 
+def _check_nats(client: Any, settings: Settings) -> dict[str, Any]:
+    import docker
+
+    try:
+        container = client.containers.get(settings.nats_container)
+    except docker.errors.NotFound:
+        return {"status": "error", "detail": "container missing"}
+    except Exception as exc:
+        return {"status": "error", "detail": str(exc)[:200]}
+    if container.status != "running":
+        return {"status": "error", "detail": f"container {container.status}"}
+    return {"status": "ok", "detail": ""}
+
+
 def _check_s3(settings: Settings) -> dict[str, Any]:
     if not settings.prod_enabled:
         return {"status": "off", "detail": "production hosting disabled"}
@@ -159,6 +173,7 @@ def collect_health(settings: Settings, *, force: bool = False) -> dict[str, Any]
             else {"status": "off", "detail": "production hosting disabled"}
         )
         checks["traefik"] = _check_traefik(client, settings)
+        checks["nats"] = _check_nats(client, settings)
     checks["s3"] = _check_s3(settings)
     checks["disk"] = _check_disk(settings)
 
@@ -174,7 +189,15 @@ def collect_health(settings: Settings, *, force: bool = False) -> dict[str, Any]
 
     # Critical checks: dev PG always; prod PG only when provisioned; traefik
     # when in traefik mode; S3 when configured; unhealthy productions.
-    critical = ["dev_pg", "prod_pg", "traefik", "s3", "productions", "docker"]
+    critical = [
+        "dev_pg",
+        "prod_pg",
+        "traefik",
+        "nats",
+        "s3",
+        "productions",
+        "docker",
+    ]
     ok = all(
         checks.get(name, {}).get("status") in ("ok", "warn", "off", None)
         for name in critical

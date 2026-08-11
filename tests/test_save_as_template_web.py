@@ -8,7 +8,7 @@ and a duplicate name surfaces the backend ConflictError as a failed response.
 
 from concurrent.futures import ThreadPoolExecutor
 from threading import Event
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import pytest
 from starlette.applications import Starlette
@@ -99,6 +99,33 @@ def test_save_as_template_does_not_block_dashboard(tmp_path):
             release_operation.set()
 
         assert save.result(timeout=2).status_code == 200
+
+
+def test_running_server_returns_durable_operation_ticket(tmp_path):
+    client = _client(tmp_path)
+    manager = Mock(started=True)
+    manager.submit.return_value = {
+        "operation_id": "server-operation-id",
+        "state": "queued",
+        "resources": ["env:1:feature-x", "template:1:prod"],
+    }
+
+    with patch(
+        "oduflow.web_ui.get_operation_manager",
+        return_value=manager,
+    ):
+        response = client.post(
+            "/api/environments/feature-x/save-as-template",
+            json={"template_name": "prod"},
+        )
+
+    assert response.status_code == 202
+    assert response.json()["operation_id"] == "server-operation-id"
+    manager.submit.assert_called_once()
+    assert manager.submit.call_args.args[3] == [
+        "env:1:feature-x",
+        "template:1:prod",
+    ]
 
 
 def test_save_as_template_requires_name(tmp_path):

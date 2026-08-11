@@ -5,7 +5,10 @@ import threading
 import time
 from dataclasses import dataclass, field
 
-_CACHE_TTL = 3600  # 1 hour
+_DEFAULT_CACHE_TTL = 3600  # 1 hour
+# Backwards-compatible module constant used by callers and tests that only
+# need to advance beyond the default expiry window.
+_CACHE_TTL = _DEFAULT_CACHE_TTL
 _MAX_ENTRIES = 50
 _MAX_OUTPUT_SIZE = 10_000_000  # 10 MB
 
@@ -42,10 +45,20 @@ _ERROR_MARKERS = (
 class OutputCache:
     """Thread-safe in-memory cache for large tool outputs."""
 
-    def __init__(self) -> None:
+    def __init__(self, ttl_seconds: int = _DEFAULT_CACHE_TTL) -> None:
         self._store: dict[str, CachedOutput] = {}
         self._lock = threading.Lock()
         self._seq = 0
+        self._ttl_seconds = ttl_seconds
+
+    @property
+    def ttl_seconds(self) -> int:
+        return self._ttl_seconds
+
+    def configure(self, ttl_seconds: int) -> None:
+        with self._lock:
+            self._ttl_seconds = ttl_seconds
+            self._evict()
 
     def store(self, output: str, source_tool: str, source_args: str) -> CachedOutput:
         """Cache output, return CachedOutput with generated ID."""
@@ -88,7 +101,7 @@ class OutputCache:
     def get(self, output_id: str) -> CachedOutput | None:
         with self._lock:
             entry = self._store.get(output_id)
-            if entry and (time.time() - entry.created_at) > _CACHE_TTL:
+            if entry and (time.time() - entry.created_at) > self._ttl_seconds:
                 del self._store[output_id]
                 return None
             return entry
@@ -96,7 +109,9 @@ class OutputCache:
     def _evict(self) -> None:
         """Remove expired entries + oldest if over limit."""
         now = time.time()
-        expired = [k for k, v in self._store.items() if now - v.created_at > _CACHE_TTL]
+        expired = [
+            k for k, v in self._store.items() if now - v.created_at > self._ttl_seconds
+        ]
         for k in expired:
             del self._store[k]
         while len(self._store) >= _MAX_ENTRIES:

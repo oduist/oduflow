@@ -732,3 +732,46 @@ class TestDirectoryResolution:
         assert first == second == "/etc/oduflow"
         assert probes_after_first > 0
         assert len(calls) == probes_after_first  # no re-probing
+
+
+class TestJobSettings:
+    def test_defaults(self, tmp_path):
+        toml = tmp_path / "oduflow.toml"
+        toml.write_text("[team.1]\n")
+
+        settings = Settings.from_toml(str(toml))
+
+        assert settings.operation_wait_timeout_seconds == 90
+        assert settings.operation_retention_seconds == 3600
+        assert settings.operation_max_workers == 4
+        assert settings.nats_image == "nats:2.14.3-alpine"
+        assert settings.nats_port == 4222
+
+    def test_configured_values(self, tmp_path):
+        toml = tmp_path / "oduflow.toml"
+        toml.write_text(
+            "[jobs]\n"
+            "wait_timeout_seconds = 30\n"
+            "retention_seconds = 86400\n"
+            "max_workers = 8\n"
+            'nats_image = "nats:2.14.3-alpine"\n'
+            "nats_port = 5222\n"
+            "[team.1]\n"
+        )
+
+        settings = Settings.from_toml(str(toml))
+        settings.validate()
+
+        assert settings.operation_wait_timeout_seconds == 30
+        assert settings.operation_retention_seconds == 86400
+        assert settings.operation_max_workers == 8
+        assert settings.nats_port == 5222
+
+    def test_retention_must_be_at_least_one_minute(self):
+        settings = Settings(
+            operation_retention_seconds=59,
+            teams={"1": TeamSettings(team_id="1")},
+        )
+
+        with pytest.raises(ValueError, match="retention_seconds"):
+            settings.validate()

@@ -1,8 +1,7 @@
 import hashlib
 import hmac
 import json
-import logging
-from unittest.mock import MagicMock, patch
+from unittest.mock import Mock, patch
 
 import pytest
 
@@ -170,7 +169,12 @@ class TestHandleGithubEvent:
         )
         secret = production_registry.get_webhook_secret(team)
         push = _push_body("https://github.com/org/erp.git", "production")
-        with patch.object(webhooks, "_deploy_in_background"):
+        manager = Mock()
+        manager.submit.return_value = {
+            "operation_id": "op-1",
+            "state": "queued",
+        }
+        with patch.object(webhooks, "get_operation_manager", return_value=manager):
             status, body = webhooks.handle_github_event(
                 settings,
                 LockManager(),
@@ -178,11 +182,9 @@ class TestHandleGithubEvent:
                 body=push,
                 signature_header=_sign(secret, push),
             )
-            # The background thread may not have run yet; queued is enough.
         assert status == 202
         assert body["queued"] == ["erp"]
-        # Coalescing state cleanup for other tests.
-        webhooks._pending.clear()
+        manager.submit.assert_called_once()
 
     def test_push_coalesces_rapid_events(self, settings, team):
         production_registry.create_production(
@@ -197,7 +199,12 @@ class TestHandleGithubEvent:
         secret = production_registry.get_webhook_secret(team)
         push = _push_body("https://github.com/org/erp.git", "production")
         locks = LockManager()
-        with patch.object(webhooks, "_deploy_in_background"):
+        manager = Mock()
+        manager.submit.side_effect = [
+            {"operation_id": "op-1", "state": "queued"},
+            {"operation_id": "op-1", "state": "queued", "coalesced": True},
+        ]
+        with patch.object(webhooks, "get_operation_manager", return_value=manager):
             _status, body1 = webhooks.handle_github_event(
                 settings,
                 locks,
@@ -212,7 +219,6 @@ class TestHandleGithubEvent:
                 body=push,
                 signature_header=_sign(secret, push),
             )
-        webhooks._pending.clear()
         assert body1["queued"] == ["erp"]
         assert body2["queued"] == []  # coalesced
 
@@ -230,127 +236,16 @@ class TestHandleGithubEvent:
         assert body["ignored"] == "issues"
 
 
-class TestDeployInBackground:
-    """The worker every other webhook test patches out.
-
-    It owns three invariants that only show up under failure: the production
-    lock is always released, the coalescing slot is always freed, and a failed
-    deploy never propagates out of the thread.
-    """
-
-    @pytest.fixture(autouse=True)
-    def _clean_pending(self):
-        webhooks._pending.clear()
-        yield
-        webhooks._pending.clear()
-
-    def _run(self, settings, team, locks, name="erp"):
-        webhooks._pending.add(f"{team.team_id}/{name}")
-        webhooks._deploy_in_background(settings, team, locks, name)
-
-    def test_deploys_under_the_production_lock_and_releases_it(self, settings, team):
-        locks = LockManager()
-        from oduflow.server import prod_lock_key
-
-        key = prod_lock_key(team.team_id, "erp")
-
-        with patch("oduflow.docker_ops.production_ops.update_production") as update:
-            update.return_value = {"action": "upgrade"}
-            self._run(settings, team, locks)
-
-        update.assert_called_once_with(settings, team, "erp", trigger="webhook")
-        # Released: a fresh acquire must succeed immediately.
-        assert locks.acquire_env_blocking(key, 0.1) is True
-        locks.release_env(key)
-
-    def test_the_coalescing_slot_is_freed_before_the_deploy_runs(self, settings, team):
-        # A push arriving while the deploy is already running must be able to
-        # queue the next one, so the slot is dropped once the lock is held.
-        locks = LockManager()
-        seen = {}
-
-        def _update(*args, **kwargs):
-            seen["pending"] = set(webhooks._pending)
-            return {"action": "none"}
-
-        with patch(
-            "oduflow.docker_ops.production_ops.update_production", side_effect=_update
-        ):
-            self._run(settings, team, locks)
-
-        assert seen["pending"] == set()
-        assert webhooks._pending == set()
-
-    def test_a_failing_deploy_does_not_escape_the_thread(self, settings, team):
-        locks = LockManager()
-        from oduflow.server import prod_lock_key
-
-        with patch(
-            "oduflow.docker_ops.production_ops.update_production",
-            side_effect=RuntimeError("deploy exploded"),
-        ):
-            self._run(settings, team, locks)  # must not raise
-
-        assert webhooks._pending == set()
-        key = prod_lock_key(team.team_id, "erp")
-        assert locks.acquire_env_blocking(key, 0.1) is True
-        locks.release_env(key)
-
-    def test_lock_timeout_skips_the_deploy_and_frees_the_slot(
-        self, settings, team, caplog
-    ):
-        # A stuck slot would make dispatch_push drop every later push for this
-        # production until the server restarts.
-        locks = MagicMock()
-        locks.acquire_env_blocking.return_value = False
-
-        with (
-            caplog.at_level(logging.WARNING, logger="oduflow"),
-            patch("oduflow.docker_ops.production_ops.update_production") as update,
-        ):
-            self._run(settings, team, locks)
-
-        update.assert_not_called()
-        locks.release_env.assert_not_called()
-        assert webhooks._pending == set()
-        assert "gave up waiting" in caplog.text
-
-    def test_the_lock_key_is_team_scoped(self, settings, team):
-        locks = MagicMock()
-        locks.acquire_env_blocking.return_value = False
-
-        self._run(settings, team, locks)
-
-        assert locks.acquire_env_blocking.call_args.args[0] == "prod:1:erp"
-
-    def test_the_lock_wait_is_bounded(self, settings, team):
-        locks = MagicMock()
-        locks.acquire_env_blocking.return_value = False
-
-        self._run(settings, team, locks)
-
-        assert (
-            locks.acquire_env_blocking.call_args.args[1]
-            == webhooks._LOCK_TIMEOUT_SECONDS
-        )
-
-
 class TestDispatchPush:
-    @pytest.fixture(autouse=True)
-    def _clean_pending(self):
-        webhooks._pending.clear()
-        yield
-        webhooks._pending.clear()
-
     def test_nothing_matching_queues_nothing(self, settings, team):
-        with patch.object(webhooks, "_deploy_in_background") as worker:
+        manager = Mock()
+        with patch.object(webhooks, "get_operation_manager", return_value=manager):
             queued = webhooks.dispatch_push(
                 settings, team, LockManager(), {"ref": "refs/tags/v1"}
             )
 
         assert queued == []
-        worker.assert_not_called()
-        assert webhooks._pending == set()
+        manager.submit.assert_not_called()
 
 
 class TestSignatureScheme:

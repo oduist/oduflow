@@ -68,6 +68,8 @@ class TestInitSystem:
         mock_docker_client.volumes.get.side_effect = docker.errors.NotFound("nf")
 
         mock_container = MagicMock()
+        mock_container.status = "running"
+        mock_container.logs.return_value = b"[INF] Server is ready"
         mock_docker_client.containers.run.return_value = mock_container
 
         def get_container(name):
@@ -91,7 +93,10 @@ class TestInitSystem:
         # Shared infra network plus one isolated network per team.
         created = [c.args[0] for c in mock_docker_client.networks.create.call_args_list]
         assert created == ["oduflow-net", "oduflow-1-net"]
-        mock_docker_client.volumes.create.assert_called_once()
+        created_volumes = [
+            call.args[0] for call in mock_docker_client.volumes.create.call_args_list
+        ]
+        assert created_volumes == ["oduflow-nats-data", "oduflow-db-data"]
 
     @patch("oduflow.docker_ops.system_ops._db_exists", return_value=True)
     @patch("oduflow.docker_ops.system_ops._wait_pg_ready")
@@ -102,7 +107,14 @@ class TestInitSystem:
         mock_docker_client.volumes.get.return_value = MagicMock()
         db_container = MagicMock()
         db_container.status = "running"
-        mock_docker_client.containers.get.return_value = db_container
+        db_container.labels = {}
+        nats_container = MagicMock()
+        nats_container.status = "running"
+        nats_container.logs.return_value = b"[INF] Server is ready"
+        mock_docker_client.containers.get.side_effect = lambda name: (
+            nats_container if name == TEST_SETTINGS.nats_container else db_container
+        )
+        mock_docker_client.containers.run.return_value = nats_container
 
         result = system_ops.init_system(TEST_SETTINGS)
 

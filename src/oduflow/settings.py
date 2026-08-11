@@ -196,6 +196,17 @@ class Settings:
     # true only when fronting Oduflow with your own auth proxy.
     allow_insecure_http: bool = False
 
+    # Durable operation queue. Oduflow provisions the local NATS/JetStream
+    # container itself; these settings control the public job behaviour rather
+    # than exposing NATS as an operator-managed dependency.
+    operation_wait_timeout_seconds: int = 90
+    operation_retention_seconds: int = 3600
+    operation_max_workers: int = 4
+    nats_image: str = "nats:2.14.3-alpine"
+    nats_container: str = "oduflow-nats"
+    nats_volume: str = "oduflow-nats-data"
+    nats_port: int = 4222
+
     # Routing
     routing_mode: str = "port"
     acme_email: str = ""
@@ -441,6 +452,15 @@ class Settings:
         if self.prod_workers_cap < 1:
             raise ValueError("[production] workers_cap must be >= 1")
 
+        if self.operation_wait_timeout_seconds < 1:
+            raise ValueError("[jobs] wait_timeout_seconds must be >= 1")
+        if self.operation_retention_seconds < 60:
+            raise ValueError("[jobs] retention_seconds must be >= 60")
+        if self.operation_max_workers < 1:
+            raise ValueError("[jobs] max_workers must be >= 1")
+        if not 1 <= self.nats_port <= 65535:
+            raise ValueError("[jobs] nats_port must be between 1 and 65535")
+
         if self.backup is not None:
             b = self.backup
             for label, value in (
@@ -470,6 +490,7 @@ class Settings:
         database = raw.get("database", {})
         storage = raw.get("storage", {})
         lifecycle = raw.get("lifecycle", {})
+        jobs = raw.get("jobs", {})
         agent = raw.get("agent", {})
         production = raw.get("production", {})
         prod_enabled = production.get("enabled", False)
@@ -585,6 +606,11 @@ class Settings:
             agent_feedback=bool(server.get("agent_feedback", False)),
             allow_local_path=bool(server.get("allow_local_path", True)),
             allow_insecure_http=bool(server.get("allow_insecure_http", False)),
+            operation_wait_timeout_seconds=int(jobs.get("wait_timeout_seconds", 90)),
+            operation_retention_seconds=int(jobs.get("retention_seconds", 3600)),
+            operation_max_workers=int(jobs.get("max_workers", 4)),
+            nats_image=str(jobs.get("nats_image", "nats:2.14.3-alpine")).strip(),
+            nats_port=int(jobs.get("nats_port", 4222)),
             routing_mode=routing_mode,
             acme_email=str(routing.get("acme_email", "")).strip(),
             routing_tls=bool(routing.get("tls", True)),

@@ -1153,6 +1153,56 @@
     22%, 72% { transform: translateX(0); }
   }
   .tab-toolbar { display: flex; justify-content: flex-end; gap: 8px; margin-bottom: 12px; }
+  .operation-list { display: grid; gap: 8px; }
+  .operation-row {
+    display: grid;
+    grid-template-columns: minmax(180px, 1fr) auto auto;
+    gap: 12px;
+    align-items: center;
+    padding: 12px 14px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+  }
+  .operation-main { min-width: 0; }
+  .operation-kind {
+    color: var(--text);
+    font-weight: 600;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .operation-meta {
+    margin-top: 3px;
+    color: var(--text-dim);
+    font-family: var(--font-mono);
+    font-size: var(--text-2xs);
+  }
+  .operation-state {
+    border-radius: 999px;
+    padding: 2px 8px;
+    font-size: var(--text-2xs);
+    font-weight: 600;
+    text-transform: uppercase;
+    border: 1px solid var(--border);
+  }
+  .operation-state[data-state="queued"],
+  .operation-state[data-state="submitting"] { color: var(--cyan); }
+  .operation-state[data-state="running"],
+  .operation-state[data-state="cancel_requested"] { color: var(--violet); }
+  .operation-state[data-state="succeeded"] { color: var(--green); }
+  .operation-state[data-state="failed"],
+  .operation-state[data-state="interrupted"],
+  .operation-state[data-state="cancelled"] { color: var(--red); }
+  .operation-error {
+    margin-top: 5px;
+    color: var(--red);
+    font-size: var(--text-xs);
+  }
+  @media (max-width: 700px) {
+    .operation-row { grid-template-columns: 1fr auto; }
+    .operation-row .operation-actions { grid-column: 1 / -1; }
+  }
   .hint { font-size: var(--text-xs); color: var(--text-dim); margin-top: 4px; }
   .fb-diagnostics {
     font-family: var(--font-mono);
@@ -1286,6 +1336,7 @@
 
 <div class="tabs">
   <button class="tab-btn active" data-tab="environments" onclick="switchTab('environments')">Environments</button>
+  <button class="tab-btn" data-tab="operations" onclick="switchTab('operations')">Operations</button>
   <button class="tab-btn" data-tab="production" onclick="switchTab('production')" __PRODUCTION_TAB_HIDDEN__>Production</button>
   <button class="tab-btn" data-tab="services" onclick="switchTab('services')">Services</button>
   <button class="tab-btn" data-tab="volumes" onclick="switchTab('volumes')">Volumes</button>
@@ -1305,6 +1356,13 @@
     </div>
   </div>
   <div id="env-list"></div>
+</div>
+
+<div id="tab-operations" class="tab-content">
+  <div class="tab-toolbar">
+    <button class="btn" onclick="loadOperations()">Refresh</button>
+  </div>
+  <div id="operation-list" class="operation-list"></div>
 </div>
 
 <div id="tab-production" class="tab-content">
@@ -2039,6 +2097,7 @@ function logout() {
 
 const API = '/api/environments';
 const API_TEMPLATES = '/api/templates';
+const API_OPERATIONS = '/api/operations';
 const MIN_INTERVAL = 5;
 let refreshInterval = 60;
 let refreshTimer = null;
@@ -2057,6 +2116,59 @@ let _lastSelectIdx = null;
 // branch -> {op: 'Stopping'|'Updating'|..., started: epoch ms}; consulted by
 // renderEnvironments so busy state survives polling re-renders.
 let busyOps = {};
+const _nativeFetch = window.fetch.bind(window);
+let _knownOperations = {};
+
+function _sleep(ms) {
+  return new Promise(function(resolve) { setTimeout(resolve, ms); });
+}
+
+function _terminalOperation(state) {
+  return ['succeeded', 'failed', 'cancelled', 'interrupted'].indexOf(state) !== -1;
+}
+
+async function _waitForRestOperation(operationId) {
+  while (true) {
+    var statusResponse = await _nativeFetch(API_OPERATIONS + '/' + encodeURIComponent(operationId));
+    var status = await readResult(statusResponse);
+    if (!statusResponse.ok || !status.ok) {
+      return new Response(JSON.stringify({
+        ok: false,
+        error: status.error || 'Operation status is unavailable'
+      }), {status: statusResponse.status || 500, headers: {'Content-Type': 'application/json'}});
+    }
+    _knownOperations[operationId] = status;
+    renderKnownOperations();
+    if (_terminalOperation(status.state)) {
+      if (status.state !== 'succeeded') {
+        return new Response(JSON.stringify({
+          ok: false,
+          error: status.error || ('Operation ' + status.state)
+        }), {status: 409, headers: {'Content-Type': 'application/json'}});
+      }
+      var result = status.result || {};
+      var contentType = result.content_type || 'application/json';
+      var responseBody = contentType.indexOf('application/json') !== -1
+        ? JSON.stringify(result.body == null ? {} : result.body)
+        : String(result.body == null ? '' : result.body);
+      return new Response(responseBody, {
+        status: result.status_code || 200,
+        headers: {'Content-Type': contentType}
+      });
+    }
+    await _sleep(600);
+  }
+}
+
+window.fetch = async function(input, init) {
+  var response = await _nativeFetch(input, init);
+  if (response.status !== 202) return response;
+  var ticket = await readResult(response.clone());
+  if (!ticket.operation_id) return response;
+  _knownOperations[ticket.operation_id] = ticket;
+  renderKnownOperations();
+  return _waitForRestOperation(ticket.operation_id);
+};
 
 function showToast(msg, isError) {
   const t = document.getElementById('toast');
@@ -3280,6 +3392,78 @@ function switchTab(name) {
   if (name === 'agent-guides') loadAgentGuides();
   if (name === 'extra-addons') loadExtraRepos();
   if (name === 'credentials') loadCredentials();
+  if (name === 'operations') loadOperations();
+}
+
+function renderKnownOperations() {
+  var target = document.getElementById('operation-list');
+  if (!target) return;
+  var operations = Object.keys(_knownOperations).map(function(id) {
+    return _knownOperations[id];
+  }).sort(function(a, b) {
+    return (b.created_at || 0) - (a.created_at || 0);
+  });
+  if (!operations.length) {
+    target.innerHTML = '<div class="empty-state">No recent operations.</div>';
+    return;
+  }
+  target.innerHTML = operations.map(function(op) {
+    var active = !_terminalOperation(op.state);
+    var elapsed = op.elapsed_seconds == null ? '' : ' · ' + op.elapsed_seconds + 's';
+    var resources = (op.resources || []).join(', ');
+    return '<div class="operation-row">' +
+      '<div class="operation-main">' +
+        '<div class="operation-kind">' + esc(op.kind || 'operation') + '</div>' +
+        '<div class="operation-meta">' + esc(op.operation_id || '') + elapsed +
+          (resources ? '<br>' + esc(resources) : '') + '</div>' +
+        (op.error ? '<div class="operation-error">' + esc(op.error) + '</div>' : '') +
+      '</div>' +
+      '<span class="operation-state" data-state="' + escAttr(op.state || '') + '">' +
+        esc(op.state || 'unknown') + '</span>' +
+      '<div class="operation-actions">' +
+        (active ? '<button class="btn btn-stop" data-operation-id="' +
+          escAttr(op.operation_id) +
+          '" onclick="cancelOperation(this.dataset.operationId)">Cancel</button>' : '') +
+      '</div>' +
+    '</div>';
+  }).join('');
+}
+
+async function loadOperations() {
+  try {
+    var response = await _nativeFetch(API_OPERATIONS + '?limit=50');
+    var data = await readResult(response);
+    if (!data.ok) {
+      showToast(data.error || 'Failed to load operations', true);
+      return;
+    }
+    _knownOperations = {};
+    (data.operations || []).forEach(function(op) {
+      _knownOperations[op.operation_id] = op;
+    });
+    renderKnownOperations();
+  } catch (e) {
+    showToast('Connection error: ' + e.message, true);
+  }
+}
+
+async function cancelOperation(operationId) {
+  try {
+    var response = await _nativeFetch(
+      API_OPERATIONS + '/' + encodeURIComponent(operationId) + '/cancel',
+      {method: 'POST'}
+    );
+    var data = await readResult(response);
+    if (!data.ok) {
+      showToast(data.error || 'Cancel failed', true);
+      return;
+    }
+    _knownOperations[operationId] = data;
+    renderKnownOperations();
+    showToast('Cancellation requested');
+  } catch (e) {
+    showToast('Connection error: ' + e.message, true);
+  }
 }
 
 async function loadTemplates() {
@@ -5989,7 +6173,7 @@ async function loadHealth() {
     var el = document.getElementById('health-chips');
     if (!el || !data.checks) return;
     var labels = {
-      dev_pg: 'PG DEV', prod_pg: 'PG PROD', traefik: 'TRAEFIK', s3: 'S3', disk: 'DISK'
+      dev_pg: 'PG DEV', prod_pg: 'PG PROD', traefik: 'TRAEFIK', nats: 'NATS', s3: 'S3', disk: 'DISK'
     };
     el.innerHTML = Object.keys(labels).map(function(key) {
       var check = data.checks[key];
@@ -6008,6 +6192,7 @@ loadEnvironments();
 loadStats();
 loadHealth();
 loadServicePresets();
+loadOperations();
 refreshAgentInfo();
 resetTimers();
 </script>

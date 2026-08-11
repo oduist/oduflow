@@ -7,14 +7,14 @@ resolver — the signature is verified against every team's secret and the
 first match wins (team counts are single digits; the cost is nil).
 
 On a ``push`` event the matching team's productions with the same
-(normalized) repo URL + branch AND ``auto_update`` enabled are deployed in
-background threads via :func:`production_ops.update_production` — with its
-automatic code rollback. Dev environments are NEVER touched by webhooks.
+(normalized) repo URL + branch AND ``auto_update`` enabled are deployed as
+durable JetStream operations via :func:`production_ops.update_production` —
+with its automatic code rollback. Dev environments are NEVER touched by
+webhooks.
 
-Coalescing: pushes arriving while a deploy runs queue behind the
-production's lock (blocking acquire with a timeout), and at most ONE
-queued run is kept — the queued deploy pulls the latest state anyway, so
-N rapid pushes collapse into at most one running + one pending deploy.
+Coalescing: at most one pending deploy per production is retained behind a
+running deploy. The pending deploy pulls the latest desired state, so N rapid
+pushes collapse into at most one running + one queued operation.
 """
 
 from __future__ import annotations
@@ -23,23 +23,19 @@ import hashlib
 import hmac
 import json
 import logging
-import threading
 from typing import Any
 from urllib.parse import urlparse
 
 from oduflow import production_registry
 from oduflow.locking import LockManager
+from oduflow.operations import (
+    get_operation_manager,
+    register_operation,
+    static_resource,
+)
 from oduflow.settings import Settings, TeamSettings
 
 logger = logging.getLogger("oduflow")
-
-# How long a webhook-triggered deploy waits for the production's lock
-# before giving up (a snapshot or manual deploy may be running).
-_LOCK_TIMEOUT_SECONDS = 30 * 60
-
-# Productions with a deploy already queued (coalescing). Guarded by _guard.
-_pending: set[str] = set()
-_guard = threading.Lock()
 
 
 def normalize_repo_url(url: str) -> str:
@@ -121,49 +117,26 @@ def match_productions(team: TeamSettings, payload: dict[str, Any]) -> list[str]:
     return sorted(names)
 
 
-def _deploy_in_background(
-    settings: Settings, team: TeamSettings, locks: LockManager, name: str
-) -> None:
+def _deploy_operation(name: str) -> dict[str, Any]:
     from oduflow.docker_ops import production_ops
-    from oduflow.server import prod_lock_key
+    from oduflow.server import _get_settings, _resolve_team
 
-    key = prod_lock_key(team.team_id, name)
-    pending_key = f"{team.team_id}/{name}"
-    try:
-        if not locks.acquire_env_blocking(
-            key, _LOCK_TIMEOUT_SECONDS, operation="webhook deploy"
-        ):
-            logger.warning(
-                "Webhook deploy of production '%s' gave up waiting for its "
-                "lock (%.0f min)",
-                name,
-                _LOCK_TIMEOUT_SECONDS / 60,
-            )
-            return
-        # Holding the lock: this run is no longer "pending" — a new push
-        # arriving from here on may queue the next one.
-        with _guard:
-            _pending.discard(pending_key)
-        try:
-            result = production_ops.update_production(
-                settings, team, name, trigger="webhook"
-            )
-            logger.info(
-                "Webhook deploy of production '%s': %s",
-                name,
-                result.get("action"),
-            )
-        finally:
-            locks.release_env(key)
-    except Exception:
-        logger.exception("Webhook deploy of production '%s' failed", name)
-    finally:
-        # Safety net: the lock-timeout early return (and any exception raised
-        # before the discard above) must never leak the coalescing slot — a
-        # stuck key would make dispatch_push drop every future push for this
-        # production until the server restarts. discard is idempotent.
-        with _guard:
-            _pending.discard(pending_key)
+    result = production_ops.update_production(
+        _get_settings(), _resolve_team(None), name, trigger="webhook"
+    )
+    logger.info(
+        "Webhook deploy of production '%s': %s",
+        name,
+        result.get("action"),
+    )
+    return result
+
+
+register_operation(
+    "webhook.production_deploy",
+    _deploy_operation,
+    static_resource("production", "name"),
+)
 
 
 def dispatch_push(
@@ -172,23 +145,23 @@ def dispatch_push(
     locks: LockManager,
     payload: dict[str, Any],
 ) -> list[str]:
-    """Start background deploys for a verified push; returns queued names."""
+    """Queue durable deploys for a verified push; returns queued names."""
+    del locks  # compatibility with the existing webhook call surface
+    manager = get_operation_manager(settings)
     queued = []
     for name in match_productions(team, payload):
-        pending_key = f"{team.team_id}/{name}"
-        with _guard:
-            if pending_key in _pending:
-                # One deploy is already waiting; it will pull this push too.
-                continue
-            _pending.add(pending_key)
-        thread = threading.Thread(
-            target=_deploy_in_background,
-            args=(settings, team, locks, name),
-            name=f"oduflow-webhook-{team.team_id}-{name}",
-            daemon=True,
+        ticket = manager.submit(
+            "webhook.production_deploy",
+            team.team_id,
+            {"name": name},
+            [f"production:{team.team_id}:{name}"],
+            wait=False,
+            coalesce_key=f"production:{name}",
         )
-        thread.start()
-        queued.append(name)
+        if ticket["state"] in {"submitting", "queued"} and not ticket.get(
+            "coalesced", False
+        ):
+            queued.append(name)
     return queued
 
 

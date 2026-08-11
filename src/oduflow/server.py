@@ -7,9 +7,12 @@ import logging
 import os
 import pathlib
 import re
+import signal
 import sys
+import threading
+import time
 import warnings
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterable, Mapping
 from typing import Any, ParamSpec, TypeVar, cast
 
 # Suppress a third-party deprecation warning emitted at import time by fastmcp's
@@ -48,6 +51,16 @@ from oduflow.docker_ops import (
 )
 from oduflow.errors import FlowError, NotFoundError, PrerequisiteNotMetError
 from oduflow.locking import LockManager
+from oduflow.operations import (
+    current_team_id as operation_team_id,
+)
+from oduflow.operations import (
+    get_operation_manager,
+    operation,
+    report_current_output,
+    resource_set,
+    static_resource,
+)
 from oduflow.output_cache import CachedOutput, OutputCache
 from oduflow.settings import Settings, TeamSettings, find_toml
 
@@ -97,6 +110,7 @@ def _get_settings() -> Settings:
         toml_path = find_toml()
         _settings = Settings.from_toml(toml_path)
         _settings.validate()
+        _output_cache.configure(_settings.operation_retention_seconds)
     return _settings
 
 
@@ -106,6 +120,12 @@ def _resolve_team(ctx: Context | None) -> TeamSettings:
     Priority: token/OAuth client_id → Host header → single-team → team "1".
     """
     settings = _get_settings()
+    # Durable jobs run outside the originating MCP request, so their authenticated
+    # team is propagated through an operation context variable instead of a
+    # FastMCP Context object.
+    queued_team_id = operation_team_id()
+    if queued_team_id is not None:
+        return settings.get_team(queued_team_id)
     # 1. Token-based: client_id set by auth provider maps to team_id
     team_id = ctx.client_id if ctx and ctx.client_id else None
     if team_id and team_id in settings.teams:
@@ -190,6 +210,7 @@ def _make_summary(cached: CachedOutput) -> str:
 def _maybe_cache(output: str, header: str, source_tool: str, source_args: str) -> str:
     """If output exceeds threshold, cache it and return header + summary. Otherwise return as-is."""
     if len(output) > _CACHE_THRESHOLD:
+        report_current_output(output)
         cached = _output_cache.store(
             output, source_tool=source_tool, source_args=source_args
         )
@@ -258,40 +279,23 @@ def handle_errors(fn: Callable[P, R]) -> Callable[P, Awaitable[R]]:
     return wrapper
 
 
+def _env_resources(arguments: Mapping[str, Any], team_id: str) -> Iterable[str]:
+    env_name = str(arguments.get("env_name", "")).strip()
+    if not env_name:
+        raise ValueError("env_name is required")
+    from oduflow.naming import PROD_ENV_PREFIX
+
+    if env_name.startswith(PROD_ENV_PREFIX):
+        raise ValueError(
+            f"'{env_name}' is a production environment. Use the "
+            "*_production tools instead of the dev environment tools."
+        )
+    return [f"env:{team_id}:{env_name}"]
+
+
 def with_env_lock(fn: Callable[P, R]) -> Callable[P, R]:
-    """Acquire a per-environment lock before executing the tool function."""
-
-    @functools.wraps(fn)
-    def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
-        # Under ParamSpec, values pulled from *args/**kwargs are typed `object`;
-        # narrow them back to the concrete types these helpers expect.
-        raw_env_name = kwargs.get("env_name") or (args[0] if args else None)
-        if not raw_env_name:
-            raise ToolError("env_name is required")
-        env_name = cast(str, raw_env_name)
-        ctx = cast("Context | None", kwargs.get("ctx"))
-        team = _resolve_team(ctx)
-        # Dev environment tools must never operate on the production
-        # namespace (their name-derived container/DB chains would resolve to
-        # production resources). Productions have their own tool stack.
-        from oduflow.naming import PROD_ENV_PREFIX
-
-        if env_name.startswith(PROD_ENV_PREFIX):
-            raise ToolError(
-                f"'{env_name}' is a production environment. Use the "
-                "*_production tools instead of the dev environment tools."
-            )
-        _locks.acquire_env(env_name, team.team_id, operation=fn.__name__)
-        try:
-            try:
-                activity.touch(team, env_name)
-            except Exception:
-                pass  # activity tracking is best-effort
-            return fn(*args, **kwargs)
-        finally:
-            _locks.release_env(env_name)
-
-    return wrapper
+    """Compatibility spelling for an environment-scoped queued operation."""
+    return cast(Callable[P, R], operation(_env_resources)(fn))
 
 
 def _wake_for_work(
@@ -309,20 +313,96 @@ def _wake_for_work(
     return ""
 
 
+def _stopped_read_result(settings: Settings, team: TeamSettings, env_name: str) -> str:
+    """Return a stopped-state response for read-only container calls."""
+    import docker
+    from oduflow.docker_ops.client import get_client
+    from oduflow.naming import get_resource_name
+
+    container_name = get_resource_name(env_name, "odoo", settings.prefix, team.team_id)
+    try:
+        container = get_client().containers.get(container_name)
+    except docker.errors.NotFound:
+        raise NotFoundError(
+            f"Environment '{env_name}' does not exist. Use create_environment first."
+        )
+    container.reload()
+    if container.status != "running":
+        return (
+            f"Environment '{env_name}' is stopped. Read-only calls do not start "
+            "environments; call start_environment first."
+        )
+    return ""
+
+
+def _service_resources(arguments: Mapping[str, Any], team_id: str) -> Iterable[str]:
+    name = str(arguments.get("name", "")).strip()
+    if not name:
+        raise ValueError("name is required")
+    resources = {f"service:{team_id}:{name}"}
+
+    # Updating with an empty volumes argument preserves existing mounts, and
+    # restoring a preset obtains them from the preset rather than the MCP
+    # payload. Reserve both sources so volume deletion cannot race either path.
+    try:
+        team = _get_settings().get_team(team_id)
+        info = service_ops.get_service_info(_get_settings(), team, name)
+        for mount in info.get("volumes", []):
+            volume_name = str(mount.get("volume", "")).strip()
+            if volume_name:
+                resources.add(f"volume:{team_id}:{volume_name}")
+    except Exception:
+        pass
+    try:
+        team = _get_settings().get_team(team_id)
+        preset = service_presets.get_preset(team, name)
+        for mount in preset.get("volumes", []):
+            volume_name = str(mount.get("volume", "")).strip()
+            if volume_name:
+                resources.add(f"volume:{team_id}:{volume_name}")
+    except Exception:
+        pass
+
+    raw_volumes = str(arguments.get("volumes", "") or "")
+    for mount in raw_volumes.split(","):
+        volume_name = mount.strip().split(":", 1)[0]
+        if volume_name:
+            resources.add(f"volume:{team_id}:{volume_name}")
+    return resources
+
+
+def _team_operation_resources(
+    fn_name: str,
+) -> Callable[[Mapping[str, Any], str], Iterable[str]]:
+    if fn_name == "setup_repo_auth":
+        return lambda _arguments, team_id: [f"credentials:{team_id}"]
+    if "extra_repo" in fn_name:
+        return static_resource("extra-repo", "name")
+    if fn_name == "save_as_template":
+        return resource_set(
+            static_resource("env", "env_name"),
+            static_resource("template", "template_name"),
+        )
+    if fn_name == "rename_template":
+        return resource_set(
+            static_resource("template", "template_name"),
+            static_resource("template", "new_name"),
+        )
+    if "template" in fn_name or fn_name == "attach_filestore":
+        return static_resource("template", "template_name")
+    if "service" in fn_name:
+        return _service_resources
+    if "volume" in fn_name:
+        return static_resource("volume", "name")
+    return lambda _arguments, team_id: [f"team-state:{team_id}:{fn_name}"]
+
+
 def with_team_lock(fn: Callable[P, R]) -> Callable[P, R]:
-    """Acquire a per-team lock before executing the tool function."""
-
-    @functools.wraps(fn)
-    def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
-        ctx = cast("Context | None", kwargs.get("ctx"))
-        team = _resolve_team(ctx)
-        _locks.acquire_team(team.team_id, operation=fn.__name__)
-        try:
-            return fn(*args, **kwargs)
-        finally:
-            _locks.release_team(team.team_id)
-
-    return wrapper
+    """Compatibility spelling for a named-resource queued operation."""
+    return cast(
+        Callable[P, R],
+        operation(_team_operation_resources(fn.__name__))(fn),
+    )
 
 
 def prod_lock_key(team_id: str, name: str) -> str:
@@ -350,24 +430,18 @@ def production_enabled(fn: Callable[P, R]) -> Callable[P, R]:
 
 
 def with_prod_lock(fn: Callable[P, R]) -> Callable[P, R]:
-    """Acquire the production's lock before executing the tool function."""
+    """Compatibility spelling for a production-scoped queued operation."""
 
-    @functools.wraps(fn)
-    def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
-        raw_name = kwargs.get("name") or (args[0] if args else None)
-        if not raw_name:
-            raise ToolError("name is required")
-        name = cast(str, raw_name)
-        ctx = cast("Context | None", kwargs.get("ctx"))
-        team = _resolve_team(ctx)
-        key = prod_lock_key(team.team_id, name)
-        _locks.acquire_env(key, operation=fn.__name__)
-        try:
-            return fn(*args, **kwargs)
-        finally:
-            _locks.release_env(key)
+    def resources(arguments: Mapping[str, Any], team_id: str) -> Iterable[str]:
+        result = set(static_resource("production", "name")(arguments, team_id))
+        if fn.__name__ in {"snapshot_production", "restore_production"}:
+            result.add(f"backup-store:{team_id}")
+        return sorted(result)
 
-    return wrapper
+    return cast(
+        Callable[P, R],
+        operation(resources)(fn),
+    )
 
 
 # =============================================================================
@@ -516,6 +590,24 @@ def _parse_extra_addons(raw: str) -> dict[str, str]:
     return result
 
 
+def _create_environment_resources(
+    arguments: Mapping[str, Any], team_id: str
+) -> Iterable[str]:
+    from oduflow.naming import validate_env_name
+
+    env_name = validate_env_name(
+        str(arguments.get("env_name") or arguments.get("branch") or "")
+    )
+    resources = {f"env:{team_id}:{env_name}"}
+    template_name = str(arguments.get("template_name", "") or "").strip()
+    if template_name and template_name.lower() != "none":
+        resources.add(f"template:{team_id}:{template_name}")
+    raw_extra = str(arguments.get("extra_addons", "") or "")
+    for name in _parse_extra_addons(raw_extra):
+        resources.add(f"extra-repo:{team_id}:{name}")
+    return resources
+
+
 # =============================================================================
 # MCP Tools — Environments
 # =============================================================================
@@ -523,6 +615,7 @@ def _parse_extra_addons(raw: str) -> dict[str, str]:
 
 @mcp.tool()
 @handle_errors
+@operation(_create_environment_resources)
 def create_environment(
     branch: str,
     env_name: str = "",
@@ -803,7 +896,6 @@ def save_as_template(
 
 @mcp.tool()
 @handle_errors
-@with_team_lock
 def list_templates(ctx: Context | None = None) -> str:
     """List available template profiles (database + filestore snapshots)."""
     settings = _get_settings()
@@ -1420,15 +1512,14 @@ def get_environment_logs(
 @mcp.tool()
 @handle_errors
 @with_env_lock
-def restart_environment(
-    env_name: str, wait: bool = True, ctx: Context | None = None
-) -> str:
+def restart_environment(env_name: str, ctx: Context | None = None) -> str:
     """
     Restart the Odoo container for a specific environment.
 
     Args:
         env_name: The name of the environment to restart.
-        wait: Wait for Odoo to become ready after restart (default True). Polls /web/health every 2 seconds for up to 120 seconds.
+        wait: Queue control added by Oduflow. The operation itself always waits
+            for Odoo readiness so a succeeded result means the restart is usable.
     """
     settings = _get_settings()
     team = _resolve_team(ctx)
@@ -1438,15 +1529,13 @@ def restart_environment(
         "Environment restarted successfully!",
         f"Odoo Container: {result['odoo_container']}",
     ]
-    if wait:
-        team = _resolve_team(ctx)
-        ready = env_ops.wait_for_odoo_ready(settings, team, env_name)
-        if ready:
-            lines.append("Odoo is ready.")
-        else:
-            lines.append(
-                "Warning: Odoo did not become ready within 120 seconds. Check logs with get_environment_logs."
-            )
+    ready = env_ops.wait_for_odoo_ready(settings, team, env_name)
+    if ready:
+        lines.append("Odoo is ready.")
+    else:
+        lines.append(
+            "Warning: Odoo did not become ready within 120 seconds. Check logs with get_environment_logs."
+        )
     return "\n".join(lines)
 
 
@@ -1588,15 +1677,14 @@ def stop_environment(env_name: str, ctx: Context | None = None) -> str:
 @mcp.tool()
 @handle_errors
 @with_env_lock
-def start_environment(
-    env_name: str, wait: bool = True, ctx: Context | None = None
-) -> str:
+def start_environment(env_name: str, ctx: Context | None = None) -> str:
     """
     Start all containers for a specific environment.
 
     Args:
         env_name: The name of the environment to start.
-        wait: Wait for Odoo to become ready after start (default True). Polls /web/health every 2 seconds for up to 120 seconds.
+        wait: Queue control added by Oduflow. The operation itself always waits
+            for Odoo readiness so a succeeded result means the environment is usable.
     """
     settings = _get_settings()
     team = _resolve_team(ctx)
@@ -1606,14 +1694,13 @@ def start_environment(
         "Environment started successfully!",
         f"Started containers: {', '.join(result['started'])}",
     ]
-    if wait:
-        ready = env_ops.wait_for_odoo_ready(settings, team, env_name)
-        if ready:
-            lines.append("Odoo is ready.")
-        else:
-            lines.append(
-                "Warning: Odoo did not become ready within 120 seconds. Check logs with get_environment_logs."
-            )
+    ready = env_ops.wait_for_odoo_ready(settings, team, env_name)
+    if ready:
+        lines.append("Odoo is ready.")
+    else:
+        lines.append(
+            "Warning: Odoo did not become ready within 120 seconds. Check logs with get_environment_logs."
+        )
     return "\n".join(lines)
 
 
@@ -1763,7 +1850,10 @@ def read_output(
 
     cached = _output_cache.get(output_id)
     if cached is None:
-        return f"Output '{output_id}' not found or expired (TTL: 1 hour)."
+        return (
+            f"Output '{output_id}' not found or expired "
+            f"(TTL: {_output_cache.ttl_seconds} seconds)."
+        )
 
     lines = cached.lines
     total = cached.total_lines
@@ -1823,6 +1913,78 @@ def read_output(
     numbered = [f"{s + i + 1:>6}| {ln}" for i, ln in enumerate(page)]
     header = f"Lines {s + 1}-{e} of {total}:"
     return header + "\n" + "\n".join(numbered)
+
+
+# =============================================================================
+# MCP Tools — Durable operations
+# =============================================================================
+
+
+@mcp.tool()
+@handle_errors
+def get_operation(operation_id: str, ctx: Context | None = None) -> dict[str, Any]:
+    """Return the current state of a queued or running operation."""
+    settings = _get_settings()
+    team = _resolve_team(ctx)
+    return get_operation_manager(settings).get(operation_id, team_id=team.team_id)
+
+
+@mcp.tool()
+@handle_errors
+def wait_operation(
+    operation_id: str,
+    timeout_seconds: int = 90,
+    ctx: Context | None = None,
+) -> dict[str, Any]:
+    """Wait repeatably for an operation without re-running it."""
+    settings = _get_settings()
+    team = _resolve_team(ctx)
+    return get_operation_manager(settings).wait(
+        operation_id,
+        timeout_seconds,
+        team_id=team.team_id,
+    )
+
+
+@mcp.tool()
+@handle_errors
+def list_operations(
+    limit: int = 50, ctx: Context | None = None
+) -> list[dict[str, Any]]:
+    """List active and recently completed operations for the current team."""
+    settings = _get_settings()
+    team = _resolve_team(ctx)
+    return get_operation_manager(settings).list(team.team_id, limit)
+
+
+@mcp.tool()
+@handle_errors
+def read_operation_output(operation_id: str, ctx: Context | None = None) -> Any:
+    """Read a completed operation result during the configured retention window."""
+    settings = _get_settings()
+    team = _resolve_team(ctx)
+    manager = get_operation_manager(settings)
+    operation_result = manager.get(operation_id, team_id=team.team_id)
+    output = manager.read_output(operation_id, team_id=team.team_id)
+    if operation_result["state"] not in {
+        "succeeded",
+        "failed",
+        "cancelled",
+        "interrupted",
+    }:
+        if output is not None:
+            operation_result["output"] = output
+        return operation_result
+    return operation_result if output is None else output
+
+
+@mcp.tool()
+@handle_errors
+def cancel_operation(operation_id: str, ctx: Context | None = None) -> dict[str, Any]:
+    """Request best-effort cancellation of a queued or running operation."""
+    settings = _get_settings()
+    team = _resolve_team(ctx)
+    return get_operation_manager(settings).cancel(operation_id, team.team_id)
 
 
 # =============================================================================
@@ -2150,13 +2312,15 @@ def read_file_in_odoo(
     """
     settings = _get_settings()
     team = _resolve_team(ctx)
-    woke = _wake_for_work(settings, team, env_name)
+    stopped = _stopped_read_result(settings, team, env_name)
+    if stopped:
+        return stopped
     result = odoo_ops.read_file_in_environment(
         settings, team, env_name, path, read_range
     )
     if "error" in result:
-        return f"{woke}Error: {result['error']}"
-    return cast(str, woke + result["output"])
+        return f"Error: {result['error']}"
+    return cast(str, result["output"])
 
 
 @mcp.tool()
@@ -2253,6 +2417,12 @@ def run_odoo_shell(
 
 @mcp.tool()
 @handle_errors
+@operation(
+    _env_resources,
+    when=lambda arguments: (
+        str(arguments.get("method", "GET")).upper() not in {"GET", "HEAD", "OPTIONS"}
+    ),
+)
 def http_request_to_odoo(
     env_name: str,
     path: str,
@@ -2288,7 +2458,14 @@ def http_request_to_odoo(
 
     settings = _get_settings()
     team = _resolve_team(ctx)
-    woke = _wake_for_work(settings, team, env_name)
+    is_read = method.upper() in {"GET", "HEAD", "OPTIONS"}
+    if is_read:
+        stopped = _stopped_read_result(settings, team, env_name)
+        if stopped:
+            return stopped
+        woke = ""
+    else:
+        woke = _wake_for_work(settings, team, env_name)
     parsed_headers = None
     if headers:
         parsed_headers = dict(
@@ -2342,14 +2519,16 @@ def search_in_odoo(
     """
     settings = _get_settings()
     team = _resolve_team(ctx)
-    woke = _wake_for_work(settings, team, env_name)
+    stopped = _stopped_read_result(settings, team, env_name)
+    if stopped:
+        return stopped
     result = odoo_ops.search_in_environment(
         settings, team, env_name, pattern, path, glob, max_results
     )
     output = result["output"]
     if not output:
-        return f"{woke}No matches for '{pattern}' in {path} ({glob})."
-    header = f"{woke}Matches: {result['matches']}"
+        return f"No matches for '{pattern}' in {path} ({glob})."
+    header = f"Matches: {result['matches']}"
     if result["truncated"]:
         header += f" (truncated to {max_results})"
     return f"{header}\n\n{output}"
@@ -3296,6 +3475,7 @@ def delete_service(name: str, ctx: Context | None = None) -> str:
 
 @mcp.tool()
 @handle_errors
+@operation(_service_resources)
 def restart_service(name: str, ctx: Context | None = None) -> str:
     """
     Restart a managed auxiliary service container.
@@ -3545,6 +3725,7 @@ def get_service_logs(name: str, n_lines: int = 100, ctx: Context | None = None) 
 
 @mcp.tool()
 @handle_errors
+@operation(_service_resources)
 def run_service_command(
     name: str,
     command: str,
@@ -4268,6 +4449,7 @@ def set_production_backup_schedule(
 @mcp.tool()
 @handle_errors
 @production_enabled
+@operation(lambda _arguments, team_id: [f"backup-store:{team_id}"])
 def prune_production_backups(ctx: Context | None = None) -> str:
     """
     Apply the retention policy ([backup] keep) to the team's snapshots and
@@ -4279,11 +4461,7 @@ def prune_production_backups(ctx: Context | None = None) -> str:
 
     settings = _get_settings()
     team = _resolve_team(ctx)
-    _locks.acquire_team(team.team_id, operation="prune_backups")
-    try:
-        result = backup_ops.prune_backups(settings, team)
-    finally:
-        _locks.release_team(team.team_id)
+    result = backup_ops.prune_backups(settings, team)
     import json as _json
 
     return _json.dumps(result, indent=2)
@@ -4292,6 +4470,7 @@ def prune_production_backups(ctx: Context | None = None) -> str:
 @mcp.tool()
 @handle_errors
 @production_enabled
+@operation(lambda _arguments, _team_id: ["prod-cluster"])
 def restore_cluster_pitr(
     target_time: str = "", confirm: str = "", ctx: Context | None = None
 ) -> str:
@@ -4320,32 +4499,28 @@ def restore_cluster_pitr(
 
     settings = _get_settings()
     _resolve_team(ctx)  # authenticate the caller; PITR spans all teams
-    _locks.acquire_env("prod:__cluster__", operation="restore_cluster_pitr")
-    try:
-        from oduflow.docker_ops.client import get_client
+    from oduflow.docker_ops.client import get_client
 
-        client = get_client()
-        # Stop every production Odoo container (all teams share the cluster).
-        stopped: list[str] = []
-        for team_cfg in settings.teams.values():
-            for prod_name in production_registry.list_productions(team_cfg):
-                container = production_ops._get_container(
-                    client, settings, team_cfg, prod_name
-                )
-                if container is not None and container.status == "running":
-                    container.stop()
-                    stopped.append(f"{team_cfg.team_id}/{prod_name}")
-        result = walg.pitr_restore_cluster(settings, target_time=target_time)
-        for entry in stopped:
-            team_id, prod_name = entry.split("/", 1)
-            try:
-                production_ops.start_production(
-                    settings, settings.teams[team_id], prod_name
-                )
-            except Exception as exc:
-                logger.warning("Could not restart production %s: %s", entry, exc)
-    finally:
-        _locks.release_env("prod:__cluster__")
+    client = get_client()
+    # Stop every production Odoo container (all teams share the cluster).
+    stopped: list[str] = []
+    for team_cfg in settings.teams.values():
+        for prod_name in production_registry.list_productions(team_cfg):
+            container = production_ops._get_container(
+                client, settings, team_cfg, prod_name
+            )
+            if container is not None and container.status == "running":
+                container.stop()
+                stopped.append(f"{team_cfg.team_id}/{prod_name}")
+    result = walg.pitr_restore_cluster(settings, target_time=target_time)
+    for entry in stopped:
+        team_id, prod_name = entry.split("/", 1)
+        try:
+            production_ops.start_production(
+                settings, settings.teams[team_id], prod_name
+            )
+        except Exception as exc:
+            logger.warning("Could not restart production %s: %s", entry, exc)
     return (
         f"Cluster restored to {result['target_time']}. Previous data "
         f"directory kept inside the volume as {result['displaced_data_dir']} "
@@ -4413,6 +4588,49 @@ def _apply_agent_feedback(settings: Settings) -> None:
     if feedback_mod.MCP_HINT not in (mcp.instructions or ""):
         mcp.instructions = f"{mcp.instructions}\n\n{feedback_mod.MCP_HINT}".strip()
     logger.info("Agent feedback enabled (submit_agent_feedback exposed)")
+
+
+def _server_pid_path(settings: Settings) -> pathlib.Path:
+    return pathlib.Path(settings.base_data_dir) / "oduflow.pid"
+
+
+def _write_server_pid(settings: Settings) -> None:
+    path = _server_pid_path(settings)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(f"{os.getpid()}\n", encoding="utf-8")
+
+
+def _remove_server_pid(settings: Settings) -> None:
+    path = _server_pid_path(settings)
+    try:
+        if path.read_text(encoding="utf-8").strip() == str(os.getpid()):
+            path.unlink()
+    except FileNotFoundError:
+        pass
+
+
+def _run_drain(settings: Settings, *, force: bool) -> None:
+    path = _server_pid_path(settings)
+    try:
+        pid = int(path.read_text(encoding="utf-8").strip())
+    except (FileNotFoundError, ValueError) as exc:
+        raise PrerequisiteNotMetError(
+            f"No running Oduflow server PID found at {path}."
+        ) from exc
+    try:
+        os.kill(pid, signal.SIGTERM)
+        if force:
+            # The first signal enters drain; the repeated signal takes the
+            # explicit force path in the server handler.
+            time.sleep(0.1)
+            os.kill(pid, signal.SIGTERM)
+    except ProcessLookupError as exc:
+        raise PrerequisiteNotMetError(
+            f"Oduflow server process {pid} is not running."
+        ) from exc
+    print(
+        f"{'Forced shutdown' if force else 'Drain'} requested for Oduflow process {pid}."
+    )
 
 
 def _ensure_initialized(settings: Settings) -> None:
@@ -5498,6 +5716,15 @@ def _run_cli() -> None:
 
     # --- System commands ---
     sub.add_parser("destroy", help="Destroy all shared infrastructure")
+    p_drain = sub.add_parser(
+        "drain",
+        help="Stop accepting mutations, finish running jobs, and exit the server",
+    )
+    p_drain.add_argument(
+        "--force",
+        action="store_true",
+        help="Exit immediately without waiting for running jobs",
+    )
     p_upgrade = sub.add_parser(
         "upgrade",
         help="Overwrite bundled agent guides and sanitize scripts with the latest version",
@@ -5804,6 +6031,10 @@ def _run_cli() -> None:
         _run_destroy(_settings)
         return
 
+    if args.command == "drain":
+        _run_drain(_settings, force=args.force)
+        return
+
     if args.command == "upgrade":
         _run_upgrade(_settings, force=args.force)
         return
@@ -5941,12 +6172,50 @@ def _start_stdio() -> None:
 
     settings = _get_settings()
     _warn_local_path_security(settings)
+    # REST jobs are transport-independent durable commands. Populate their
+    # handler registry even when this process currently serves stdio, so a
+    # command queued before a transport change can still finish.
+    from oduflow.web_ui import _build_routes
+
+    _build_routes(_get_settings, _locks)
+    manager = get_operation_manager(settings)
+    manager.start()
     reaper.start_reaper(_get_settings, _locks)
     start_backup_scheduler(_get_settings, _locks)
+    _write_server_pid(settings)
+    draining = threading.Event()
+    previous_sigterm = signal.getsignal(signal.SIGTERM)
+
+    def handle_sigterm(_sig: int, _frame: Any) -> None:
+        if draining.is_set():
+            logger.warning("Repeated shutdown signal: forcing immediate exit.")
+            manager.begin_drain(force=True)
+            os._exit(0)
+        draining.set()
+        logger.info(
+            "Drain started: rejecting new mutations and waiting for running jobs."
+        )
+        manager.begin_drain()
+
+        def finish_drain() -> None:
+            manager.drain()
+            os.kill(os.getpid(), signal.SIGINT)
+
+        threading.Thread(
+            target=finish_drain,
+            name="oduflow-stdio-drain",
+            daemon=True,
+        ).start()
+
+    signal.signal(signal.SIGTERM, handle_sigterm)
     try:
         asyncio.run(mcp.run_stdio_async())
     except KeyboardInterrupt:
         logger.info("Shutting down.")
+    finally:
+        signal.signal(signal.SIGTERM, previous_sigterm)
+        manager.drain()
+        _remove_server_pid(settings)
 
 
 def _traefik_forwarded_allow_ips(settings: Settings) -> list[str]:
@@ -6065,17 +6334,17 @@ def _start_http() -> None:
 
     mcp.add_middleware(ScopedAccessMiddleware(build_env_param_tools(mcp)))
 
-    reaper.start_reaper(_get_settings, _locks)
-
     from oduflow.backup_scheduler import start_backup_scheduler
-
-    start_backup_scheduler(_get_settings, _locks)
-
     from oduflow.web_ui import mount_web_ui
 
     mount_web_ui(app, _get_settings, _locks)
     global _web_bind
     _web_bind = (host, port)
+    manager = get_operation_manager(settings)
+    manager.start()
+    reaper.start_reaper(_get_settings, _locks)
+    start_backup_scheduler(_get_settings, _locks)
+    _write_server_pid(settings)
 
     for tid, team in settings.teams.items():
         if settings.routing_mode == "traefik":
@@ -6128,7 +6397,31 @@ def _start_http() -> None:
     # so without a cap uvicorn waits indefinitely on SIGTERM and systemd escalates
     # to SIGKILL after TimeoutStopSec (~90s). Force-close lingering connections
     # after 10s so a stop/restart completes cleanly instead of being killed.
-    uvicorn.run(
+    class DrainingServer(uvicorn.Server):
+        _drain_started = False
+
+        def handle_exit(self, sig: int, frame: Any) -> None:
+            if self._drain_started:
+                logger.warning("Repeated shutdown signal: forcing immediate exit.")
+                manager.begin_drain(force=True)
+                os._exit(0)
+            self._drain_started = True
+            logger.info(
+                "Drain started: rejecting new mutations and waiting for running jobs."
+            )
+            manager.begin_drain()
+
+            def finish_drain() -> None:
+                manager.drain()
+                self.should_exit = True
+
+            threading.Thread(
+                target=finish_drain,
+                name="oduflow-drain",
+                daemon=True,
+            ).start()
+
+    config = uvicorn.Config(
         served,
         host=host,
         port=port,
@@ -6137,6 +6430,11 @@ def _start_http() -> None:
         proxy_headers=True,
         forwarded_allow_ips=forwarded_allow_ips,
     )
+    try:
+        DrainingServer(config).run()
+    finally:
+        manager.drain(force=True)
+        _remove_server_pid(settings)
 
 
 def _build_auth(settings: Settings):  # type: ignore[no-untyped-def]

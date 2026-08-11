@@ -47,7 +47,7 @@ oduflow-{team}-net oduflow-db      oduflow-{team}-{branch}-odoo
 | Decision | Rationale |
 |---|---|
 | Single process, single uvicorn worker | Designed for a single developer or small team; no shared-state problems |
-| Granular `LockManager` (per-branch, per-team, system) | Operations on different branches run in parallel; same-branch operations are serialised with `BusyError` |
+| NATS/JetStream operation coordinator | Mutations survive transport timeouts; named resources serialize conflicts while unrelated work stays parallel |
 | Docker SDK only (no subprocess for Docker) | Consistent error handling; `put_archive` replaces `docker cp` |
 | fuse-overlayfs for filestore | Copy-on-write sharing of a large template filestore across all environments |
 | Stable port registry (`ports.json`) | Port assignments survive container restarts; eliminates TOCTOU race conditions |
@@ -169,6 +169,8 @@ This means no manual ownership fixups are ever needed on either platform.
 | **Network** | `oduflow-{team_id}-net` | Per-team isolated bridge network (only shared PostgreSQL and the Traefik bridge cross teams) |
 | **DB container** | `oduflow-db` | PostgreSQL 15, shared across all environments |
 | **DB volume** | `oduflow-db-data` | Persistent database storage |
+| **NATS container** | `oduflow-nats` | Local JetStream operation queue |
+| **NATS volume** | `oduflow-nats-data` | Durable commands, current state, and retained output |
 | **Template DB** | `oduflow_template_{team_id}_{name}` | Created from the dump file, used as PostgreSQL template |
 | **Environment DB** | `oduflow_{team_id}_{branch}` | Created from template DB via `CREATE DATABASE ... TEMPLATE` |
 | **Odoo containers** | `oduflow-{team_id}-{branch}-odoo` | One per environment |
@@ -178,17 +180,22 @@ This means no manual ownership fixups are ever needed on either platform.
 
 All containers are labeled with `oduflow.managed=true` and `oduflow.team={team_id}` for discovery and management.
 
-## Concurrency & Locking
+## Durable operations and concurrency
 
-Oduflow uses a granular `LockManager` (`locking.py`) with per-branch and per-team locks:
+Mutations enter one NATS/JetStream work queue and declare named resources such
+as `env:1:feature`, `template:1:clean`, or `production:1:erp`. The embedded
+coordinator starts an operation only after all its resources are free.
+Operations on different resources run in parallel; conflicts are FIFO per
+resource instead of returning `BusyError`.
 
-| Lock Level | Scope | Example Operations |
-|---|---|---|
-| **Per-branch** | One operation per branch at a time | `create_environment`, `delete_environment`, `install_odoo_modules`, `pull_and_apply`, `export_module_translations` |
-| **Per-team** | One team-level operation at a time | `add_extra_repo`, `setup_repo_auth`, `create_service` |
-| **System/cluster** | Cross-environment infrastructure operation | startup initialization, `destroy`, production cluster PITR |
+The command survives an MCP/HTTP timeout and a server restart. JetStream KV
+stores current state, while Object Store retains large results and complete
+tool output for `[jobs].retention_seconds` after terminal completion. MCP
+callers use `wait=false` for an immediate server-generated ticket or
+`wait_operation` to follow long work.
 
-Operations on **different branches** run in parallel. If a lock cannot be acquired, the tool immediately returns `BusyError` (no queuing).
+`LockManager` remains for direct bootstrap/maintenance paths and for narrow
+in-process critical sections that do not enter the public operation queue.
 
 ## Error Handling
 
@@ -197,7 +204,7 @@ Oduflow uses a typed error hierarchy for clear error reporting:
 | Error | Description |
 |---|---|
 | `FlowError` | Base error for all operations |
-| `BusyError` | Another operation is in progress (lock not available) |
+| `BusyError` | A direct maintenance critical section is already held |
 | `NotFoundError` | Environment, service, or resource not found |
 | `ConflictError` | Resource already exists (e.g. environment already running) |
 | `PrerequisiteNotMetError` | System not initialized, Docker not running, or dependency missing |

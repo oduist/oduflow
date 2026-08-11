@@ -64,6 +64,7 @@ precursors).
 | [0043](0043-template-code-provenance-and-lineage.md) | 2026-08-08 | Templates record the commit their data was snapshotted at; environments report code/database drift at creation |
 | [0044](0044-unified-host-resource-planning.md) | 2026-08-02 | One host-wide resource plan for dev PostgreSQL, production PostgreSQL, and production Odoo |
 | [0045](0045-user-attributed-github-feedback.md) | 2026-08-11 | User-attributed GitHub feedback through prefilled, review-before-submit issue forms |
+| [0046](0046-durable-nats-operation-queue.md) | 2026-07-25 | Durable local NATS/JetStream queue for mutating operations |
 
 ## Design docs
 

@@ -5,6 +5,7 @@ import base64
 import hashlib
 import hmac
 import html
+import inspect
 import json
 import logging
 import os
@@ -16,7 +17,7 @@ import tempfile
 import threading
 import time
 from collections.abc import Callable
-from typing import Any
+from typing import Any, cast
 from urllib.parse import quote, urlsplit
 
 from itsdangerous import BadData, URLSafeTimedSerializer
@@ -67,6 +68,13 @@ from oduflow.errors import BusyError, ConflictError, FlowError, NotFoundError
 from oduflow.licensing import get_license_info, install_license_from_text
 from oduflow.locking import LockManager
 from oduflow.naming import validate_template_name
+from oduflow.operations import (
+    current_team_id as operation_team_id,
+)
+from oduflow.operations import (
+    get_operation_manager,
+    register_operation,
+)
 from oduflow.settings import Settings, TeamSettings
 
 logger = logging.getLogger("oduflow")
@@ -118,6 +126,75 @@ _SECRET_FILENAME = ".ui_session_secret"
 # Cached per data dir (process-wide; the server runs against a single one).
 _secrets_cache: dict[str, str] = {}
 _signers: dict[str, URLSafeTimedSerializer] = {}
+_WEB_OPERATION_ENDPOINTS: dict[str, Callable[[Request], Any]] = {}
+_WEB_SETTINGS_GETTER: Callable[[], Settings] | None = None
+
+
+def _execute_web_operation(
+    route_name: str, request_data: dict[str, Any]
+) -> dict[str, Any]:
+    """Replay one authenticated REST mutation inside a job worker."""
+    endpoint = _WEB_OPERATION_ENDPOINTS.get(route_name)
+    if endpoint is None:
+        raise RuntimeError(f"REST operation handler is unavailable: {route_name}")
+    team_id = operation_team_id()
+    if team_id is None:
+        raise RuntimeError("REST operation has no team context")
+
+    body = base64.b64decode(str(request_data.get("body", "")))
+    headers = [
+        (str(name).encode("latin-1"), str(value).encode("latin-1"))
+        for name, value in request_data.get("headers", [])
+    ]
+
+    async def invoke() -> dict[str, Any]:
+        if _WEB_SETTINGS_GETTER is None:
+            raise RuntimeError("REST operation settings are unavailable")
+        settings = _WEB_SETTINGS_GETTER()
+        sent = False
+
+        async def receive() -> dict[str, Any]:
+            nonlocal sent
+            if sent:
+                return {"type": "http.request", "body": b"", "more_body": False}
+            sent = True
+            return {"type": "http.request", "body": body, "more_body": False}
+
+        scope: Scope = {
+            "type": "http",
+            "asgi": {"version": "3.0"},
+            "http_version": "1.1",
+            "method": str(request_data["method"]),
+            "scheme": "http",
+            "path": str(request_data["path"]),
+            "raw_path": str(request_data["path"]).encode("utf-8"),
+            "query_string": str(request_data.get("query_string", "")).encode("latin-1"),
+            "root_path": "",
+            "headers": headers,
+            "client": ("127.0.0.1", 0),
+            "server": ("oduflow", settings.port),
+            "state": {"team": settings.get_team(team_id)},
+            "path_params": dict(request_data.get("path_params", {})),
+        }
+        request = Request(scope, receive)
+        response = endpoint(request)
+        if inspect.isawaitable(response):
+            response = await response
+        if not isinstance(response, Response):
+            raise RuntimeError(f"REST operation returned {type(response).__name__}")
+        raw_body = getattr(response, "body", b"")
+        content_type = response.headers.get("content-type", "")
+        if "application/json" in content_type:
+            payload: Any = json.loads(raw_body.decode("utf-8"))
+        else:
+            payload = raw_body.decode("utf-8", errors="replace")
+        return {
+            "status_code": response.status_code,
+            "content_type": content_type,
+            "body": payload,
+        }
+
+    return asyncio.run(invoke())
 
 
 def _load_or_create_secret(data_dir: str) -> str:
@@ -621,6 +698,8 @@ def _build_routes(
     get_settings: Callable[[], Settings],
     locks: LockManager,
 ) -> list[BaseRoute]:
+    global _WEB_SETTINGS_GETTER
+    _WEB_SETTINGS_GETTER = get_settings
     # Per-app so test apps and real deployments don't share failure counters.
     login_limiter = _LoginRateLimiter()
     import_staging_locks = _ImportStagingLocks()
@@ -745,6 +824,170 @@ def _build_routes(
         if len(settings.teams) == 1:
             return next(iter(settings.teams.values()))
         return settings.get_team("1")
+
+    def _web_operation_resources(
+        route_name: str,
+        request: Request,
+        body: dict[str, Any],
+        team_id: str,
+    ) -> list[str]:
+        params = request.path_params
+        resources: set[str] = set()
+        if "branch" in params:
+            resources.add(f"env:{team_id}:{params['branch']}")
+        elif route_name == "api_create":
+            env_name = str(body.get("env_name") or body.get("branch") or "").strip()
+            if env_name:
+                resources.add(f"env:{team_id}:{env_name}")
+
+        resource_map = {
+            "name": (
+                ("api_service", "service"),
+                ("api_volume", "volume"),
+                ("api_extra_repo", "extra-repo"),
+                ("api_template", "template"),
+                ("api_production", "production"),
+            )
+        }
+        raw_name = str(params.get("name") or body.get("name") or "").strip()
+        for prefixes in resource_map.values():
+            for prefix, resource_type in prefixes:
+                if route_name.startswith(prefix) and raw_name:
+                    resources.add(f"{resource_type}:{team_id}:{raw_name}")
+                    break
+
+        if route_name.startswith("api_service") and raw_name:
+            try:
+                team = get_settings().get_team(team_id)
+                info = service_ops.get_service_info(get_settings(), team, raw_name)
+                for mount in info.get("volumes", []):
+                    volume_name = str(mount.get("volume", "")).strip()
+                    if volume_name:
+                        resources.add(f"volume:{team_id}:{volume_name}")
+            except Exception:
+                pass
+            try:
+                team = get_settings().get_team(team_id)
+                preset = service_presets.get_preset(team, raw_name)
+                for mount in preset.get("volumes", []):
+                    volume_name = str(mount.get("volume", "")).strip()
+                    if volume_name:
+                        resources.add(f"volume:{team_id}:{volume_name}")
+            except Exception:
+                pass
+            for mount in str(body.get("volumes", "") or "").split(","):
+                volume_name = mount.strip().split(":", 1)[0]
+                if volume_name:
+                    resources.add(f"volume:{team_id}:{volume_name}")
+
+        if route_name == "api_save_as_template":
+            template_name = str(body.get("template_name", "")).strip()
+            if template_name:
+                resources.add(f"template:{team_id}:{template_name}")
+        if route_name.startswith("api_credential"):
+            resources.add(f"credentials:{team_id}")
+        if not resources:
+            resources.add(f"web-state:{team_id}:{route_name}")
+        return sorted(resources)
+
+    def mutation_route(
+        path: str,
+        endpoint: Callable[[Request], Any],
+        *,
+        methods: list[str],
+    ) -> Route:
+        route_name = endpoint.__name__
+        operation_kind = f"web.{route_name}"
+        _WEB_OPERATION_ENDPOINTS[route_name] = endpoint
+        register_operation(
+            operation_kind,
+            _execute_web_operation,
+            lambda _arguments, _team_id: (),
+        )
+
+        async def submit(request: Request) -> Response:
+            team = _get_ui_team(request)
+            raw_body = await request.body()
+            try:
+                parsed = json.loads(raw_body) if raw_body else {}
+                body = parsed if isinstance(parsed, dict) else {}
+            except (TypeError, ValueError, json.JSONDecodeError):
+                body = {}
+            request_data = {
+                "method": request.method,
+                "path": request.url.path,
+                "query_string": request.url.query,
+                "path_params": dict(request.path_params),
+                "headers": [
+                    (name, value)
+                    for name, value in request.headers.items()
+                    if name.lower() in {"content-type", "accept"}
+                ],
+                "body": base64.b64encode(raw_body).decode("ascii"),
+            }
+            manager = get_operation_manager(get_settings())
+            if not manager.started:
+                # mount_web_ui is also used directly by embedders and unit
+                # tests. The owning Oduflow server starts the queue before it
+                # serves requests; without that lifecycle owner, preserve the
+                # endpoint's synchronous behavior instead of spawning an
+                # uncoordinated second consumer.
+                response = endpoint(request)
+                if inspect.isawaitable(response):
+                    response = await response
+                return cast(Response, response)
+            try:
+                ticket = manager.submit(
+                    operation_kind,
+                    team.team_id,
+                    {"route_name": route_name, "request_data": request_data},
+                    _web_operation_resources(route_name, request, body, team.team_id),
+                    wait=False,
+                )
+                return JSONResponse({"ok": True, **ticket}, status_code=202)
+            except FlowError as exc:
+                return _error_response(exc)
+
+        submit.__name__ = f"queued_{route_name}"
+        return Route(path, submit, methods=methods)
+
+    def api_operations(request: Request) -> JSONResponse:
+        try:
+            team = _get_ui_team(request)
+            limit = int(request.query_params.get("limit", "50"))
+            operations = get_operation_manager(get_settings()).list(team.team_id, limit)
+            return JSONResponse({"ok": True, "operations": operations})
+        except FlowError as exc:
+            return _error_response(exc)
+        except ValueError:
+            return JSONResponse(
+                {"ok": False, "error": "limit must be an integer"},
+                status_code=400,
+            )
+
+    def api_operation(request: Request) -> JSONResponse:
+        try:
+            team = _get_ui_team(request)
+            operation_id = request.path_params["operation_id"]
+            result = get_operation_manager(get_settings()).get(
+                operation_id,
+                include_result=True,
+                team_id=team.team_id,
+            )
+            return JSONResponse({"ok": True, **result})
+        except FlowError as exc:
+            return _error_response(exc)
+
+    def api_operation_cancel(request: Request) -> JSONResponse:
+        try:
+            team = _get_ui_team(request)
+            operation_id = request.path_params["operation_id"]
+            result = get_operation_manager(get_settings()).cancel(
+                operation_id, team.team_id
+            )
+            return JSONResponse({"ok": True, **result})
+        except FlowError as exc:
+            return _error_response(exc)
 
     def api_list(request: Request) -> JSONResponse:
         try:
@@ -4383,39 +4626,43 @@ def _build_routes(
     if get_settings().prod_enabled:
         production_routes = [
             Route("/api/productions", api_productions, methods=["GET"]),
-            Route("/api/productions/create", api_production_create, methods=["POST"]),
+            mutation_route(
+                "/api/productions/create",
+                api_production_create,
+                methods=["POST"],
+            ),
             Route(
                 "/api/productions/backup-status",
                 api_production_backup_status,
                 methods=["GET"],
             ),
             Route("/api/productions/{name}", api_production_info, methods=["GET"]),
-            Route(
+            mutation_route(
                 "/api/productions/{name}/start",
                 api_production_start,
                 methods=["POST"],
             ),
-            Route(
+            mutation_route(
                 "/api/productions/{name}/stop",
                 api_production_stop,
                 methods=["POST"],
             ),
-            Route(
+            mutation_route(
                 "/api/productions/{name}/restart",
                 api_production_restart,
                 methods=["POST"],
             ),
-            Route(
+            mutation_route(
                 "/api/productions/{name}/update",
                 api_production_update,
                 methods=["POST"],
             ),
-            Route(
+            mutation_route(
                 "/api/productions/{name}/rollback",
                 api_production_rollback,
                 methods=["POST"],
             ),
-            Route(
+            mutation_route(
                 "/api/productions/{name}/auto-update",
                 api_production_auto_update,
                 methods=["POST"],
@@ -4430,7 +4677,7 @@ def _build_routes(
                 api_production_deploys,
                 methods=["GET"],
             ),
-            Route(
+            mutation_route(
                 "/api/productions/{name}/delete",
                 api_production_delete,
                 methods=["POST"],
@@ -4440,17 +4687,17 @@ def _build_routes(
                 api_production_snapshots,
                 methods=["GET"],
             ),
-            Route(
+            mutation_route(
                 "/api/productions/{name}/snapshot",
                 api_production_snapshot_now,
                 methods=["POST"],
             ),
-            Route(
+            mutation_route(
                 "/api/productions/{name}/restore",
                 api_production_restore,
                 methods=["POST"],
             ),
-            Route(
+            mutation_route(
                 "/api/productions/{name}/backup-schedule",
                 api_production_backup_schedule,
                 methods=["POST"],
@@ -4466,7 +4713,7 @@ def _build_routes(
         Route("/logo.png", logo, methods=["GET"]),
         Route("/static/{filename}", static_file, methods=["GET"]),
         Route("/api/license", api_license, methods=["GET"]),
-        Route("/api/license/activate", api_license_activate, methods=["POST"]),
+        mutation_route("/api/license/activate", api_license_activate, methods=["POST"]),
         Route("/api/feedback/link", api_feedback_link, methods=["POST"]),
         Route("/api/templates", api_templates, methods=["GET"]),
         Route("/import-odoo.sh", import_odoo_script, methods=["GET"]),
@@ -4489,21 +4736,32 @@ def _build_routes(
             api_template_metadata,
             methods=["GET"],
         ),
-        Route(
+        mutation_route(
             "/api/templates/{name:path}/metadata",
             api_template_metadata_update,
             methods=["PUT"],
         ),
-        Route("/api/templates/{name}/delete", api_template_delete, methods=["POST"]),
-        Route("/api/templates/{name}/rename", api_template_rename, methods=["POST"]),
+        mutation_route(
+            "/api/templates/{name}/delete", api_template_delete, methods=["POST"]
+        ),
+        mutation_route(
+            "/api/templates/{name}/rename", api_template_rename, methods=["POST"]
+        ),
         Route("/api/environments", api_list, methods=["GET"]),
-        Route("/api/environments/create", api_create, methods=["POST"]),
+        mutation_route("/api/environments/create", api_create, methods=["POST"]),
         *production_routes,
+        Route("/api/operations", api_operations, methods=["GET"]),
+        Route("/api/operations/{operation_id}", api_operation, methods=["GET"]),
+        Route(
+            "/api/operations/{operation_id}/cancel",
+            api_operation_cancel,
+            methods=["POST"],
+        ),
         Route("/healthz", healthz, methods=["GET"]),
         Route("/api/stats", api_stats, methods=["GET"]),
         Route("/api/usage", api_usage, methods=["GET"]),
-        Route("/api/usage/refresh", api_usage_refresh, methods=["POST"]),
-        Route(
+        mutation_route("/api/usage/refresh", api_usage_refresh, methods=["POST"]),
+        mutation_route(
             "/api/environments/{branch:path}/storage/refresh",
             api_storage_refresh,
             methods=["POST"],
@@ -4531,15 +4789,33 @@ def _build_routes(
             api_agent_acp_attachment_delete,
             methods=["DELETE"],
         ),
-        Route("/api/environments/{branch:path}/start", api_start, methods=["POST"]),
-        Route("/api/environments/{branch:path}/stop", api_stop, methods=["POST"]),
-        Route("/api/environments/{branch:path}/restart", api_restart, methods=["POST"]),
-        Route("/api/environments/{branch:path}/sync", api_sync, methods=["POST"]),
-        Route("/api/environments/{branch:path}/protect", api_protect, methods=["POST"]),
-        Route(
+        mutation_route(
+            "/api/environments/{branch:path}/start", api_start, methods=["POST"]
+        ),
+        mutation_route(
+            "/api/environments/{branch:path}/stop", api_stop, methods=["POST"]
+        ),
+        mutation_route(
+            "/api/environments/{branch:path}/restart",
+            api_restart,
+            methods=["POST"],
+        ),
+        mutation_route(
+            "/api/environments/{branch:path}/sync", api_sync, methods=["POST"]
+        ),
+        mutation_route(
+            "/api/environments/{branch:path}/protect",
+            api_protect,
+            methods=["POST"],
+        ),
+        mutation_route(
             "/api/environments/{branch:path}/unprotect", api_unprotect, methods=["POST"]
         ),
-        Route("/api/environments/{branch:path}/note", api_set_note, methods=["POST"]),
+        mutation_route(
+            "/api/environments/{branch:path}/note",
+            api_set_note,
+            methods=["POST"],
+        ),
         Route(
             "/api/environments/{branch:path}/mcp-access",
             api_mcp_access,
@@ -4550,7 +4826,7 @@ def _build_routes(
             api_env_users,
             methods=["GET"],
         ),
-        Route(
+        mutation_route(
             "/api/environments/{branch:path}/connect-as",
             api_connect_as,
             methods=["POST"],
@@ -4564,50 +4840,72 @@ def _build_routes(
         # public + token-authenticated. See api_connect_land.
         Route("/oduflow-connect", api_connect_land, methods=["GET"]),
         Route("/oduflow-artifact", api_artifact_download, methods=["GET"]),
-        Route("/api/environments/{branch:path}/update", api_update, methods=["POST"]),
-        Route(
+        mutation_route(
+            "/api/environments/{branch:path}/update", api_update, methods=["POST"]
+        ),
+        mutation_route(
             "/api/environments/{branch:path}/recreate", api_recreate, methods=["POST"]
         ),
-        Route(
+        mutation_route(
             "/api/environments/{branch:path}/save-as-template",
             api_save_as_template,
             methods=["POST"],
         ),
-        Route("/api/environments/{branch:path}/delete", api_delete, methods=["POST"]),
+        mutation_route(
+            "/api/environments/{branch:path}/delete", api_delete, methods=["POST"]
+        ),
         Route("/api/services", api_services, methods=["GET"]),
-        Route("/api/services/create", api_service_create, methods=["POST"]),
-        Route("/api/services/{name}/update", api_service_update, methods=["POST"]),
-        Route("/api/services/{name}/restart", api_service_restart, methods=["POST"]),
-        Route("/api/services/{name}/delete", api_service_delete, methods=["POST"]),
+        mutation_route("/api/services/create", api_service_create, methods=["POST"]),
+        mutation_route(
+            "/api/services/{name}/update", api_service_update, methods=["POST"]
+        ),
+        mutation_route(
+            "/api/services/{name}/restart", api_service_restart, methods=["POST"]
+        ),
+        mutation_route(
+            "/api/services/{name}/delete", api_service_delete, methods=["POST"]
+        ),
         Route("/api/services/{name}/logs", api_service_logs, methods=["GET"]),
         Route("/api/service-presets", api_service_presets, methods=["GET"]),
-        Route("/api/service-presets/restore", api_service_restore, methods=["POST"]),
-        Route(
+        mutation_route(
+            "/api/service-presets/restore", api_service_restore, methods=["POST"]
+        ),
+        mutation_route(
             "/api/service-presets/{name}/delete",
             api_service_preset_delete,
             methods=["POST"],
         ),
         Route("/api/volumes", api_volumes, methods=["GET"]),
-        Route("/api/volumes/create", api_volume_create, methods=["POST"]),
-        Route("/api/volumes/{name}/delete", api_volume_delete, methods=["POST"]),
+        mutation_route("/api/volumes/create", api_volume_create, methods=["POST"]),
+        mutation_route(
+            "/api/volumes/{name}/delete", api_volume_delete, methods=["POST"]
+        ),
         Route("/api/extra-repos", api_extra_repos, methods=["GET"]),
-        Route("/api/extra-repos/add", api_extra_repo_add, methods=["POST"]),
-        Route("/api/extra-repos/{name}/pull", api_extra_repo_pull, methods=["POST"]),
-        Route(
+        mutation_route("/api/extra-repos/add", api_extra_repo_add, methods=["POST"]),
+        mutation_route(
+            "/api/extra-repos/{name}/pull",
+            api_extra_repo_pull,
+            methods=["POST"],
+        ),
+        mutation_route(
             "/api/extra-repos/{name}/protect", api_extra_repo_protect, methods=["POST"]
         ),
-        Route(
+        mutation_route(
             "/api/extra-repos/{name}/unprotect",
             api_extra_repo_unprotect,
             methods=["POST"],
         ),
-        Route(
+        mutation_route(
             "/api/extra-repos/{name}/delete", api_extra_repo_delete, methods=["POST"]
         ),
         Route("/api/credentials", api_credentials, methods=["GET"]),
-        Route("/api/credentials/add", api_credential_add, methods=["POST"]),
-        Route("/api/credentials/delete", api_credential_delete, methods=["POST"]),
-        Route("/api/credentials/validate", api_credential_validate, methods=["POST"]),
+        mutation_route("/api/credentials/add", api_credential_add, methods=["POST"]),
+        mutation_route(
+            "/api/credentials/delete", api_credential_delete, methods=["POST"]
+        ),
+        mutation_route(
+            "/api/credentials/validate", api_credential_validate, methods=["POST"]
+        ),
         Route("/api/environments/{branch:path}/logs", api_logs, methods=["GET"]),
         WebSocketRoute("/api/environments/{branch:path}/terminal", ws_terminal),
         WebSocketRoute("/api/environments/{branch:path}/sql", ws_sql_terminal),

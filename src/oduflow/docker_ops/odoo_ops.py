@@ -8,6 +8,7 @@ from typing import Any
 
 import docker
 from oduflow import po_tools
+from oduflow.docker_ops.cancellable_exec import exec_run as cancellable_exec
 from oduflow.docker_ops.client import get_client
 from oduflow.env_credentials import load_credentials
 from oduflow.errors import (
@@ -217,8 +218,8 @@ def run_environment_tests(
             "upgrade": upgrade,
         },
     )
-    exit_code, output = container.exec_run(
-        cmd, environment={"PGPASSWORD": creds["pg_password"]}
+    exit_code, output = cancellable_exec(
+        container, cmd, environment={"PGPASSWORD": creds["pg_password"]}
     )
 
     if isinstance(output, bytes):
@@ -315,7 +316,7 @@ def _run_odoo_module_command(
         action,
         extra={"env_name": env_name, "modules": modules_str},
     )
-    exit_code, output = container.exec_run(cmd)
+    exit_code, output = cancellable_exec(container, cmd)
     output_str = output.decode("utf-8") if isinstance(output, bytes) else str(output)
 
     return {
@@ -481,8 +482,10 @@ def run_command_in_environment(
             "shell": shell,
         },
     )
-    exit_code, output = container.exec_run(
-        ["sh", "-c", command] if shell else command, user=user
+    exit_code, output = cancellable_exec(
+        container,
+        ["sh", "-c", command] if shell else command,
+        user=user,
     )
     output_str = output.decode("utf-8") if isinstance(output, bytes) else str(output)
 
@@ -581,7 +584,7 @@ def run_db_query(
         "Running DB query",
         extra={"env_name": env_name, "format": output_format},
     )
-    exit_code, output = db_container.exec_run(cmd)
+    exit_code, output = cancellable_exec(db_container, cmd)
     output_str = output.decode("utf-8") if isinstance(output, bytes) else str(output)
 
     if exit_code != 0:
@@ -731,7 +734,8 @@ def run_odoo_shell(
     )
     # Pass the per-env DB password via PGPASSWORD (libpq reads it) rather than
     # `-w` on the odoo CLI, keeping it out of the container's process argv (`ps`).
-    exit_code, output = container.exec_run(
+    exit_code, output = cancellable_exec(
+        container,
         ["sh", "-c", cmd],
         user="odoo",
         environment={"PGPASSWORD": creds["pg_password"]},
@@ -890,7 +894,8 @@ def connect_as_user(
         # Password via PGPASSWORD (libpq reads it), never `-w` on the odoo CLI:
         # that would expose it in the container's process argv. Minting is a hot
         # path now that the odoo_* RPC tools re-mint per environment and user.
-        exit_code, output = container.exec_run(
+        exit_code, output = cancellable_exec(
+            container,
             ["sh", "-c", cmd],
             user="odoo",
             environment={"PGPASSWORD": creds["pg_password"]},

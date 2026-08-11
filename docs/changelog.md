@@ -4,6 +4,15 @@
 
 ### Features
 
+- **Durable NATS operation queue** — mutating MCP and dashboard requests,
+  webhooks, lifecycle actions, and backup schedules now run as server-ticketed
+  JetStream operations instead of being bounded by an MCP response timeout.
+  Independent resources remain parallel, conflicting work queues FIFO,
+  `wait=false` returns immediately, and `wait=true` falls back to the same
+  ticket after a safe timeout while execution continues. Operation output is
+  retained for a configurable hour by default; drain waits only already-running
+  work, with queued commands left durable for the next server process.
+
 - **Non-interactive bundled-file upgrades** — `oduflow upgrade --force` prints
   the usual overwrite warning and affected paths but proceeds without waiting
   for terminal input, enabling unattended deployments while continuing to

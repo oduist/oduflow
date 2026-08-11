@@ -23,6 +23,11 @@ uvx oduflow -t http
 
 Shared infrastructure (Docker network, PostgreSQL, team directories) is initialized automatically on startup.
 
+Mutating MCP and dashboard work is queued in the managed local NATS/JetStream
+service. To restart safely, run `oduflow drain` (or send SIGTERM): new mutations
+are rejected, running jobs finish, queued jobs stay durable, and the server
+exits. `oduflow drain --force` requests immediate shutdown.
+
 **stdio mode** — the server communicates over stdin/stdout. The MCP client starts the process directly; no network port is needed. Ideal for local clients like Claude Desktop, Windsurf, etc.
 
 **HTTP mode** — starts a persistent HTTP server on `http://0.0.0.0:8000` by default. Exposes the MCP endpoint at `/mcp`, a Web Dashboard at `/`, and a REST API at `/api/`. MCP uses Bearer tokens; the dashboard uses a form/session cookie, while API clients may also use HTTP Basic auth.

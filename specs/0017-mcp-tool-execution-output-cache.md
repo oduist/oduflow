@@ -89,6 +89,14 @@ stays addressable on the server. This refinement was specified up front
   15K to 5K during the spec phase so the safety net engages well before any
   client limit.
 
+## Evolution
+
+[[0046-durable-nats-operation-queue]] keeps the compact summary and
+`read_output` workflow, makes the one-hour lifetime configurable through
+`[jobs].retention_seconds`, and adds durable operation-result and full-output
+storage so a transport timeout or server restart does not erase the terminal
+job result or its complete log.
+
 ## History
 
 - `87edd27` (2026-03-02) — author the MCP tools refinement spec (`mcp-ref.md`):

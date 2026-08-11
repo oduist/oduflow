@@ -75,3 +75,8 @@ oduflow_data_*/
 # mutmut mutation testing workspace + result cache
 mutants/
 .mutmut-cache
+
+# Local runtime state (production keeps these under [server].etc_dir/data_dir)
+/nats-secrets.json
+/nats.conf
+/oduflow.pid

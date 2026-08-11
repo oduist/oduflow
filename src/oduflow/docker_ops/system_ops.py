@@ -1655,6 +1655,12 @@ def init_system(
 
     _ensure_iptables_accept(client, settings.shared_network)
 
+    # The operation queue is bootstrap infrastructure: it must exist before the
+    # MCP/REST workers start accepting mutating calls.
+    from oduflow.nats_runtime import ensure_nats
+
+    ensure_nats(client, settings, system_labels)
+
     _ensure_traefik(client, settings)
 
     try:
@@ -2590,7 +2596,11 @@ def destroy_system(settings: Settings) -> dict[str, str]:
 
     filters = {"label": [f"{settings.managed_label}=true"]}
     containers = client.containers.list(all=True, filters=filters)
-    system_names = {settings.shared_db_container, settings.traefik_container}
+    system_names = {
+        settings.shared_db_container,
+        settings.traefik_container,
+        settings.nats_container,
+    }
     env_containers = [
         c
         for c in containers
@@ -2667,6 +2677,21 @@ def destroy_system(settings: Settings) -> dict[str, str]:
         vol = client.volumes.get(settings.shared_db_volume)
         vol.remove()
         removed.append(settings.shared_db_volume)
+    except docker.errors.NotFound:
+        pass
+
+    # NATS is removed after every other workload. The destroy CLI is a direct
+    # bootstrap path (not a queued job), so tearing down the queue here cannot
+    # strand the operation reporting its own result.
+    try:
+        nats_container = client.containers.get(settings.nats_container)
+        nats_container.remove(force=True)
+        removed.append(settings.nats_container)
+    except docker.errors.NotFound:
+        pass
+    try:
+        client.volumes.get(settings.nats_volume).remove()
+        removed.append(settings.nats_volume)
     except docker.errors.NotFound:
         pass
 

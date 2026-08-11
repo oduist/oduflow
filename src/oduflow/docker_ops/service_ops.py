@@ -9,6 +9,7 @@ from typing import Any
 
 import docker
 from oduflow.docker_ops import service_presets, volume_ops
+from oduflow.docker_ops.cancellable_exec import exec_run as cancellable_exec
 from oduflow.docker_ops.client import get_client
 from oduflow.errors import ConflictError, NotFoundError, PrerequisiteNotMetError
 from oduflow.naming import get_service_container_name
@@ -971,8 +972,10 @@ def run_command_in_service(
         "Executing command in service",
         extra={"service": name, "command": command, "user": user, "shell": shell},
     )
-    exit_code, output = container.exec_run(
-        ["sh", "-c", command] if shell else command, user=user
+    exit_code, output = cancellable_exec(
+        container,
+        ["sh", "-c", command] if shell else command,
+        user=user,
     )
     output_str = output.decode("utf-8") if isinstance(output, bytes) else str(output)
 

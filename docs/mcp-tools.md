@@ -4,16 +4,16 @@
 
 All tools are accessible via MCP clients (Cursor, Cline, Amp, etc.) and the CLI (`oduflow call`). A subset is also available via the [REST API](web-api.md).
 
-| Tool | Lock | Description |
+| Tool | Operation | Description |
 |---|:---:|---|
 | **Environment Management** | | |
 | `create_environment` | ✓ | Provision an Odoo environment for a branch (clone, DB, container, filestore); optional `env_vars` injects container environment variables |
 | `delete_environment` | ✓ | Tear down all resources for a branch |
 | `list_environments` | | List all managed environments with status and URLs |
 | `get_environment_info` | | Full environment details: DB name, URL, repo, image, template, extra addons, workspace, container status, CPU/RAM stats |
-| `start_environment` | | Start a stopped environment |
-| `stop_environment` | | Stop a running environment |
-| `restart_environment` | | Restart the Odoo container |
+| `start_environment` | ✓ | Start a stopped environment |
+| `stop_environment` | ✓ | Stop a running environment |
+| `restart_environment` | ✓ | Restart the Odoo container |
 | `update_environment` | ✓ | Re-create the container, preserving DB and filestore; optional `odoo_image` switches the image and `env_vars` replaces the container environment variables |
 | **Odoo Operations** | | |
 | `pull_and_apply` | ✓ | Git pull + smart analysis → auto install/upgrade/restart |
@@ -34,12 +34,17 @@ All tools are accessible via MCP clients (Cursor, Cline, Amp, etc.) and the CLI 
 | `read_file_in_odoo` | | Read a text file or list a directory inside the Odoo container. Supports line ranges (e.g. `"1:50"`) |
 | `write_file_in_odoo` | ✓ | Write a text file inside the container (CSV imports, scripts, configs) |
 | `search_in_odoo` | | Search for a pattern (fixed-string grep) in files inside the Odoo container |
-| `http_request_to_odoo` | | Make an HTTP request to the running Odoo instance (test controllers, JSON-RPC, REST) |
+| `http_request_to_odoo` | conditional | Read methods run directly; mutating methods are durable operations |
 | `list_installed_modules` | | List Odoo modules and their states with name/state filtering |
 | `run_db_query` | ✓ | Execute SQL against the environment's PostgreSQL database; supports `output_format="csv"` or `"json"` and caps returned rows with `max_rows` (default `100`) |
 | `reset_admin_password` | ✓ | Reset the admin user password in the Odoo database (default: "test") |
 | `connect_as_user` | ✓ | Mint a passwordless Odoo login session for a user (by login or id) and return the `session_id` cookie + URL — hand to Playwright to skip the login form and test as any role (incl. portal) |
 | `read_output` | | Read from a cached tool output by ID (paginate, grep, errors, tail) |
+| `get_operation` | | Get queued/running/terminal operation state |
+| `wait_operation` | | Wait repeatably for a ticket without rerunning the mutation |
+| `list_operations` | | List active and recent operations for the team |
+| `read_operation_output` | | Read live tracked-command output when available, then the complete terminal output/result during its retention window |
+| `cancel_operation` | | Request best-effort cancellation |
 | **Template Management** | | |
 | `save_as_template` | ✓ | ⚠️ Save a branch DB + filestore as a new template |
 | `list_templates` | | List available template profiles, including the branch/commit each database snapshot was taken from |
@@ -51,12 +56,12 @@ All tools are accessible via MCP clients (Cursor, Cline, Amp, etc.) and the CLI 
 | **Auxiliary Services** | | |
 | `create_service` | ✓ | Create a managed service with exactly one exposure model: catch-all `port`, or restricted Traefik `routes` (`path`, backend `port`, optional `strip_prefix`). The two parameters are mutually exclusive; `port` remains required outside Traefik |
 | `delete_service` | ✓ | Stop and remove a service container |
-| `restart_service` | | Restart a service container |
+| `restart_service` | ✓ | Restart a service container |
 | `update_service` | ✓ | Preflight configuration, pull the latest image and/or change settings. `routes` replaces the complete allowlist; use `routes=[]` with `port` only when switching back to catch-all mode |
 | `list_services` | | List all managed service containers |
 | `get_service_info` | | Full live state of a single service (image+digest, port/routes, hostname, host_mode, volumes, env, capabilities, restart count, preset). Call before recreating it |
 | `get_service_logs` | | Retrieve service container logs |
-| `run_service_command` | | Execute a shell command inside a service container (through `sh -c`; `shell=False` for exact argv) |
+| `run_service_command` | ✓ | Execute a shell command inside a service container (through `sh -c`; `shell=False` for exact argv) |
 | **Volumes** | | |
 | `create_volume` | ✓ | Create a named Docker volume for use with services |
 | `list_volumes` | | List all managed Docker volumes and their usage by services |
@@ -103,8 +108,11 @@ All tools are accessible via MCP clients (Cursor, Cline, Amp, etc.) and the CLI 
 | **Feedback** | | |
 | `report_issue` | | Build a prefilled link for the user to file a bug, feature request, or feedback about Oduflow on GitHub |
 
-!!! info "Locking"
-    Tools marked with ✓ acquire a per-branch or per-team lock. Operations on different branches run in parallel. If another operation on the **same branch** (or team, for team-level tools) is already in progress, the call is rejected with `BusyError`. The rejection names the operation holding the lock and how long it has held it (e.g. *"Another operation on environment 'main' (pull_and_apply, running for 4m12s) is in progress"*), so a long install is distinguishable from a hung one. A lock is released when its operation finishes — including when the client that started it timed out and stopped waiting, which is why restarting the environment is the wrong response.
+!!! info "Durable operations"
+    Tools marked with ✓ are durable mutating operations. They accept
+    `wait=true` by default for a normal one-call result; `wait=false` returns a
+    server-generated ticket immediately. Conflicting named resources queue in
+    JetStream, while unrelated operations run in parallel.
 
 The exact current signature and defaults for every tool are also available from
 `oduflow list` (`oduflow list --verbose` adds descriptions). The production

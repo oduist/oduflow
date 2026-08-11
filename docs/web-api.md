@@ -37,6 +37,19 @@ own security model:
 than a JSON API. Production routes are registered only when
 `[production].enabled = true`.
 
+Mutating endpoints return `202 Accepted` with a server-generated
+`operation_id` and current state. Poll the operation endpoints below; the
+dashboard does this automatically and then presents the original endpoint
+result. Read-only endpoints remain synchronous.
+
+### Operations
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `GET` | `/api/operations?limit=50` | List active and recently completed operations for the authenticated team |
+| `GET` | `/api/operations/{operation_id}` | Read current state and the terminal REST result when complete |
+| `POST` | `/api/operations/{operation_id}/cancel` | Request best-effort cancellation |
+
 ## Environment endpoints
 
 | Method | Endpoint | Description |

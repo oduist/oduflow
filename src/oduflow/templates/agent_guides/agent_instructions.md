@@ -244,7 +244,25 @@ The summary footer looks like:
 
 **When to use:** If the summary shows an error but you need more context around it, or if you need to find a specific module/field/class in the output.
 
-**Cache lifetime:** 1 hour. After that, the output expires.
+**Cache lifetime:** configured by the server operator (1 hour by default).
+After that, the output expires.
+
+### Durable operations
+
+Every mutating tool accepts `wait` (default `true`). Oduflow generates the
+operation ID; do not generate one yourself.
+
+- With `wait=true`, a quick operation returns its normal result in the same
+  call. If it exceeds the server's safe wait window, the response becomes an
+  operation ticket and the work continues.
+- With `wait=false`, the tool immediately returns a ticket containing
+  `operation_id`, `state`, and resource keys.
+- Use `wait_operation(operation_id)` repeatedly to wait without running the
+  mutation again. Use `get_operation`, `list_operations`,
+  `read_operation_output`, and `cancel_operation` for status, result retrieval,
+  live output when available, and best-effort cancellation.
+- Never repeat the original mutating call merely because an MCP request timed
+  out. First use `list_operations` to find its server-generated ticket.
 
 ---
 
@@ -258,7 +276,11 @@ The summary footer looks like:
 
 ### Environment Lifecycle (automatic)
 1. Idle environments **auto-stop** after 48 hours without any env-scoped tool call; stopped environments **auto-delete** after another 72 hours (both configurable, both skip protected environments).
-2. You do not need to start a stopped environment yourself: container-level tools (`pull_and_apply`, `run_odoo_shell`, `run_odoo_tests`, installs/upgrades, file and command tools) start it automatically and prepend `Note: environment was stopped; started it ...` to the response. Treat that note as normal, not as an error.
+2. Mutating container tools (`pull_and_apply`, `run_odoo_shell`,
+   `run_odoo_tests`, installs/upgrades, file writes, and commands) start a
+   stopped environment automatically. Read-only tools never wake it; they
+   return the stopped state, after which call `start_environment` explicitly
+   when the read is needed.
 3. If an environment must survive idle periods (e.g. handed to a customer for testing), call `protect_environment` — protection disables stop and delete entirely.
 
 ### Sync & Work Cycle
@@ -364,7 +386,9 @@ The environment container runs **remotely** and has access only to the git repos
 
 ### General
 - **One task = one branch = one environment.**
-- Mutexed tools (create, delete, install, upgrade, pull, test, exec) reject concurrent calls with `BusyError` — retry after a short delay. The message names the operation holding the lock and how long it has held it (`pull_and_apply, running for 4m12s`), so read it before reacting: the lock is held by work that is **still running server-side**, including when your own earlier call timed out client-side. Wait for it; do not restart or recreate the environment to "clear" it.
+- Mutating tools are queued by named resource. Conflicting operations on the
+  same environment/service/template/etc. serialize automatically; unrelated
+  resources continue in parallel. Do not retry a queued mutation.
 - `run_odoo_command` runs as `odoo` by default. Use `user="root"` for package installation or system operations.
 - Database is accessible from inside the container: `psql -h oduflow-db -U odoo -d oduflow_{env_name}`.
 

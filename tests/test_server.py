@@ -973,19 +973,20 @@ class TestEnvLock:
             _locks.release_env("main")
 
 
-class TestTemplateListLock:
+class TestTemplateListConcurrency:
     @patch("oduflow.docker_ops.system_ops.list_templates")
-    def test_busy_raises_tool_error_without_listing(self, mock_list):
+    def test_read_only_listing_does_not_wait_for_mutation_lock(self, mock_list):
         import oduflow.server
 
+        mock_list.return_value = []
         locks = oduflow.server._locks
         locks.acquire_team("1")
         try:
-            with pytest.raises(ToolError, match="Another team-level operation"):
-                _call_tool("list_templates")
+            result = _call_tool("list_templates")
         finally:
             locks.release_team("1")
-        mock_list.assert_not_called()
+        assert result == "No template profiles found."
+        mock_list.assert_called_once()
 
 
 class TestListServicePresetsTool:
@@ -1176,10 +1177,13 @@ class TestHttpFailClosed:
             patch("fastmcp.server.http.create_streamable_http_app"),
             patch("oduflow.web_ui.mount_web_ui"),
             patch("oduflow.reaper.start_reaper"),
-            patch("uvicorn.run") as mock_uvicorn,
+            patch.object(server, "get_operation_manager"),
+            patch("uvicorn.Config") as mock_config,
+            patch("uvicorn.Server.run") as mock_uvicorn,
         ):
             server._start_http()
             mock_uvicorn.assert_called_once()
+            mock_config.assert_called_once()
 
     def test_start_http_refuses_empty_team_map(self):
         from oduflow import server
@@ -1215,10 +1219,12 @@ class TestHttpFailClosed:
             patch("fastmcp.server.http.create_streamable_http_app"),
             patch("oduflow.web_ui.mount_web_ui"),
             patch("oduflow.reaper.start_reaper"),
-            patch("uvicorn.run") as mock_uvicorn,
+            patch.object(server, "get_operation_manager"),
+            patch("uvicorn.Config") as mock_config,
+            patch("uvicorn.Server.run"),
         ):
             server._start_http()
-            _, kwargs = mock_uvicorn.call_args
+            kwargs = mock_config.call_args.kwargs
             assert kwargs["proxy_headers"] is True
             assert kwargs["forwarded_allow_ips"] is None
 
@@ -1246,10 +1252,12 @@ class TestHttpFailClosed:
                 "_traefik_forwarded_allow_ips",
                 return_value=["127.0.0.1", "172.18.0.0/16"],
             ),
-            patch("uvicorn.run") as mock_uvicorn,
+            patch.object(server, "get_operation_manager"),
+            patch("uvicorn.Config") as mock_config,
+            patch("uvicorn.Server.run"),
         ):
             server._start_http()
-            _, kwargs = mock_uvicorn.call_args
+            kwargs = mock_config.call_args.kwargs
             assert kwargs["proxy_headers"] is True
             assert kwargs["forwarded_allow_ips"] == ["127.0.0.1", "172.18.0.0/16"]
 

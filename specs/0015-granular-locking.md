@@ -1,6 +1,6 @@
 # 0015 — Granular locking: per-branch / per-team / system locks
 
-**Status:** Adopted (still in force)
+**Status:** Superseded by [[0046-durable-nats-operation-queue]]
 **Type:** Architecture
 **First introduced:** global mutex `3a26c70` "Load filestore" (2026-02-06); replaced by the granular `LockManager` in `ad3b382` "team-based multi-tenancy" (2026-03-01)
 **Key code today:** `locking.py` (`LockManager`, `BusyError`), `server.py` (`with_env_lock` / `with_team_lock` decorators, `acquire_system`)
@@ -77,6 +77,14 @@ resource is in progress and to retry, instead of the request hanging.
 - Locks are in-process only: they serialize within one Oduflow process, while
   cross-process safety on shared files (e.g. the port registry) is handled
   separately with an flock (see [[0004-stable-addressing-port-registry-and-traefik]]).
+
+## Evolution
+
+On 2026-07-25, [[0046-durable-nats-operation-queue]] replaced fail-fast
+environment/team/system locks at the public mutation boundary with durable
+queueing over explicit named resource keys. The original principle—serialize
+only work that touches the same state—remains, but a client timeout no longer
+owns the lock lifetime and team-wide locks are no longer the default.
 
 ## History
 

@@ -815,6 +815,10 @@ port_range = [50000, 50100]          # port range for Odoo containers [start, en
 | `[storage].overlay_threshold_mb` | `50` | Template filestore size threshold (MB). Templates smaller than this use a simple copy per environment; larger templates use fuse-overlayfs. The decision is stored in `metadata.json` at template creation time |
 | `[lifecycle].auto_stop_hours` | `48` | Auto-stop environments after N hours without work (env-scoped MCP calls or dashboard actions). `0` disables. Protected environments are exempt |
 | `[lifecycle].auto_delete_hours` | `0` | Auto-delete stopped environments N hours after they stopped (manual stops count). Default `0` = **disabled** — auto-delete is opt-in and destructive; set a positive value to enable. Protected environments are exempt; `pull_and_apply` wakes a stopped environment automatically |
+| `[jobs].wait_timeout_seconds` | `90` | Maximum `wait=true` time before a mutating MCP call returns an operation ticket while work continues |
+| `[jobs].retention_seconds` | `3600` | Retention for terminal operation metadata and output; queued/running jobs never expire |
+| `[jobs].max_workers` | `4` | Maximum parallel operations on unrelated named resources |
+| `[jobs].nats_port` | `4222` | Loopback-only host port for the Oduflow-managed NATS/JetStream container |
 
 ### Agent settings
 
@@ -2642,6 +2646,19 @@ own security model:
 than a JSON API. Production routes are registered only when
 `[production].enabled = true`.
 
+Mutating endpoints return `202 Accepted` with a server-generated
+`operation_id` and current state. Poll the operation endpoints below; the
+dashboard does this automatically and then presents the original endpoint
+result. Read-only endpoints remain synchronous.
+
+### Operations
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `GET` | `/api/operations?limit=50` | List active and recently completed operations for the authenticated team |
+| `GET` | `/api/operations/{operation_id}` | Read current state and the terminal REST result when complete |
+| `POST` | `/api/operations/{operation_id}/cancel` | Request best-effort cancellation |
+
 ## Environment endpoints
 
 | Method | Endpoint | Description |
@@ -2808,16 +2825,16 @@ semantics.
 
 All tools are accessible via MCP clients (Cursor, Cline, Amp, etc.) and the CLI (`oduflow call`). A subset is also available via the [REST API](web-api.md).
 
-| Tool | Lock | Description |
+| Tool | Operation | Description |
 |---|:---:|---|
 | **Environment Management** | | |
 | `create_environment` | ✓ | Provision an Odoo environment for a branch (clone, DB, container, filestore); optional `env_vars` injects container environment variables |
 | `delete_environment` | ✓ | Tear down all resources for a branch |
 | `list_environments` | | List all managed environments with status and URLs |
 | `get_environment_info` | | Full environment details: DB name, URL, repo, image, template, extra addons, workspace, container status, CPU/RAM stats |
-| `start_environment` | | Start a stopped environment |
-| `stop_environment` | | Stop a running environment |
-| `restart_environment` | | Restart the Odoo container |
+| `start_environment` | ✓ | Start a stopped environment |
+| `stop_environment` | ✓ | Stop a running environment |
+| `restart_environment` | ✓ | Restart the Odoo container |
 | `update_environment` | ✓ | Re-create the container, preserving DB and filestore; optional `odoo_image` switches the image and `env_vars` replaces the container environment variables |
 | **Odoo Operations** | | |
 | `pull_and_apply` | ✓ | Git pull + smart analysis → auto install/upgrade/restart |
@@ -2838,12 +2855,17 @@ All tools are accessible via MCP clients (Cursor, Cline, Amp, etc.) and the CLI 
 | `read_file_in_odoo` | | Read a text file or list a directory inside the Odoo container. Supports line ranges (e.g. `"1:50"`) |
 | `write_file_in_odoo` | ✓ | Write a text file inside the container (CSV imports, scripts, configs) |
 | `search_in_odoo` | | Search for a pattern (fixed-string grep) in files inside the Odoo container |
-| `http_request_to_odoo` | | Make an HTTP request to the running Odoo instance (test controllers, JSON-RPC, REST) |
+| `http_request_to_odoo` | conditional | Read methods run directly; mutating methods are durable operations |
 | `list_installed_modules` | | List Odoo modules and their states with name/state filtering |
 | `run_db_query` | ✓ | Execute SQL against the environment's PostgreSQL database; supports `output_format="csv"` or `"json"` and caps returned rows with `max_rows` (default `100`) |
 | `reset_admin_password` | ✓ | Reset the admin user password in the Odoo database (default: "test") |
 | `connect_as_user` | ✓ | Mint a passwordless Odoo login session for a user (by login or id) and return the `session_id` cookie + URL — hand to Playwright to skip the login form and test as any role (incl. portal) |
 | `read_output` | | Read from a cached tool output by ID (paginate, grep, errors, tail) |
+| `get_operation` | | Get queued/running/terminal operation state |
+| `wait_operation` | | Wait repeatably for a ticket without rerunning the mutation |
+| `list_operations` | | List active and recent operations for the team |
+| `read_operation_output` | | Read live tracked-command output when available, then the complete terminal output/result during its retention window |
+| `cancel_operation` | | Request best-effort cancellation |
 | **Template Management** | | |
 | `save_as_template` | ✓ | ⚠️ Save a branch DB + filestore as a new template |
 | `list_templates` | | List available template profiles, including the branch/commit each database snapshot was taken from |
@@ -2855,12 +2877,12 @@ All tools are accessible via MCP clients (Cursor, Cline, Amp, etc.) and the CLI 
 | **Auxiliary Services** | | |
 | `create_service` | ✓ | Create a managed service with exactly one exposure model: catch-all `port`, or restricted Traefik `routes` (`path`, backend `port`, optional `strip_prefix`). The two parameters are mutually exclusive; `port` remains required outside Traefik |
 | `delete_service` | ✓ | Stop and remove a service container |
-| `restart_service` | | Restart a service container |
+| `restart_service` | ✓ | Restart a service container |
 | `update_service` | ✓ | Preflight configuration, pull the latest image and/or change settings. `routes` replaces the complete allowlist; use `routes=[]` with `port` only when switching back to catch-all mode |
 | `list_services` | | List all managed service containers |
 | `get_service_info` | | Full live state of a single service (image+digest, port/routes, hostname, host_mode, volumes, env, capabilities, restart count, preset). Call before recreating it |
 | `get_service_logs` | | Retrieve service container logs |
-| `run_service_command` | | Execute a shell command inside a service container (through `sh -c`; `shell=False` for exact argv) |
+| `run_service_command` | ✓ | Execute a shell command inside a service container (through `sh -c`; `shell=False` for exact argv) |
 | **Volumes** | | |
 | `create_volume` | ✓ | Create a named Docker volume for use with services |
 | `list_volumes` | | List all managed Docker volumes and their usage by services |
@@ -2907,8 +2929,11 @@ All tools are accessible via MCP clients (Cursor, Cline, Amp, etc.) and the CLI 
 | **Feedback** | | |
 | `report_issue` | | Build a prefilled link for the user to file a bug, feature request, or feedback about Oduflow on GitHub |
 
-!!! info "Locking"
-    Tools marked with ✓ acquire a per-branch or per-team lock. Operations on different branches run in parallel. If another operation on the **same branch** (or team, for team-level tools) is already in progress, the call is rejected with `BusyError`. The rejection names the operation holding the lock and how long it has held it (e.g. *"Another operation on environment 'main' (pull_and_apply, running for 4m12s) is in progress"*), so a long install is distinguishable from a hung one. A lock is released when its operation finishes — including when the client that started it timed out and stopped waiting, which is why restarting the environment is the wrong response.
+!!! info "Durable operations"
+    Tools marked with ✓ are durable mutating operations. They accept
+    `wait=true` by default for a normal one-call result; `wait=false` returns a
+    server-generated ticket immediately. Conflicting named resources queue in
+    JetStream, while unrelated operations run in parallel.
 
 The exact current signature and defaults for every tool are also available from
 `oduflow list` (`oduflow list --verbose` adds descriptions). The production
@@ -2941,6 +2966,11 @@ uvx oduflow -t http
 ```
 
 Shared infrastructure (Docker network, PostgreSQL, team directories) is initialized automatically on startup.
+
+Mutating MCP and dashboard work is queued in the managed local NATS/JetStream
+service. To restart safely, run `oduflow drain` (or send SIGTERM): new mutations
+are rejected, running jobs finish, queued jobs stay durable, and the server
+exits. `oduflow drain --force` requests immediate shutdown.
 
 **stdio mode** — the server communicates over stdin/stdout. The MCP client starts the process directly; no network port is needed. Ideal for local clients like Claude Desktop, Windsurf, etc.
 
@@ -3843,7 +3873,7 @@ oduflow-{team}-net oduflow-db      oduflow-{team}-{branch}-odoo
 | Decision | Rationale |
 |---|---|
 | Single process, single uvicorn worker | Designed for a single developer or small team; no shared-state problems |
-| Granular `LockManager` (per-branch, per-team, system) | Operations on different branches run in parallel; same-branch operations are serialised with `BusyError` |
+| NATS/JetStream operation coordinator | Mutations survive transport timeouts; named resources serialize conflicts while unrelated work stays parallel |
 | Docker SDK only (no subprocess for Docker) | Consistent error handling; `put_archive` replaces `docker cp` |
 | fuse-overlayfs for filestore | Copy-on-write sharing of a large template filestore across all environments |
 | Stable port registry (`ports.json`) | Port assignments survive container restarts; eliminates TOCTOU race conditions |
@@ -3965,6 +3995,8 @@ This means no manual ownership fixups are ever needed on either platform.
 | **Network** | `oduflow-{team_id}-net` | Per-team isolated bridge network (only shared PostgreSQL and the Traefik bridge cross teams) |
 | **DB container** | `oduflow-db` | PostgreSQL 15, shared across all environments |
 | **DB volume** | `oduflow-db-data` | Persistent database storage |
+| **NATS container** | `oduflow-nats` | Local JetStream operation queue |
+| **NATS volume** | `oduflow-nats-data` | Durable commands, current state, and retained output |
 | **Template DB** | `oduflow_template_{team_id}_{name}` | Created from the dump file, used as PostgreSQL template |
 | **Environment DB** | `oduflow_{team_id}_{branch}` | Created from template DB via `CREATE DATABASE ... TEMPLATE` |
 | **Odoo containers** | `oduflow-{team_id}-{branch}-odoo` | One per environment |
@@ -3974,17 +4006,22 @@ This means no manual ownership fixups are ever needed on either platform.
 
 All containers are labeled with `oduflow.managed=true` and `oduflow.team={team_id}` for discovery and management.
 
-## Concurrency & Locking
+## Durable operations and concurrency
 
-Oduflow uses a granular `LockManager` (`locking.py`) with per-branch and per-team locks:
+Mutations enter one NATS/JetStream work queue and declare named resources such
+as `env:1:feature`, `template:1:clean`, or `production:1:erp`. The embedded
+coordinator starts an operation only after all its resources are free.
+Operations on different resources run in parallel; conflicts are FIFO per
+resource instead of returning `BusyError`.
 
-| Lock Level | Scope | Example Operations |
-|---|---|---|
-| **Per-branch** | One operation per branch at a time | `create_environment`, `delete_environment`, `install_odoo_modules`, `pull_and_apply`, `export_module_translations` |
-| **Per-team** | One team-level operation at a time | `add_extra_repo`, `setup_repo_auth`, `create_service` |
-| **System/cluster** | Cross-environment infrastructure operation | startup initialization, `destroy`, production cluster PITR |
+The command survives an MCP/HTTP timeout and a server restart. JetStream KV
+stores current state, while Object Store retains large results and complete
+tool output for `[jobs].retention_seconds` after terminal completion. MCP
+callers use `wait=false` for an immediate server-generated ticket or
+`wait_operation` to follow long work.
 
-Operations on **different branches** run in parallel. If a lock cannot be acquired, the tool immediately returns `BusyError` (no queuing).
+`LockManager` remains for direct bootstrap/maintenance paths and for narrow
+in-process critical sections that do not enter the public operation queue.
 
 ## Error Handling
 
@@ -3993,7 +4030,7 @@ Oduflow uses a typed error hierarchy for clear error reporting:
 | Error | Description |
 |---|---|
 | `FlowError` | Base error for all operations |
-| `BusyError` | Another operation is in progress (lock not available) |
+| `BusyError` | A direct maintenance critical section is already held |
 | `NotFoundError` | Environment, service, or resource not found |
 | `ConflictError` | Resource already exists (e.g. environment already running) |
 | `PrerequisiteNotMetError` | System not initialized, Docker not running, or dependency missing |

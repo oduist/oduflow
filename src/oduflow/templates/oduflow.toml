@@ -6,6 +6,17 @@ allow_local_path = true        # trusted single-user local development; disable 
 # allow_insecure_http = false  # serve HTTP /mcp with NO auth (only behind your own proxy)
 # trace = false                    # verbose tracing for git analysis & env ops
 
+# ── Durable operations ─────────────────────────────────
+# Mutating MCP/REST calls are queued in a local NATS JetStream container managed
+# by Oduflow. Completed operation metadata and output expire after this period;
+# queued/running operations never expire.
+[jobs]
+wait_timeout_seconds = 90          # wait=true falls back to a ticket after N seconds
+retention_seconds = 3600           # completed result/output retention (1 hour)
+max_workers = 4                    # unrelated resource operations may run in parallel
+# nats_port = 4222                 # loopback-only host port for the managed NATS
+# nats_image = "nats:2.14.3-alpine"
+
 # ── Routing ───────────────────────────────────────────
 [routing]
 mode = "port"                   # "port" | "traefik"

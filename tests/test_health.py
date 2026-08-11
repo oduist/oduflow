@@ -48,7 +48,12 @@ def _client(running: dict[str, bool]):
 class TestCollectHealth:
     def test_all_ok(self, settings):
         client = _client(
-            {"oduflow-db": True, "oduflow-prod-db": True, "oduflow-traefik": True}
+            {
+                "oduflow-db": True,
+                "oduflow-prod-db": True,
+                "oduflow-traefik": True,
+                "oduflow-nats": True,
+            }
         )
         with patch("oduflow.docker_ops.client.get_client", return_value=client):
             result = health.collect_health(settings, force=True)
@@ -60,7 +65,9 @@ class TestCollectHealth:
         assert result["checks"]["s3"]["status"] == "off"
 
     def test_missing_prod_pg_is_off_not_error(self, settings):
-        client = _client({"oduflow-db": True, "oduflow-traefik": True})
+        client = _client(
+            {"oduflow-db": True, "oduflow-traefik": True, "oduflow-nats": True}
+        )
         with patch("oduflow.docker_ops.client.get_client", return_value=client):
             result = health.collect_health(settings, force=True)
         assert result["checks"]["prod_pg"]["status"] == "off"
@@ -116,7 +123,9 @@ class TestCollectHealth:
             routing_mode=settings.routing_mode,
             teams=settings.teams,
         )
-        client = _client({"oduflow-db": True, "oduflow-traefik": True})
+        client = _client(
+            {"oduflow-db": True, "oduflow-traefik": True, "oduflow-nats": True}
+        )
         with patch("oduflow.docker_ops.client.get_client", return_value=client):
             result = health.collect_health(settings, force=True)
         assert result["ok"] is True
@@ -143,7 +152,12 @@ class TestCollectHealth:
 
     def test_disk_warn_does_not_degrade(self, settings):
         client = _client(
-            {"oduflow-db": True, "oduflow-prod-db": True, "oduflow-traefik": True}
+            {
+                "oduflow-db": True,
+                "oduflow-prod-db": True,
+                "oduflow-traefik": True,
+                "oduflow-nats": True,
+            }
         )
         fake_usage = MagicMock(total=100, used=90, free=10)
         with (
@@ -153,6 +167,16 @@ class TestCollectHealth:
             result = health.collect_health(settings, force=True)
         assert result["checks"]["disk"]["status"] == "warn"
         assert result["ok"] is True
+
+    def test_missing_nats_degrades(self, settings):
+        client = _client(
+            {"oduflow-db": True, "oduflow-prod-db": True, "oduflow-traefik": True}
+        )
+        with patch("oduflow.docker_ops.client.get_client", return_value=client):
+            result = health.collect_health(settings, force=True)
+
+        assert result["checks"]["nats"]["status"] == "error"
+        assert result["ok"] is False
 
     def test_cache(self, settings):
         client = _client(

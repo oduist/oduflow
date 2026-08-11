@@ -266,6 +266,10 @@ port_range = [50000, 50100]          # port range for Odoo containers [start, en
 | `[storage].overlay_threshold_mb` | `50` | Template filestore size threshold (MB). Templates smaller than this use a simple copy per environment; larger templates use fuse-overlayfs. The decision is stored in `metadata.json` at template creation time |
 | `[lifecycle].auto_stop_hours` | `48` | Auto-stop environments after N hours without work (env-scoped MCP calls or dashboard actions). `0` disables. Protected environments are exempt |
 | `[lifecycle].auto_delete_hours` | `0` | Auto-delete stopped environments N hours after they stopped (manual stops count). Default `0` = **disabled** — auto-delete is opt-in and destructive; set a positive value to enable. Protected environments are exempt; `pull_and_apply` wakes a stopped environment automatically |
+| `[jobs].wait_timeout_seconds` | `90` | Maximum `wait=true` time before a mutating MCP call returns an operation ticket while work continues |
+| `[jobs].retention_seconds` | `3600` | Retention for terminal operation metadata and output; queued/running jobs never expire |
+| `[jobs].max_workers` | `4` | Maximum parallel operations on unrelated named resources |
+| `[jobs].nats_port` | `4222` | Loopback-only host port for the Oduflow-managed NATS/JetStream container |
 
 ### Agent settings
 

@@ -17,9 +17,9 @@ after startup, while a restart right after a successful run does not
 double-fire. Failures are retried on subsequent ticks (still due), capped
 per slot, and surfaced in the registry / backup log.
 
-Jobs run inline, sequentially, in the scheduler thread — one pg_dump / one
-chunkstore upload at a time keeps I/O predictable, and it serializes
-backup against prune for the chunkstore's safety assumptions.
+Due work is submitted to the durable operation coordinator. Named production
+and backup-store resources keep snapshots, manual backup actions, and prune
+safe while leaving unrelated teams and cluster work parallel.
 """
 
 from __future__ import annotations
@@ -35,6 +35,10 @@ from typing import Any, Callable
 from oduflow import production_registry
 from oduflow.errors import BusyError
 from oduflow.locking import LockManager
+from oduflow.operations import (
+    get_operation_manager,
+    register_operation,
+)
 from oduflow.settings import Settings, TeamSettings
 
 logger = logging.getLogger("oduflow")
@@ -50,6 +54,7 @@ _PRUNE_TIME = "04:30"
 
 # Cluster-level job state lives in a small JSON beside the registry files.
 _CLUSTER_STATE_FILENAME = "backup_scheduler.json"
+_job_locks = LockManager()
 
 
 def _parse_hhmm(value: str) -> tuple[int, int]:
@@ -153,6 +158,69 @@ def _save_cluster_state(settings: Settings, state: dict[str, Any]) -> None:
 
 def _local_now() -> datetime.datetime:
     return datetime.datetime.now().astimezone()
+
+
+def _scheduled_snapshot_operation(name: str, now_iso: str, fire_iso: str) -> None:
+    from oduflow.server import _get_settings, _resolve_team
+
+    _run_snapshot_job(
+        _get_settings(),
+        _resolve_team(None),
+        _job_locks,
+        name,
+        datetime.datetime.fromisoformat(now_iso),
+        datetime.datetime.fromisoformat(fire_iso),
+    )
+
+
+def _scheduled_basebackup_operation(now_iso: str, fire_iso: str) -> None:
+    from oduflow.server import _get_settings
+
+    _run_basebackup_job(
+        _get_settings(),
+        _job_locks,
+        datetime.datetime.fromisoformat(now_iso),
+        datetime.datetime.fromisoformat(fire_iso),
+    )
+
+
+def _scheduled_prune_operation(now_iso: str, fire_iso: str) -> None:
+    from oduflow.server import _get_settings
+
+    _run_prune_job(
+        _get_settings(),
+        _job_locks,
+        datetime.datetime.fromisoformat(now_iso),
+        datetime.datetime.fromisoformat(fire_iso),
+    )
+
+
+register_operation(
+    "schedule.production_snapshot",
+    _scheduled_snapshot_operation,
+    lambda arguments, team_id: [
+        f"production:{team_id}:{arguments['name']}",
+        f"backup-store:{team_id}",
+    ],
+)
+register_operation(
+    "schedule.basebackup",
+    _scheduled_basebackup_operation,
+    lambda _arguments, _team_id: ["prod-cluster"],
+)
+register_operation(
+    "schedule.backup_prune",
+    _scheduled_prune_operation,
+    lambda _arguments, _team_id: [
+        f"backup-store:{team_id}" for team_id in _get_scheduler_settings().teams
+    ],
+)
+
+
+def _get_scheduler_settings() -> Settings:
+    from oduflow.server import _get_settings
+
+    return _get_settings()
 
 
 # ---------------------------------------------------------------------------
@@ -345,6 +413,8 @@ def tick(settings: Settings, locks: LockManager) -> None:
     if backup is None:
         return
     now = _local_now()
+    manager = get_operation_manager(settings)
+    queue_ready = manager.started
 
     # Per-production snapshots.
     for team in settings.teams.values():
@@ -379,7 +449,24 @@ def tick(settings: Settings, locks: LockManager) -> None:
                 int(backup_state.get("slot_attempts", 0) or 0),
             )
             if due:
-                _run_snapshot_job(settings, team, locks, name, now, fire)
+                if queue_ready:
+                    manager.submit(
+                        "schedule.production_snapshot",
+                        team.team_id,
+                        {
+                            "name": name,
+                            "now_iso": now.isoformat(),
+                            "fire_iso": fire.isoformat(),
+                        },
+                        [
+                            f"production:{team.team_id}:{name}",
+                            f"backup-store:{team.team_id}",
+                        ],
+                        wait=False,
+                        coalesce_key=f"snapshot:{name}:{fire.isoformat()}",
+                    )
+                else:
+                    _run_snapshot_job(settings, team, locks, name, now, fire)
 
     # Cluster jobs only make sense once the production tier exists.
     from oduflow.docker_ops.client import get_client
@@ -401,7 +488,18 @@ def tick(settings: Settings, locks: LockManager) -> None:
         _parse_ts(str(base.get("last_attempt_at", ""))),
         int(base.get("slot_attempts", 0) or 0),
     ):
-        _run_basebackup_job(settings, locks, now, fire)
+        if queue_ready:
+            default_team = next(iter(settings.teams.values()))
+            manager.submit(
+                "schedule.basebackup",
+                default_team.team_id,
+                {"now_iso": now.isoformat(), "fire_iso": fire.isoformat()},
+                ["prod-cluster"],
+                wait=False,
+                coalesce_key=f"basebackup:{fire.isoformat()}",
+            )
+        else:
+            _run_basebackup_job(settings, locks, now, fire)
 
     prune_state = state.get("prune", {})
     fire = last_fire_time(now, _PRUNE_TIME, weekday=_PRUNE_WEEKDAY)
@@ -412,7 +510,18 @@ def tick(settings: Settings, locks: LockManager) -> None:
         _parse_ts(str(prune_state.get("last_attempt_at", ""))),
         int(prune_state.get("slot_attempts", 0) or 0),
     ):
-        _run_prune_job(settings, locks, now, fire)
+        if queue_ready:
+            default_team = next(iter(settings.teams.values()))
+            manager.submit(
+                "schedule.backup_prune",
+                default_team.team_id,
+                {"now_iso": now.isoformat(), "fire_iso": fire.isoformat()},
+                [f"backup-store:{team_id}" for team_id in sorted(settings.teams)],
+                wait=False,
+                coalesce_key=f"prune:{fire.isoformat()}",
+            )
+        else:
+            _run_prune_job(settings, locks, now, fire)
 
 
 def start_backup_scheduler(

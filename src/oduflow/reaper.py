@@ -8,10 +8,10 @@ A background daemon thread sweeps every team on an interval:
 - a stopped environment that nobody started for ``auto_delete_hours``
   after it stopped is deleted.
 
-Protected environments are exempt from both. Environments busy with another
-operation (per-environment lock held) are skipped until the next sweep, so
-the reaper never races agents. Both actions are idempotent, so a second
-oduflow process sweeping the same data dir is harmless.
+Protected environments are exempt from both. Actions are submitted through
+the same named-resource operation queue as MCP and dashboard mutations, so
+the reaper never races agent work. Eligibility is checked again when the
+operation actually starts.
 
 Disable either behavior with ``0`` in ``oduflow.toml``::
 
@@ -32,11 +32,93 @@ from oduflow import activity
 from oduflow.docker_ops import env_ops
 from oduflow.errors import BusyError, FlowError
 from oduflow.locking import LockManager
+from oduflow.operations import (
+    get_operation_manager,
+    register_operation,
+    static_resource,
+)
 from oduflow.settings import Settings, TeamSettings
 
 logger = logging.getLogger("oduflow")
 
 SWEEP_INTERVAL_SECONDS = 300
+
+
+def _auto_stop_operation(env_name: str) -> None:
+    """Re-check eligibility at execution time, then stop the environment."""
+    from oduflow.server import _get_settings, _resolve_team
+
+    settings = _get_settings()
+    team = _resolve_team(None)
+    env = next(
+        (
+            item
+            for item in env_ops.list_environments(settings, team)
+            if item["env_name"] == env_name
+        ),
+        None,
+    )
+    if env is None or env.get("protected") or not _is_running(env):
+        return
+    record = activity.get_all(team).get(env_name, {})
+    last = activity.parse_ts(record.get("last_activity"))
+    if (
+        last is None
+        or settings.auto_stop_hours <= 0
+        or time.time() - last <= settings.auto_stop_hours * 3600
+    ):
+        return
+    env_ops.stop_environment(settings, team, env_name)
+    activity.mark_stopped(team, env_name, by="auto")
+    logger.info(
+        "Auto-stopped environment '%s' (idle longer than %dh)",
+        env_name,
+        settings.auto_stop_hours,
+    )
+
+
+def _auto_delete_operation(env_name: str) -> None:
+    """Re-check stopped age/protection immediately before destructive cleanup."""
+    from oduflow.server import _get_settings, _resolve_team
+
+    settings = _get_settings()
+    team = _resolve_team(None)
+    env = next(
+        (
+            item
+            for item in env_ops.list_environments(settings, team)
+            if item["env_name"] == env_name
+        ),
+        None,
+    )
+    if env is None or env.get("protected") or _is_running(env):
+        return
+    record = activity.get_all(team).get(env_name, {})
+    stopped = activity.parse_ts(record.get("stopped_at"))
+    if (
+        stopped is None
+        or settings.auto_delete_hours <= 0
+        or time.time() - stopped <= settings.auto_delete_hours * 3600
+    ):
+        return
+    env_ops.delete_environment(settings, team, env_name)
+    logger.info(
+        "Auto-deleted environment '%s' (stopped longer than %dh)",
+        env_name,
+        settings.auto_delete_hours,
+    )
+
+
+register_operation(
+    "lifecycle.auto_stop",
+    _auto_stop_operation,
+    static_resource("env", "env_name"),
+)
+register_operation(
+    "lifecycle.auto_delete",
+    _auto_delete_operation,
+    static_resource("env", "env_name"),
+)
 
 
 def _is_running(env: dict[str, Any]) -> bool:
@@ -93,6 +175,8 @@ def sweep(settings: Settings, locks: LockManager) -> None:
     now = time.time()
     stop_after = settings.auto_stop_hours * 3600
     delete_after = settings.auto_delete_hours * 3600
+    manager = get_operation_manager(settings)
+    queue_ready = manager.started
 
     for team in settings.teams.values():
         try:
@@ -127,7 +211,17 @@ def sweep(settings: Settings, locks: LockManager) -> None:
                     and not env.get("protected")
                     and now - last > stop_after
                 ):
-                    _auto_stop(settings, team, locks, env_name)
+                    if queue_ready:
+                        manager.submit(
+                            "lifecycle.auto_stop",
+                            team.team_id,
+                            {"env_name": env_name},
+                            [f"env:{team.team_id}:{env_name}"],
+                            wait=False,
+                            coalesce_key=f"auto-stop:{env_name}",
+                        )
+                    else:
+                        _auto_stop(settings, team, locks, env_name)
             else:
                 stopped = activity.parse_ts(rec.get("stopped_at"))
                 if stopped is None:
@@ -140,7 +234,17 @@ def sweep(settings: Settings, locks: LockManager) -> None:
                     and not env.get("protected")
                     and now - stopped > delete_after
                 ):
-                    _auto_delete(settings, team, locks, env_name)
+                    if queue_ready:
+                        manager.submit(
+                            "lifecycle.auto_delete",
+                            team.team_id,
+                            {"env_name": env_name},
+                            [f"env:{team.team_id}:{env_name}"],
+                            wait=False,
+                            coalesce_key=f"auto-delete:{env_name}",
+                        )
+                    else:
+                        _auto_delete(settings, team, locks, env_name)
 
 
 def start_reaper(

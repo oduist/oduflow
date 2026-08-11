@@ -12,6 +12,7 @@ keywords = ["odoo", "mcp", "docker", "development", "ci"]
 dependencies = [
     "fastmcp==2.14.3",
     "docker",
+    "nats-py==2.15.0",
 
     "packaging",
     "cryptography",
