@@ -1,5 +1,6 @@
 import logging
 import os
+import time
 
 import docker
 from docker import DockerClient
@@ -22,6 +23,33 @@ def get_client() -> DockerClient:
             "Cannot connect to Docker. Please make sure Docker is installed "
             "and running. https://docs.docker.com/get-docker/"
         ) from exc
+
+
+def wait_for_docker(timeout: float = 60.0, poll_seconds: float = 2.0) -> None:
+    """Block until the Docker daemon answers, or raise after *timeout*.
+
+    The unit is ordered after ``docker.service``, but a host-wide restart batch
+    (unattended-upgrades restarting containerd, say) can still hand us a socket
+    that exists while the daemon behind it is not answering yet. Retrying for a
+    minute turns that race into a slower start instead of a failed one.
+    """
+    deadline = time.monotonic() + timeout
+    announced = False
+    while True:
+        try:
+            get_client().ping()
+            if announced:
+                logger.info("Docker daemon is answering")
+            return
+        except Exception as exc:
+            if time.monotonic() >= deadline:
+                raise PrerequisiteNotMetError(
+                    f"The Docker daemon did not answer within {timeout:.0f}s: {exc}"
+                ) from exc
+            if not announced:
+                logger.info("Waiting for the Docker daemon to answer (%s)", exc)
+                announced = True
+            time.sleep(poll_seconds)
 
 
 def get_odoo_uid_gid(client: DockerClient, image: str) -> str:

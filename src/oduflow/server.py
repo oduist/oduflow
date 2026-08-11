@@ -5778,9 +5778,19 @@ def _run_cli() -> None:
         # No subcommand → start the MCP server. Migrations run before init so
         # each step sees the data dir / Docker resources exactly as the
         # previous version left them.
-        migrations.run_pending(_settings)
-        _ensure_initialized(_settings)
-        quotas.apply_all(_settings)
+        #
+        # Everything here happens before the HTTP listener binds, so a Docker
+        # call that never returns would leave a live process serving nothing
+        # and systemd none the wiser. The watchdog turns that into an exit and
+        # a restart; see startup_watchdog for why silence is the stall signal.
+        from oduflow.docker_ops.client import wait_for_docker
+        from oduflow.startup_watchdog import guard_startup
+
+        with guard_startup():
+            wait_for_docker()
+            migrations.run_pending(_settings)
+            _ensure_initialized(_settings)
+            quotas.apply_all(_settings)
         # Record the active transport for informational purposes.
         # local_path is gated by allow_local_path in Settings.
         settings_module.TRANSPORT = args.transport
