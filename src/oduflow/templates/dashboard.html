@@ -1774,6 +1774,10 @@
         <label for="new-tpl-name">Template name</label>
         <input type="text" id="new-tpl-name" placeholder="new template name">
         <div class="hint">Saves this environment's database and filestore as a new template. Refused if a template with this name already exists.</div>
+        <div class="hint" id="new-tpl-progress" role="status" aria-live="polite" style="display:none">
+          <span>Saving database and filestore…</span>
+          <span id="new-tpl-elapsed" aria-hidden="true"></span>
+        </div>
       </div>
       <div class="form-actions">
         <button class="btn" onclick="closeNewTemplateModal()">Cancel</button>
@@ -2349,7 +2353,7 @@ async function refreshStorage(branch) {
   applyStats();
   try {
     const r = await fetch(API + '/' + encodeURIComponent(branch) + '/storage/refresh', { method: 'POST' });
-    const data = await r.json();
+    const data = await readResult(r);
     if (data.ok) {
       envStorageMap[branch] = data.storage;
     } else {
@@ -2587,7 +2591,7 @@ async function _runBulk(branches, action, opLabel, doneLabel) {
   var results = await Promise.all(branches.map(async function(b) {
     try {
       var r = await fetch(API + '/' + encodeURIComponent(b) + '/' + action, { method: 'POST' });
-      var data = await r.json();
+      var data = await readResult(r);
       return { branch: b, ok: !!data.ok, error: data.error };
     } catch (e) {
       return { branch: b, ok: false, error: e.message };
@@ -2670,6 +2674,10 @@ function escAttr(s) {
     .replace(/>/g, '&gt;');
 }
 
+function isAmbiguousGatewayStatus(status) {
+  return [408, 502, 503, 504, 524].indexOf(status) !== -1;
+}
+
 // Reads a fetch Response without throwing on an empty / non-JSON body.
 // Always returns a {ok, error, ...} object. A non-2xx response whose body
 // isn't JSON (e.g. a reverse-proxy timeout page on a long request) yields a
@@ -2681,6 +2689,13 @@ async function readResult(r) {
   try { text = await r.text(); } catch (e) { text = ''; }
   try { return JSON.parse(text); }
   catch (e) {
+    if (isAmbiguousGatewayStatus(r.status)) {
+      return {
+        ok: false,
+        error: 'The request timed out at the proxy (HTTP ' + r.status +
+          '). The operation may still be running on the server; refresh in a moment.'
+      };
+    }
     return {
       ok: false,
       error: (text && text.trim())
@@ -2757,7 +2772,7 @@ async function _putNote(branch, note, okMsg) {
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({note: note})
     });
-    var data = await r.json();
+    var data = await readResult(r);
     if (data.ok) { showToast(okMsg); closeNoteModal(); }
     else { showToast(data.error || 'Failed to update note', true); }
   } catch(e) { showToast('Connection error: ' + e.message, true); }
@@ -2787,7 +2802,7 @@ async function openMcpAccess(branch) {
   showModal('mcp-access-modal');
   try {
     var r = await fetch(API + '/' + encodeURIComponent(branch) + '/mcp-access');
-    var data = await r.json();
+    var data = await readResult(r);
     if (!data.ok) { showToast(data.error || 'Failed to load MCP access', true); return; }
     document.getElementById('mcp-access-url').value = data.result.url || '';
     if (data.result.token) {
@@ -2873,7 +2888,7 @@ async function openConnect(branch) {
   showModal('connect-modal');
   try {
     var r = await fetch(API + '/' + encodeURIComponent(branch) + '/users');
-    var data = await r.json();
+    var data = await readResult(r);
     if (!data.ok) {
       fillConnectSelects([], data.error || 'Failed to load users');
     } else {
@@ -2908,7 +2923,7 @@ function submitConnect() {
 async function loadEnvironments(force) {
   try {
     const r = await fetch(API);
-    const data = await r.json();
+    const data = await readResult(r);
     if (data.ok) {
       cachedEnvs = data.environments || [];
       renderEnvironments(cachedEnvs, force);
@@ -2923,7 +2938,7 @@ async function loadEnvironments(force) {
 async function loadStats() {
   try {
     const r = await fetch('/api/stats');
-    const data = await r.json();
+    const data = await readResult(r);
     if (!data.ok) return;
 
     containerStatsMap = {};
@@ -2953,7 +2968,7 @@ async function doUpdate(branch) {
   setBusy(branch, 'Updating');
   try {
     const r = await fetch(API + '/' + encodeURIComponent(branch) + '/update', { method: 'POST' });
-    const data = await r.json();
+    const data = await readResult(r);
     if (data.ok) {
       showToast(branch + ': updated');
     } else {
@@ -2976,7 +2991,7 @@ async function doRecreate(branch) {
   setBusy(branch, 'Recreating');
   try {
     const r = await fetch(API + '/' + encodeURIComponent(branch) + '/recreate', { method: 'POST' });
-    const data = await r.json();
+    const data = await readResult(r);
     if (data.ok) {
       showToast(branch + ': recreated');
     } else {
@@ -2999,7 +3014,7 @@ async function doDelete(branch) {
   setBusy(branch, 'Deleting');
   try {
     const r = await fetch(API + '/' + encodeURIComponent(branch) + '/delete', { method: 'POST' });
-    const data = await r.json();
+    const data = await readResult(r);
     if (data.ok) {
       showToast(branch + ': deleted');
     } else {
@@ -3021,7 +3036,7 @@ async function doProtect(branch, isProtected) {
   }))) return;
   try {
     var r = await fetch(API + '/' + encodeURIComponent(branch) + '/' + action, { method: 'POST' });
-    var data = await r.json();
+    var data = await readResult(r);
     if (data.ok) {
       showToast(branch + ': ' + (isProtected ? 'unprotected' : 'protected'));
     } else {
@@ -3075,7 +3090,7 @@ async function fetchLogs() {
       if (cont) url += '&container=' + encodeURIComponent(cont);
     }
     var r = await fetch(url);
-    var data = await r.json();
+    var data = await readResult(r);
     if (data.ok) {
       _logsState.lines = (data.logs || '').split('\n');
       renderLogs();
@@ -3205,7 +3220,7 @@ function switchTab(name) {
 async function loadTemplates() {
   try {
     var r = await fetch(API_TEMPLATES);
-    var data = await r.json();
+    var data = await readResult(r);
     if (data.ok) {
       cachedTemplates = data.templates || [];
       renderTemplates(cachedTemplates);
@@ -3226,7 +3241,7 @@ async function doDeleteTemplate(name) {
   }))) return;
   try {
     var r = await fetch(API_TEMPLATES + '/' + encodeURIComponent(name) + '/delete', { method: 'POST' });
-    var data = await r.json();
+    var data = await readResult(r);
     if (data.ok) {
       showToast('Template "' + name + '" removed');
       await loadTemplates();
@@ -3301,7 +3316,7 @@ async function submitImportOdoo() {
         with_extra_addons: document.getElementById('import-with-extra').checked
       })
     });
-    var data = await r.json();
+    var data = await readResult(r);
     if (data.ok) {
       document.getElementById('import-odoo-command').textContent = data.command;
       document.getElementById('import-odoo-form').style.display = 'none';
@@ -3343,7 +3358,7 @@ async function openTemplateSettingsModal(name) {
 
   try {
     var r = await fetch(API_TEMPLATES + '/' + encodeURIComponent(name) + '/metadata');
-    var data = await r.json();
+    var data = await readResult(r);
     if (token !== _templateSettingsLoadToken) return;
     if (data.ok) {
       editor.value = data.content;
@@ -3402,7 +3417,7 @@ async function submitTemplateSettings() {
         revision: revision
       })
     });
-    var data = await r.json();
+    var data = await readResult(r);
     if (token !== _templateSettingsLoadToken || name !== _templateSettingsName) return;
     if (data.ok) {
       editor.value = data.content;
@@ -3467,7 +3482,7 @@ async function submitRenameTemplate() {
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({ new_name: newName })
     });
-    var data = await r.json();
+    var data = await readResult(r);
     if (data.ok) {
       showToast('Template renamed to "' + newName + '"');
       hideModal('rename-tpl-modal');
@@ -3496,6 +3511,8 @@ function doNewTemplate(branch) {
   input.value = '';
   document.getElementById('new-tpl-submit').disabled = false;
   document.getElementById('new-tpl-submit').textContent = 'Create';
+  document.getElementById('new-tpl-progress').style.display = 'none';
+  document.getElementById('new-tpl-elapsed').textContent = '';
   showModal('new-tpl-modal');
   input.focus();
 }
@@ -3506,6 +3523,7 @@ function closeNewTemplateModal(event) {
 }
 
 async function submitNewTemplate() {
+  var branch = _newTplBranch;
   var name = document.getElementById('new-tpl-name').value.trim();
   var errEl = document.getElementById('new-tpl-error');
   if (!name) {
@@ -3515,18 +3533,34 @@ async function submitNewTemplate() {
   }
   errEl.style.display = 'none';
   var btn = document.getElementById('new-tpl-submit');
+  var progress = document.getElementById('new-tpl-progress');
+  var elapsed = document.getElementById('new-tpl-elapsed');
+  var started = Date.now();
   btn.disabled = true;
-  btn.textContent = 'Creating...';
+  btn.textContent = 'Creating…';
+  progress.style.display = 'block';
+  var updateProgress = function() {
+    elapsed.textContent = _fmtElapsed(Date.now() - started);
+  };
+  updateProgress();
+  var progressTimer = setInterval(updateProgress, 1000);
+  setBusy(branch, 'Saving template');
   try {
-    var r = await fetch(API + '/' + encodeURIComponent(_newTplBranch) + '/save-as-template', {
+    var r = await fetch(API + '/' + encodeURIComponent(branch) + '/save-as-template', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({ template_name: name })
     });
-    var data = await r.json();
-    if (data.ok) {
-      showToast('Saved "' + _newTplBranch + '" as template "' + name + '"');
+    var data = await readResult(r);
+    if (r.ok && data.ok) {
+      showToast('Saved "' + branch + '" as template "' + name + '"');
       hideModal('new-tpl-modal');
+      await loadTemplates();
+      await loadEnvironments(true);
+    } else if (isAmbiguousGatewayStatus(r.status)) {
+      hideModal('new-tpl-modal');
+      showToast('The proxy stopped waiting, but saving template "' + name +
+        '" may still be running. Refresh in a moment.');
       await loadTemplates();
       await loadEnvironments(true);
     } else {
@@ -3537,6 +3571,9 @@ async function submitNewTemplate() {
     errEl.textContent = 'Connection error: ' + e.message;
     errEl.style.display = 'block';
   } finally {
+    clearInterval(progressTimer);
+    clearBusy(branch);
+    progress.style.display = 'none';
     btn.disabled = false;
     btn.textContent = 'Create';
   }
@@ -3798,7 +3835,7 @@ async function doAction(branch, action) {
 
   try {
     const r = await fetch(API + '/' + encodeURIComponent(branch) + '/' + action, { method: 'POST' });
-    const data = await r.json();
+    const data = await readResult(r);
     if (data.ok) {
       if (action === 'sync' && data.result) {
         showSyncResult(branch, data.result);
@@ -3841,7 +3878,7 @@ const API_SERVICES = '/api/services';
 async function loadServices() {
   try {
     var r = await fetch(API_SERVICES);
-    var data = await r.json();
+    var data = await readResult(r);
     if (data.ok) {
       renderServices(data.services || []);
     } else {
@@ -3995,7 +4032,7 @@ async function doUpdateService(name) {
   if (card) card.querySelectorAll('button').forEach(function(b) { b.disabled = true; });
   try {
     var r = await fetch(API_SERVICES + '/' + encodeURIComponent(name) + '/update', { method: 'POST' });
-    var data = await r.json();
+    var data = await readResult(r);
     if (data.ok) {
       var res = data.result || {};
       var digest = (res.new_digest || '').substring(0, 19);
@@ -4023,7 +4060,7 @@ async function doRestartService(name) {
   if (card) card.querySelectorAll('button').forEach(function(b) { b.disabled = true; });
   try {
     var r = await fetch(API_SERVICES + '/' + encodeURIComponent(name) + '/restart', { method: 'POST' });
-    var data = await r.json();
+    var data = await readResult(r);
     if (data.ok) {
       showToast('Service "' + name + '" restarted');
     } else {
@@ -4046,7 +4083,7 @@ async function doDeleteService(name) {
   if (card) card.querySelectorAll('button').forEach(function(b) { b.disabled = true; });
   try {
     var r = await fetch(API_SERVICES + '/' + encodeURIComponent(name) + '/delete', { method: 'POST' });
-    var data = await r.json();
+    var data = await readResult(r);
     if (data.ok) {
       showToast('Service "' + name + '" deleted');
     } else {
@@ -4136,7 +4173,7 @@ async function submitCreateService() {
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify(payload)
     });
-    var data = await r.json();
+    var data = await readResult(r);
     if (data.ok) {
       closeCreateServiceModal();
       showToast('Service "' + name + '" created');
@@ -4161,7 +4198,7 @@ var _cachedPresets = [];
 async function loadServicePresets() {
   try {
     var r = await fetch(API_PRESETS);
-    var data = await r.json();
+    var data = await readResult(r);
     if (data.ok) {
       _cachedPresets = data.presets || [];
       renderPresetsList(_cachedPresets);
@@ -4219,7 +4256,7 @@ async function doDeletePreset(name) {
   }))) return;
   try {
     var r = await fetch(API_PRESETS + '/' + encodeURIComponent(name) + '/delete', { method: 'POST' });
-    var data = await r.json();
+    var data = await readResult(r);
     if (data.ok) {
       showToast('Preset "' + name + '" deleted');
       await loadServicePresets();
@@ -4275,7 +4312,7 @@ function openRestoreServiceModal(preselect) {
   sel.innerHTML = '<option value="">Loading...</option>';
   showModal('restore-svc-modal');
 
-  fetch(API_PRESETS).then(function(r) { return r.json(); }).then(function(data) {
+  fetch(API_PRESETS).then(function(r) { return readResult(r); }).then(function(data) {
     if (data.ok && data.presets && data.presets.length > 0) {
       sel.innerHTML = '<option value="">— select a preset —</option>' +
         data.presets.map(function(p) {
@@ -4340,7 +4377,7 @@ async function submitRestoreService() {
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify(payload)
     });
-    var data = await r.json();
+    var data = await readResult(r);
     if (data.ok) {
       closeRestoreServiceModal();
       showToast('Service "' + name + '" restored');
@@ -4372,7 +4409,7 @@ const API_VOLUMES = '/api/volumes';
 async function loadVolumes() {
   try {
     var r = await fetch(API_VOLUMES);
-    var data = await r.json();
+    var data = await readResult(r);
     if (data.ok) {
       renderVolumes(data.volumes || []);
     } else {
@@ -4460,7 +4497,7 @@ async function submitCreateVolume() {
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify(payload)
     });
-    var data = await r.json();
+    var data = await readResult(r);
     if (data.ok) {
       closeCreateVolumeModal();
       showToast('Volume "' + name + '" created');
@@ -4487,7 +4524,7 @@ async function doDeleteVolume(name) {
   }))) return;
   try {
     var r = await fetch(API_VOLUMES + '/' + encodeURIComponent(name) + '/delete', { method: 'POST' });
-    var data = await r.json();
+    var data = await readResult(r);
     if (data.ok) {
       showToast('Volume "' + name + '" deleted');
       await loadVolumes();
@@ -4505,7 +4542,7 @@ const API_GUIDES = '/api/agent-guides';
 async function loadAgentGuides() {
   try {
     var r = await fetch(API_GUIDES);
-    var data = await r.json();
+    var data = await readResult(r);
     if (data.ok) {
       renderAgentGuides(data.guides || []);
     } else {
@@ -4537,7 +4574,7 @@ async function openGuide(filename, title) {
   document.getElementById('guide-editor').value = 'Loading...';
   try {
     var r = await fetch(API_GUIDES + '/' + encodeURIComponent(filename));
-    var data = await r.json();
+    var data = await readResult(r);
     if (data.ok) {
       document.getElementById('guide-editor').value = data.content || '';
     } else {
@@ -4559,7 +4596,7 @@ const API_LICENSE = '/api/license';
 async function loadLicense() {
   try {
     var r = await fetch(API_LICENSE);
-    var data = await r.json();
+    var data = await readResult(r);
     if (!data.ok) return;
     var lic = data.license;
     var badge = document.getElementById('license-badge');
@@ -4646,7 +4683,7 @@ async function activateLicense() {
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({ key: key })
     });
-    var data = await r.json();
+    var data = await readResult(r);
     if (data.ok) {
       closeLicenseModal();
       showToast('License activated: ' + data.license.label);
@@ -4670,7 +4707,7 @@ let cachedExtraRepos = [];
 async function loadExtraRepos() {
   try {
     var r = await fetch(API_EXTRA_REPOS);
-    var data = await r.json();
+    var data = await readResult(r);
     if (data.ok) {
       cachedExtraRepos = data.repos || [];
       renderExtraRepos(cachedExtraRepos);
@@ -4756,7 +4793,7 @@ async function submitAddExtraRepo() {
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({name: name, repo_url: url, git_user: gitUser})
     });
-    var data = await r.json();
+    var data = await readResult(r);
     if (data.ok) {
       closeAddExtraRepoModal();
       showToast('Extra repo "' + name + '" cloned');
@@ -4779,7 +4816,7 @@ async function doPullExtraRepo(name, btn) {
   btn.textContent = 'Updating...';
   try {
     var r = await fetch(API_EXTRA_REPOS + '/' + encodeURIComponent(name) + '/pull', {method:'POST'});
-    var data = await r.json();
+    var data = await readResult(r);
     if (data.ok) {
       showExtraRepoUpdateResult(name, data.result);
       await loadExtraRepos();
@@ -4835,7 +4872,7 @@ async function doProtectExtraRepo(name, isProtected) {
   }))) return;
   try {
     var r = await fetch(API_EXTRA_REPOS + '/' + encodeURIComponent(name) + '/' + action, { method: 'POST' });
-    var data = await r.json();
+    var data = await readResult(r);
     if (data.ok) {
       showToast(name + ': ' + (isProtected ? 'unprotected' : 'protected'));
     } else {
@@ -4856,7 +4893,7 @@ async function doDeleteExtraRepo(name) {
   }))) return;
   try {
     var r = await fetch(API_EXTRA_REPOS + '/' + encodeURIComponent(name) + '/delete', {method:'POST'});
-    var data = await r.json();
+    var data = await readResult(r);
     if (data.ok) {
       showToast('Extra repo "' + name + '" deleted');
       await loadExtraRepos();
@@ -4879,7 +4916,7 @@ window.ODU_AGENT_DEFAULT = 'claude';
 async function refreshAgentInfo() {
   try {
     var r = await fetch('/api/agent');
-    var data = await r.json();
+    var data = await readResult(r);
     if (!data.ok) return;
     var enabled = !!data.enabled;
     var changed = enabled !== window.ODU_AGENT_ENABLED;
@@ -4899,7 +4936,7 @@ let cachedCredentials = [];
 async function loadCredentials() {
   try {
     var r = await fetch(API_CREDENTIALS);
-    var data = await r.json();
+    var data = await readResult(r);
     if (data.ok) {
       cachedCredentials = data.credentials || [];
       renderCredentials(data.credentials || []);
@@ -4970,7 +5007,7 @@ async function submitAddCredential() {
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({repo_url: url})
     });
-    var data = await r.json();
+    var data = await readResult(r);
     if (data.ok) {
       closeAddCredentialModal();
       showToast('Credential saved and verified');
@@ -5001,7 +5038,7 @@ async function doDeleteCredential(host, username) {
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({host: host, username: username})
     });
-    var data = await r.json();
+    var data = await readResult(r);
     if (data.ok) {
       showToast('Credential deleted');
       await loadCredentials();
@@ -5026,7 +5063,7 @@ async function doValidateCredential(host, username) {
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({host: host, username: username})
     });
-    var data = await r.json();
+    var data = await readResult(r);
     if (badge) {
       if (data.ok && data.status === 'valid') {
         badge.textContent = '✓ Valid';
@@ -5507,7 +5544,7 @@ function prodBadgeClass(status) {
 async function loadProductions() {
   try {
     var r = await fetch(API_PRODUCTIONS);
-    var data = await r.json();
+    var data = await readResult(r);
     if (!data.ok) { showToast(data.error || 'Failed to load productions', true); return; }
     cachedProds = data.productions || [];
     window._prodBackupConfigured = !!data.backup_configured;
@@ -5608,13 +5645,13 @@ async function _loadProdSection(name, section) {
   try {
     if (section === 'logs') {
       var r = await fetch(API_PRODUCTIONS + '/' + encodeURIComponent(name) + '/logs?lines=200');
-      var data = await r.json();
+      var data = await readResult(r);
       el.innerHTML = data.ok
         ? '<div class="prod-logs-pre">' + esc(data.logs || '(no output)') + '</div>'
         : esc(data.error || 'Failed to load logs');
     } else if (section === 'deploys') {
       var r2 = await fetch(API_PRODUCTIONS + '/' + encodeURIComponent(name) + '/deploys');
-      var d2 = await r2.json();
+      var d2 = await readResult(r2);
       if (!d2.ok) { el.textContent = d2.error || 'Failed to load deploys'; return; }
       var rows = (d2.deploys || []).slice().reverse().map(function(d) {
         return '<tr><td class="prod-mono">' + esc((d.ts_end || d.ts_start || '').slice(0, 19)) + '</td>' +
@@ -5628,7 +5665,7 @@ async function _loadProdSection(name, section) {
         : 'No deploys recorded yet.';
     } else if (section === 'snapshots') {
       var r3 = await fetch(API_PRODUCTIONS + '/' + encodeURIComponent(name) + '/snapshots');
-      var d3 = await r3.json();
+      var d3 = await readResult(r3);
       if (!d3.ok) { el.textContent = d3.error || 'Failed to load snapshots'; return; }
       var rows3 = (d3.snapshots || []).slice().reverse().map(function(s) {
         return '<tr><td class="prod-mono">' + esc(s.id) + '</td>' +
@@ -5660,7 +5697,7 @@ async function _prodPost(url, body, okMsg) {
     var r = await fetch(url, body !== undefined
       ? { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }
       : { method: 'POST' });
-    var data = await r.json();
+    var data = await readResult(r);
     if (data.ok) { if (okMsg) showToast(okMsg); await loadProductions(); return data; }
     showToast(data.error || 'Request failed', true);
   } catch (e) {
@@ -5819,7 +5856,7 @@ async function submitCreateProduction() {
 async function loadHealth() {
   try {
     var r = await fetch('/healthz');
-    var data = await r.json();
+    var data = await readResult(r);
     var el = document.getElementById('health-chips');
     if (!el || !data.checks) return;
     var labels = {

@@ -55,3 +55,25 @@ def test_environment_metadata_shows_live_mount_path(tmp_path):
 
     assert dashboard.status_code == 200
     assert "env.local_path ? '<span>Live-mount:" in dashboard.text
+
+
+def test_dashboard_uses_safe_json_response_reader(tmp_path):
+    dashboard = _client(tmp_path).get("/")
+
+    assert dashboard.status_code == 200
+    assert re.search(r"await\s+\w+\.json\(\)", dashboard.text) is None
+    assert "return r.json()" not in dashboard.text
+    assert "[408, 502, 503, 504, 524]" in dashboard.text
+    assert "The operation may still be running on the server" in dashboard.text
+
+
+def test_save_as_template_shows_elapsed_progress(tmp_path):
+    dashboard = _client(tmp_path).get("/")
+
+    assert dashboard.status_code == 200
+    assert 'id="new-tpl-progress" role="status" aria-live="polite"' in dashboard.text
+    assert "Saving database and filestore…" in dashboard.text
+    assert 'id="new-tpl-elapsed" aria-hidden="true"' in dashboard.text
+    assert "elapsed.textContent = _fmtElapsed" in dashboard.text
+    assert "progress.textContent = 'Saving database and filestore" not in dashboard.text
+    assert "setBusy(branch, 'Saving template')" in dashboard.text

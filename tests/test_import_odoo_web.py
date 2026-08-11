@@ -4,6 +4,9 @@ import io
 import json
 import os
 import tarfile
+import time
+from concurrent.futures import ThreadPoolExecutor
+from threading import Event, Lock
 from unittest.mock import patch
 
 from starlette.applications import Starlette
@@ -350,6 +353,79 @@ def test_addon_upload_and_status(tmp_path):
     assert st["progress"]["addons"] == ["enterprise"]
 
 
+def test_concurrent_addon_finalizers_are_serialized(tmp_path):
+    client, _s, team = _client(tmp_path)
+    token, _ = _mint(client, "zipfit")
+    hdr = {"Authorization": f"Bearer {token}"}
+    first_started = Event()
+    release_first = Event()
+    second_started = Event()
+    state_lock = Lock()
+    active = 0
+    real_extract = system_ops.extract_addon_dir
+
+    def extract(tar_path, addons_dir, name):
+        nonlocal active
+        with state_lock:
+            active += 1
+            if active == 2:
+                second_started.set()
+        try:
+            if not first_started.is_set():
+                first_started.set()
+                assert release_first.wait(timeout=5)
+            return real_extract(tar_path, addons_dir, name)
+        finally:
+            with state_lock:
+                active -= 1
+
+    staging = team.get_import_staging_dir("zipfit")
+    uploads = {
+        "enterprise": _tar_bytes({"enterprise_src/mod_a/__manifest__.py": b"{}"}),
+        "themes": _tar_bytes({"themes_src/mod_b/__manifest__.py": b"{}"}),
+    }
+    with (
+        client,
+        patch.object(system_ops, "extract_addon_dir", side_effect=extract),
+        ThreadPoolExecutor(max_workers=2) as executor,
+    ):
+        first = executor.submit(
+            client.post,
+            "/api/templates/import/addon?name=enterprise&branch=18.0",
+            headers=hdr,
+            content=uploads["enterprise"],
+        )
+        assert first_started.wait(timeout=2)
+        second = executor.submit(
+            client.post,
+            "/api/templates/import/addon?name=themes&branch=18.0",
+            headers=hdr,
+            content=uploads["themes"],
+        )
+        deadline = time.monotonic() + 2
+        staged_tars: list[str] = []
+        while time.monotonic() < deadline:
+            staged_tars = [
+                name
+                for name in os.listdir(staging)
+                if name.startswith(".addon_") and name.endswith(".tar")
+            ]
+            if len(staged_tars) == 2:
+                break
+            time.sleep(0.01)
+        try:
+            assert len(staged_tars) == 2
+            assert not second_started.wait(timeout=0.2)
+        finally:
+            release_first.set()
+
+        assert first.result(timeout=2).status_code == 200
+        assert second.result(timeout=2).status_code == 200
+
+    entries = json.loads(open(os.path.join(staging, "addons.json")).read())
+    assert {entry["name"] for entry in entries} == {"enterprise", "themes"}
+
+
 def test_addon_remote_announce(tmp_path):
     client, _s, _t = _client(tmp_path)
     token, _ = _mint(client, "zipfit")
@@ -507,6 +583,66 @@ def test_corrupt_chunk_is_not_marked_complete(tmp_path):
     assert r.status_code == 200
     st = client.get("/api/templates/import/status", headers=hdr).json()
     assert st["progress"]["filestore_chunks"] == ["ab"]
+
+
+def test_concurrent_filestore_retry_uses_unique_staging_tar(tmp_path):
+    client, _s, team = _client(tmp_path)
+    token, _ = _mint(client, "zipfit")
+    hdr = {"Authorization": f"Bearer {token}"}
+    tar = _tar_bytes({"ab/f": b"data"})
+    first_started = Event()
+    release_first = Event()
+    real_extract = system_ops.extract_filestore_chunk
+
+    def extract(tar_path, filestore_dir, chunk):
+        first_started.set()
+        assert release_first.wait(timeout=5)
+        return real_extract(tar_path, filestore_dir, chunk)
+
+    staging = team.get_import_staging_dir("zipfit")
+    with (
+        client,
+        patch.object(
+            system_ops, "extract_filestore_chunk", side_effect=extract
+        ) as mocked,
+        ThreadPoolExecutor(max_workers=2) as executor,
+    ):
+        first = executor.submit(
+            client.post,
+            "/api/templates/import/filestore?chunk=ab",
+            headers=hdr,
+            content=tar,
+        )
+        assert first_started.wait(timeout=2)
+        retry = executor.submit(
+            client.post,
+            "/api/templates/import/filestore?chunk=ab",
+            headers=hdr,
+            content=tar,
+        )
+        deadline = time.monotonic() + 2
+        staged_tars: list[str] = []
+        while time.monotonic() < deadline:
+            staged_tars = [
+                name
+                for name in os.listdir(staging)
+                if name.startswith(".chunk_ab_") and name.endswith(".tar")
+            ]
+            if len(staged_tars) == 2:
+                break
+            time.sleep(0.01)
+        try:
+            assert len(staged_tars) == 2
+        finally:
+            release_first.set()
+
+        assert first.result(timeout=2).status_code == 200
+        assert retry.result(timeout=2).status_code == 200
+        assert mocked.call_count == 1
+
+    extracted = os.path.join(staging, "filestore", "ab", "f")
+    assert open(extracted, "rb").read() == b"data"
+    assert not any(name.startswith(".chunk_ab_") for name in os.listdir(staging))
 
 
 def test_extract_filestore_chunk_missing_dir_fails_cleanly(tmp_path):
