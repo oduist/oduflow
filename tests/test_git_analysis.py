@@ -2,16 +2,16 @@ import os
 import textwrap
 
 from oduflow.git_analysis import (
-    classify_changes,
-    shallow_classify,
-    merge_recommendations,
-    _get_module_name,
-    _is_security_path,
-    _is_data_path,
-    _is_dep_file,
-    _is_translation_file,
     _extract_field_lines,
     _extract_view_tag_attrs,
+    _get_module_name,
+    _is_data_path,
+    _is_dep_file,
+    _is_security_path,
+    _is_translation_file,
+    classify_changes,
+    merge_recommendations,
+    shallow_classify,
 )
 
 

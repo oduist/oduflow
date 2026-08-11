@@ -15,8 +15,9 @@ from typing import Any
 
 import docker
 from docker import DockerClient
-
+from oduflow import activity, settings
 from oduflow.docker_ops.client import chown_recursive, get_client, get_odoo_uid_gid
+from oduflow.docker_ops.stats import default_env_limits
 from oduflow.docker_ops.system_ops import (
     _copy_file_to_container,
     _create_pg_role,
@@ -26,11 +27,10 @@ from oduflow.docker_ops.system_ops import (
     _resolve_instance_conf,
     check_db_quota,
     drop_signaling_sequences,
-    ensure_team_tablespace,
     ensure_team_network,
+    ensure_team_tablespace,
     reassign_db_ownership,
 )
-from oduflow.docker_ops.stats import default_env_limits
 from oduflow.env_credentials import create_credentials, load_credentials
 from oduflow.env_tokens import MCP_TOKEN_LABEL, generate_token, invalidate_cache
 from oduflow.errors import (
@@ -51,8 +51,8 @@ from oduflow.naming import (
     get_env_hostname,
     get_filestore_paths,
     get_repo_path,
-    get_team_network_name,
     get_resource_name,
+    get_team_network_name,
     get_template_db_name,
     get_workspace_path,
     redact_url_credentials,
@@ -60,8 +60,6 @@ from oduflow.naming import (
     slugify_branch,
 )
 from oduflow.port_registry import allocate_port, release_port
-from oduflow import settings
-from oduflow import activity
 from oduflow.settings import Settings, TeamSettings
 
 logger = logging.getLogger("oduflow")
@@ -2164,8 +2162,8 @@ def wait_for_odoo_ready(
 ) -> bool:
     """Poll Odoo /web/health until it responds 200 or timeout."""
     import time
-    import urllib.request
     import urllib.error
+    import urllib.request
 
     # Path-free base URL: `get_environment_info()["url"]` ends in "/web?debug=1",
     # so appending "/web/health" to it probed "/web" instead — readiness then

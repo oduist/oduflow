@@ -8,10 +8,8 @@ import re
 from typing import Any
 
 import docker
-
+from oduflow.docker_ops import service_presets, volume_ops
 from oduflow.docker_ops.client import get_client
-from oduflow.docker_ops import service_presets
-from oduflow.docker_ops import volume_ops
 from oduflow.errors import ConflictError, NotFoundError, PrerequisiteNotMetError
 from oduflow.naming import get_service_container_name
 from oduflow.settings import Settings, TeamSettings

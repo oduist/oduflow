@@ -17,7 +17,6 @@ from unittest.mock import patch
 
 import pytest
 import yaml
-
 from tool_helpers import call_cli, call_tool
 
 FIXTURES_PATH = Path(__file__).parent / "fixtures.yaml"

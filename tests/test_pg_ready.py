@@ -9,9 +9,9 @@ turns into a restart loop).
 
 from unittest.mock import MagicMock, patch
 
-import docker
 import pytest
 
+import docker
 from oduflow.docker_ops import system_ops
 from oduflow.errors import PrerequisiteNotMetError
 from oduflow.settings import Settings

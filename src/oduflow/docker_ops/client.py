@@ -3,7 +3,6 @@ import os
 
 import docker
 from docker import DockerClient
-
 from oduflow.errors import PrerequisiteNotMetError
 
 logger = logging.getLogger("oduflow")

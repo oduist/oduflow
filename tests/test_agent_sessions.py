@@ -270,7 +270,6 @@ def test_delete_environment_clears_chat_sessions(tmp_path, monkeypatch):
     """A deleted environment must not leave a stale session that a later env of
     the same name would resume."""
     import docker as _docker
-
     from oduflow.docker_ops import env_ops
     from oduflow.naming import get_workspace_path
 

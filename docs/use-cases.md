@@ -27,8 +27,8 @@ oduflow call create_environment bug-12345 "" default https://github.com/company/
 # Debug inside the container
 oduflow call run_odoo_command bug-12345 "python3 -c 'import odoo; ...'"
 
-# Check the database directly
-oduflow call run_odoo_command bug-12345 "psql -h oduflow-db -U odoo -d oduflow_bug-12345 -c 'SELECT * FROM sale_order WHERE id=42;'"
+# Check the database directly with the environment-scoped DB role
+oduflow call run_db_query bug-12345 "SELECT * FROM sale_order WHERE id=42"
 ```
 
 ## 🧪 Module Testing

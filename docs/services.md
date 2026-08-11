@@ -125,14 +125,14 @@ oduflow call restart_service redis
 oduflow call update_service meilisearch
 
 # Change environment variables on a running service (fully replaces existing env_vars)
-oduflow call update_service meilisearch --env_vars "MEILI_MASTER_KEY=newkey,MEILI_ENV=production"
+oduflow call update_service '{"name":"meilisearch","env_vars":"MEILI_MASTER_KEY=newkey,MEILI_ENV=production"}'
 
 # Change the image (tag) of a running service
-oduflow call update_service meilisearch --image getmeili/meilisearch:v1.8
+oduflow call update_service '{"name":"meilisearch","image":"getmeili/meilisearch:v1.8"}'
 
 # Toggle Linux capabilities / privileged mode on a running service (recreates it)
-oduflow call update_service wireguard --net_admin true
-oduflow call update_service wireguard --privileged true
+oduflow call update_service '{"name":"wireguard","net_admin":true}'
+oduflow call update_service '{"name":"wireguard","privileged":true}'
 
 # Delete a service
 oduflow call delete_service redis

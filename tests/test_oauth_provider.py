@@ -205,11 +205,10 @@ class TestOduflowOAuthProvider:
         # A non-issued value is not a valid refresh token.
         assert _run(provider.load_refresh_token(client, "team_1")) is None
 
-    def test_expired_access_token_keeps_refresh_token_across_restart(
-        self, monkeypatch
-    ):
-        from oduflow import oauth_token_store as store_mod
+    def test_expired_access_token_keeps_refresh_token_across_restart(self, monkeypatch):
         from mcp.server.auth.provider import TokenError
+
+        from oduflow import oauth_token_store as store_mod
 
         data_dir = tempfile.mkdtemp()
         provider = OduflowOAuthProvider(_settings(base_data_dir=data_dir))
@@ -294,8 +293,8 @@ class TestOduflowOAuthProvider:
         assert client.validate_redirect_uri(AnyUrl("http://127.0.0.1:8976/cb"))
 
     def test_redirect_uri_rejects_dangerous_and_cleartext(self):
-        from pydantic import AnyUrl
         from mcp.shared.auth import InvalidRedirectUriError
+        from pydantic import AnyUrl
 
         provider = OduflowOAuthProvider(_settings())
         client = _run(provider.get_client("team_1"))

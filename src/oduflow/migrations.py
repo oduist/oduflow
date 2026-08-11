@@ -60,7 +60,6 @@ def _migrate_team_scoped_names(settings: Settings) -> None:
     cleanly.
     """
     import docker
-
     from oduflow.docker_ops.client import get_client
     from oduflow.naming import get_resource_name, get_service_container_name
 
@@ -127,7 +126,6 @@ def _migrate_team_pg_tablespaces(settings: Settings) -> None:
     resumes where it stopped.
     """
     import docker
-
     from oduflow.docker_ops import system_ops
     from oduflow.docker_ops.client import get_client
     from oduflow.naming import get_tablespace_name
@@ -216,7 +214,6 @@ def _migrate_per_team_networks(settings: Settings) -> None:
     container itself. Idempotent.
     """
     import docker
-
     from oduflow.docker_ops import system_ops
     from oduflow.docker_ops.client import get_client
 
@@ -315,7 +312,6 @@ def _migrate_traefik_yml_config(settings: Settings) -> None:
     Idempotent: once recreated the arg is ``.yml``, so a rerun finds nothing.
     """
     import docker
-
     from oduflow.docker_ops.client import get_client
 
     if settings.routing_mode != "traefik":

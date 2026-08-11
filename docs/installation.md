@@ -78,9 +78,23 @@ uv sync          # or: python -m venv .venv && pip install -e .
 
 ```bash
 uv tool upgrade oduflow
+oduflow upgrade
+# For unattended automation:
+oduflow upgrade --force
 ```
 
-During upgrade, Oduflow overwrites bundled files (agent guides, `postgresql.conf`, sanitize scripts, `odoo.conf`) with the latest versions. If you have customized any of these files and want to prevent them from being overwritten, add `# KEEP` as the **very first line** of the file:
+The first command upgrades the Python package. The second is a separate,
+interactive migration of deployed bundled files: it shows the files that would
+be replaced and waits for confirmation before updating agent guides,
+`postgresql.conf`, sanitize scripts, and per-team `odoo.conf` files. Package
+upgrade alone does not overwrite those deployed copies.
+
+For unattended upgrades, pass `--force`. Oduflow still prints the warning and
+affected paths but proceeds without reading from stdin. Files protected by
+`# KEEP` remain untouched.
+
+If you have customized any of these files and want to prevent `oduflow upgrade`
+from overwriting it, add `# KEEP` as the **very first line** of the file:
 
 ```conf
 # KEEP
@@ -123,6 +137,7 @@ port = 8000                 # HTTP server port
 allow_local_path = true     # trusted single-user local development; disable on hosted/multi-user servers
 # allow_insecure_http = false  # serve /mcp over HTTP with NO auth (only behind your own proxy)
 # trace = false             # verbose tracing for git analysis & env ops
+# disable_telemetry = false # disable anonymous first_run/env_created events
 
 # ── Routing ───────────────────────────────────────────
 [routing]
@@ -131,6 +146,11 @@ mode = "port"               # "port" (direct host port) | "traefik" (reverse pro
 # tls = true                # traefik only. false = plain HTTP on :80, no ACME (behind a Cloudflare tunnel / TLS proxy)
 # hostname = "localhost"    # port mode only: default host for teams without their own
                             # (traefik requires each team to set its own hostname)
+
+# ── Extra routes (Traefik only) ───────────────────────
+# [route.legacy-api]
+# host = "api.example.com"
+# url = "http://127.0.0.1:3000"
 
 # ── OAuth (optional) ──────────────────────────────────
 # In traefik mode the self-hosted OAuth 2.1 Authorization Server is enabled
@@ -145,7 +165,7 @@ mode = "port"               # "port" (direct host port) | "traefik" (reverse pro
 # ── Database ──────────────────────────────────────────
 [database]
 user = "odoo"               # PostgreSQL user for the shared database container
-# password = "..."          # auto-generated on first init; set explicitly to override
+# password = "..."          # auto-generated on first launch; set explicitly to override
 image = "postgres:15"       # PostgreSQL Docker image
 
 # ── Storage ───────────────────────────────────────────
@@ -166,6 +186,25 @@ auto_delete_hours = 0       # auto-delete environments stopped for N hours; 0 di
 # claude_model = ""         # optional Claude model override; empty = CLI default
 # codex_model = ""          # optional Codex model override; empty = CLI default
 
+# ── Production hosting (optional) ─────────────────────
+# [production]
+# enabled = true            # opt in; requires routing.mode = "traefik"
+# postgres_image = ""       # empty = [database].image
+# walg_version = ""         # empty = Oduflow's pinned WAL-G version
+# workers_cap = 8           # upper bound for auto-tuned Odoo workers
+
+# [backup]                  # optional; requires all three credentials below
+# bucket = ""
+# access_key = ""
+# secret_key = ""
+# endpoint = ""             # empty = AWS; set for MinIO/R2
+# region = ""
+# prefix = "oduflow"
+# snapshot_time = "02:00"
+# basebackup_time = "03:30"
+# keep = ["30:180", "7:30", "1:7"]
+# walg_keep_full = 7
+
 # ── Teams ─────────────────────────────────────────────
 # Each team gets isolated workspaces, templates, credentials, and services.
 # At least one [team.*] section is required.
@@ -177,6 +216,8 @@ ui_password = ""                     # auto-filled in fresh configs; Web UI pass
 port_range = [50000, 50100]          # port range for Odoo containers [start, end)
 # agent_enabled = false              # enable the per-team coding agent (Agent Chat / Agent CLI)
 # agent_default = "claude"           # "claude" | "codex" — default agent for consoles/chats
+# db_quota_gb = 50                   # combined PostgreSQL database cap; 0 disables
+# disk_quota_gb = 0                  # XFS project quota for team files + databases; 0 disables
 # [team.1.agent_env]                 # provider credentials injected into the agent container
 # CLAUDE_CODE_OAUTH_TOKEN = ""
 # ANTHROPIC_API_KEY = ""
@@ -214,7 +255,7 @@ port_range = [50000, 50100]          # port range for Odoo containers [start, en
 | Key | Default | Description |
 |---|---|---|
 | `[database].user` | `odoo` | PostgreSQL user for the shared database container |
-| `[database].password` | *(generated)* | PostgreSQL password. The bundled config omits it and one is auto-generated on first init; set explicitly to override |
+| `[database].password` | *(generated)* | PostgreSQL password. The bundled config omits it and one is auto-generated on first launch; set explicitly to override |
 | `[database].image` | `postgres:15` | PostgreSQL Docker image |
 
 ### Storage settings
@@ -236,6 +277,37 @@ The global `[agent]` section holds deployment-wide settings for the per-team cod
 | `[agent].claude_model` | *(empty)* | Optional Claude model override for the agent; empty = CLI default |
 | `[agent].codex_model` | *(empty)* | Optional Codex model override for the agent; empty = CLI default |
 
+### Production settings
+
+Production hosting is opt-in and is documented in detail in
+[Production Hosting](production.md). Production routes and the dashboard tab
+are registered only when `[production].enabled = true`.
+
+| Key | Default | Description |
+|---|---|---|
+| `[production].enabled` | `false` | Enable long-lived production environments and their dedicated PostgreSQL cluster. Requires Traefik routing |
+| `[production].postgres_image` | *(empty)* | PostgreSQL image for the production cluster. Empty inherits `[database].image` |
+| `[production].walg_version` | *(empty)* | WAL-G release override. Empty uses the version pinned by Oduflow |
+| `[production].workers_cap` | `8` | Upper bound for automatically calculated Odoo workers; must be at least `1` |
+
+### Backup settings
+
+The `[backup]` section is optional. If it is present, `bucket`, `access_key`,
+and `secret_key` are all required; remove the whole section to disable backups.
+
+| Key | Default | Description |
+|---|---|---|
+| `[backup].bucket` | *(required)* | S3-compatible bucket name |
+| `[backup].access_key` | *(required)* | S3 access key |
+| `[backup].secret_key` | *(required)* | S3 secret key |
+| `[backup].endpoint` | *(empty)* | Custom S3 endpoint for MinIO, R2, or another compatible service; enables path-style addressing |
+| `[backup].region` | *(empty)* | S3 region |
+| `[backup].prefix` | `oduflow` | Object-key prefix, normalized without leading or trailing `/` |
+| `[backup].snapshot_time` | `02:00` | Default daily per-production snapshot time in server-local `HH:MM` |
+| `[backup].basebackup_time` | `03:30` | Daily WAL-G base-backup time in server-local `HH:MM` |
+| `[backup].keep` | `["30:180", "7:30", "1:7"]` | Snapshot retention tiers as `interval_days:age_days` pairs |
+| `[backup].walg_keep_full` | `7` | Number of WAL-G full base backups to retain; must be at least `1` |
+
 ### Per-team settings
 
 Each `[team.*]` section defines an isolated team with its own workspaces, templates, credentials, and services. At least one team is required.
@@ -248,6 +320,8 @@ Each `[team.*]` section defines an isolated team with its own workspaces, templa
 | `port_range` | `[50000, 50100]` | Port range for Odoo containers `[start, end)` — supports up to 100 concurrent environments |
 | `agent_enabled` | `false` | Enable the per-team coding agent (dashboard Agent Chat / Agent CLI). Off by default |
 | `agent_default` | `claude` | Which agent consoles/chats open by default: `claude` or `codex` |
+| `db_quota_gb` | `50` | Combined size cap for the team's environment and template PostgreSQL databases. `0` disables the check |
+| `disk_quota_gb` | `0` | Kernel-enforced cap for team files and databases when the data filesystem supports XFS project quotas. `0` disables it |
 | `[team.X.agent_env]` | *(empty)* | Sub-table of environment variables injected into the team's agent container — provider credentials (`CLAUDE_CODE_OAUTH_TOKEN`, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`) and any custom vars |
 
 Team data is stored at `{data_dir}/team_{ID}/`:

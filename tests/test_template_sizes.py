@@ -1,6 +1,7 @@
 import json
-from oduflow.settings import Settings, TeamSettings
+
 from oduflow.docker_ops.system_ops import _file_size_mb, _update_template_sizes
+from oduflow.settings import Settings, TeamSettings
 
 
 class TestFileSizeMb:

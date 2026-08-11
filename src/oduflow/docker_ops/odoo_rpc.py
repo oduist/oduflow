@@ -39,7 +39,6 @@ from dataclasses import dataclass
 from typing import Any
 
 import docker
-
 from oduflow.docker_ops.client import get_client
 from oduflow.errors import ExternalCommandError, NotFoundError
 from oduflow.naming import get_resource_name

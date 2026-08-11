@@ -2,7 +2,6 @@ import json
 from unittest.mock import MagicMock
 
 import docker
-
 from oduflow.docker_ops import system_ops
 from oduflow.docker_ops.env_ops import build_env_traefik_labels
 from oduflow.settings import ExtraRoute, Settings, TeamSettings

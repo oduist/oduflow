@@ -23,9 +23,12 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Type checker pinned so a local `mypy src/oduflow` matches the CI gate exactly
+# Developer tools are pinned so local checks match the CI gates exactly
 # (see .github/workflows/tests.yml). Install with: pip install -e ".[dev]"
-dev = ["mypy==2.3.0"]
+dev = [
+    "mypy==2.3.0",
+    "ruff==0.16.2",
+]
 
 [project.urls]
 Homepage = "https://oduflow.dev"
@@ -47,6 +50,13 @@ packages = ["src/oduflow"]
 [tool.ruff]
 line-length = 88
 target-version = "py310"
+
+[tool.ruff.lint]
+# Keep a stable baseline across Ruff releases: syntax/style errors, Pyflakes,
+# and deterministic imports. Broader refactoring/security rules are reviewed
+# separately because this infrastructure code intentionally catches and
+# suppresses errors at several best-effort boundaries.
+select = ["E4", "E7", "E9", "F", "I"]
 
 [tool.mypy]
 python_version = "3.10"

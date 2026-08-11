@@ -9,7 +9,6 @@ from pathlib import Path
 
 import pytest
 
-
 _CHAT_JS = (
     Path(__file__).parents[1] / "src" / "oduflow" / "templates" / "static" / "chat.js"
 )

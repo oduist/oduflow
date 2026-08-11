@@ -1,5 +1,5 @@
 from oduflow import licensing
-from oduflow.licensing import LicenseInfo, TYPE_BUSINESS, TYPE_INDIVIDUAL
+from oduflow.licensing import TYPE_BUSINESS, TYPE_INDIVIDUAL, LicenseInfo
 
 
 def _info() -> LicenseInfo:

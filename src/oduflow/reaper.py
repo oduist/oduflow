@@ -17,7 +17,7 @@ Disable either behavior with ``0`` in ``oduflow.toml``::
 
     [lifecycle]
     auto_stop_hours = 48
-    auto_delete_hours = 72
+    auto_delete_hours = 0
 """
 
 from __future__ import annotations
@@ -25,7 +25,8 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 from oduflow import activity
 from oduflow.docker_ops import env_ops

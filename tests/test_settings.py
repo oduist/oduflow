@@ -1,5 +1,7 @@
-import pytest
 from pathlib import Path
+
+import pytest
+
 from oduflow.settings import DEFAULT_AGENT_IMAGE, Settings, TeamSettings, find_toml
 
 

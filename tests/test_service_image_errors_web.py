@@ -11,7 +11,6 @@ from oduflow.locking import LockManager
 from oduflow.settings import Settings, TeamSettings
 from oduflow.web_ui import mount_web_ui
 
-
 IMAGE = "example/missing:0.7.2"
 NOT_FOUND_MESSAGE = (
     f"Docker image '{IMAGE}' was not found or is not accessible. "

@@ -1,5 +1,4 @@
 from __future__ import annotations
-from typing import Any
 
 import ast
 import logging
@@ -7,6 +6,7 @@ import os
 import re
 import subprocess
 from collections.abc import Iterable
+from typing import Any
 
 from oduflow import settings
 

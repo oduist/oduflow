@@ -1,5 +1,4 @@
 from __future__ import annotations
-from typing import Any
 
 import contextlib
 import gzip
@@ -16,10 +15,10 @@ import tarfile
 import time
 import uuid
 from importlib.metadata import PackageNotFoundError, version
+from typing import Any
 
 import docker
 from docker import DockerClient
-
 from oduflow.docker_ops.client import chown_recursive, get_client, get_odoo_uid_gid
 from oduflow.docker_ops.stats import default_env_limits
 from oduflow.errors import (

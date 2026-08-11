@@ -1,7 +1,8 @@
-import pytest
-import docker
 from unittest.mock import MagicMock, patch
 
+import pytest
+
+import docker
 from oduflow.docker_ops import service_ops, system_ops
 from oduflow.errors import (
     ConflictError,

@@ -1,11 +1,10 @@
+import glob as glob_mod
 import logging
 import os
-import glob as glob_mod
 import re
 
 import docker
 from docker import DockerClient
-
 from oduflow.docker_ops.system_ops import _exec_sql
 from oduflow.env_credentials import load_credentials
 from oduflow.naming import get_db_name, get_repo_path, get_resource_name

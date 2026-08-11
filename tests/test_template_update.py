@@ -10,9 +10,9 @@ import os
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-import docker
 import pytest
 
+import docker
 from oduflow.docker_ops import env_ops, system_ops
 from oduflow.naming import get_filestore_paths, get_resource_name
 from oduflow.settings import Settings, TeamSettings
