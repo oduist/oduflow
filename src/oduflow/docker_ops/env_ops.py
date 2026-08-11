@@ -719,6 +719,86 @@ def _install_pip_requirements(
         return True, f"[PIP] Requirements installed successfully:\n{output_str}"
 
 
+def _odoo_registry_probe(env_db: str) -> list[str]:
+    """Build an in-container probe that forces the target registry to load."""
+    script = (
+        "import http.cookiejar,sys,urllib.parse,urllib.request;"
+        f"db={env_db!r};"
+        "jar=http.cookiejar.CookieJar();"
+        "opener=urllib.request.build_opener("
+        "urllib.request.HTTPCookieProcessor(jar));"
+        "url='http://127.0.0.1:8069/web/login?'+urllib.parse.urlencode({'db':db});"
+        "response=opener.open(url,timeout=5);"
+        "sys.exit(0 if response.status==200 else 1)"
+    )
+    return ["python3", "-c", script]
+
+
+def _wait_for_container_odoo_ready(
+    container: Any, env_db: str, timeout: int = 120
+) -> bool:
+    """Wait until the serving Odoo process has finished registry startup.
+
+    The probe runs inside the container so readiness does not depend on public
+    DNS, TLS, Traefik, or a published host port. It requests ``/web/login`` with
+    a cookie-aware opener: Odoo's first response selects ``env_db`` and the
+    redirected request must pass through that database's registry. A secondary
+    Odoo command must not start before this succeeds: on cloned Odoo 15
+    databases both processes can otherwise race while re-creating the registry
+    signaling sequences. ``/web/health`` is not sufficient here because it is
+    database-independent and can respond before registry preloading completes.
+    """
+    probe = _odoo_registry_probe(env_db)
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            if container.exec_run(probe)[0] == 0:
+                return True
+        except docker.errors.APIError:
+            # The container may briefly reject execs while restarting after a
+            # dependency install. Treat that exactly like a failed probe.
+            pass
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(2)
+
+
+def _auto_install_modules(
+    container: Any, env_db: str, modules: list[str], env_name: str = ""
+) -> str:
+    """Install modules after the serving registry is ready and return its log."""
+    modules_str = ",".join(modules)
+    logger.info(
+        "Waiting for serving Odoo before auto-installing modules",
+        extra={"env_name": env_name},
+    )
+    if not _wait_for_container_odoo_ready(container, env_db):
+        message = (
+            f"[AUTO-INSTALL] odoo -i {modules_str} FAILED: serving Odoo did not "
+            "become ready within 120 seconds; installation was not attempted"
+        )
+        logger.error(message, extra={"env_name": env_name})
+        return message
+
+    install_cmd = (
+        f"/entrypoint.sh odoo -d {env_db} -i {modules_str} --stop-after-init --no-http"
+    )
+    exit_code, output = container.exec_run(install_cmd)
+    output_str = output.decode("utf-8") if isinstance(output, bytes) else str(output)
+    if exit_code != 0:
+        logger.error(
+            "Auto-install modules failed (exit %d): %s",
+            exit_code,
+            output_str,
+            extra={"env_name": env_name},
+        )
+        return (
+            f"[AUTO-INSTALL] odoo -i {modules_str} FAILED (exit {exit_code}):\n"
+            f"{output_str}"
+        )
+    return f"[AUTO-INSTALL] odoo -i {modules_str} completed successfully"
+
+
 def _cleanup_old_environment(
     client: "DockerClient",
     settings: Settings,
@@ -1333,28 +1413,11 @@ def create_environment(
             modules_str,
             extra={"env_name": env_name},
         )
-        install_cmd = (
-            f"/entrypoint.sh odoo -d {env_db} -i {modules_str}"
-            f" --stop-after-init --no-http"
+        setup_logs.append(
+            _auto_install_modules(
+                container, env_db, auto_install_modules, env_name=env_name
+            )
         )
-        exit_code, output = container.exec_run(install_cmd)
-        output_str = (
-            output.decode("utf-8") if isinstance(output, bytes) else str(output)
-        )
-        if exit_code != 0:
-            logger.error(
-                "Auto-install modules failed (exit %d): %s",
-                exit_code,
-                output_str,
-                extra={"env_name": env_name},
-            )
-            setup_logs.append(
-                f"[AUTO-INSTALL] odoo -i {modules_str} FAILED (exit {exit_code}):\n{output_str}"
-            )
-        else:
-            setup_logs.append(
-                f"[AUTO-INSTALL] odoo -i {modules_str} completed successfully"
-            )
         # NOTE: the serving container is restarted further down, AFTER
         # sanitization, so the newly-installed modules' crons are already
         # deactivated in the DB before PID1 reloads them into a live registry.
