@@ -3,6 +3,7 @@ from __future__ import annotations
 import contextlib
 import gzip
 import hashlib
+import io
 import json
 import logging
 import os
@@ -1123,28 +1124,64 @@ def _is_pg_restore_archive_version_error(output: str) -> bool:
     return "unsupported version" in output and "file header" in output
 
 
+class _ChunkReader(io.RawIOBase):
+    """Read-only file object over an iterator of byte chunks.
+
+    ``container.get_archive`` hands back a generator; wrapping it here lets
+    ``tarfile`` consume the archive as it arrives instead of spooling the whole
+    thing to a temp file first (a full-size extra write + read per dump).
+    """
+
+    def __init__(self, chunks: Any) -> None:
+        self._chunks = iter(chunks)
+        self._buf = b""
+
+    def readable(self) -> bool:
+        return True
+
+    def readinto(self, buffer: Any) -> int:
+        while not self._buf:
+            try:
+                self._buf = next(self._chunks)
+            except StopIteration:
+                return 0
+        size = min(len(buffer), len(self._buf))
+        buffer[:size] = self._buf[:size]
+        self._buf = self._buf[size:]
+        return size
+
+
+@contextlib.contextmanager
+def _container_archive_stream(
+    container: docker.models.containers.Container, container_path: str
+) -> Any:
+    """Open the container's tar stream for sequential reading (``r|``).
+
+    Stream mode has no random access: members must be extracted while the
+    iteration is positioned on them, and ``getmembers()`` is unavailable.
+    """
+    chunks, _ = container.get_archive(container_path)
+    reader = io.BufferedReader(_ChunkReader(chunks))
+    with tarfile.open(fileobj=reader, mode="r|") as tar:
+        yield tar
+
+
 def _copy_file_from_container(
     container: docker.models.containers.Container, container_path: str, dest_path: str
 ) -> None:
-    import tempfile
-
-    chunks, _ = container.get_archive(container_path)
-    with tempfile.NamedTemporaryFile(suffix=".tar", delete=False) as tmp:
-        for chunk in chunks:
-            tmp.write(chunk)
-        tmp_path = tmp.name
-    try:
-        with tarfile.open(tmp_path, mode="r") as tar:
-            member = tar.getmembers()[0]
-            f = tar.extractfile(member)
-            if f is None:
-                raise ExternalCommandError(
-                    "get_archive", -1, f"Could not extract {container_path} from tar"
-                )
+    with _container_archive_stream(container, container_path) as tar:
+        for member in tar:
+            if not member.isfile():
+                continue
+            src = tar.extractfile(member)
+            if src is None:
+                break
             with open(dest_path, "wb") as out:
-                shutil.copyfileobj(f, out)
-    finally:
-        os.remove(tmp_path)
+                shutil.copyfileobj(src, out)
+            return
+    raise ExternalCommandError(
+        "get_archive", -1, f"Could not extract {container_path} from tar"
+    )
 
 
 def _extract_archive_from_container(
@@ -1153,51 +1190,217 @@ def _extract_archive_from_container(
     dest_dir: str,
     prefix: str,
 ) -> int:
-    import tempfile
-
-    chunks, _ = container.get_archive(container_path)
-    with tempfile.NamedTemporaryFile(suffix=".tar", delete=False) as tmp:
-        for chunk in chunks:
-            tmp.write(chunk)
-        tmp_path = tmp.name
-    try:
-        extracted = 0
-        with tarfile.open(tmp_path, mode="r") as tar:
-            for member in tar.getmembers():
-                if not member.name.startswith(prefix) and member.name != prefix.rstrip(
-                    "/"
+    extracted = 0
+    with _container_archive_stream(container, container_path) as tar:
+        for member in tar:
+            if not member.name.startswith(prefix) and member.name != prefix.rstrip("/"):
+                continue
+            rel = member.name[len(prefix) :]
+            if not rel:
+                continue
+            member.name = rel
+            # Reject members that escape dest_dir via traversal or an
+            # absolute/symlink target (defence in depth; source is our own
+            # template-builder container).
+            if not _is_within_directory(dest_dir, os.path.join(dest_dir, rel)):
+                logger.warning("Skipping unsafe archive member: %s", rel)
+                continue
+            if member.issym() or member.islnk():
+                link_target = os.path.join(dest_dir, os.path.dirname(rel))
+                if not _is_within_directory(
+                    dest_dir, os.path.join(link_target, member.linkname)
                 ):
+                    logger.warning("Skipping unsafe link member: %s", rel)
                     continue
-                rel = member.name[len(prefix) :]
-                if not rel:
-                    continue
-                member.name = rel
-                # Reject members that escape dest_dir via traversal or an
-                # absolute/symlink target (defence in depth; source is our own
-                # template-builder container).
-                if not _is_within_directory(dest_dir, os.path.join(dest_dir, rel)):
-                    logger.warning("Skipping unsafe archive member: %s", rel)
-                    continue
-                if member.issym() or member.islnk():
-                    link_target = os.path.join(dest_dir, os.path.dirname(rel))
-                    if not _is_within_directory(
-                        dest_dir, os.path.join(link_target, member.linkname)
-                    ):
-                        logger.warning("Skipping unsafe link member: %s", rel)
-                        continue
-                tar.extract(member, dest_dir)
-                if not member.isdir():
-                    extracted += 1
-        return extracted
-    finally:
-        os.remove(tmp_path)
+            tar.extract(member, dest_dir)
+            if not member.isdir():
+                extracted += 1
+    return extracted
+
+
+_EXEC_EXIT_POLL_SECONDS = 5.0
+
+
+def _wait_exec_exit_code(api: Any, exec_id: str) -> int:
+    """Exit code of a finished exec, tolerating a briefly lagging daemon."""
+    deadline = time.monotonic() + _EXEC_EXIT_POLL_SECONDS
+    while True:
+        code = api.exec_inspect(exec_id).get("ExitCode")
+        if code is not None:
+            return int(code)
+        if time.monotonic() >= deadline:
+            return -1
+        time.sleep(0.05)
+
+
+def _stream_exec_to_file(
+    client: DockerClient,
+    container: docker.models.containers.Container,
+    cmd: list[str],
+    dest_path: str,
+    *,
+    tool: str,
+) -> int:
+    """Run ``cmd`` in ``container``, streaming its stdout straight to ``dest_path``.
+
+    Replaces the exec-to-/tmp + ``get_archive`` route, which wrote every dump
+    three times at full size (container writable layer, host temp tar, final
+    file) and left the container copy behind to grow the writable layer. Here
+    the payload lands only at its destination.
+
+    ``tty=False`` is required: with a TTY the daemon stops multiplexing the
+    streams and mangles binary output. ``demux=True`` then keeps stderr out of
+    the payload bytes. The exit code is checked explicitly — without it a
+    truncated dump looks like success.
+    """
+    api = client.api
+    exec_id = api.exec_create(container.id, cmd, tty=False, stdout=True, stderr=True)[
+        "Id"
+    ]
+    stderr = bytearray()
+    written = 0
+    part_path = dest_path + ".part"
+    try:
+        with open(part_path, "wb") as out:
+            for stdout_chunk, stderr_chunk in api.exec_start(
+                exec_id, stream=True, demux=True
+            ):
+                if stdout_chunk:
+                    out.write(stdout_chunk)
+                    written += len(stdout_chunk)
+                if stderr_chunk:
+                    stderr.extend(stderr_chunk)
+        exit_code = _wait_exec_exit_code(api, exec_id)
+        message = stderr.decode("utf-8", errors="replace")
+        if exit_code != 0:
+            raise ExternalCommandError(tool, exit_code, message)
+        os.replace(part_path, dest_path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.remove(part_path)
+        raise
+    if message.strip():
+        logger.debug("%s stderr: %s", tool, message.strip())
+    return written
+
+
+def _pg_restore_jobs() -> int:
+    """Worker count for parallel ``pg_restore``.
+
+    Derived from the host CPUs rather than configured: the shared PostgreSQL
+    container serves every team, so the cap keeps one restore from taking the
+    whole cluster.
+    """
+    return max(1, min(4, os.cpu_count() or 1))
 
 
 _PG_TABLESPACES_MOUNT = "/tablespaces"
+_PG_EXCHANGE_MOUNT = "/exchange"
 
 
 def _pg_tablespaces_host_dir(settings: Settings) -> str:
     return os.path.join(settings.base_data_dir, "pg_tablespaces")
+
+
+def _pg_exchange_host_dir(settings: Settings) -> str:
+    return os.path.join(settings.base_data_dir, "pg_exchange")
+
+
+def _pg_exchange_dirs(
+    client: DockerClient, settings: Settings, team: TeamSettings
+) -> tuple[str, str] | None:
+    """Host and in-container paths of the team's dump exchange dir, if mounted.
+
+    Returns None when the shared PostgreSQL container predates the mount (it is
+    only attached at creation time, and an existing container is never recreated
+    behind the operator's back). Callers fall back to streaming the dump out
+    through the exec API, so nothing has to be migrated: an installation picks
+    up the faster path whenever its PostgreSQL container is next recreated.
+    """
+    try:
+        container = client.containers.get(settings.shared_db_container)
+    except (docker.errors.NotFound, docker.errors.APIError):
+        return None
+    attrs = getattr(container, "attrs", None)
+    mounts = attrs.get("Mounts") if isinstance(attrs, dict) else None
+    if not isinstance(mounts, list):
+        return None
+    if not any(
+        isinstance(m, dict) and m.get("Destination") == _PG_EXCHANGE_MOUNT
+        for m in mounts
+    ):
+        return None
+    leaf = f"team_{team.team_id}"
+    return (
+        os.path.join(_pg_exchange_host_dir(settings), leaf),
+        f"{_PG_EXCHANGE_MOUNT}/{leaf}",
+    )
+
+
+@contextlib.contextmanager
+def _staged_db_dump(
+    client: DockerClient,
+    settings: Settings,
+    team: TeamSettings,
+    db_name: str,
+    dest_path: str,
+) -> Any:
+    """Dump *db_name* for *dest_path*, as cheaply as this installation allows.
+
+    Yields ``(host_path, container_path)``. ``container_path`` is None unless
+    the dump was staged in the pg_exchange mount, where PostgreSQL can restore
+    it in place instead of having it copied into its writable layer first.
+    Writing through the mount also leaves the archive's TOC offsets intact,
+    which a parallel ``pg_restore`` uses; a dump streamed from stdout cannot
+    carry them.
+
+    On a clean exit the staged dump is moved to *dest_path*; on failure nothing
+    is left behind, and *dest_path* is never half-written.
+    """
+    db_container = client.containers.get(settings.shared_db_container)
+    exchange = _pg_exchange_dirs(client, settings, team)
+    dump_cmd = ["pg_dump", "-U", settings.db_user, "-Fc"]
+    container_path: str | None = None
+
+    if exchange is None:
+        host_path = f"{dest_path}.staged"
+    else:
+        host_dir, container_dir = exchange
+        os.makedirs(host_dir, exist_ok=True)
+        name = f"{db_name}-{uuid.uuid4().hex}.pgdump"
+        host_path = os.path.join(host_dir, name)
+        container_path = f"{container_dir}/{name}"
+
+    try:
+        if container_path is None:
+            _stream_exec_to_file(
+                client, db_container, [*dump_cmd, db_name], host_path, tool="pg_dump"
+            )
+        else:
+            exit_code, output = db_container.exec_run(
+                [*dump_cmd, "-f", container_path, db_name]
+            )
+            if exit_code != 0:
+                msg = (
+                    output.decode("utf-8") if isinstance(output, bytes) else str(output)
+                )
+                raise ExternalCommandError("pg_dump", exit_code, msg)
+
+        yield host_path, container_path
+        try:
+            os.replace(host_path, dest_path)
+        except OSError as exc:
+            # Both paths sit under the base data dir, so this is normally a free
+            # rename. XFS also refuses it (-EXDEV) when the exchange dir was
+            # never stamped with the team's quota project — see quotas.py.
+            logger.warning(
+                "Could not move the staged dump into place (%s); copying instead",
+                exc,
+            )
+            shutil.move(host_path, dest_path)
+    finally:
+        with contextlib.suppress(OSError):
+            os.remove(host_path)
 
 
 def _ensure_pg_container(
@@ -1205,11 +1408,17 @@ def _ensure_pg_container(
 ) -> None:
     """Start (or create) the shared PostgreSQL container.
 
-    Mounts only the dedicated pg_tablespaces directory into the container —
-    never the whole data dir: PostgreSQL has no business seeing team
-    workspaces or credentials. Per-team tablespace directories are created
-    inside this one mount, so adding a team never requires recreating the
-    container (see ensure_team_tablespace).
+    Mounts only dedicated base-level directories into the container — never the
+    whole data dir: PostgreSQL has no business seeing team workspaces or
+    credentials. Per-team subdirectories are created inside these mounts, so
+    adding a team never requires recreating the container (see
+    ensure_team_tablespace).
+
+    pg_tablespaces holds the databases themselves. pg_exchange is where dumps
+    are staged: writing one there costs a single write to its final filesystem
+    instead of a full-size copy through the container's writable layer, and a
+    restore can read it in place. It carries no new exposure — a dump is a
+    subset of the cluster this container already serves.
     """
     try:
         db_container = client.containers.get(settings.shared_db_container)
@@ -1221,6 +1430,8 @@ def _ensure_pg_container(
 
     tablespaces_dir = _pg_tablespaces_host_dir(settings)
     os.makedirs(tablespaces_dir, exist_ok=True)
+    exchange_dir = _pg_exchange_host_dir(settings)
+    os.makedirs(exchange_dir, exist_ok=True)
     client.containers.run(
         settings.postgres_image,
         name=settings.shared_db_container,
@@ -1236,6 +1447,7 @@ def _ensure_pg_container(
                 "mode": "ro",
             },
             tablespaces_dir: {"bind": _PG_TABLESPACES_MOUNT, "mode": "rw"},
+            exchange_dir: {"bind": _PG_EXCHANGE_MOUNT, "mode": "rw"},
         },
         command=["postgres", "-c", "config_file=/etc/postgresql/postgresql.conf"],
         environment={
@@ -1703,7 +1915,18 @@ def reload_template(
     team: TeamSettings,
     template_name: str,
     dump_path: str | None = None,
+    container_dump_path: str | None = None,
+    *,
+    persist_dump: bool = True,
 ) -> dict[str, Any]:
+    """Rebuild the template database from its dump.
+
+    ``container_dump_path`` names a dump the PostgreSQL container can already
+    read (staged in the pg_exchange mount), skipping the copy into its writable
+    layer. The caller owns that file; only dumps copied in here are cleaned up.
+    ``persist_dump=False`` lets a caller install its staged file atomically after
+    this restore succeeds instead of making a second full-size copy here.
+    """
     client = get_client()
     tpl_db = get_template_db_name(template_name, team.team_id)
     resolved_dump = dump_path or team.get_template_sql_path(template_name)
@@ -1740,15 +1963,16 @@ def reload_template(
         # The DB container is shared across teams, whose locks do not contend.
         # Use an opaque per-restore name so one restore cannot overwrite or
         # clean up another restore's input file.
-        container_dump_name = f"oduflow-restore-{uuid.uuid4().hex}"
-        container_dump_path = f"/tmp/{container_dump_name}"
-        container_tmp_files.add(container_dump_path)
-        _copy_file_to_container(
-            db_container,
-            resolved_dump,
-            "/tmp",
-            archive_name=container_dump_name,
-        )
+        if container_dump_path is None:
+            container_dump_name = f"oduflow-restore-{uuid.uuid4().hex}"
+            container_dump_path = f"/tmp/{container_dump_name}"
+            container_tmp_files.add(container_dump_path)
+            _copy_file_to_container(
+                db_container,
+                resolved_dump,
+                "/tmp",
+                archive_name=container_dump_name,
+            )
 
         # pg_restore runs with --no-owner so restored objects are owned by the
         # restoring superuser, not by whatever role the dump recorded. For
@@ -1781,6 +2005,10 @@ def reload_template(
                     container_dump_path,
                 ]
             else:
+                # Parallel restore only here: -j needs a seekable archive, which
+                # rules out the gzip pipeline above (pg_restore reads a pipe) and
+                # the plain-SQL psql path. Odoo restores are dominated by index
+                # and constraint builds, which is exactly what -j parallelises.
                 restore_cmd = [
                     "pg_restore",
                     "--no-owner",
@@ -1788,8 +2016,11 @@ def reload_template(
                     settings.db_user,
                     "-d",
                     tpl_db,
-                    container_dump_path,
                 ]
+                jobs = _pg_restore_jobs()
+                if jobs > 1:
+                    restore_cmd += ["-j", str(jobs)]
+                restore_cmd.append(container_dump_path)
 
         logger.info(
             "DB restore started, template_db=%s, dump=%s", tpl_db, resolved_dump
@@ -1905,7 +2136,7 @@ def reload_template(
 
         logger.info("Verified %d tables in restored database %s", num_tables, tpl_db)
 
-        if dump_path:
+        if dump_path and persist_dump:
             tpl_dir = team.get_template_dir(template_name)
             os.makedirs(tpl_dir, exist_ok=True)
             base = "dump.sql" if use_psql else "dump.pgdump"
@@ -2078,29 +2309,15 @@ def init_template(
     os.makedirs(os.path.dirname(template_sql_path), exist_ok=True)
 
     db_container = client.containers.get(settings.shared_db_container)
-    dump_cmd = [
-        "pg_dump",
-        "-U",
-        settings.db_user,
-        "-Fp",
-        "-f",
-        f"/tmp/{build_db}.dump",
-        build_db,
-    ]
-    exit_code_dump, output_dump = db_container.exec_run(dump_cmd)
-    if exit_code_dump != 0:
-        msg = (
-            output_dump.decode("utf-8")
-            if isinstance(output_dump, bytes)
-            else str(output_dump)
+    dump_cmd = ["pg_dump", "-U", settings.db_user, "-Fp", build_db]
+    try:
+        _stream_exec_to_file(
+            client, db_container, dump_cmd, template_sql_path, tool="pg_dump"
         )
+    except ExternalCommandError:
         temp_container.remove(v=True)
         _exec_sql(client, settings, f"DROP DATABASE IF EXISTS {build_db} WITH (FORCE);")
-        raise ExternalCommandError("pg_dump", exit_code_dump, msg)
-
-    logger.info("pg_dump completed, extracting dump file")
-
-    _copy_file_from_container(db_container, f"/tmp/{build_db}.dump", template_sql_path)
+        raise
 
     logger.info("Dump saved to %s", template_sql_path)
 
@@ -2229,6 +2446,123 @@ def _source_env_metadata(settings: Settings, labels: dict[str, Any]) -> dict[str
     return metadata
 
 
+def _snapshot_filestore(
+    source: str, dest: str, *, link_dests: list[str]
+) -> list[str] | None:
+    """Materialise *source* at *dest*, reusing files from *link_dests*.
+
+    *source* is the environment's merged filestore (for an overlay env, the
+    fuse-overlayfs mount: template baseline plus the environment's own upper
+    deltas, whiteouts already applied). Copying it wholesale copies the entire
+    baseline again, which is almost always the bulk of the data and almost
+    always unchanged.
+
+    Each ``--link-dest`` directory lets rsync hardlink instead of copy any file
+    that already matches there, so only the environment's actual deltas hit the
+    disk. Sharing inodes is safe here: Odoo filestore entries are content
+    addressed (the name is the checksum) and never rewritten in place, and the
+    baseline being linked against is replaced by this snapshot moments later —
+    ``rmtree`` only drops one name, the inode survives through the new link.
+
+    Returns the paths rsync transferred, relative to *dest*, or None when the
+    whole tree was copied (in which case every file needs its ownership fixed).
+    """
+    if os.path.exists(dest):
+        shutil.rmtree(dest)
+
+    def _full_copy(reason: str) -> None:
+        # Never silent: falling back here costs exactly the full-size copy this
+        # function exists to avoid, so it must be visible in the logs.
+        logger.warning("Filestore snapshot fell back to a full copy: %s", reason)
+        shutil.copytree(source, dest)
+
+    if not shutil.which("rsync"):
+        _full_copy("rsync not found on PATH")
+        return None
+
+    cmd = ["rsync", "-a", "--delete", "--out-format=%n"]
+    for link_dest in link_dests:
+        if os.path.isdir(link_dest):
+            # Relative paths would be resolved against dest, not the cwd.
+            cmd.append(f"--link-dest={os.path.abspath(link_dest)}")
+    cmd += [source.rstrip("/") + "/", dest.rstrip("/") + "/"]
+
+    os.makedirs(dest, exist_ok=True)
+    result = subprocess.run(cmd, capture_output=True)
+    if result.returncode != 0:
+        shutil.rmtree(dest, ignore_errors=True)
+        _full_copy(
+            f"rsync exited {result.returncode}: "
+            f"{result.stderr.decode('utf-8', errors='replace').strip()}"
+        )
+        return None
+
+    return [
+        line
+        for line in result.stdout.decode("utf-8", errors="replace").splitlines()
+        if line and not line.startswith("deleting ")
+    ]
+
+
+def _baselines_owned_by(link_dests: list[str], uid: int, gid: int) -> bool:
+    """Whether the linkable baselines already carry the target ownership.
+
+    A hardlinked file keeps whatever ownership the publish that created it gave
+    it, so chowning only the transferred files is complete only while that
+    ownership still matches. It stops matching when a team moves to an Odoo
+    image with a different uid — rare, but then the whole tree has to be walked
+    or the old files would keep the previous uid forever.
+
+    Checking each baseline's root is enough: a mismatch forces the full walk,
+    which leaves root and contents consistent again.
+    """
+    for path in link_dests:
+        if not os.path.isdir(path):
+            continue
+        info = os.stat(path)
+        if info.st_uid != uid or info.st_gid != gid:
+            logger.info(
+                "Baseline %s is owned by %d:%d, not %d:%d; chowning the whole "
+                "template filestore",
+                path,
+                info.st_uid,
+                info.st_gid,
+                uid,
+                gid,
+            )
+            return False
+    return True
+
+
+def _chown_filestore(
+    root: str,
+    rel_paths: list[str] | None,
+    uid: int,
+    gid: int,
+    client: DockerClient,
+    image: str,
+) -> None:
+    """Give *root* to *uid*:*gid*, touching only *rel_paths* when they are known.
+
+    Files hardlinked from the previous baseline already carry the right
+    ownership — they are the very inodes a previous publish chowned — so only
+    the files rsync actually transferred need fixing. With *rel_paths* None
+    (full copy fallback) the whole tree is walked as before.
+    """
+    if rel_paths is None:
+        chown_recursive(root, uid, gid, client, image)
+        return
+    try:
+        os.chown(root, uid, gid)
+        for rel in rel_paths:
+            target = os.path.join(root, rel)
+            if _is_within_directory(root, target) and os.path.lexists(target):
+                os.chown(target, uid, gid)
+    except PermissionError:
+        # macOS and other non-root hosts: fall back to the container-based chown.
+        chown_recursive(root, uid, gid, client, image)
+
+
 def publish_env_as_template(
     settings: Settings,
     team: TeamSettings,
@@ -2267,28 +2601,39 @@ def publish_env_as_template(
         check_db_quota(client, settings, team)
 
     _wait_pg_ready(client, settings)
-    db_container = client.containers.get(settings.shared_db_container)
 
-    # 1. pg_dump branch DB → new template dump. Ownership is stripped at restore
-    # time (pg_restore --no-owner in reload_template), NOT here: --no-owner is
-    # ignored by pg_dump for the -Fc archive format.
-    dump_path = team.get_template_sql_path(template_name)
-    os.makedirs(os.path.dirname(dump_path), exist_ok=True)
-    dump_file = f"/tmp/{env_db}.dump"
-    dump_cmd = ["pg_dump", "-U", settings.db_user, "-Fc", "-f", dump_file, env_db]
+    # 1-2. pg_dump the branch DB, then rebuild the template DB from it, and only
+    # then move the dump into the template dir — a failed restore leaves no
+    # half-published template behind. Ownership is stripped at restore time
+    # (pg_restore --no-owner in reload_template), NOT here: --no-owner is ignored
+    # by pg_dump for the -Fc archive format.
+    template_dir = team.get_template_dir(template_name)
+    dump_path = os.path.join(template_dir, "dump.pgdump")
+    os.makedirs(template_dir, exist_ok=True)
 
     logger.info("Dumping branch database %s", env_db)
-    exit_code, output = db_container.exec_run(dump_cmd)
-    if exit_code != 0:
-        msg = output.decode("utf-8") if isinstance(output, bytes) else str(output)
-        raise ExternalCommandError("pg_dump", exit_code, msg)
+    with _staged_db_dump(client, settings, team, env_db, dump_path) as (
+        staged_dump,
+        container_dump,
+    ):
+        logger.info("Branch dump saved to %s", staged_dump)
+        reload_template(
+            settings,
+            team,
+            template_name=template_name,
+            dump_path=staged_dump,
+            container_dump_path=container_dump,
+            persist_dump=False,
+        )
 
-    _copy_file_from_container(db_container, dump_file, dump_path)
-
-    logger.info("Branch dump saved to %s", dump_path)
-
-    # 2. Reload template DB from new dump
-    reload_template(settings, team, template_name=template_name, dump_path=dump_path)
+    # A publish always produces an uncompressed custom-format archive. Keep the
+    # previous dump until the restore and atomic install above have both
+    # succeeded, then remove any obsolete format left by an older template.
+    for old_name in ("dump.sql", "dump.sql.gz", "dump.pgdump.gz"):
+        old_path = os.path.join(template_dir, old_name)
+        if os.path.isfile(old_path):
+            os.remove(old_path)
+            logger.info("Removed old dump %s", old_path)
 
     # ------------------------------------------------------------------
     # 3-7. Swap the template's lower filestore non-destructively (issue #2).
@@ -2304,26 +2649,42 @@ def publish_env_as_template(
     )
     source_is_overlay = os.path.isdir(branch_merged) and os.path.ismount(branch_merged)
 
+    source_template = ""
+    try:
+        sc = client.containers.get(source_container)
+        source_was_running = sc.status == "running"
+        source_image = sc.image.tags[0] if sc.image.tags else "odoo:19.0"
+        source_template = sc.labels.get("oduflow.template", "") or ""
+    except (docker.errors.NotFound, IndexError):
+        source_was_running = False
+        source_image = "odoo:19.0"
+
     # Snapshot the source env's merged filestore while it is still mounted.
+    # Link against the baseline the env is currently mounted on (where nearly
+    # every file matches) and against the template being published into, which
+    # differ when an env from one template is published under a new name.
+    # An env created without a template carries the literal "none" label
+    # (env_ops._env_labels), which is a sentinel, not a template to link against.
+    candidates = (
+        source_template if source_template != "none" else "",
+        template_name,
+    )
+    link_dests = [
+        team.get_template_filestore_path(name)
+        for name in dict.fromkeys(filter(None, candidates))
+    ]
     snapshot_dir: str | None = None
+    transferred: list[str] | None = None
     if os.path.isdir(branch_merged):
         snapshot_dir = branch_merged + "_snapshot"
-        if os.path.exists(snapshot_dir):
-            shutil.rmtree(snapshot_dir)
-        shutil.copytree(branch_merged, snapshot_dir)
+        transferred = _snapshot_filestore(
+            branch_merged, snapshot_dir, link_dests=link_dests
+        )
         logger.info("Snapshot of filestore created for env %s", env_name)
     else:
         logger.warning(
             "Branch filestore %s not found, skipping filestore update", branch_merged
         )
-
-    try:
-        sc = client.containers.get(source_container)
-        source_was_running = sc.status == "running"
-        source_image = sc.image.tags[0] if sc.image.tags else "odoo:19.0"
-    except (docker.errors.NotFound, IndexError):
-        source_was_running = False
-        source_image = "odoo:19.0"
 
     with env_ops.remount_template_overlays(
         client,
@@ -2349,17 +2710,29 @@ def publish_env_as_template(
             os.makedirs(os.path.dirname(template_filestore_path), exist_ok=True)
             try:
                 os.rename(snapshot_dir, template_filestore_path)
-            except OSError:
+            except OSError as exc:
+                # Both paths live under the team data dir, so this should be a
+                # free rename. Anything else (separate mounts, mismatched XFS
+                # project IDs) degrades to a full-size copy — say so loudly
+                # instead of quietly paying for it.
+                logger.warning(
+                    "Could not move the filestore snapshot into place (%s); "
+                    "copying %s instead",
+                    exc,
+                    snapshot_dir,
+                )
                 shutil.copytree(snapshot_dir, template_filestore_path)
                 shutil.rmtree(snapshot_dir)
             logger.info("Template filestore replaced from env %s", env_name)
 
             odoo_uid_gid = get_odoo_uid_gid(client, source_image)
             uid_str, gid_str = odoo_uid_gid.split(":")
-            chown_recursive(
+            uid, gid = int(uid_str), int(gid_str)
+            _chown_filestore(
                 template_filestore_path,
-                int(uid_str),
-                int(gid_str),
+                transferred if _baselines_owned_by(link_dests, uid, gid) else None,
+                uid,
+                gid,
                 client,
                 source_image,
             )

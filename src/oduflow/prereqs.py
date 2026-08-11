@@ -1,16 +1,26 @@
 """Best-effort host prerequisite provisioning, run once at server start.
 
-The only prerequisite handled here is ``fuse-overlayfs``, used to clone large
-template filestores copy-on-write instead of duplicating them (see
-``docker_ops/env_ops.py``). It is a Linux/FUSE binary — it does not exist on
-macOS, and the packaged Docker image (``oduist/oduflow``) already bundles it —
-so auto-install only matters for bare-metal Linux installs (``uv tool`` +
-systemd running as root).
+Two host binaries are handled here:
 
-Every check is best-effort and idempotent: nothing here raises. When the binary
+``fuse-overlayfs`` clones large template filestores copy-on-write instead of
+duplicating them (see ``docker_ops/env_ops.py``). It is a Linux/FUSE binary — it
+does not exist on macOS, where filestore overlays are skipped entirely — so its
+absence off Linux is expected and silent.
+
+``rsync`` copies only what changed. Publishing an environment as a template
+snapshots its filestore by hardlinking every unchanged file from the baseline
+(``docker_ops/system_ops.py``), and syncing a template from a local source uses
+it directly (``sync.py``). It is wanted on every platform: without it a publish
+degrades to re-copying the whole filestore, and a local template sync fails.
+
+Both are bundled in the packaged Docker image (``oduist/oduflow``), so
+auto-install only matters for bare-metal installs (``uv tool`` + systemd running
+as root).
+
+Every check is best-effort and idempotent: nothing here raises. When a binary
 cannot be provided (non-Linux, not root, non-Debian, no network), the reason is
-logged and env creation falls back to a plain filestore copy on macOS or surfaces
-a clear ``PrerequisiteNotMetError`` on Linux at mount time.
+logged and the caller degrades — a plain filestore copy, or a clear
+``PrerequisiteNotMetError`` at overlay mount time on Linux.
 
 Called from ``server._ensure_initialized`` on every server start.
 """
@@ -40,37 +50,65 @@ def ensure_fuse_overlayfs() -> None:
     """
     if not sys.platform.startswith("linux"):
         return  # macOS/other: overlay is unsupported, copy mode is used instead
-    if shutil.which("fuse-overlayfs"):
+    _ensure_binary("fuse-overlayfs")
+
+
+def ensure_rsync() -> None:
+    """Install ``rsync`` via apt-get on Linux if it is missing.
+
+    Unlike fuse-overlayfs this is wanted everywhere, so a missing binary is
+    reported off Linux too rather than passed over: publishing a template
+    silently degrades to copying the whole filestore without it, and syncing a
+    template from a local source needs it outright.
+    """
+    if shutil.which("rsync"):
+        return
+    if not sys.platform.startswith("linux"):
+        logger.warning(
+            "rsync is missing; template publishes will copy the whole filestore "
+            "instead of only what changed, and local template syncs will fail"
+        )
+        return
+    _ensure_binary("rsync")
+
+
+def _ensure_binary(binary: str) -> None:
+    """Best-effort ``apt-get install`` of *binary* on a Debian/Ubuntu host."""
+    if shutil.which(binary):
         return  # already present (Docker image ships it, or installed earlier)
     if os.geteuid() != 0:
         logger.warning(
-            "fuse-overlayfs is missing and Oduflow is not running as root; "
-            "install it manually: sudo apt install fuse-overlayfs"
+            "%s is missing and Oduflow is not running as root; "
+            "install it manually: sudo apt install %s",
+            binary,
+            binary,
         )
         return
     if shutil.which("apt-get") is None:
         logger.warning(
-            "fuse-overlayfs is missing and apt-get was not found; install it "
-            "with your distribution's package manager (e.g. dnf install "
-            "fuse-overlayfs)"
+            "%s is missing and apt-get was not found; install it with your "
+            "distribution's package manager (e.g. dnf install %s)",
+            binary,
+            binary,
         )
         return
 
-    logger.info("fuse-overlayfs is missing; installing via apt-get")
-    if _apt_install("fuse-overlayfs"):
-        logger.info("fuse-overlayfs installed successfully")
+    logger.info("%s is missing; installing via apt-get", binary)
+    if _apt_install(binary):
+        logger.info("%s installed successfully", binary)
         return
 
     # Package index may be stale/empty (e.g. fresh minimal image); refresh once
     # and retry a single time.
-    logger.info("fuse-overlayfs install failed; refreshing apt index and retrying")
+    logger.info("%s install failed; refreshing apt index and retrying", binary)
     _run_apt(["apt-get", "update"])
-    if _apt_install("fuse-overlayfs"):
-        logger.info("fuse-overlayfs installed successfully after apt-get update")
+    if _apt_install(binary):
+        logger.info("%s installed successfully after apt-get update", binary)
     else:
         logger.warning(
-            "Could not auto-install fuse-overlayfs; install it manually: "
-            "sudo apt install fuse-overlayfs"
+            "Could not auto-install %s; install it manually: sudo apt install %s",
+            binary,
+            binary,
         )
 
 

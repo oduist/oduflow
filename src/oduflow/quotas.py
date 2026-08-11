@@ -123,6 +123,11 @@ def apply_team_disk_quota(
     trees = [
         team.data_dir,
         os.path.join(settings.base_data_dir, "pg_tablespaces", f"team_{team.team_id}"),
+        # Dumps staged for the PostgreSQL container. Stamping this is not just
+        # accounting: XFS refuses to rename a file into a project-inheriting
+        # directory whose project ID differs (-EXDEV), so without it the move of
+        # a finished dump into the team's templates dir would fail outright.
+        os.path.join(settings.base_data_dir, "pg_exchange", f"team_{team.team_id}"),
     ]
     for tree in trees:
         os.makedirs(tree, exist_ok=True)

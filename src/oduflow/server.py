@@ -4422,6 +4422,7 @@ def _ensure_initialized(settings: Settings) -> None:
     _apply_agent_feedback(settings)
     _copy_bundled_configs()
     prereqs.ensure_fuse_overlayfs()
+    prereqs.ensure_rsync()
     system_ops.init_system(settings)
 
     # Snapshot-before-deploy hook (no-op while [backup] is unconfigured).

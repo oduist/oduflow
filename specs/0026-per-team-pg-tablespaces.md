@@ -3,7 +3,7 @@
 **Status:** Adopted
 **Type:** Architecture
 **First introduced:** this change (2026-07-02), branch `litnimax/multi-tenant-hosting-design`
-**Key code today:** `docker_ops/system_ops.py` (`_ensure_pg_container`, `ensure_team_tablespace`), `naming.py` (`get_tablespace_name`), `migrations.py` (`0002-team-pg-tablespaces`), `CREATE DATABASE ... TABLESPACE` call sites in `env_ops.py` / `system_ops.py`
+**Key code today:** `docker_ops/system_ops.py` (`_ensure_pg_container`, `ensure_team_tablespace`, `_pg_exchange_dirs`, `_staged_db_dump`), `naming.py` (`get_tablespace_name`), `migrations.py` (`0002-team-pg-tablespaces`), `quotas.py` (`apply_team_disk_quota`), `CREATE DATABASE ... TABLESPACE` call sites in `env_ops.py` / `system_ops.py`
 
 ## Context
 
@@ -63,6 +63,34 @@ Give every team its **own PostgreSQL tablespace**, with its files under a
   tablespaces exist; the built-in template flow (`pg_dump`) is unaffected.
 - One-time upgrade cost on existing installs: a PG container recreate plus a
   physical copy of every database at first startup.
+
+## Evolution
+
+**A second base-level mount, `pg_exchange/` (2026-08-11).** Dumps used to
+reach the container the only way an unmounted path can: written into its
+writable layer, pulled out through the Docker archive API, and pushed back in
+for the restore. The same two-part rule that produced `/tablespaces` produces
+the answer here — never mount a team dir (workspaces and credentials stay
+invisible), and keep the mount set **static** so adding a team never recreates
+the shared container. So `base_data_dir/pg_exchange/` is mounted once as
+`/exchange`, with per-team subdirectories created inside it, and a finished
+dump is renamed from there into the team's templates dir.
+
+The exposure question is settled differently than for team dirs: a dump is a
+subset of the cluster this container already serves, so staging one there adds
+nothing PostgreSQL cannot already read. What it does add is a constraint
+inherited from the quota model above — `pg_exchange/team_{id}/` must carry the
+**same project ID** as the rest of the team, and not merely for accounting:
+XFS refuses (`-EXDEV`) to rename a file into a project-inheriting directory
+whose project ID differs, so an unstamped exchange dir breaks the move
+outright.
+
+The mount is attached only at container creation, and an existing container is
+never recreated behind the operator's back. Detection is therefore by
+inspection at call time, with the streaming path as the fallback: existing
+installations keep working untouched and pick up the faster route whenever
+their PostgreSQL container is next recreated. No migration entry, no forced
+downtime for a performance change.
 
 ## History
 

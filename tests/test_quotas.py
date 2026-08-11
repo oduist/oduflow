@@ -87,13 +87,18 @@ class TestApplyAll:
 
         team_dir = str(tmp_path / "team_1")
         pg_dir = str(tmp_path / "pg_tablespaces" / "team_1")
+        exchange_dir = str(tmp_path / "pg_exchange" / "team_1")
         assert xfs.call_args_list == [
             call("/srv", f"project -s -p {team_dir} 1001"),
             call("/srv", f"project -s -p {pg_dir} 1001"),
+            # Staged dumps must share the team's project ID: XFS refuses to
+            # rename a file into a project-inheriting dir with a different ID.
+            call("/srv", f"project -s -p {exchange_dir} 1001"),
             call("/srv", "limit -p bhard=25g 1001"),
         ]
-        # Both trees exist (created if missing so the project can be set up).
+        # Every tree exists (created if missing so the project can be set up).
         assert (tmp_path / "pg_tablespaces" / "team_1").is_dir()
+        assert (tmp_path / "pg_exchange" / "team_1").is_dir()
 
     def test_one_team_failure_does_not_block_others(self, tmp_path, monkeypatch):
         t1 = TeamSettings(
