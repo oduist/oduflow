@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import tarfile
 from unittest.mock import MagicMock, patch
 from urllib.parse import urlsplit
@@ -1266,7 +1267,9 @@ class TestUpdateEnvironment:
         }
         assert run_kwargs["labels"][TEST_SETTINGS.image_label] == "odoo:17.0"
         assert json.loads(run_kwargs["labels"]["oduflow.env_vars"]) == {"FOO": "new"}
-        assert run_kwargs["extra_hosts"] == {"host.docker.internal": "host-gateway"}
+        assert run_kwargs["extra_hosts"] == {
+            "host.docker.internal": "host-gateway"
+        }
         mock_docker_client.images.pull.assert_called_once_with("odoo:17.0")
         assert result["image"] == "odoo:17.0"
         assert result["image_updated"] is True
@@ -2692,6 +2695,310 @@ class TestFinalizeShellScript:
             "for i in range(3):\n    x = i\n"
             "__oduflow_cr__.commit()\n"
         )
+
+
+# --- Translations (i18n) ----------------------------------------------------
+
+_POT = """msgid ""
+msgstr ""
+"Content-Type: text/plain; charset=UTF-8\\n"
+
+#. module: mymod
+#: model:ir.model.fields,field_description:mymod.field_mymod_deal__max_price
+msgid "Budget Ceiling"
+msgstr ""
+
+#. module: mymod
+#: model_terms:ir.ui.view,arch_db:mymod.view_deal_form
+msgid "Publish"
+msgstr ""
+
+#. module: mymod
+#: code:addons/mymod/models/deal.py:0
+msgid "Only a dispatch manager may accept deals."
+msgstr ""
+"""
+
+_INSTALLED = {"exit_code": 0, "output": "state\ninstalled\n"}
+_ACTIVE_LANGS = {"exit_code": 0, "output": "code\nen_US\npl_PL\n"}
+
+
+def _export_exec_results(po_text=_POT, manifest="/mnt/extra-addons/mymod"):
+    """exec_run results for one _export_po run, then the module-dir lookup."""
+    return [
+        (0, b"odoo: module mymod: exporting translations"),  # the export itself
+        (0, str(len(po_text.encode())).encode()),  # stat -c %s
+        (0, po_text.encode()),  # cat
+        (0, b""),  # rm -f
+        (0, f"{manifest}/__manifest__.py\n".encode()),  # find
+    ]
+
+
+class TestExportModuleTranslations:
+    @patch("oduflow.docker_ops.odoo_ops.write_file_in_environment")
+    @patch("oduflow.docker_ops.odoo_ops.run_db_query", return_value=_INSTALLED)
+    def test_exports_template_through_entrypoint(
+        self, mock_query, mock_write, mock_docker_client
+    ):
+        container = MagicMock()
+        container.labels = {
+            "oduflow.local_path": "/home/dev/veles",
+            TEST_SETTINGS.image_label: "odoo:18.0",
+        }
+        container.exec_run.side_effect = _export_exec_results()
+        mock_docker_client.containers.get.return_value = container
+
+        result = odoo_ops.export_module_translations(
+            TEST_SETTINGS, TEST_TEAM, "main", "mymod"
+        )
+
+        cmd = container.exec_run.call_args_list[0][0][0]
+        # Going through /entrypoint.sh is what gives the exporter the full
+        # addons_path; without it the module's own .py files resolve to no
+        # known module and every `_()` term is silently dropped.
+        assert cmd.startswith("/entrypoint.sh odoo -d oduflow_1_main")
+        assert "--modules=mymod" in cmd
+        # The extension is what tells Odoo which writer to use.
+        assert re.search(r"--i18n-export=/tmp/oduflow-i18n-\w+\.pot(\s|$)", cmd)
+        assert " -l " not in cmd
+
+        assert result["filename"] == "mymod.pot"
+        assert result["summary"].by_type == {
+            "model": 1,
+            "model_terms": 1,
+            "code": 1,
+        }
+
+    @patch("oduflow.docker_ops.odoo_ops.write_file_in_environment")
+    @patch("oduflow.docker_ops.odoo_ops.run_db_query", return_value=_INSTALLED)
+    def test_writes_into_the_module_i18n_dir_and_reports_host_path(
+        self, mock_query, mock_write, mock_docker_client
+    ):
+        container = MagicMock()
+        container.labels = {
+            "oduflow.local_path": "/home/dev/veles",
+            TEST_SETTINGS.image_label: "odoo:18.0",
+        }
+        container.exec_run.side_effect = _export_exec_results()
+        mock_docker_client.containers.get.return_value = container
+
+        result = odoo_ops.export_module_translations(
+            TEST_SETTINGS, TEST_TEAM, "main", "mymod"
+        )
+
+        assert result["written_path"] == "/mnt/extra-addons/mymod/i18n/mymod.pot"
+        mock_write.assert_called_once_with(
+            TEST_SETTINGS,
+            TEST_TEAM,
+            "main",
+            "/mnt/extra-addons/mymod/i18n/mymod.pot",
+            _POT,
+        )
+        # Live-mount: the container path maps onto the developer's own checkout,
+        # so an agent on this machine can open the file without a download.
+        assert result["host_path"] == "/home/dev/veles/mymod/i18n/mymod.pot"
+
+    @patch("oduflow.docker_ops.odoo_ops.write_file_in_environment")
+    @patch("oduflow.docker_ops.odoo_ops.run_db_query", return_value=_INSTALLED)
+    def test_lang_export_uses_odoos_own_i18n_filename(
+        self, mock_query, mock_write, mock_docker_client
+    ):
+        # Module loading looks for i18n/<get_iso_codes(lang)>.po, so pl_PL must
+        # be written as pl.po — pl_PL.po would be a file Odoo never reads.
+        container = MagicMock()
+        container.labels = {TEST_SETTINGS.image_label: "odoo:18.0"}
+        container.exec_run.side_effect = _export_exec_results()
+        mock_docker_client.containers.get.return_value = container
+
+        result = odoo_ops.export_module_translations(
+            TEST_SETTINGS, TEST_TEAM, "main", "mymod", "pl_PL"
+        )
+
+        cmd = container.exec_run.call_args_list[0][0][0]
+        assert "-l pl_PL" in cmd
+        assert re.search(r"--i18n-export=/tmp/oduflow-i18n-\w+\.po(\s|$)", cmd)
+        assert result["filename"] == "pl.po"
+        assert result["written_path"] == "/mnt/extra-addons/mymod/i18n/pl.po"
+
+    def test_i18n_basename_keeps_locales_that_differ_from_their_language(self):
+        # pt_BR is a distinct locale from pt, so it does not collapse.
+        assert odoo_ops._i18n_basename("pl_PL") == "pl"
+        assert odoo_ops._i18n_basename("pt_BR") == "pt_BR"
+        assert odoo_ops._i18n_basename("fr") == "fr"
+
+    @patch(
+        "oduflow.docker_ops.odoo_ops.load_credentials",
+        return_value={"pg_user": "u_1_main", "pg_password": "test-pw"},
+    )
+    @patch("oduflow.docker_ops.odoo_ops.write_file_in_environment")
+    @patch("oduflow.docker_ops.odoo_ops.run_db_query", return_value=_INSTALLED)
+    def test_odoo_19_uses_the_i18n_subcommand(
+        self, mock_query, mock_write, mock_creds, mock_docker_client
+    ):
+        # Odoo 19 dropped the --i18n-* server options. Its `odoo i18n` subcommand
+        # parses argv strictly, so it rejects the --db_* arguments the image
+        # entrypoint appends and takes the connection from a config file instead.
+        container = MagicMock()
+        container.labels = {TEST_SETTINGS.image_label: "odoo:19.0"}
+        container.exec_run.side_effect = _export_exec_results()
+        mock_docker_client.containers.get.return_value = container
+
+        odoo_ops.export_module_translations(
+            TEST_SETTINGS, TEST_TEAM, "main", "mymod", "pl_PL"
+        )
+
+        call = container.exec_run.call_args_list[0]
+        argv = call[0][0]
+        assert argv[:2] == ["sh", "-c"]
+        script = argv[2]
+        assert "/entrypoint.sh" not in script
+        assert "odoo i18n export -c /tmp/oduflow-i18n-" in script
+        assert "-d oduflow_1_main mymod -l pl_PL -o /tmp/oduflow-i18n-" in script
+        assert 'echo "db_host = oduflow-db"' in script
+        assert 'echo "db_user = u_1_main"' in script
+        # The password reaches libpq through the environment, never the config
+        # file on disk or the container's process argv.
+        assert "test-pw" not in script
+        assert call.kwargs["environment"] == {"PGPASSWORD": "test-pw"}
+        # Both the catalogue and the generated config are cleaned up.
+        cleanup = container.exec_run.call_args_list[3][0][0]
+        assert cleanup[:2] == ["rm", "-f"]
+        assert len(cleanup) == 4
+
+    @patch("oduflow.docker_ops.odoo_ops.write_file_in_environment")
+    @patch("oduflow.docker_ops.odoo_ops.run_db_query", return_value=_INSTALLED)
+    def test_extra_addons_repo_is_not_written_to(
+        self, mock_query, mock_write, mock_docker_client
+    ):
+        # Extra-addons checkouts are shared between environments and mounted
+        # read-only, so the file can only leave via the download link.
+        container = MagicMock()
+        container.labels = {TEST_SETTINGS.image_label: "odoo:18.0"}
+        container.exec_run.side_effect = _export_exec_results(
+            manifest="/mnt/extra-addons-enterprise/mymod"
+        )
+        mock_docker_client.containers.get.return_value = container
+
+        result = odoo_ops.export_module_translations(
+            TEST_SETTINGS, TEST_TEAM, "main", "mymod"
+        )
+
+        assert result["read_only_mount"] is True
+        assert result["written_path"] == ""
+        mock_write.assert_not_called()
+
+    @patch("oduflow.docker_ops.odoo_ops.run_db_query", return_value=_INSTALLED)
+    def test_failed_export_raises_with_the_odoo_log(
+        self, mock_query, mock_docker_client
+    ):
+        container = MagicMock()
+        container.labels = {TEST_SETTINGS.image_label: "odoo:18.0"}
+        container.exec_run.side_effect = [
+            (1, b"odoo: error: database not initialized"),
+            (1, b""),  # stat: no file was produced
+            (0, b""),  # rm -f
+        ]
+        mock_docker_client.containers.get.return_value = container
+
+        with pytest.raises(
+            odoo_ops.ExternalCommandError, match="database not initialized"
+        ):
+            odoo_ops.export_module_translations(
+                TEST_SETTINGS, TEST_TEAM, "main", "mymod"
+            )
+
+    @patch(
+        "oduflow.docker_ops.odoo_ops.run_db_query",
+        return_value={"exit_code": 0, "output": "state\nuninstalled\n"},
+    )
+    def test_uninstalled_module_is_refused(self, mock_query, mock_docker_client):
+        # Odoo's exporter filters on installed modules, so this would otherwise
+        # succeed and return an empty catalogue.
+        with pytest.raises(PrerequisiteNotMetError, match="not installed"):
+            odoo_ops.export_module_translations(
+                TEST_SETTINGS, TEST_TEAM, "main", "mymod"
+            )
+
+    @patch(
+        "oduflow.docker_ops.odoo_ops.run_db_query",
+        return_value={"exit_code": 0, "output": "state\n"},
+    )
+    def test_unknown_module_is_refused(self, mock_query, mock_docker_client):
+        with pytest.raises(NotFoundError, match="unknown"):
+            odoo_ops.export_module_translations(
+                TEST_SETTINGS, TEST_TEAM, "main", "nosuch"
+            )
+
+    def test_bad_lang_code_is_rejected(self, mock_docker_client):
+        # The value lands on the `odoo -l <lang>` command line, which exec_run
+        # tokenizes — an unvalidated token could smuggle a separate CLI flag.
+        with pytest.raises(ValueError, match="Invalid language code"):
+            odoo_ops.export_module_translations(
+                TEST_SETTINGS, TEST_TEAM, "main", "mymod", "pl --load=web"
+            )
+
+
+class TestTranslationStatus:
+    @patch("oduflow.docker_ops.odoo_ops.read_file_in_environment")
+    @patch("oduflow.docker_ops.odoo_ops.run_db_query")
+    def test_flags_a_po_file_that_imports_to_nothing(
+        self, mock_query, mock_read, mock_docker_client
+    ):
+        mock_query.side_effect = [_INSTALLED, _ACTIVE_LANGS]
+        container = MagicMock()
+        container.labels = {TEST_SETTINGS.image_label: "odoo:18.0"}
+        # Template export, module-dir lookup, then the pl_PL database export.
+        container.exec_run.side_effect = _export_exec_results() + [
+            (0, b"odoo: exporting"),
+            (0, b"1"),
+            (0, b""),  # database holds nothing for pl_PL
+            (0, b""),
+        ]
+        mock_docker_client.containers.get.return_value = container
+        # A valid gettext file whose entries carry no "#:" reference.
+        mock_read.return_value = {
+            "output": (
+                'msgid ""\nmsgstr ""\n\n'
+                "#. module: mymod\n"
+                'msgid "Budget Ceiling"\nmsgstr "Limit budżetu"\n'
+            )
+        }
+
+        result = odoo_ops.translation_status(TEST_SETTINGS, TEST_TEAM, "main", "mymod")
+
+        # en_US is skipped; only the real target language is reported.
+        assert [e["lang"] for e in result["langs"]] == ["pl_PL"]
+        entry = result["langs"][0]
+        assert entry["active"] is True
+        assert entry["database"].entries == 0
+        assert entry["file"].entries == 1
+        assert entry["file"].no_reference == 1
+        assert entry["diff"]["missing"] == [
+            "Only a dispatch manager may accept deals.",
+            "Publish",
+        ]
+        assert result["template"].entries == 3
+
+    @patch("oduflow.docker_ops.odoo_ops.read_file_in_environment")
+    @patch("oduflow.docker_ops.odoo_ops.run_db_query")
+    def test_inactive_language_is_reported_not_silently_empty(
+        self, mock_query, mock_read, mock_docker_client
+    ):
+        mock_query.side_effect = [_INSTALLED, _ACTIVE_LANGS]
+        container = MagicMock()
+        container.labels = {TEST_SETTINGS.image_label: "odoo:18.0"}
+        container.exec_run.side_effect = _export_exec_results()
+        mock_docker_client.containers.get.return_value = container
+        mock_read.return_value = {"error": "Path not found"}
+
+        result = odoo_ops.translation_status(
+            TEST_SETTINGS, TEST_TEAM, "main", "mymod", ["ru_RU"]
+        )
+
+        entry = result["langs"][0]
+        assert entry["active"] is False
+        assert "database" not in entry
+        assert entry["file_path"] == ""
 
 
 class TestOdooUrlComposition:

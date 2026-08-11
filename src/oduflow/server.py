@@ -25,7 +25,15 @@ except Exception:  # pragma: no cover - authlib internals may change
 from fastmcp import Context, FastMCP
 from fastmcp.exceptions import ToolError
 
-from oduflow import activity, git_ops, migrations, production_registry, quotas, reaper
+from oduflow import (
+    activity,
+    artifact_tokens,
+    git_ops,
+    migrations,
+    production_registry,
+    quotas,
+    reaper,
+)
 from oduflow import settings as settings_module
 from oduflow.docker_ops import (
     env_ops,
@@ -77,6 +85,10 @@ mcp = FastMCP("Oduflow", instructions=_MCP_INSTRUCTIONS, mask_error_details=True
 _locks = LockManager()
 _settings: Settings | None = None
 _instance_id: str = ""
+# Where the dashboard is reachable, recorded when the HTTP transport starts.
+# Stays None under stdio, where no web server is mounted and therefore no
+# artifact download URL can be offered.
+_web_bind: tuple[str, int] | None = None
 
 
 def _get_settings() -> Settings:
@@ -183,6 +195,27 @@ def _maybe_cache(output: str, header: str, source_tool: str, source_args: str) -
         )
         return f"{header}\n\n{_make_summary(cached)}"
     return f"{header}\n\nOutput:\n{output}"
+
+
+def _artifact_url(settings: Settings, team: TeamSettings, token: str) -> str | None:
+    """Public URL for a one-time artifact download, or None if unavailable.
+
+    Under stdio there is no web server to serve it from — but there the agent
+    runs on the same machine as Oduflow, so the file's host path is the better
+    answer anyway and the caller falls back to that.
+    """
+    if _web_bind is None:
+        return None
+    if settings.oauth_base_url:
+        base = settings.oauth_base_url.rstrip("/")
+    elif settings.routing_mode == "traefik":
+        base = f"https://{team.hostname}"
+    else:
+        host, port = _web_bind
+        # 0.0.0.0 means "every interface", which is not a name anything can
+        # dial; localhost is the only honest rendering for a same-host caller.
+        base = f"http://{'localhost' if host in ('0.0.0.0', '::') else host}:{port}"
+    return f"{base}/oduflow-artifact?token={token}"
 
 
 # -- Decorators --
@@ -1691,6 +1724,212 @@ def upgrade_odoo_modules(
         header,
         "upgrade_odoo_modules",
         f"env={env_name}, modules={modules}",
+    )
+
+
+_TERM_KINDS = {
+    "model": "field labels, help, selection values, model names",
+    "model_terms": "view arch, action help",
+    "code": "Python _() / _lt(), JS _t()",
+    "other": "unrecognised reference kind",
+}
+# Long lists of terms belong in the cached output, not in the headline report.
+_TERM_PREVIEW = 15
+
+
+def _format_term_counts(by_type: dict[str, int]) -> list[str]:
+    return [
+        f"  {kind:<12} {count:>5}  {_TERM_KINDS.get(kind, '')}"
+        for kind, count in by_type.items()
+    ]
+
+
+def _format_term_list(label: str, msgids: list[str]) -> list[str]:
+    """A capped bullet list, nested one level under its own label's indent."""
+    if not msgids:
+        return []
+    indent = " " * (len(label) - len(label.lstrip()) + 2)
+    lines = [f"{label} ({len(msgids)}):"]
+    lines += [f"{indent}- {m}" for m in msgids[:_TERM_PREVIEW]]
+    if len(msgids) > _TERM_PREVIEW:
+        lines.append(f"{indent}... and {len(msgids) - _TERM_PREVIEW} more")
+    return lines
+
+
+@mcp.tool()
+@handle_errors
+@with_env_lock
+def export_module_translations(
+    env_name: str, module: str, lang: str = "", ctx: Context | None = None
+) -> str:
+    """
+    Export a module's translation catalogue using Odoo's own exporter.
+
+    Without `lang` this produces the `.pot` template: every translatable term
+    with an empty translation, including the `_()` / `_lt()` messages from the
+    module's Python sources. With `lang` it produces a `.po` whose translations
+    are filled from what the database currently holds — useful for seeing what
+    actually got applied.
+
+    The file is written to the module's own `i18n/` directory inside the
+    container, which is a read-write mount of the environment's checkout, so in
+    live-mount mode it lands directly in your working tree. The response carries
+    only a summary plus a one-time download URL, never the file body — a
+    template for a mid-sized module is tens of kilobytes.
+
+    Common use cases:
+    - Get the authoritative term list before writing translations
+    - Check that `_()` messages are being picked up (look at the `code` count)
+    - Snapshot what the database holds for a language
+
+    Args:
+        env_name: The name of the environment.
+        module: A single installed module's technical name (e.g. "sale_custom").
+        lang: Optional locale to fill translations from (e.g. "pl_PL"). Omit for
+              a `.pot` template.
+    """
+    settings = _get_settings()
+    team = _resolve_team(ctx)
+    woke = _wake_for_work(settings, team, env_name)
+    result = odoo_ops.export_module_translations(settings, team, env_name, module, lang)
+    summary = result["summary"]
+    kind = f"'{lang}' translations" if lang else "template"
+
+    lines = [f"Terms: {summary.entries}"]
+    lines += _format_term_counts(summary.by_type)
+    if lang:
+        lines.append(
+            f"Translated: {summary.translated} / {summary.entries} "
+            f"({summary.untranslated} missing)"
+        )
+        lines += [""] + _format_term_list("Untranslated", summary.untranslated_msgids)
+    if not summary.by_type.get("code"):
+        # The exporter finds these by walking addons_path and reading the
+        # module's sources, so an empty count usually means the module's
+        # directory is not itself an addons-path entry.
+        lines += [
+            "",
+            "Note: no `code:` terms were exported. If this module has _() or "
+            "_lt() messages, its directory is probably not directly on "
+            "addons_path, so the exporter could not attribute its sources.",
+        ]
+
+    lines.append("")
+    if result["written_path"]:
+        lines.append(f"Written:   {result['written_path']}")
+        if result["host_path"]:
+            lines.append(f"Host path: {result['host_path']}")
+    elif result["read_only_mount"]:
+        lines.append(
+            f"Not written: {result['module_dir']} is a shared extra-addons "
+            "checkout, mounted read-only. Use the download link below."
+        )
+    else:
+        lines.append(
+            f"Not written: no directory for '{module}' found under /mnt. "
+            "Core Odoo modules ship their own translations."
+        )
+
+    content = str(result["content"]).encode("utf-8")
+    token = artifact_tokens.issue(str(result["filename"]), content)
+    url = _artifact_url(settings, team, token)
+    if url:
+        lines.append(f"Download:  {url}  (one-time, expires in 10 minutes)")
+
+    header = f"{woke}Exported {module} ({kind}) from environment '{env_name}'."
+    return _maybe_cache(
+        "\n".join(lines),
+        header,
+        "export_module_translations",
+        f"env={env_name}, module={module}, lang={lang}",
+    )
+
+
+@mcp.tool()
+@handle_errors
+@with_env_lock
+def translation_status(
+    env_name: str, module: str, langs: str = "", ctx: Context | None = None
+) -> str:
+    """
+    Report what a module's translations look like across all three places they live.
+
+    Compares the term template Odoo derives from the module, the translations
+    actually stored in the database, and the committed `i18n/<lang>.po` files.
+    Use this after loading translations: Odoo's importer is silent about the two
+    ways a `.po` fails, and this is what makes them visible.
+
+    - Entries with no `#:` reference line import as ZERO translations, with no
+      warning at all — the file is read and thrown away.
+    - Entries with no `#. module:` comment abort the import outright.
+
+    It also reports terms present in the module but missing from the file, and
+    stale entries left in the file after a source string changed.
+
+    Args:
+        env_name: The name of the environment.
+        module: A single installed module's technical name.
+        langs: Comma-separated locales to check (e.g. "pl_PL,ru_RU"). Omit to
+               check every language activated in the database except en_US.
+    """
+    lang_list = [s.strip() for s in langs.split(",") if s.strip()]
+
+    settings = _get_settings()
+    team = _resolve_team(ctx)
+    woke = _wake_for_work(settings, team, env_name)
+    result = odoo_ops.translation_status(
+        settings, team, env_name, module, lang_list or None
+    )
+
+    template = result["template"]
+    lines = [f"Module terms (template): {template.entries}"]
+    lines += _format_term_counts(template.by_type)
+
+    if not result["langs"]:
+        lines += [
+            "",
+            "No languages to check. Activate one in Odoo (Settings → "
+            "Translations → Languages) or pass `langs` explicitly.",
+        ]
+
+    for entry in result["langs"]:
+        lines += ["", f"--- {entry['lang']} ---"]
+        if not entry["active"]:
+            lines.append(
+                "Language is NOT activated in this database, so translations "
+                "have nowhere to load. Activate it first."
+            )
+        else:
+            db = entry["database"]
+            counts = ", ".join(f"{k} {v}" for k, v in db.by_type.items())
+            lines.append(f"In database:  {db.translated} translated ({counts})")
+
+        if not entry["file_path"]:
+            lines.append(f"No i18n/{entry['lang']}.po in the module.")
+            continue
+
+        po = entry["file"]
+        lines.append(f"In {entry['file_path']}: {po.entries} entries")
+        if po.no_reference:
+            lines.append(
+                f"  ! {po.no_reference} entries have no '#:' reference — Odoo "
+                "imports these as ZERO translations, silently."
+            )
+        if po.no_module_comment:
+            lines.append(
+                f"  ! {po.no_module_comment} entries have no '#. module:' "
+                "comment — these abort the import with an error."
+            )
+        diff = entry["diff"]
+        lines += _format_term_list("  Missing from the file", diff["missing"])
+        lines += _format_term_list("  Stale (no longer in the module)", diff["stale"])
+
+    header = f"{woke}Translation status for {module} in environment '{env_name}'."
+    return _maybe_cache(
+        "\n".join(lines),
+        header,
+        "translation_status",
+        f"env={env_name}, module={module}, langs={langs}",
     )
 
 
@@ -5285,6 +5524,8 @@ def _start_http() -> None:
     from oduflow.web_ui import mount_web_ui
 
     mount_web_ui(app, _get_settings, _locks)
+    global _web_bind
+    _web_bind = (host, port)
 
     for tid, team in settings.teams.items():
         if settings.routing_mode == "traefik":

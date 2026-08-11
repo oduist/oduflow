@@ -1,15 +1,22 @@
 from __future__ import annotations
 
 import logging
+import os
 import re
 import secrets
 from typing import Any
 
 import docker
+
+from oduflow import po_tools
 from oduflow.docker_ops.client import get_client
 from oduflow.env_credentials import load_credentials
-from oduflow.errors import ExternalCommandError, NotFoundError
-from oduflow.naming import get_db_name, get_resource_name
+from oduflow.errors import (
+    ExternalCommandError,
+    NotFoundError,
+    PrerequisiteNotMetError,
+)
+from oduflow.naming import get_db_name, get_repo_path, get_resource_name
 from oduflow.settings import Settings, TeamSettings
 
 logger = logging.getLogger("oduflow")
@@ -1002,3 +1009,363 @@ def http_request_to_odoo(
             "headers": {},
             "body": f"Connection failed: {e.reason}",
         }
+
+
+# -- Translations (i18n) --
+
+# Locale codes reaching the `odoo -l <lang>` command line get the same treatment
+# as module names above: exec_run tokenizes with shlex.split, so an unvalidated
+# value could smuggle a separate Odoo CLI flag into the invocation.
+_LANG_CODE_RE = re.compile(r"^[a-z]{2,3}(_[A-Z]{2})?$")
+
+# A module's exported catalogue is tens of KB; the cap only exists so a runaway
+# export cannot be read into the server's memory in one piece.
+_PO_EXPORT_LIMIT = 5 * 1024 * 1024
+
+# Extra-addons repos are mounted read-only (see env_ops), so a generated file can
+# only be written back into the environment's own main checkout.
+_MAIN_ADDONS_MOUNT = "/mnt/extra-addons"
+
+
+def _validate_lang_codes(langs: "list[str] | tuple[str, ...]") -> None:
+    for lang in langs:
+        if not _LANG_CODE_RE.match(lang or ""):
+            raise ValueError(
+                f"Invalid language code '{lang}': expected a locale like "
+                "'pl_PL', 'ru_RU' or 'fr'."
+            )
+
+
+def _get_odoo_container(settings: Settings, team: TeamSettings, env_name: str) -> Any:
+    client = get_client()
+    name = get_resource_name(env_name, "odoo", settings.prefix, team.team_id)
+    try:
+        return client.containers.get(name)
+    except docker.errors.NotFound:
+        raise NotFoundError(
+            f"Environment '{env_name}' does not exist. Use create_environment first."
+        )
+
+
+def _decode(output: Any) -> str:
+    return (
+        output.decode("utf-8", errors="replace")
+        if isinstance(output, bytes)
+        else str(output)
+    )
+
+
+def _csv_column(output: str) -> list[str]:
+    """Values of a single-column ``psql --csv`` result, header dropped."""
+    rows = [line.strip() for line in output.splitlines() if line.strip()]
+    return rows[1:]
+
+
+def _require_installed_module(
+    settings: Settings, team: TeamSettings, env_name: str, module: str
+) -> None:
+    """Fail early when the module is not installed in this environment.
+
+    Odoo's exporter filters on installed modules, so exporting an uninstalled one
+    succeeds and produces an empty catalogue — indistinguishable from "this
+    module has nothing to translate" unless we check.
+    """
+    # `module` has already passed _validate_module_names ([A-Za-z0-9_]), so it
+    # cannot break out of the literal.
+    result = run_db_query(
+        settings,
+        team,
+        env_name,
+        f"SELECT state FROM ir_module_module WHERE name = '{module}'",
+    )
+    states = _csv_column(result["output"])
+    if not states:
+        raise NotFoundError(
+            f"Module '{module}' is unknown in environment '{env_name}'. "
+            "Run pull_and_apply first so Odoo sees it."
+        )
+    if states[0] != "installed":
+        raise PrerequisiteNotMetError(
+            f"Module '{module}' is '{states[0]}', not installed. Translations are "
+            "exported from installed modules only — install it first with "
+            "install_odoo_modules."
+        )
+
+
+def _active_langs(settings: Settings, team: TeamSettings, env_name: str) -> list[str]:
+    """Language codes activated in the environment's database."""
+    result = run_db_query(
+        settings, team, env_name, "SELECT code FROM res_lang WHERE active"
+    )
+    return _csv_column(result["output"])
+
+
+def _i18n_basename(lang: str) -> str:
+    """Odoo's own filename rule for a module's ``i18n/`` directory.
+
+    Module loading looks for ``i18n/<get_iso_codes(lang)>.po``, which collapses a
+    locale whose country repeats its language: ``pl_PL`` → ``pl``, while
+    ``pt_BR`` stays as it is. Writing ``pl_PL.po`` would produce a file Odoo
+    never reads.
+    """
+    if "_" in lang:
+        base, _, country = lang.partition("_")
+        if base == country.lower():
+            return base
+    return lang
+
+
+def _export_command(
+    settings: Settings,
+    team: TeamSettings,
+    env_name: str,
+    container: Any,
+    env_db: str,
+    module: str,
+    lang: str,
+    path: str,
+    token: str,
+) -> tuple[Any, dict[str, Any], list[str], int | None]:
+    """Build the export invocation for the environment's Odoo version.
+
+    Odoo 19 dropped the ``--i18n-*`` server options for an ``odoo i18n``
+    subcommand. That subcommand parses its own argv strictly, so it rejects the
+    ``--db_*`` arguments the official image's entrypoint appends — the route
+    every other module command here takes. It also accepts no connection flags
+    of its own, only ``-c``, so the connection has to arrive through a config
+    file; the password still travels in ``PGPASSWORD`` rather than onto disk or
+    into the container's ``ps``.
+    """
+    major = _detect_odoo_major(container, settings.image_label)
+    if major is not None and major >= 19:
+        creds = load_credentials(
+            env_name,
+            team.workspaces_dir,
+            settings.db_user,
+            settings.db_password,
+            allow_fallback=False,
+        )
+        conf = f"/tmp/oduflow-i18n-{token}.conf"
+        script = (
+            f'{{ cat "${{ODOO_RC:-/etc/odoo/odoo.conf}}"; '
+            f'echo "db_host = {settings.shared_db_container}"; '
+            f'echo "db_user = {creds["pg_user"]}"; }} > {conf} && '
+            f"odoo i18n export -c {conf} -d {env_db} {module} "
+            f"-l {lang or 'pot'} -o {path}"
+        )
+        return (
+            ["sh", "-c", script],
+            {"environment": {"PGPASSWORD": creds["pg_password"]}},
+            [path, conf],
+            major,
+        )
+
+    cmd = (
+        f"/entrypoint.sh odoo -d {env_db} --stop-after-init --no-http "
+        f"--i18n-export={path} --modules={module}"
+    )
+    if lang:
+        cmd += f" -l {lang}"
+    return cmd, {}, [path], major
+
+
+def _export_po(
+    settings: Settings,
+    team: TeamSettings,
+    env_name: str,
+    container: Any,
+    module: str,
+    lang: str = "",
+) -> str:
+    """Run Odoo's own translation export and return the generated file.
+
+    The export always goes through the environment's configured addons path,
+    which matters for more than the database connection: the exporter finds
+    ``_()``/``_lt()`` terms by walking ``addons_path`` and extracting from the
+    module's Python sources. Under a partial addons path those files resolve to
+    no known module and are dropped, leaving a catalogue of database terms only
+    — the usual reason people conclude code messages "are not exported".
+    """
+    env_db = get_db_name(env_name, team.team_id)
+    token = secrets.token_hex(8)
+    path = f"/tmp/oduflow-i18n-{token}.{'po' if lang else 'pot'}"
+    cmd, kwargs, artifacts, major = _export_command(
+        settings, team, env_name, container, env_db, module, lang, path, token
+    )
+    label = "odoo i18n export" if major and major >= 19 else "odoo --i18n-export"
+
+    # "module" is a reserved LogRecord attribute — passing it in `extra` raises.
+    logger.info(
+        "Exporting translations",
+        extra={"module_name": module, "lang": lang or "template"},
+    )
+    export_code, export_output = container.exec_run(cmd, **kwargs)
+    try:
+        size_code, size_out = container.exec_run(["stat", "-c", "%s", path])
+        if size_code != 0:
+            raise ExternalCommandError(label, export_code, _decode(export_output))
+        size = int(_decode(size_out).strip() or 0)
+        if size > _PO_EXPORT_LIMIT:
+            raise ExternalCommandError(
+                label,
+                export_code,
+                f"Exported catalogue is {size} bytes, above the "
+                f"{_PO_EXPORT_LIMIT} byte limit.",
+            )
+        _, blob = container.exec_run(["cat", path])
+        return _decode(blob)
+    finally:
+        container.exec_run(["rm", "-f", *artifacts])
+
+
+def _find_module_dir(container: Any, module: str) -> str:
+    """Directory of *module* inside the container, or "" if it is not on a mount.
+
+    Only the ``/mnt`` addons mounts are searched: core Odoo modules live in the
+    image and have nothing we could usefully write back to.
+    """
+    _code, output = container.exec_run(
+        [
+            "find",
+            "/mnt",
+            "-maxdepth",
+            "4",
+            "-type",
+            "f",
+            "-name",
+            "__manifest__.py",
+            "-path",
+            f"*/{module}/__manifest__.py",
+        ]
+    )
+    marker = f"/{module}/__manifest__.py"
+    for line in _decode(output).splitlines():
+        line = line.strip()
+        if line.endswith(marker):
+            return line[: -len("/__manifest__.py")]
+    return ""
+
+
+def _host_path(
+    settings: Settings, team: TeamSettings, env_name: str, container_path: str
+) -> str:
+    """Host-side path of a file under the main addons mount, or "" if elsewhere.
+
+    In live-mount mode this is a path inside the developer's own checkout, so an
+    agent on the same machine can open the generated file directly.
+    """
+    prefix = _MAIN_ADDONS_MOUNT + "/"
+    if not container_path.startswith(prefix):
+        return ""
+    container = _get_odoo_container(settings, team, env_name)
+    repo_path = container.labels.get("oduflow.local_path") or get_repo_path(
+        env_name, team.workspaces_dir
+    )
+    return os.path.join(repo_path, container_path[len(prefix) :])
+
+
+def export_module_translations(
+    settings: Settings,
+    team: TeamSettings,
+    env_name: str,
+    module: str,
+    lang: str = "",
+) -> dict[str, Any]:
+    """Export a module's translation catalogue via Odoo's own exporter.
+
+    Without *lang* this produces the ``.pot`` template (every translatable term,
+    empty translations); with *lang* the msgstr values are filled from what the
+    database currently holds.
+    """
+    _validate_module_names([module])
+    if lang:
+        _validate_lang_codes([lang])
+
+    _require_installed_module(settings, team, env_name, module)
+    container = _get_odoo_container(settings, team, env_name)
+    content = _export_po(settings, team, env_name, container, module, lang)
+
+    filename = f"{_i18n_basename(lang)}.po" if lang else f"{module}.pot"
+    module_dir = _find_module_dir(container, module)
+    written = ""
+    read_only = False
+    if module_dir.startswith(_MAIN_ADDONS_MOUNT + "/"):
+        written = f"{module_dir}/i18n/{filename}"
+        write_file_in_environment(settings, team, env_name, written, content)
+    elif module_dir:
+        # An extra-addons repo: shared across environments and mounted read-only,
+        # so the file can only travel out via the download link.
+        read_only = True
+
+    return {
+        "module": module,
+        "lang": lang,
+        "filename": filename,
+        "content": content,
+        "summary": po_tools.summarize(po_tools.parse_po(content)),
+        "module_dir": module_dir,
+        "written_path": written,
+        "host_path": (_host_path(settings, team, env_name, written) if written else ""),
+        "read_only_mount": read_only,
+    }
+
+
+def translation_status(
+    settings: Settings,
+    team: TeamSettings,
+    env_name: str,
+    module: str,
+    langs: "list[str] | None" = None,
+) -> dict[str, Any]:
+    """Compare a module's terms, its database translations and its ``.po`` files.
+
+    The three differ more often than anyone expects, and the gap that costs the
+    most is invisible: a ``.po`` whose entries carry no ``#:`` reference loads
+    without a single warning and stores nothing. Reporting all three side by side
+    turns that into something you see on the first call.
+    """
+    _validate_module_names([module])
+    if langs:
+        _validate_lang_codes(langs)
+
+    _require_installed_module(settings, team, env_name, module)
+    container = _get_odoo_container(settings, team, env_name)
+
+    active = _active_langs(settings, team, env_name)
+    targets = list(langs) if langs else [c for c in active if c != "en_US"]
+
+    template_entries = po_tools.parse_po(
+        _export_po(settings, team, env_name, container, module)
+    )
+    module_dir = _find_module_dir(container, module)
+
+    per_lang: list[dict[str, Any]] = []
+    for lang in targets:
+        entry: dict[str, Any] = {"lang": lang, "active": lang in active}
+        if entry["active"]:
+            db_entries = po_tools.parse_po(
+                _export_po(settings, team, env_name, container, module, lang)
+            )
+            entry["database"] = po_tools.summarize(db_entries)
+        po_path = f"{module_dir}/i18n/{_i18n_basename(lang)}.po" if module_dir else ""
+        file_result = (
+            read_file_in_environment(settings, team, env_name, po_path)
+            if po_path
+            else {"error": "module directory not found"}
+        )
+        if "error" in file_result:
+            entry["file_path"] = ""
+        else:
+            file_entries = po_tools.parse_po(str(file_result["output"]))
+            entry["file_path"] = po_path
+            entry["file"] = po_tools.summarize(file_entries)
+            entry["diff"] = po_tools.compare(template_entries, file_entries)
+        per_lang.append(entry)
+
+    return {
+        "module": module,
+        "module_dir": module_dir,
+        "template": po_tools.summarize(template_entries),
+        "active_langs": active,
+        "langs": per_lang,
+    }
