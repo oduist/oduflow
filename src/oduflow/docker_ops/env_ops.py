@@ -248,6 +248,64 @@ def _dir_size_mb(path: str) -> float:
     return total / (1024 * 1024)
 
 
+def _read_template_metadata(team: TeamSettings, template_name: str) -> dict[str, Any]:
+    """Template metadata.json, or an empty dict when it is absent/unreadable."""
+    metadata_path = team.get_template_metadata_path(template_name)
+    if not os.path.isfile(metadata_path):
+        return {}
+    try:
+        with open(metadata_path) as f:
+            loaded: dict[str, Any] = json.load(f)
+            return loaded
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+
+def _template_code_lineage(
+    team: TeamSettings,
+    template_name: str | None,
+    repo_path: str,
+    *,
+    current_branch: str = "",
+    fetch_missing_history: bool = False,
+) -> dict[str, Any]:
+    """Drift between this checkout and the commit the template DB came from.
+
+    Advisory only: templates predating provenance (and imported ones, which have
+    no commit of ours behind them) yield status ``unknown`` and say nothing.
+    """
+    empty: dict[str, Any] = {
+        "status": "unknown",
+        "message": "",
+        "modules_to_install": [],
+        "modules_to_upgrade": [],
+    }
+    if template_name is None:
+        return empty
+    from oduflow import git_analysis, git_ops
+
+    metadata = _read_template_metadata(team, template_name)
+    try:
+        template_commit = str(metadata.get("source_commit", ""))
+        source_branch = str(metadata.get("source_branch", ""))
+        if template_commit and fetch_missing_history:
+            git_ops.ensure_lineage_history(
+                repo_path,
+                template_commit,
+                current_branch,
+                source_branch,
+                team.git_credentials_file(),
+            )
+        return git_analysis.template_lineage(
+            repo_path,
+            template_commit,
+            source_branch,
+        )
+    except Exception:  # noqa: BLE001 - never fail creation over an advisory check
+        logger.warning("Template lineage check failed", exc_info=True)
+        return empty
+
+
 def _mount_filestore(
     client: DockerClient,
     settings: Settings,
@@ -1049,6 +1107,17 @@ def create_environment(
             git_user=git_user,
         )
 
+    # The template database is a snapshot of some commit; this checkout may sit
+    # before or after it. Report the drift now, while the agent is still deciding
+    # what its first pull_and_apply should do.
+    lineage = _template_code_lineage(
+        team,
+        template_name,
+        repo_path,
+        current_branch=branch,
+        fetch_missing_history=not local_mount,
+    )
+
     # --- Shared immutable extra-addons checkouts ---
     extra_mount_paths: list[tuple[str, str]] = []
     extra_revisions: dict[str, str] = {}
@@ -1344,6 +1413,7 @@ def create_environment(
     result["extra_addons"] = extra_addons or {}
     result["extra_addons_revisions"] = extra_revisions
     result["local_path"] = repo_path if local_mount else ""
+    result["template_lineage"] = lineage
     result["elapsed_seconds"] = round(time.time() - start_time, 1)
     activity.touch(team, env_name)
     # Let the new env's MCP token resolve without waiting for the scan interval.

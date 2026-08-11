@@ -233,3 +233,85 @@ This is intentional. A template's filestore is the overlay **lower layer** for
 every environment built from it; deleting the template would pull the base out
 from under those live overlays and break them. Delete the listed environments
 first (or keep the template). The same guard applies to renaming a template.
+
+---
+
+## A brand-new environment fails its first upgrade
+
+An environment is a *new* database cloned from a template plus *your* branch's
+code. The template database is a snapshot of some branch at some commit, so the
+two can drift in either direction — and the failure only surfaces on the first
+`-u`.
+
+```bash
+# What the template was snapshotted from:
+oduflow call list_templates
+# → - prod: DB=loaded, ..., Source=prod @ c0ffee12 @ snapshot 2026-08-01
+```
+
+`create_environment` compares that commit with the branch checkout and reports
+the drift in its response:
+
+* **"Code is behind the template database"** — your branch does not contain the
+  snapshot commit. The database already holds views and records written by newer
+  code, so upgrading the older branch fails validation (typically a `ParseError`
+  on a view referencing a method your branch does not have). **Merge the
+  template's source branch** into yours, push, then `pull_and_apply`.
+* **"Code is ahead of the template database"** — the database predates your
+  code. Apply the drift explicitly with the arguments reported by Oduflow, for
+  example `pull_and_apply(install="new_module", upgrade="a,b,c")`, listing
+  dependencies before dependents. Brand-new modules need `install=`; existing
+  modules with schema/data drift need `upgrade=`. Modules whose manifest version
+  was not bumped are never upgraded automatically, so a `column ... does not
+  exist` or a missing external ID means "find the module that owns it and add it
+  to `upgrade=`".
+
+Templates created before Oduflow recorded provenance — and templates imported
+from a running Odoo — have no commit to compare against, so no drift is
+reported. That is not an error; the rule above still applies, you just have to
+apply it by hand.
+
+!!! warning "Recreating the environment does not fix it"
+    The template is unchanged, so the same drift comes straight back — and the
+    environment's data is gone. Reconcile with a merge or an explicit
+    install/upgrade action.
+
+---
+
+## `BusyError`: "Another operation ... is in progress"
+
+The message names the holder and its age:
+
+```
+Another operation on environment 'main' (pull_and_apply, running for 4m12s) is in progress.
+```
+
+Locks are held for exactly as long as the operation runs and are released when
+it finishes. A long-running install, upgrade or test run legitimately holds one
+for minutes — including when the *client* gave up waiting and timed out, because
+the work continues server-side. Wait for it to finish and retry; restarting or
+recreating the environment interrupts real work instead of clearing anything.
+
+Background operations take the same locks and are named too: `auto-stop`,
+`auto-delete`, `scheduled backup`, `webhook deploy`.
+
+---
+
+## The Odoo web client loads blank
+
+The page is served, the JS bundles arrive, the browser console is clean — and
+nothing renders. This is an Odoo-side asset/registry problem (commonly a custom
+systray or a legacy widget that never resolves during `startWebClient`), not an
+environment provisioning problem: restarting the container or rebuilding assets
+does not help, and headless browser tooling tends to hang on such a page.
+
+Verify server-side instead — it works normally while the web client does not:
+
+```bash
+oduflow call run_odoo_shell '{"env_name": "my-branch", "python_code":
+  "print(env[\"res.partner\"].fields_get([\"name\"]).keys())", "auto_commit": false}'
+oduflow call run_odoo_tests '{"env_name": "my-branch", "modules": "my_module"}'
+```
+
+Then narrow the failing asset with `get_environment_logs` and by disabling the
+suspect module's assets.

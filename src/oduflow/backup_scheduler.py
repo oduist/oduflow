@@ -173,7 +173,7 @@ def _run_snapshot_job(
 
     key = prod_lock_key(team.team_id, name)
     try:
-        locks.acquire_env(key)
+        locks.acquire_env(key, operation="scheduled backup")
     except BusyError:
         return  # deploy/restore in flight; still due next tick
     started = time.time()
@@ -255,7 +255,7 @@ def _run_basebackup_job(
     base["slot_attempts"] = attempts + 1
     _save_cluster_state(settings, state)
     try:
-        locks.acquire_env("prod:__cluster__")
+        locks.acquire_env("prod:__cluster__", operation="scheduled base backup")
     except BusyError:
         return
     try:
@@ -297,7 +297,7 @@ def _run_prune_job(
     ok = True
     for team in settings.teams.values():
         try:
-            locks.acquire_team(team.team_id)
+            locks.acquire_team(team.team_id, operation="scheduled backup prune")
         except BusyError:
             ok = False
             continue

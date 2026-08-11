@@ -163,10 +163,10 @@ For OAuth-based MCP clients like Claude.ai Remote MCP, Oduflow runs its own OAut
 - `upgrade_odoo_modules` — upgrade Odoo modules
 - `export_module_translations` — export a module's .pot/.po translation catalogue
 - `translation_status` — check what translations actually loaded, and lint the .po files
-- `run_odoo_tests` — run Odoo tests for specific modules
+- `run_odoo_tests` — run Odoo tests for specific modules (`test_tags` narrows to one class/method; `upgrade=False` skips the `-u`, collects `post_install` tests only, and requires module-scoped positive tags)
 - `pull_and_apply` — pull latest code and auto-install/upgrade/restart as needed
 - `get_environment_logs` — retrieve container logs
-- `run_odoo_command` — execute shell commands inside the Odoo container
+- `run_odoo_command` — execute shell commands inside the Odoo container (through `sh -c`, so pipes and redirections work; `shell=False` for exact argv)
 - `run_odoo_shell` — execute Python code in the Odoo shell with full ORM access
 - `odoo_search_read` / `odoo_create` / `odoo_write` / `odoo_unlink` / `odoo_call` / `odoo_schema` — XML-RPC `execute_kw`-equivalent ORM tools. Structured JSON in and out, no Python to write; every one takes `as_user` (login or id, empty = the environment's admin) and runs in a real session for that user, so `ir.model.access` and `ir.rule` apply as they do in the web client. `odoo_call` handles other public methods (`read_group`, `name_search`, `action_*`, custom methods), while policy-visible `create`/`write`/`unlink` must use their dedicated tools; `odoo_schema` pages through models or returns `fields_get`. They hit the **running** server: edited Python is invisible until the environment restarts, and each call is its own committed transaction — use `run_odoo_shell` for a fresh registry, `sudo()`, private methods, a dry run, or multi-step atomicity
 - `read_file_in_odoo` — read a text file or list a directory inside the container (supports line ranges)

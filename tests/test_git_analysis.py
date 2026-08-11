@@ -1,6 +1,8 @@
 import os
 import textwrap
 
+import pytest
+
 from oduflow.git_analysis import (
     _extract_field_lines,
     _extract_view_tag_attrs,
@@ -768,3 +770,143 @@ class TestMergeRecommendations:
         extra = {"action": "none", "modules_to_install": [], "modules_to_upgrade": []}
         merged = merge_recommendations([main, extra])
         assert merged["action"] == "restart"
+
+
+class TestTemplateLineage:
+    """A template DB and a branch checkout drift in both directions; the check
+    must name the right remedy for each and stay silent when it cannot tell."""
+
+    def _repo(self, tmp_path):
+        os.makedirs(tmp_path / ".git", exist_ok=True)
+        return str(tmp_path)
+
+    @pytest.fixture(autouse=True)
+    def _recognize_test_repo(self, monkeypatch):
+        from oduflow import git_ops
+
+        monkeypatch.setattr(git_ops, "is_git_repository", lambda path: True)
+
+    def test_no_commit_recorded_is_unknown(self, tmp_path):
+        from oduflow.git_analysis import template_lineage
+
+        result = template_lineage(self._repo(tmp_path), "")
+        assert result["status"] == "unknown"
+        assert result["message"] == ""
+
+    def test_commit_absent_from_repo_is_unknown(self, tmp_path, monkeypatch):
+        # Deleted source branch / different repo / shallow clone: no lineage
+        # information is not an error and must not produce a warning.
+        from oduflow import git_ops
+        from oduflow.git_analysis import template_lineage
+
+        monkeypatch.setattr(git_ops, "commit_exists", lambda p, c: False)
+        result = template_lineage(self._repo(tmp_path), "deadbeef", "prod")
+        assert result["status"] == "unknown"
+
+    def test_same_commit_is_aligned(self, tmp_path, monkeypatch):
+        from oduflow import git_ops
+        from oduflow.git_analysis import template_lineage
+
+        monkeypatch.setattr(git_ops, "commit_exists", lambda p, c: True)
+        monkeypatch.setattr(git_ops, "rev_parse", lambda p, ref="HEAD": "abc123")
+        result = template_lineage(self._repo(tmp_path), "abc123", "prod")
+        assert result["status"] == "aligned"
+        assert result["message"] == ""
+
+    def test_branch_missing_snapshot_commit_asks_for_a_merge(
+        self, tmp_path, monkeypatch
+    ):
+        # The database is newer than the code — upgrading would validate the old
+        # code against data written by newer code. Merge first.
+        from oduflow import git_ops
+        from oduflow.git_analysis import template_lineage
+
+        monkeypatch.setattr(git_ops, "commit_exists", lambda p, c: True)
+        monkeypatch.setattr(git_ops, "rev_parse", lambda p, ref="HEAD": "feature1")
+        monkeypatch.setattr(git_ops, "is_ancestor", lambda p, a, d="HEAD": False)
+        result = template_lineage(self._repo(tmp_path), "snapshot1", "prod")
+        assert result["status"] == "diverged"
+        assert "Merge prod" in result["message"]
+        assert result["modules_to_upgrade"] == []
+
+    def test_branch_ahead_names_the_modules_to_upgrade(self, tmp_path, monkeypatch):
+        # The code is newer than the database: the changed modules need an
+        # explicit -u, including ones whose version was never bumped.
+        from oduflow import git_ops
+        from oduflow.git_analysis import template_lineage
+
+        module_dir = tmp_path / "supply" / "models"
+        module_dir.mkdir(parents=True)
+        (tmp_path / "supply" / "__manifest__.py").write_text(
+            "{'name': 'Supply', 'version': '15.0.1.0.0', 'data': []}"
+        )
+        (module_dir / "supply.py").write_text(
+            textwrap.dedent(
+                """
+                class Supply(models.Model):
+                    _name = "supply"
+                    new_field = fields.Char()
+                """
+            )
+        )
+        monkeypatch.setattr(git_ops, "commit_exists", lambda p, c: True)
+        monkeypatch.setattr(git_ops, "rev_parse", lambda p, ref="HEAD": "head1")
+        monkeypatch.setattr(git_ops, "is_ancestor", lambda p, a, d="HEAD": True)
+        monkeypatch.setattr(
+            git_ops, "diff_names", lambda p, b, h="HEAD": ["supply/models/supply.py"]
+        )
+
+        from unittest.mock import patch
+
+        with patch("subprocess.run") as mock_run:
+            # The old revision of the file had no field definition at all.
+            mock_run.return_value = type("Result", (), {"stdout": "class Supply:\n"})()
+            result = template_lineage(self._repo(tmp_path), "snapshot1", "prod")
+
+        assert result["status"] == "ahead"
+        assert result["modules_to_upgrade"] == ["supply"]
+        assert 'upgrade="supply"' in result["message"]
+
+    def test_new_modules_are_installed_not_upgraded(self, tmp_path, monkeypatch):
+        from oduflow import git_analysis, git_ops
+        from oduflow.git_analysis import template_lineage
+
+        monkeypatch.setattr(git_ops, "commit_exists", lambda p, c: True)
+        monkeypatch.setattr(git_ops, "rev_parse", lambda p, ref="HEAD": "head1")
+        monkeypatch.setattr(git_ops, "is_ancestor", lambda p, a, d="HEAD": True)
+        monkeypatch.setattr(
+            git_ops,
+            "diff_names",
+            lambda p, b, h="HEAD": [
+                "new_module/__manifest__.py",
+                "sale/models/order.py",
+            ],
+        )
+        monkeypatch.setattr(
+            git_analysis,
+            "recommend",
+            lambda files, path, base: {
+                "modules_to_install": ["new_module"],
+                "modules_to_upgrade": ["sale"],
+            },
+        )
+
+        result = template_lineage(self._repo(tmp_path), "snapshot1", "prod")
+
+        assert result["modules_to_install"] == ["new_module"]
+        assert result["modules_to_upgrade"] == ["sale"]
+        assert 'install="new_module"' in result["message"]
+        assert 'upgrade="sale"' in result["message"]
+
+    def test_ahead_without_db_relevant_changes_stays_quiet(self, tmp_path, monkeypatch):
+        # Ahead by a README only: nothing to upgrade, so say nothing.
+        from oduflow import git_ops
+        from oduflow.git_analysis import template_lineage
+
+        monkeypatch.setattr(git_ops, "commit_exists", lambda p, c: True)
+        monkeypatch.setattr(git_ops, "rev_parse", lambda p, ref="HEAD": "head1")
+        monkeypatch.setattr(git_ops, "is_ancestor", lambda p, a, d="HEAD": True)
+        monkeypatch.setattr(git_ops, "diff_names", lambda p, b, h="HEAD": ["README.md"])
+        result = template_lineage(self._repo(tmp_path), "snapshot1", "prod")
+        assert result["status"] == "ahead"
+        assert result["message"] == ""

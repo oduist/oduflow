@@ -944,8 +944,21 @@ def get_service_logs(
 
 
 def run_command_in_service(
-    settings: Settings, team: TeamSettings, name: str, command: str, user: str = "root"
+    settings: Settings,
+    team: TeamSettings,
+    name: str,
+    command: str,
+    user: str = "root",
+    shell: bool = True,
 ) -> dict[str, object]:
+    """Run *command* inside a managed service container.
+
+    Same shell semantics as :func:`odoo_ops.run_command_in_environment`: by
+    default the command runs through ``sh -c`` so pipes and redirections work;
+    ``shell=False`` execs the argv directly. Service images are minimal but all
+    ship a POSIX ``sh``; on one that genuinely has none (scratch/distroless),
+    use ``shell=False``.
+    """
     client = get_client()
     container_name = get_service_container_name(name, settings.prefix, team.team_id)
 
@@ -956,9 +969,11 @@ def run_command_in_service(
 
     logger.info(
         "Executing command in service",
-        extra={"service": name, "command": command, "user": user},
+        extra={"service": name, "command": command, "user": user, "shell": shell},
     )
-    exit_code, output = container.exec_run(command, user=user)
+    exit_code, output = container.exec_run(
+        ["sh", "-c", command] if shell else command, user=user
+    )
     output_str = output.decode("utf-8") if isinstance(output, bytes) else str(output)
 
     return {

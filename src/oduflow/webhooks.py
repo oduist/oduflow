@@ -130,7 +130,9 @@ def _deploy_in_background(
     key = prod_lock_key(team.team_id, name)
     pending_key = f"{team.team_id}/{name}"
     try:
-        if not locks.acquire_env_blocking(key, _LOCK_TIMEOUT_SECONDS):
+        if not locks.acquire_env_blocking(
+            key, _LOCK_TIMEOUT_SECONDS, operation="webhook deploy"
+        ):
             logger.warning(
                 "Webhook deploy of production '%s' gave up waiting for its "
                 "lock (%.0f min)",

@@ -61,6 +61,7 @@ precursors).
 | [0040](0040-versioned-coder-image-contract.md) | 2026-07-22 | Immutable, release-coupled coder image tags replace the rolling runtime |
 | [0041](0041-structured-odoo-orm-tools.md) | 2026-08-02 | Structured Odoo ORM tools (`execute_kw` semantics) over the web JSON-RPC endpoint |
 | [0042](0042-translation-tooling.md) | 2026-07-27 | Translation tooling on Odoo's own exporter, plus one-time artifact download links |
+| [0043](0043-template-code-provenance-and-lineage.md) | 2026-08-08 | Templates record the commit their data was snapshotted at; environments report code/database drift at creation |
 
 ## Design docs
 

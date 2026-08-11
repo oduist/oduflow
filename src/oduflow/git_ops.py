@@ -409,6 +409,164 @@ def rev_parse(repo_path: str, ref: str = "HEAD") -> str:
         raise ExternalCommandError("git rev-parse", e.returncode, e.stderr or "")
 
 
+def is_git_repository(repo_path: str) -> bool:
+    """Whether *repo_path* is a Git working tree.
+
+    Ask Git instead of inspecting ``.git``: linked worktrees store ``.git`` as
+    a file that points at the common repository, while ordinary clones use a
+    directory.
+    """
+    if not os.path.isdir(repo_path):
+        return False
+    result = subprocess.run(
+        ["git", "-C", repo_path, "rev-parse", "--is-inside-work-tree"],
+        capture_output=True,
+        text=True,
+        env=_GIT_BASE_ENV,
+    )
+    return result.returncode == 0 and result.stdout.strip() == "true"
+
+
+def commit_exists(repo_path: str, commit: str) -> bool:
+    """True when *commit* is present in *repo_path*'s object database.
+
+    A template's snapshot commit can be absent for perfectly ordinary reasons —
+    the branch it was taken from was deleted, the clone is shallow, the template
+    came from a different repository. Callers treat "absent" as "no lineage
+    information", never as an error.
+    """
+    if not commit:
+        return False
+    return (
+        subprocess.run(
+            ["git", "-C", repo_path, "cat-file", "-e", f"{commit}^{{commit}}"],
+            capture_output=True,
+            text=True,
+            env=_GIT_BASE_ENV,
+        ).returncode
+        == 0
+    )
+
+
+def ensure_lineage_history(
+    repo_path: str,
+    commit: str,
+    current_branch: str,
+    source_branch: str = "",
+    cred_file: str = "",
+) -> bool:
+    """Best-effort fetch of history needed to compare *commit* with ``HEAD``.
+
+    Development environments are cloned with ``--depth 1``. Deepen the current
+    branch first so ancestry is reliable, then fetch the template's source
+    branch when it differs. Returns whether *commit* is available afterwards;
+    callers keep lineage advisory when a branch was deleted or a fetch fails.
+    """
+    if not commit or not is_git_repository(repo_path):
+        return False
+    if commit_exists(repo_path, commit):
+        return True
+
+    env = git_env_for_team(cred_file) if cred_file else _GIT_BASE_ENV
+    try:
+        shallow = (
+            subprocess.run(
+                ["git", "-C", repo_path, "rev-parse", "--is-shallow-repository"],
+                check=True,
+                capture_output=True,
+                text=True,
+                env=env,
+            ).stdout.strip()
+            == "true"
+        )
+
+        if current_branch:
+            cmd = [
+                "git",
+                "-C",
+                repo_path,
+                "fetch",
+                "--recurse-submodules=no",
+            ]
+            if shallow:
+                cmd.append("--unshallow")
+            cmd.extend(
+                [
+                    "origin",
+                    f"+refs/heads/{current_branch}:refs/remotes/origin/{current_branch}",
+                ]
+            )
+            subprocess.run(
+                cmd,
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=60,
+                env=env,
+            )
+
+        if source_branch and source_branch != current_branch:
+            subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    repo_path,
+                    "fetch",
+                    "--recurse-submodules=no",
+                    "origin",
+                    f"+refs/heads/{source_branch}:refs/remotes/origin/{source_branch}",
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=60,
+                env=env,
+            )
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+        logger.info("Could not fetch template lineage history: %s", type(exc).__name__)
+
+    return commit_exists(repo_path, commit)
+
+
+def is_ancestor(repo_path: str, ancestor: str, descendant: str = "HEAD") -> bool:
+    """True when *ancestor* is reachable from *descendant*.
+
+    Thin wrapper over ``git merge-base --is-ancestor``.
+    """
+    return (
+        subprocess.run(
+            [
+                "git",
+                "-C",
+                repo_path,
+                "merge-base",
+                "--is-ancestor",
+                ancestor,
+                descendant,
+            ],
+            capture_output=True,
+            text=True,
+            env=_GIT_BASE_ENV,
+        ).returncode
+        == 0
+    )
+
+
+def diff_names(repo_path: str, base: str, head: str = "HEAD") -> list[str]:
+    """Files changed between *base* and *head* (``git diff --name-only base..head``)."""
+    try:
+        out = subprocess.run(
+            ["git", "-C", repo_path, "diff", "--name-only", f"{base}..{head}"],
+            check=True,
+            capture_output=True,
+            text=True,
+            env=_GIT_BASE_ENV,
+        ).stdout
+    except subprocess.CalledProcessError as e:
+        raise ExternalCommandError("git diff", e.returncode, e.stderr or "")
+    return [f for f in out.strip().splitlines() if f]
+
+
 def reset_hard(repo_path: str, ref: str) -> None:
     """``git reset --hard <ref>`` — the code-rollback primitive."""
     try:
