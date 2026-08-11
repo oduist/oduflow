@@ -4,6 +4,7 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         git \
         fuse-overlayfs \
+        rsync \
         iptables \
         docker.io \
     && rm -rf /var/lib/apt/lists/*

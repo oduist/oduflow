@@ -555,6 +555,7 @@ When running in HTTP mode, a web dashboard is available at the root URL (`http:/
 - **Python 3.10+**
 - **Git**
 - **fuse-overlayfs** (Linux only, for filestore overlay mounting) — auto-installed on first launch; see below
+- **rsync** (all platforms, for incremental filestore copies) — auto-installed on first launch; see below
 
 !!! note "macOS support"
     On macOS, Docker Desktop runs containers inside a Linux VM and projects
@@ -584,6 +585,24 @@ Oduflow mounts each environment's filestore with `fuse-overlayfs`'s `allow_other
 # Only needed when running Oduflow as a non-root user:
 sudo sed -i 's/^#user_allow_other/user_allow_other/' /etc/fuse.conf
 ```
+
+### Install rsync
+
+`rsync` is auto-installed the same way on Linux (`apt-get install -y rsync` when
+running as root on a Debian/Ubuntu host; the Docker image bundles it). Unlike
+fuse-overlayfs it matters on **every** platform, including macOS, where it ships
+with the system:
+
+```bash
+sudo apt install rsync
+```
+
+Oduflow uses it to copy only what changed. Saving an environment as a template
+snapshots its filestore by hardlinking every file that already matches the
+template baseline, so a multi-gigabyte filestore costs only the environment's
+own deltas. Without `rsync`, publishing still works but re-copies the whole
+filestore each time (logged as a warning), and syncing a template from a local
+source fails outright.
 
 ## Install Oduflow
 
