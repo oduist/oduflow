@@ -61,7 +61,7 @@ from oduflow.docker_ops.stats import (
     refresh_env_storage,
     refresh_team_storage,
 )
-from oduflow.errors import BusyError, FlowError, NotFoundError
+from oduflow.errors import BusyError, ConflictError, FlowError, NotFoundError
 from oduflow.licensing import get_license_info, install_license_from_text
 from oduflow.locking import LockManager
 from oduflow.naming import validate_template_name
@@ -1250,8 +1250,13 @@ def _build_routes(
             )
 
     def api_templates(request: Request) -> JSONResponse:
+        team = _get_ui_team(request)
         try:
-            templates = system_ops.list_templates(get_settings(), _get_ui_team(request))
+            locks.acquire_team(team.team_id)
+        except BusyError as e:
+            return _error_response(e)
+        try:
+            templates = system_ops.list_templates(get_settings(), team)
             return JSONResponse({"ok": True, "templates": templates})
         except FlowError as e:
             return _error_response(e)
@@ -1260,6 +1265,8 @@ def _build_routes(
             return JSONResponse(
                 {"ok": False, "error": "Internal server error."}, status_code=500
             )
+        finally:
+            locks.release_team(team.team_id)
 
     def api_template_delete(request: Request) -> JSONResponse:
         name = request.path_params["name"]
@@ -1308,6 +1315,78 @@ def _build_routes(
             return _error_response(e)
         except Exception:
             logger.exception("Unexpected error in api_template_rename")
+            return JSONResponse(
+                {"ok": False, "error": "Internal server error."}, status_code=500
+            )
+        finally:
+            locks.release_team(team.team_id)
+
+    def api_template_metadata(request: Request) -> JSONResponse:
+        name = request.path_params["name"]
+        team = _get_ui_team(request)
+        try:
+            result = system_ops.get_template_metadata(team, name)
+            return JSONResponse({"ok": True, **result})
+        except ValueError as e:  # invalid template name
+            return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
+        except FlowError as e:
+            return _error_response(e)
+        except UnicodeDecodeError:
+            return JSONResponse(
+                {
+                    "ok": False,
+                    "error": "Template metadata is not valid UTF-8.",
+                },
+                status_code=400,
+            )
+        except Exception:
+            logger.exception("Unexpected error in api_template_metadata")
+            return JSONResponse(
+                {"ok": False, "error": "Internal server error."}, status_code=500
+            )
+
+    async def api_template_metadata_update(request: Request) -> JSONResponse:
+        name = request.path_params["name"]
+        team = _get_ui_team(request)
+        try:
+            validate_template_name(name)
+            body = await request.json()
+        except (TypeError, ValueError) as e:
+            message = str(e) or "Invalid JSON body"
+            return JSONResponse({"ok": False, "error": message}, status_code=400)
+
+        if not isinstance(body, dict):
+            return JSONResponse(
+                {"ok": False, "error": "JSON body must be an object"},
+                status_code=400,
+            )
+
+        content = body.get("content")
+        revision = body.get("revision")
+        if not isinstance(content, str):
+            return JSONResponse(
+                {"ok": False, "error": "content must be a string"}, status_code=400
+            )
+        if not isinstance(revision, str):
+            return JSONResponse(
+                {"ok": False, "error": "revision must be a string"}, status_code=400
+            )
+
+        try:
+            locks.acquire_team(team.team_id)
+        except BusyError as e:
+            return _error_response(e)
+        try:
+            result = system_ops.update_template_metadata(team, name, content, revision)
+            return JSONResponse({"ok": True, **result})
+        except ConflictError as e:
+            return JSONResponse({"ok": False, "error": str(e)}, status_code=409)
+        except (TypeError, ValueError) as e:
+            return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
+        except FlowError as e:
+            return _error_response(e)
+        except Exception:
+            logger.exception("Unexpected error in api_template_metadata_update")
             return JSONResponse(
                 {"ok": False, "error": "Internal server error."}, status_code=500
             )
@@ -4260,6 +4339,16 @@ def _build_routes(
             methods=["POST"],
         ),
         Route("/api/templates/import/finalize", api_import_finalize, methods=["POST"]),
+        Route(
+            "/api/templates/{name:path}/metadata",
+            api_template_metadata,
+            methods=["GET"],
+        ),
+        Route(
+            "/api/templates/{name:path}/metadata",
+            api_template_metadata_update,
+            methods=["PUT"],
+        ),
         Route("/api/templates/{name}/delete", api_template_delete, methods=["POST"]),
         Route("/api/templates/{name}/rename", api_template_rename, methods=["POST"]),
         Route("/api/environments", api_list, methods=["GET"]),

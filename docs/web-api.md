@@ -72,6 +72,8 @@ contain `/` are accepted and URL-decoded as one environment name.
 | Method | Endpoint | Description |
 |---|---|---|
 | `GET` | `/api/templates` | List template profiles |
+| `GET` | `/api/templates/{name:path}/metadata` | Read the complete `metadata.json` content and its optimistic revision |
+| `PUT` | `/api/templates/{name:path}/metadata` | Validate and atomically replace `metadata.json`; body: `content`, `revision` |
 | `POST` | `/api/templates/{name}/delete` | Delete a template |
 | `POST` | `/api/templates/{name}/rename` | Rename it; body: `new_name` |
 | `POST` | `/api/templates/import-token` | UI-authenticated: mint a 15-minute Odoo.sh import token |

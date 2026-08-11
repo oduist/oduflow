@@ -803,6 +803,7 @@ def save_as_template(
 
 @mcp.tool()
 @handle_errors
+@with_team_lock
 def list_templates(ctx: Context | None = None) -> str:
     """List available template profiles (database + filestore snapshots)."""
     settings = _get_settings()
