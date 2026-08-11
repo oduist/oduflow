@@ -23,6 +23,12 @@ All tools are accessible via MCP clients (Cursor, Cline, Amp, etc.) and the CLI 
 | `get_environment_logs` | | Retrieve recent container logs |
 | `run_odoo_command` | ✓ | Execute an arbitrary shell command inside the Odoo container |
 | `run_odoo_shell` | ✓ | Execute Python code in the Odoo shell context with full ORM access |
+| `odoo_search_read` | ✓ | Search and read records (XML-RPC `search_read`/`search_count`) as any user, with ACLs and record rules applied |
+| `odoo_create` | ✓ | Create one or many records (XML-RPC `create`). Committed immediately |
+| `odoo_write` | ✓ | Update records (XML-RPC `write`). Committed immediately |
+| `odoo_unlink` | ✓ | ⚠️ Delete records (XML-RPC `unlink`). Committed immediately, not recoverable |
+| `odoo_call` | ✓ | Call public model methods not covered by the dedicated CRUD tools (`read_group`, `name_search`, `action_*`, …) |
+| `odoo_schema` | ✓ | Page through models, or describe one model's fields (XML-RPC `fields_get`) |
 | `read_file_in_odoo` | | Read a text file or list a directory inside the Odoo container. Supports line ranges (e.g. `"1:50"`) |
 | `write_file_in_odoo` | ✓ | Write a text file inside the container (CSV imports, scripts, configs) |
 | `search_in_odoo` | | Search for a pattern (fixed-string grep) in files inside the Odoo container |

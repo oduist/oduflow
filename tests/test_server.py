@@ -1,5 +1,6 @@
 import logging
 import sys
+import time
 from unittest.mock import patch
 
 import pytest
@@ -1217,3 +1218,282 @@ class TestHttpFailClosed:
             pytest.raises(PrerequisiteNotMetError, match="trusted proxy network"),
         ):
             server._traefik_forwarded_allow_ips(Settings(shared_network="oduflow-net"))
+
+
+class TestOdooRpcTools:
+    """The six execute_kw-equivalent tools: argument shaping and rendering."""
+
+    @staticmethod
+    def _result(value, ok=True, **kwargs):
+        from oduflow.docker_ops.odoo_rpc import RpcResult
+
+        return RpcResult(ok=ok, value=value, login="admin", uid=2, **kwargs)
+
+    @patch("oduflow.docker_ops.env_ops.ensure_running", return_value=False)
+    @patch("oduflow.docker_ops.odoo_rpc.call_kw")
+    def test_search_read_shapes_args_and_renders_rows(self, mock_call, mock_ensure):
+        mock_call.return_value = self._result([{"id": 1, "name": "Acme"}])
+
+        result = _get_tool_fn("odoo_search_read")(
+            env_name="main",
+            model="res.partner",
+            domain='[["customer_rank", ">", 0]]',
+            fields="name,email",
+            limit=5,
+        )
+
+        args = mock_call.call_args
+        assert args[0][3:6] == (
+            "res.partner",
+            "search_read",
+            [[["customer_rank", ">", 0]], ["name", "email"]],
+        )
+        assert args[0][6] == {"limit": 5, "offset": 0}
+        assert "res.partner: 1 rows (as admin, limit 5)." in result
+        assert '{"id":1,"name":"Acme"}' in result
+
+    @patch("oduflow.docker_ops.env_ops.ensure_running", return_value=False)
+    @patch("oduflow.docker_ops.odoo_rpc.call_kw")
+    def test_search_read_bare_leaf_domain_is_wrapped(self, mock_call, mock_ensure):
+        mock_call.return_value = self._result([])
+
+        _get_tool_fn("odoo_search_read")(
+            env_name="main", model="res.partner", domain="['name', '=', 'x']"
+        )
+
+        assert mock_call.call_args[0][5][0] == [["name", "=", "x"]]
+
+    @patch("oduflow.docker_ops.env_ops.ensure_running", return_value=False)
+    @patch("oduflow.docker_ops.odoo_rpc.call_kw")
+    def test_count_only_uses_search_count(self, mock_call, mock_ensure):
+        mock_call.return_value = self._result(1284)
+
+        result = _get_tool_fn("odoo_search_read")(
+            env_name="main", model="res.partner", count_only=True
+        )
+
+        assert mock_call.call_args[0][4] == "search_count"
+        assert "1284 records match" in result
+
+    @patch("oduflow.docker_ops.env_ops.ensure_running", return_value=False)
+    @patch("oduflow.docker_ops.odoo_rpc.call_kw")
+    def test_write_sends_ids_then_values(self, mock_call, mock_ensure):
+        mock_call.return_value = self._result(True)
+
+        result = _get_tool_fn("odoo_write")(
+            env_name="main",
+            model="res.partner",
+            ids="1,2",
+            values='{"comment": "x"}',
+        )
+
+        assert mock_call.call_args[0][5] == [[1, 2], {"comment": "x"}]
+        assert "Committed." in result
+
+    @patch("oduflow.docker_ops.env_ops.ensure_running", return_value=False)
+    @patch("oduflow.docker_ops.odoo_rpc.call_kw")
+    def test_unlink_warns_it_is_not_recoverable(self, mock_call, mock_ensure):
+        mock_call.return_value = self._result(True)
+
+        result = _get_tool_fn("odoo_unlink")(
+            env_name="main", model="res.partner", ids="[7]"
+        )
+
+        assert mock_call.call_args[0][4] == "unlink"
+        assert mock_call.call_args[0][5] == [[7]]
+        assert "not recoverable" in result
+
+    @patch("oduflow.docker_ops.env_ops.ensure_running", return_value=False)
+    @patch("oduflow.docker_ops.odoo_rpc.call_kw")
+    def test_create_accepts_several_records(self, mock_call, mock_ensure):
+        mock_call.return_value = self._result([42, 43])
+
+        result = _get_tool_fn("odoo_create")(
+            env_name="main",
+            model="res.partner",
+            values='[{"name": "a"}, {"name": "b"}]',
+        )
+
+        assert mock_call.call_args[0][5] == [[{"name": "a"}, {"name": "b"}]]
+        assert "2 record(s)" in result
+        assert "[42, 43]" in result
+
+    @patch("oduflow.docker_ops.env_ops.ensure_running", return_value=False)
+    @patch("oduflow.docker_ops.odoo_rpc.call_kw")
+    def test_call_prepends_ids_to_args(self, mock_call, mock_ensure):
+        mock_call.return_value = self._result(True)
+
+        _get_tool_fn("odoo_call")(
+            env_name="main",
+            model="sale.order",
+            method="action_confirm",
+            ids="42",
+        )
+
+        assert mock_call.call_args[0][5] == [[42]]
+
+    @patch("oduflow.docker_ops.env_ops.ensure_running", return_value=False)
+    @patch("oduflow.docker_ops.odoo_rpc.call_kw")
+    def test_call_merges_context_into_kwargs(self, mock_call, mock_ensure):
+        mock_call.return_value = self._result(True)
+
+        _get_tool_fn("odoo_call")(
+            env_name="main",
+            model="res.partner",
+            method="name_search",
+            kwargs='{"name": "Acme"}',
+            context='{"lang": "fr_FR"}',
+        )
+
+        assert mock_call.call_args[0][6] == {
+            "name": "Acme",
+            "context": {"lang": "fr_FR"},
+        }
+
+    @pytest.mark.parametrize("method", ["create", "write", "unlink"])
+    @patch("oduflow.docker_ops.env_ops.ensure_running", return_value=False)
+    @patch("oduflow.docker_ops.odoo_rpc.call_kw")
+    def test_call_rejects_dedicated_mutations(self, mock_call, mock_ensure, method):
+        with pytest.raises(ToolError, match=f"dedicated odoo_{method} tool"):
+            _get_tool_fn("odoo_call")(
+                env_name="main", model="res.partner", method=method, ids="1"
+            )
+
+        mock_ensure.assert_not_called()
+        mock_call.assert_not_called()
+
+    @patch("oduflow.docker_ops.env_ops.ensure_running", return_value=False)
+    @patch("oduflow.docker_ops.odoo_rpc.call_kw")
+    def test_schema_lists_models_when_model_is_empty(self, mock_call, mock_ensure):
+        mock_call.return_value = self._result(
+            [{"model": "sale.order", "name": "Sales Order", "transient": False}]
+        )
+
+        result = _get_tool_fn("odoo_schema")(
+            env_name="main", name_filter="sale", limit=50, offset=100
+        )
+
+        assert mock_call.call_args[0][3:5] == ("ir.model", "search_read")
+        assert mock_call.call_args[0][6] == {
+            "limit": 50,
+            "offset": 100,
+            "order": "model",
+        }
+        assert "Models matching 'sale': 1" in result
+
+    @patch("oduflow.docker_ops.env_ops.ensure_running", return_value=False)
+    @patch("oduflow.docker_ops.odoo_rpc.call_kw")
+    def test_schema_reports_a_full_page_as_possibly_truncated(
+        self, mock_call, mock_ensure
+    ):
+        mock_call.return_value = self._result(
+            [
+                {"model": f"x.model.{index}", "name": str(index), "transient": False}
+                for index in range(2)
+            ]
+        )
+
+        result = _get_tool_fn("odoo_schema")(env_name="main", limit=2, offset=4)
+
+        assert "there may be more" in result
+        assert "offset=6" in result
+
+    @patch("oduflow.docker_ops.env_ops.ensure_running", return_value=False)
+    @patch("oduflow.docker_ops.odoo_rpc.call_kw")
+    def test_schema_filters_fields_by_name(self, mock_call, mock_ensure):
+        mock_call.return_value = self._result(
+            {"name": {"type": "char"}, "email": {"type": "char"}}
+        )
+
+        result = _get_tool_fn("odoo_schema")(
+            env_name="main", model="res.partner", name_filter="mail"
+        )
+
+        assert mock_call.call_args[0][4] == "fields_get"
+        assert "res.partner: 1 fields" in result
+        assert "email" in result and '"name"' not in result
+
+    @patch("oduflow.docker_ops.env_ops.ensure_running", return_value=False)
+    @patch("oduflow.docker_ops.odoo_rpc.call_kw")
+    def test_odoo_error_is_returned_not_raised(self, mock_call, mock_ensure):
+        mock_call.return_value = self._result(
+            None,
+            ok=False,
+            error_name="odoo.exceptions.AccessError",
+            error_message="not allowed",
+            error_debug="Traceback: line 1",
+        )
+
+        result = _get_tool_fn("odoo_write")(
+            env_name="main",
+            model="res.partner",
+            ids="1",
+            values='{"comment": "x"}',
+            as_user="portal@example.com",
+        )
+
+        assert "Error (as admin)." in result
+        assert "AccessError: not allowed" in result
+        assert "Traceback: line 1" in result
+
+    @patch("oduflow.docker_ops.env_ops.ensure_running", return_value=False)
+    @patch("oduflow.docker_ops.odoo_rpc.call_kw")
+    def test_cold_mint_is_announced(self, mock_call, mock_ensure):
+        mock_call.return_value = self._result([], minted=True)
+
+        result = _get_tool_fn("odoo_search_read")(env_name="main", model="res.partner")
+
+        assert "minted a new Odoo session for admin" in result
+
+    @pytest.mark.parametrize("superuser", ["1", "__system__"])
+    @patch("oduflow.docker_ops.env_ops.ensure_running", return_value=False)
+    @patch("oduflow.docker_ops.odoo_rpc.call_kw")
+    def test_superuser_is_rejected(self, mock_call, mock_ensure, superuser):
+        with pytest.raises(ToolError, match="run_odoo_shell"):
+            _get_tool_fn("odoo_search_read")(
+                env_name="main", model="res.partner", as_user=superuser
+            )
+        mock_call.assert_not_called()
+
+    @patch("oduflow.docker_ops.env_ops.ensure_running", return_value=False)
+    @patch("oduflow.docker_ops.odoo_rpc.call_kw")
+    def test_private_method_points_at_run_odoo_shell(self, mock_call, mock_ensure):
+        mock_call.side_effect = ValueError(
+            "Method '_compute' is private and is not callable over RPC "
+            "(Odoo 19 rejects it server-side too). Use run_odoo_shell for "
+            "private methods and registry internals."
+        )
+
+        with pytest.raises(ToolError, match="run_odoo_shell"):
+            _get_tool_fn("odoo_call")(
+                env_name="main", model="res.partner", method="_compute"
+            )
+
+    def test_tools_are_reachable_from_a_scoped_env_token(self):
+        from oduflow.scoped_access import SCOPED_ALLOWLIST
+
+        for name in (
+            "odoo_search_read",
+            "odoo_create",
+            "odoo_write",
+            "odoo_unlink",
+            "odoo_call",
+            "odoo_schema",
+        ):
+            assert name in SCOPED_ALLOWLIST
+
+
+class TestResetAdminPasswordDropsSessions:
+    @patch("oduflow.docker_ops.env_ops.ensure_running", return_value=False)
+    @patch("oduflow.docker_ops.odoo_ops.reset_admin_password")
+    def test_cached_sessions_are_invalidated(self, mock_reset, mock_ensure):
+        from oduflow.docker_ops import odoo_rpc
+
+        mock_reset.return_value = {"status": "ok", "login": "admin", "psql_output": ""}
+        odoo_rpc._SESSIONS[("1", "main", "")] = odoo_rpc._CachedSession(
+            "sid", "admin", 2, time.time() + 1000
+        )
+
+        _get_tool_fn("reset_admin_password")(env_name="main")
+
+        assert ("1", "main", "") not in odoo_rpc._SESSIONS

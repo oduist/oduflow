@@ -81,8 +81,31 @@ In live-mount mode, you as the agent must track the intent of your own edits. If
 
 ### ORM & Scripting
 
+The `odoo_*` tools are the XML-RPC `execute_kw` surface: structured, fast, and
+they run as a real user so access rights and record rules apply. Reach for them
+first when reading or changing data. `run_odoo_shell` stays the escape hatch.
+
+| Need | Tool |
+|---|---|
+| Read or change data, as a specific user, with real ACLs | `odoo_*` |
+| Multi-step logic in one transaction, a dry run, `sudo()`, private methods, registry internals | `run_odoo_shell` |
+| See freshly edited Python **without** restarting the environment | `run_odoo_shell` |
+| Raw SQL, `EXPLAIN`, schema-level checks | `run_db_query` |
+
+> ⚠️ The `odoo_*` tools talk to the **live** Odoo HTTP server, exactly like an
+> external RPC client. Edited **Python** code is invisible to them until the
+> environment restarts (`pull_and_apply` / `restart_environment`); XML views do
+> reload. Each call is its own committed transaction — there is no dry run and
+> no atomicity across calls.
+
 | Tool | When to use |
 |---|---|
+| `odoo_search_read(env_name, model, domain?, fields?, limit?, offset?, order?, count_only?, as_user?, context?)` | Search and read records. `domain` is JSON (a Python literal also works); a bare leaf is wrapped for you. Always pass `fields`. `count_only=true` runs `search_count`. |
+| `odoo_create(env_name, model, values, as_user?, context?)` | Create one record (JSON object) or many (JSON array of objects). Returns the new ids. |
+| `odoo_write(env_name, model, ids, values, as_user?, context?)` | Update records. `ids` accepts `"42"`, `"1,2,3"` or `"[1,2,3]"`. |
+| `odoo_unlink(env_name, model, ids, as_user?, context?)` | Delete records. Not recoverable — confirm with `odoo_search_read` first, and prefer archiving (`active=false` via `odoo_write`). |
+| `odoo_call(env_name, model, method, ids?, args?, kwargs?, as_user?, context?)` | Public methods not covered by the dedicated CRUD tools: `read_group`, `name_search`, `default_get`, `action_confirm`, custom addon methods. `create`, `write`, and `unlink` must use their named tools. `ids` is prepended as the first positional argument. Private (`_`-prefixed) methods are rejected — use `run_odoo_shell`. |
+| `odoo_schema(env_name, model?, name_filter?, attributes?, as_user?, limit?, offset?)` | Paged model discovery and `fields_get`. Call it before writing a domain or a values dict — guessing field names is the top cause of empty results. |
 | `run_odoo_shell(env_name, python_code, auto_commit?)` | Execute Python in Odoo shell with full ORM access (`self.env`, models, registry). Use `print()` to produce output. Commits on success by default; pass `auto_commit=false` for a read-only dry run (changes rolled back). |
 | `write_file_in_odoo(env_name, path, content, user?)` | Write a text file inside the container (CSV imports, scripts, configs). Uses tar stream — no shell escaping issues. Do NOT use for source code. |
 | `http_request_to_odoo(env_name, path, method?, body?, headers?, session_id?)` | HTTP request to the running Odoo instance. Test controllers, JSON-RPC, REST endpoints. |
@@ -258,6 +281,14 @@ The environment container runs **remotely** and has access only to the git repos
 - If Odoo Community or Enterprise source repositories are available **locally** (cloned to your machine), prefer using your native search tools (Grep, Glob, Read) over `search_in_odoo` — local search is faster and doesn't require a running environment.
 - If local copies are not available, `search_in_odoo` works well for searching both Odoo core (`/usr/lib/python3/dist-packages/odoo/addons`) and extra addons inside the container.
 
+### Reading and Changing Odoo Data
+- Reach for the `odoo_*` ORM tools before `run_odoo_shell`. They are the XML-RPC `execute_kw` surface: you pass a model, a domain and fields instead of authoring Python, and you get JSON back instead of scraping a log stream.
+- Call `odoo_schema` before writing a domain or a `values` object. Guessed field names are the single most common cause of an empty result set, and an empty result set looks exactly like "no such records".
+- Use `as_user` to answer access questions for real. `odoo_search_read(..., as_user="portal@example.com")` runs inside that user's session, so `ir.model.access` and `ir.rule` apply exactly as in the web client. Running the same call as admin and as the target user is the fastest way to prove a rule works.
+- **These tools talk to the running server.** After changing **Python** code you must `pull_and_apply` (or `restart_environment`) before `odoo_*` sees it; XML views reload on their own. `run_odoo_shell` boots a fresh registry and sees new Python immediately — that difference will cost you an hour if you forget it.
+- Every `odoo_*` call is its own committed transaction. There is no dry run and no atomicity across calls. Use `run_odoo_shell(auto_commit=false)` to inspect without persisting, and one `run_odoo_shell` call when several steps must succeed or fail together.
+- `odoo_unlink` is not recoverable. Confirm the target ids with `odoo_search_read` first, and prefer archiving (`odoo_write` with `{"active": false}`) unless deletion is actually required.
+
 ### General
 - **One task = one branch = one environment.**
 - Mutexed tools (create, delete, install, upgrade, pull, test, exec) reject concurrent calls with `BusyError` — retry after a short delay.
@@ -386,6 +417,23 @@ Agent: pull_and_apply("feature-invoice-pdf")
 Agent: run_odoo_tests("feature-invoice-pdf", "invoice_pdf")
 → "Ran 12 tests, 0 failures. Exit code: 0."
    # ↑ Test results are also in the response
+
+Agent: odoo_schema("feature-invoice-pdf", model="account.move", name_filter="pdf")
+→ "account.move: 2 fields (as admin)."
+   {"x_pdf_layout": {"string": "PDF Layout", "type": "selection", ...}, ...}
+   # ↑ Real field names, so the next domain cannot be a guess
+
+Agent: odoo_search_read("feature-invoice-pdf", model="account.move",
+                        domain='[["move_type","=","out_invoice"]]',
+                        fields="name,x_pdf_layout", limit=5)
+→ "account.move: 3 rows (as admin, limit 5)."
+   [{"id":12,"name":"INV/2026/0001","x_pdf_layout":"compact"}, ...]
+
+Agent: odoo_search_read("feature-invoice-pdf", model="account.move",
+                        domain="[]", fields="name", as_user="portal@example.com")
+→ "Error (as portal@example.com)."
+   AccessError: You are not allowed to access 'Journal Entry' records.
+   # ↑ The record rule works — this is an answer, not a broken tool
 
 Agent: delete_environment("feature-invoice-pdf")
 → Environment deleted.

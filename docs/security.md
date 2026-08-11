@@ -100,7 +100,10 @@ https://your-server.com/mcp/<env>
 
 On this endpoint only the in-environment tools are available — sync
 (`pull_and_apply`), install/upgrade modules, run tests, open the Odoo shell, run
-SQL, read/write/search files, fetch logs and info, and `restart`. Lifecycle and
+SQL, read and write records through the `odoo_*` ORM tools, read/write/search
+files, fetch logs and info, and `restart`. The ORM tools grant no new privilege:
+anything they can reach is already reachable through `run_odoo_shell` and
+`run_db_query`, which the endpoint has always exposed. Lifecycle and
 system tools (create/delete/stop/start/recreate, templates, services, volumes,
 listing other environments) are **not exposed and cannot be called**. The
 environment is taken from the URL, so the agent never passes — and cannot

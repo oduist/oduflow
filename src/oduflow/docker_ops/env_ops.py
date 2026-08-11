@@ -2167,9 +2167,12 @@ def wait_for_odoo_ready(
     import urllib.request
     import urllib.error
 
-    info = get_environment_info(settings, team, env_name)
-    base_url = info.get("url", "")
-    if not base_url:
+    # Path-free base URL: `get_environment_info()["url"]` ends in "/web?debug=1",
+    # so appending "/web/health" to it probed "/web" instead — readiness then
+    # meant "the login page renders", not "Odoo is healthy".
+    try:
+        base_url, _cookie_domain = get_env_base_url(settings, team, env_name)
+    except NotFoundError:
         return False
 
     url = f"{base_url}/web/health"

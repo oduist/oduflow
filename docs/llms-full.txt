@@ -138,6 +138,7 @@ Same JSON format in `claude_desktop_config.json` or `.amp/settings.json`.
 - `get_environment_logs` — retrieve container logs
 - `run_odoo_command` — execute shell commands inside the Odoo container
 - `run_odoo_shell` — execute Python code in the Odoo shell with full ORM access
+- `odoo_search_read` / `odoo_create` / `odoo_write` / `odoo_unlink` / `odoo_call` / `odoo_schema` — XML-RPC `execute_kw`-equivalent ORM tools. Structured JSON in and out, no Python to write; every one takes `as_user` (login or id, empty = the environment's admin) and runs in a real session for that user, so `ir.model.access` and `ir.rule` apply as they do in the web client. `odoo_call` handles other public methods (`read_group`, `name_search`, `action_*`, custom methods), while policy-visible `create`/`write`/`unlink` must use their dedicated tools; `odoo_schema` pages through models or returns `fields_get`. They hit the **running** server: edited Python is invisible until the environment restarts, and each call is its own committed transaction — use `run_odoo_shell` for a fresh registry, `sudo()`, private methods, a dry run, or multi-step atomicity
 - `read_file_in_odoo` — read a text file or list a directory inside the container (supports line ranges)
 - `write_file_in_odoo` — write a text file inside the container (CSV imports, scripts, configs)
 - `search_in_odoo` — search for a pattern (fixed-string grep) in files inside the container
@@ -169,7 +170,8 @@ An opt-in, per-team hosting feature: Oduflow runs one coding-agent container per
 2. If not, call `create_environment` with `branch`, `template_name`, `repo_url`, and `odoo_image`
 3. Write code, `git push`, then call `pull_and_apply` (auto-detects what to do)
 4. Use `install_odoo_modules` / `run_odoo_tests` / `get_environment_logs` to verify
-5. Call `delete_environment` when the task is done
+5. Inspect and manipulate data with the `odoo_*` ORM tools — `odoo_schema` first to get the real field names, then `odoo_search_read`; add `as_user` to check what a given role can actually see or change
+6. Call `delete_environment` when the task is done
 
 ## Links
 
@@ -1886,6 +1888,12 @@ All tools are accessible via MCP clients (Cursor, Cline, Amp, etc.) and the CLI 
 | `get_environment_logs` | | Retrieve recent container logs |
 | `run_odoo_command` | ✓ | Execute an arbitrary shell command inside the Odoo container |
 | `run_odoo_shell` | ✓ | Execute Python code in the Odoo shell context with full ORM access |
+| `odoo_search_read` | ✓ | Search and read records (XML-RPC `search_read`/`search_count`) as any user, with ACLs and record rules applied |
+| `odoo_create` | ✓ | Create one or many records (XML-RPC `create`). Committed immediately |
+| `odoo_write` | ✓ | Update records (XML-RPC `write`). Committed immediately |
+| `odoo_unlink` | ✓ | ⚠️ Delete records (XML-RPC `unlink`). Committed immediately, not recoverable |
+| `odoo_call` | ✓ | Call public model methods not covered by the dedicated CRUD tools (`read_group`, `name_search`, `action_*`, …) |
+| `odoo_schema` | ✓ | Page through models, or describe one model's fields (XML-RPC `fields_get`) |
 | `read_file_in_odoo` | | Read a text file or list a directory inside the Odoo container. Supports line ranges (e.g. `"1:50"`) |
 | `write_file_in_odoo` | ✓ | Write a text file inside the container (CSV imports, scripts, configs) |
 | `search_in_odoo` | | Search for a pattern (fixed-string grep) in files inside the Odoo container |

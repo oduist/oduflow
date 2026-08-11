@@ -1,5 +1,36 @@
 # Changelog
 
+## Unreleased
+
+### Features
+
+- **Structured Odoo ORM tools** — six new MCP tools give agents the semantics of
+  standard Odoo XML-RPC `execute_kw` without writing Python: `odoo_search_read`,
+  `odoo_create`, `odoo_write`, `odoo_unlink`, `odoo_call` (public model methods
+  other than those policy-visible CRUD mutations) and `odoo_schema` (paged model
+  list + `fields_get`). They call
+  `/web/dataset/call_kw` over HTTP from inside the environment's Odoo container,
+  so they are independent of the routing mode and need no DNS, TLS or published
+  port. Every tool takes `as_user` (a login or user id, empty = the environment's
+  admin) and runs inside a real session for that user — access rights and record
+  rules apply exactly as they do in the web client, which `run_odoo_shell` cannot
+  do without hand-rolling `env(user=…)` and XML-RPC cannot do without that user's
+  password. The session is minted passwordlessly through the existing
+  "Connect as user" mechanism and cached per environment and user. JSON arguments
+  also accept Python literals, and Odoo-side failures (`AccessError`,
+  `ValidationError`, …) come back as text with the server traceback instead of a
+  masked tool error. `run_odoo_shell` remains the escape hatch for a fresh
+  registry, `sudo()`, private methods, dry runs and multi-step transactions.
+
+### Bug Fixes
+
+- **`http_request_to_odoo` now requests the path you pass it** — the base URL was
+  taken from `get_environment_info()["url"]`, which ends in `/web?debug=1`, so
+  appending the path buried it in the query string and every request silently hit
+  `/web`. Both this tool and the environment readiness probe now build on the
+  path-free `get_env_base_url`, making `wait_for_odoo_ready` check the real
+  `/web/health` instead of passing because the login page rendered.
+
 ## v1.68.1
 
 ### Bug Fixes
