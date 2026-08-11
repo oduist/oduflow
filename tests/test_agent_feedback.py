@@ -4,7 +4,6 @@ import asyncio
 
 import pytest
 from fastmcp import Client
-
 from tool_helpers import call_tool
 
 from oduflow import agent_feedback, server
@@ -29,6 +28,15 @@ class TestScrub:
     def test_absolute_path(self):
         out = agent_feedback.scrub("wrote /home/max/work/addons/sale_ext/models.py")
         assert "/home" not in out and "sale_ext" not in out
+
+    def test_relative_path(self):
+        out = agent_feedback.scrub("read addons/acme_secret/models/invoice.py")
+        assert "addons" not in out and "acme_secret" not in out
+
+    def test_slash_separated_terms_are_not_paths(self):
+        assert agent_feedback.scrub("add limit/offset arguments") == (
+            "add limit/offset arguments"
+        )
 
     def test_windows_path(self):
         assert "Users" not in agent_feedback.scrub(r"read C:\Users\max\addons")
@@ -58,6 +66,12 @@ class TestScrub:
             "environment payments broke", known_names=("payments",)
         )
         assert "payments" not in out
+
+    def test_known_names_are_case_insensitive(self):
+        out = agent_feedback.scrub(
+            "environment Payments broke", known_names=("payments",)
+        )
+        assert "payments" not in out.lower()
 
     def test_short_known_names_ignored(self):
         # A two-letter name would shred ordinary prose; leave it alone.
@@ -97,6 +111,12 @@ class TestNormalizeTools:
         assert agent_feedback.normalize_tools("`pull_and_apply()`") == [
             "pull_and_apply"
         ]
+
+    def test_filters_names_outside_the_allowed_set(self):
+        assert agent_feedback.normalize_tools(
+            "pull_and_apply, acme_customer_database",
+            {"pull_and_apply", "run_odoo_tests"},
+        ) == ["pull_and_apply"]
 
     def test_empty(self):
         assert agent_feedback.normalize_tools("") == []
@@ -213,6 +233,15 @@ class TestSubmitTool:
         assert "did not name the module" in text
         assert sent[0]["tools"] == ["pull_and_apply"]
         assert sent[0]["category"] == "friction"
+
+    def test_drops_unregistered_tool_identifiers(self, monkeypatch):
+        _, sent = self._call(
+            monkeypatch,
+            category="friction",
+            tools="pull_and_apply, acme_customer_database",
+            suggestion="the workflow took too many calls",
+        )
+        assert sent[0]["tools"] == ["pull_and_apply"]
 
     def test_rejects_unknown_category(self, monkeypatch):
         with pytest.raises(Exception, match="category must be one of"):

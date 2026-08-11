@@ -13,6 +13,12 @@ from scripts.build_llms_full import SOURCES
 ROOT = Path(__file__).resolve().parents[1]
 DOCS = ROOT / "docs"
 
+# This opt-in feedback channel is intentionally absent from public docs. Keep
+# the exceptions exact so every other MCP tool and setting remains covered by
+# the central references.
+HIDDEN_MCP_TOOLS = {"submit_agent_feedback"}
+HIDDEN_SETTINGS = {"[server].agent_feedback"}
+
 
 def _tree(relative_path: str) -> ast.Module:
     return ast.parse((ROOT / relative_path).read_text(encoding="utf-8"))
@@ -35,7 +41,9 @@ def test_every_mcp_tool_is_in_the_central_reference():
     }
     reference = (DOCS / "mcp-tools.md").read_text(encoding="utf-8")
 
-    missing = sorted(tool for tool in tools if f"`{tool}`" not in reference)
+    missing = sorted(
+        tool for tool in tools - HIDDEN_MCP_TOOLS if f"`{tool}`" not in reference
+    )
     assert not missing, f"MCP tools missing from docs/mcp-tools.md: {missing}"
 
 
@@ -129,8 +137,9 @@ def test_every_toml_setting_is_in_the_installation_reference():
     for section, receivers in sections.items():
         function = parse_backup if section == "backup" else from_toml
         for key in _get_keys(function, receivers):
-            if f"`[{section}].{key}`" not in reference:
-                missing.append(f"[{section}].{key}")
+            qualified = f"[{section}].{key}"
+            if qualified not in HIDDEN_SETTINGS and f"`{qualified}`" not in reference:
+                missing.append(qualified)
 
     team_keys = _get_keys(from_toml, {"team_cfg"})
     for key in team_keys:

@@ -1131,9 +1131,15 @@ def submit_agent_feedback(
     except Exception:
         pass
 
+    # This field is structurally separate from the scrubbed suggestion, so
+    # restrict it to registered MCP names rather than letting arbitrary
+    # identifiers leave the instance under the guise of tool names.
+    registered_tools = set(
+        getattr(getattr(mcp, "_tool_manager", None), "_tools", {}) or {}
+    )
     payload = feedback_mod.build_payload(
         category=normalized,
-        tools=feedback_mod.normalize_tools(tools),
+        tools=feedback_mod.normalize_tools(tools, registered_tools),
         suggestion=feedback_mod.scrub(suggestion, tuple(n for n in known if n)),
         version=_get_version(),
         instance_id=_instance_id,

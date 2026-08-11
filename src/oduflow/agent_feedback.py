@@ -22,6 +22,7 @@ import logging
 import os
 import re
 import threading
+from collections.abc import Collection
 from urllib.request import Request, urlopen
 
 logger = logging.getLogger("oduflow")
@@ -49,12 +50,22 @@ _PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"\b[\w.+-]+@[\w-]+\.[\w.-]+\b"),
     # URL with scheme (incl. git@host:path style already caught by e-mail rule)
     re.compile(r"\b[a-z][a-z0-9+.-]*://\S+", re.IGNORECASE),
+    # absolute POSIX path (/usr/lib/... , /home/max/work/...)
+    re.compile(r"(?<![\w.])/(?:[\w.-]+/)+[\w.-]*"),
+    # relative POSIX path. Require either an explicit ./ or ../ prefix, at
+    # least two separators, or a filename extension so ordinary phrases such
+    # as "limit/offset" keep their meaning.
+    re.compile(
+        r"(?<![\w./-])(?:"
+        r"(?:\.{1,2}/)+(?:[\w.-]+/)*[\w.-]+"
+        r"|(?:[\w.-]+/){2,}[\w.-]+"
+        r"|[\w.-]+/[\w.-]+\.[A-Za-z0-9]{1,10}"
+        r")(?![\w./-])"
+    ),
     # bare hostname with a TLD-ish tail (example.com, srv.company.io:8069)
     re.compile(r"\b(?:[\w-]+\.)+[a-z]{2,}(?::\d+)?\b", re.IGNORECASE),
     # IPv4, optionally with a port
     re.compile(r"\b\d{1,3}(?:\.\d{1,3}){3}(?::\d+)?\b"),
-    # absolute POSIX path (/usr/lib/... , /home/max/work/...)
-    re.compile(r"(?<![\w.])/(?:[\w.-]+/)+[\w.-]*"),
     # Windows path
     re.compile(r"\b[A-Za-z]:\\[\\\w.-]+"),
     # Odoo databases provisioned by Oduflow
@@ -78,7 +89,12 @@ def scrub(text: str, known_names: tuple[str, ...] = ()) -> str:
         return ""
     cleaned = text
     for name in sorted({n for n in known_names if len(n) >= 3}, key=len, reverse=True):
-        cleaned = re.sub(rf"\b{re.escape(name)}\b", _REDACTED, cleaned)
+        cleaned = re.sub(
+            rf"(?<!\w){re.escape(name)}(?!\w)",
+            _REDACTED,
+            cleaned,
+            flags=re.IGNORECASE,
+        )
     for pattern in _PATTERNS:
         cleaned = pattern.sub(_REDACTED, cleaned)
     cleaned = re.sub(r"\s+", " ", cleaned).strip()
@@ -87,15 +103,22 @@ def scrub(text: str, known_names: tuple[str, ...] = ()) -> str:
     return cleaned
 
 
-def normalize_tools(tools: str | list[str] | None) -> list[str]:
-    """Parse the reported tool names into a bounded list of bare identifiers."""
+def normalize_tools(
+    tools: str | list[str] | None,
+    allowed_names: Collection[str] | None = None,
+) -> list[str]:
+    """Parse reported tool names into a bounded, optionally closed-set list."""
     if not tools:
         return []
     raw = tools if isinstance(tools, list) else re.split(r"[,\s]+", tools)
     names: list[str] = []
     for item in raw:
         name = re.sub(r"[^\w]", "", str(item))[:MAX_TOOL_NAME_CHARS]
-        if name and name not in names:
+        if (
+            name
+            and (allowed_names is None or name in allowed_names)
+            and name not in names
+        ):
             names.append(name)
     return names[:MAX_TOOLS]
 
