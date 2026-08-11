@@ -41,6 +41,7 @@ from oduflow import (
     agent_uploads,
     artifact_tokens,
     connect_tokens,
+    feedback,
     git_ops,
     import_tokens,
     production_registry,
@@ -639,11 +640,22 @@ def _build_routes(
 
     def dashboard(request: Request) -> HTMLResponse:
         html_path = _TEMPLATE_DIR / "dashboard.html"
-        html = html_path.read_text(encoding="utf-8").replace(
-            "__PRODUCTION_TAB_HIDDEN__",
-            "" if get_settings().prod_enabled else "hidden",
+        settings = get_settings()
+        page = (
+            html_path.read_text(encoding="utf-8")
+            .replace(
+                "__PRODUCTION_TAB_HIDDEN__",
+                "" if settings.prod_enabled else "hidden",
+            )
+            .replace("__ODUFLOW_VERSION__", html.escape(feedback.oduflow_version()))
+            .replace(
+                "__ODUFLOW_DIAGNOSTICS__",
+                html.escape(
+                    feedback.format_diagnostics(feedback.diagnostics(settings))
+                ),
+            )
         )
-        response = HTMLResponse(html)
+        response = HTMLResponse(page)
         team = getattr(request.state, "team", None)
         if team is not None and team.ui_password:
             _set_session_cookie(response, team, request)
@@ -2681,6 +2693,33 @@ def _build_routes(
                 {"ok": False, "error": "Internal server error."}, status_code=500
             )
 
+    async def api_feedback_link(request: Request) -> JSONResponse:
+        """Build the prefilled GitHub issue URL the dashboard opens in a tab.
+
+        Built server-side so the issue forms, the diagnostics block, and the URL
+        length budget have one owner (oduflow.feedback) shared with the
+        report_issue MCP tool.
+        """
+        try:
+            body = await request.json()
+            details = (body.get("details") or "").strip()
+            if not details:
+                return JSONResponse(
+                    {"ok": False, "error": "Details are required."}, status_code=400
+                )
+            url = feedback.build_issue_url(
+                kind=(body.get("kind") or feedback.DEFAULT_KIND).strip(),
+                title=(body.get("title") or "").strip(),
+                details=details,
+                settings=get_settings(),
+            )
+            return JSONResponse({"ok": True, "url": url})
+        except Exception:
+            logger.exception("Unexpected error in api_feedback_link")
+            return JSONResponse(
+                {"ok": False, "error": "Internal server error."}, status_code=500
+            )
+
     def api_extra_repos(request: Request) -> JSONResponse:
         from oduflow.extra_addons import list_extra_repos
 
@@ -4408,6 +4447,7 @@ def _build_routes(
         Route("/static/{filename}", static_file, methods=["GET"]),
         Route("/api/license", api_license, methods=["GET"]),
         Route("/api/license/activate", api_license_activate, methods=["POST"]),
+        Route("/api/feedback/link", api_feedback_link, methods=["POST"]),
         Route("/api/templates", api_templates, methods=["GET"]),
         Route("/import-odoo.sh", import_odoo_script, methods=["GET"]),
         Route("/api/templates/import-token", api_import_token, methods=["POST"]),

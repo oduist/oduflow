@@ -10,6 +10,12 @@ enabled—coding agents and productions. Environment cards also expose logs,
 Odoo/SQL terminals, Connect As, notes, protection, scoped MCP access, and
 save-as-template actions.
 
+The header's **Feedback** action opens a prefilled issue form on
+`github.com/oduist/oduflow`. Oduflow holds no GitHub credentials and files
+nothing itself: it builds the link with the description and a short
+version/platform/transport block, then the user reviews and submits it from
+their own GitHub account.
+
 ## Authentication and responses
 
 Dashboard API routes use the authenticated UI session (user `admin`, password
@@ -132,6 +138,7 @@ workflow.
 | `GET` | `/healthz` | Public health report; returns `200` when healthy, `503` when degraded |
 | `GET` | `/api/license` | License information |
 | `POST` | `/api/license/activate` | Activate body `key` |
+| `POST` | `/api/feedback/link` | Build a prefilled `github.com/oduist/oduflow` issue URL. Body: required `details`; optional `kind` (`bug`, `feature`, or `feedback`) and `title` |
 | `GET` | `/api/agent-guides` | List available agent guides |
 | `GET` | `/api/agent-guides/{filename}` | Read a guide |
 
