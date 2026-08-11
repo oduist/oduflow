@@ -248,9 +248,7 @@ class TestDeployInBackground:
         webhooks._pending.add(f"{team.team_id}/{name}")
         webhooks._deploy_in_background(settings, team, locks, name)
 
-    def test_deploys_under_the_production_lock_and_releases_it(
-        self, settings, team
-    ):
+    def test_deploys_under_the_production_lock_and_releases_it(self, settings, team):
         locks = LockManager()
         from oduflow.server import prod_lock_key
 
@@ -265,9 +263,7 @@ class TestDeployInBackground:
         assert locks.acquire_env_blocking(key, 0.1) is True
         locks.release_env(key)
 
-    def test_the_coalescing_slot_is_freed_before_the_deploy_runs(
-        self, settings, team
-    ):
+    def test_the_coalescing_slot_is_freed_before_the_deploy_runs(self, settings, team):
         # A push arriving while the deploy is already running must be able to
         # queue the next one, so the slot is dropped once the lock is held.
         locks = LockManager()

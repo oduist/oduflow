@@ -303,7 +303,10 @@ class TestConcurrencyAndFailures:
         ops.list.return_value = [_env()]
         activity._save(
             activity.activity_path(team),
-            {"main": {"last_activity": _iso(10)}, "deleted": {"last_activity": _iso(10)}},
+            {
+                "main": {"last_activity": _iso(10)},
+                "deleted": {"last_activity": _iso(10)},
+            },
         )
 
         reaper.sweep(settings, LockManager())
@@ -346,8 +349,9 @@ class TestStartReaper:
         import logging
 
         settings = _settings(settings.base_data_dir, team, 48, 72)
-        with caplog.at_level(logging.WARNING, logger="oduflow"), patch(
-            "threading.Thread"
+        with (
+            caplog.at_level(logging.WARNING, logger="oduflow"),
+            patch("threading.Thread"),
         ):
             reaper.start_reaper(lambda: settings, LockManager())
 
@@ -357,8 +361,9 @@ class TestStartReaper:
         import logging
 
         settings = _settings(settings.base_data_dir, team, 48, 0)
-        with caplog.at_level(logging.WARNING, logger="oduflow"), patch(
-            "threading.Thread"
+        with (
+            caplog.at_level(logging.WARNING, logger="oduflow"),
+            patch("threading.Thread"),
         ):
             reaper.start_reaper(lambda: settings, LockManager())
 
@@ -369,8 +374,9 @@ class TestStartReaper:
         import logging
 
         settings = _settings(settings.base_data_dir, team, 48, 1)
-        with caplog.at_level(logging.WARNING, logger="oduflow"), patch(
-            "threading.Thread"
+        with (
+            caplog.at_level(logging.WARNING, logger="oduflow"),
+            patch("threading.Thread"),
         ):
             reaper.start_reaper(lambda: settings, LockManager())
 
@@ -391,9 +397,8 @@ class TestThresholdIsStrict:
         return 1_000_000.0
 
     def _at(self, offset: float, frozen: float) -> str:
-        return (
-            datetime.fromtimestamp(frozen - offset, tz=timezone.utc)
-            .isoformat(timespec="seconds")
+        return datetime.fromtimestamp(frozen - offset, tz=timezone.utc).isoformat(
+            timespec="seconds"
         )
 
     def test_idle_exactly_the_stop_threshold_survives(

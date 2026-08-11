@@ -109,9 +109,7 @@ class TestVerifyLicenseText:
         return lambda payload: self._sign(private, payload)
 
     def test_valid_license_is_accepted(self, signer):
-        key = signer(
-            {"type": "business", "name": "Acme", "email": "ops@acme.example"}
-        )
+        key = signer({"type": "business", "name": "Acme", "email": "ops@acme.example"})
 
         info = licensing._verify_license_text(key)
 

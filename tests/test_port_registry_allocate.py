@@ -82,9 +82,7 @@ class TestReuse:
         )
 
         out_of_range_but_free = _seed(tmp_path, {"other": 60_000})
-        assert (
-            allocate_port(out_of_range_but_free, "other", 50_000, 50_100) != 60_000
-        )
+        assert allocate_port(out_of_range_but_free, "other", 50_000, 50_100) != 60_000
 
     def test_assignment_below_the_range_is_reallocated(self, tmp_path):
         path = _seed(tmp_path, {"main": 49_999})

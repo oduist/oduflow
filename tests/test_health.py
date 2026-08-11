@@ -236,7 +236,8 @@ class TestCollectHealth:
 class TestDiskCheck:
     def _disk(self, settings, total, used, free):
         with patch(
-            "shutil.disk_usage", return_value=MagicMock(total=total, used=used, free=free)
+            "shutil.disk_usage",
+            return_value=MagicMock(total=total, used=used, free=free),
         ):
             return health._check_disk(settings)
 

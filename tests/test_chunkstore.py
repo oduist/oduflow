@@ -572,7 +572,9 @@ class TestChunkerParameters:
         # still respect both bounds and lose no bytes.
         chunks = _chunk_all(Chunker(b"seed", **SMALL), b"\x00" * 100_000)
 
-        assert all(SMALL["min_size"] <= len(c) <= SMALL["max_size"] for c in chunks[:-1])
+        assert all(
+            SMALL["min_size"] <= len(c) <= SMALL["max_size"] for c in chunks[:-1]
+        )
         assert sum(len(c) for c in chunks) == 100_000
         assert b"".join(chunks) == b"\x00" * 100_000
 
@@ -793,9 +795,7 @@ class TestRetentionBoundaries:
         # than thinning it to one per day.
         revs = [self._rev(1, 400), self._rev(2, 401), self._rev(3, 0)]
 
-        kept = select_revisions_to_keep(
-            revs, parse_keep(["1:7", "0:365"]), self._NOW
-        )
+        kept = select_revisions_to_keep(revs, parse_keep(["1:7", "0:365"]), self._NOW)
 
         assert kept == {3}
 
@@ -894,8 +894,15 @@ class TestRestoreDetails:
         self, small_config_storage, tmp_path
     ):
         # A tampered revision must not be able to write outside target_dir.
+        import importlib
+
         from oduflow.chunkstore.backup import load_revision
         from oduflow.chunkstore.format import ensure_config as _ensure
+
+        # The package re-exports the restore() function, so the name
+        # oduflow.chunkstore.restore resolves to that function, not to the
+        # module — patch() by dotted string cannot reach the module's globals.
+        restore_module = importlib.import_module("oduflow.chunkstore.restore")
 
         src = tmp_path / "src"
         _make_tree(str(src), {"a.txt": b"payload"})
@@ -908,8 +915,9 @@ class TestRestoreDetails:
         files[0]["path"] = "../escaped.txt"
 
         with (
-            patch(
-                "oduflow.chunkstore.restore.load_revision",
+            patch.object(
+                restore_module,
+                "load_revision",
                 return_value=(_meta, files, _hashes, _lengths),
             ),
             pytest.raises(ValueError, match="escapes target dir"),
@@ -1040,9 +1048,7 @@ class TestBackupMetadata:
 
         assert result.unchanged_files == 0
 
-    def test_revision_numbers_increment_from_one(
-        self, small_config_storage, tmp_path
-    ):
+    def test_revision_numbers_increment_from_one(self, small_config_storage, tmp_path):
         src = tmp_path / "src"
         _make_tree(str(src), {"a.txt": b"x"})
 
@@ -1068,8 +1074,7 @@ class TestPruneCounters:
         key = f"snapshots/{snapshot_id}/{result.revision}"
         meta = _json.loads(storage.get(key).decode())
         meta["created_at"] = (
-            datetime.datetime.now(datetime.timezone.utc)
-            - datetime.timedelta(days=days)
+            datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=days)
         ).isoformat()
         storage.put(key, _json.dumps(meta).encode())
         return result

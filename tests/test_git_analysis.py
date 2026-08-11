@@ -973,7 +973,7 @@ class TestInstallSupersedesUpgrade:
             "{'name': 'Sale', 'version': '17.0.1.0.0'}"
         )
         (module / "security" / "groups.xml").write_text("<odoo/>")
-        (module / "i18n" / "ru.po").write_text("msgid \"\"\n")
+        (module / "i18n" / "ru.po").write_text('msgid ""\n')
         return module
 
     def test_security_xml_in_a_new_module_stays_install_only(self, tmp_path):
@@ -1121,7 +1121,10 @@ class TestMergeRecommendationPriority:
         merged = merge_recommendations(
             [
                 {"action": "refresh", "details": {"restart_required": []}},
-                {"action": "refresh", "details": {"restart_required": [".oduflow/odoo.conf"]}},
+                {
+                    "action": "refresh",
+                    "details": {"restart_required": [".oduflow/odoo.conf"]},
+                },
             ]
         )
         assert merged["details"]["restart_required"] is True

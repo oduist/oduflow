@@ -627,7 +627,9 @@ class TestDirectoryResolution:
     def test_data_dir_uses_srv_when_parent_is_writable(self, monkeypatch):
         from oduflow import settings as settings_mod
 
-        monkeypatch.setattr(settings_mod.os, "access", lambda path, mode: path == "/srv")
+        monkeypatch.setattr(
+            settings_mod.os, "access", lambda path, mode: path == "/srv"
+        )
 
         assert settings_mod._resolve_data_dir("") == "/srv/oduflow"
 
