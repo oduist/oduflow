@@ -24,6 +24,7 @@ SOURCES = (
     "agent.md",
     "services.md",
     "extra-addons.md",
+    "stacks.md",
     "web-api.md",
     "mcp-tools.md",
     "cli.md",

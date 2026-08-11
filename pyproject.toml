@@ -12,6 +12,9 @@ keywords = ["odoo", "mcp", "docker", "development", "ci"]
 dependencies = [
     "fastmcp==2.14.3",
     "docker",
+    # Declarative Oduflow Stack manifests: typed validation + YAML input.
+    "pydantic>=2.10,<3",
+    "PyYAML>=6.0,<7",
 
     "packaging",
     "cryptography",

@@ -50,6 +50,7 @@ from oduflow.errors import FlowError, NotFoundError, PrerequisiteNotMetError
 from oduflow.locking import LockManager
 from oduflow.output_cache import CachedOutput, OutputCache
 from oduflow.settings import Settings, TeamSettings, find_toml
+from oduflow.stack_loader import StackValidationError
 
 logger = logging.getLogger("oduflow")
 
@@ -5495,6 +5496,17 @@ def _run_cli() -> None:
         default="stdio",
         help="MCP transport (default: stdio)",
     )
+    parser.add_argument(
+        "--stack",
+        dest="stack_manifest",
+        default="",
+        help="reconcile this declarative Stack manifest before starting the server",
+    )
+    parser.add_argument(
+        "--stack-team",
+        default="1",
+        help="team for --stack startup reconciliation (default: 1)",
+    )
     sub = parser.add_subparsers(dest="command", title="commands", metavar="")
 
     # --- System commands ---
@@ -5682,6 +5694,21 @@ def _run_cli() -> None:
         "call_args", nargs="*", default=[], help="Tool name and arguments"
     )
 
+    # --- Declarative stacks ---
+    p_stack = sub.add_parser(
+        "stack", help="Validate, plan, apply, or inspect a declarative Stack"
+    )
+    stack_sub = p_stack.add_subparsers(
+        dest="stack_command", title="stack commands", metavar=""
+    )
+    for stack_command in ("validate", "plan", "apply", "status"):
+        p_stack_command = stack_sub.add_parser(stack_command)
+        p_stack_command.add_argument("manifest", help="Path to oduflow.yaml")
+        if stack_command != "validate":
+            p_stack_command.add_argument(
+                "--team", default="1", help="Team ID (default: 1)"
+            )
+
     # --- Systemd ---
     sub.add_parser(
         "systemd-install", help="Install and enable a systemd service for Oduflow"
@@ -5701,6 +5728,13 @@ def _run_cli() -> None:
 
     if args.command == "call":
         _run_call(args.call_args)
+        return
+
+    if args.command == "stack" and args.stack_command == "validate":
+        from oduflow.stack_loader import load_stack
+
+        manifest = load_stack(args.manifest)
+        print(f"Stack '{manifest.metadata.name}' is valid ({manifest.api_version}).")
         return
 
     if args.command == "systemd-install":
@@ -5792,6 +5826,20 @@ def _run_cli() -> None:
             migrations.run_pending(_settings)
             _ensure_initialized(_settings)
             quotas.apply_all(_settings)
+            if args.stack_manifest:
+                from oduflow.stack_loader import load_stack
+                from oduflow.stack_ops import apply_stack, format_plan
+
+                stack_team = _settings.get_team(args.stack_team)
+                stack_manifest = load_stack(args.stack_manifest)
+                applied = apply_stack(
+                    _settings,
+                    stack_team,
+                    stack_manifest,
+                    args.stack_manifest,
+                    lock_manager=_locks,
+                )
+                logger.info("Startup stack reconciliation:\n%s", format_plan(applied))
         # Record the active transport for informational purposes.
         # local_path is gated by allow_local_path in Settings.
         settings_module.TRANSPORT = args.transport
@@ -5916,6 +5964,39 @@ def _run_cli() -> None:
     if args.command == "cleanup":
         _run_cleanup(_settings, _cli_team(), dry_run=not args.force)
         return
+
+    if args.command == "stack":
+        if args.stack_command is None:
+            p_stack.print_help()
+            return
+        from oduflow.stack_loader import load_stack
+        from oduflow.stack_ops import apply_stack, build_plan, format_plan, stack_status
+
+        manifest = load_stack(args.manifest)
+        team = _cli_team()
+        if args.stack_command == "plan":
+            print(format_plan(build_plan(_settings, team, manifest, args.manifest)))
+            return
+        if args.stack_command == "apply":
+            migrations.run_pending(_settings)
+            _ensure_initialized(_settings)
+            quotas.apply_all(_settings)
+            stack_result = apply_stack(
+                _settings,
+                team,
+                manifest,
+                args.manifest,
+                lock_manager=_locks,
+            )
+            print(format_plan(stack_result))
+            return
+        if args.stack_command == "status":
+            print(
+                json.dumps(
+                    stack_status(_settings, team, manifest, args.manifest), indent=2
+                )
+            )
+            return
 
 
 def _warn_local_path_security(settings: Settings) -> None:
@@ -6185,7 +6266,10 @@ def main() -> None:
     boundary we convert it to an exit code."""
     try:
         _run_cli()
-    except PrerequisiteNotMetError as exc:
+    except FlowError as exc:
+        print(f"\n❌ {exc}", file=sys.stderr)
+        sys.exit(1)
+    except StackValidationError as exc:
         print(f"\n❌ {exc}", file=sys.stderr)
         sys.exit(1)
 

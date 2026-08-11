@@ -1020,6 +1020,7 @@ def create_environment(
     auto_install_modules: list[str] | None = None,
     env_vars: dict[str, str] | None = None,
     local_path: str = "",
+    stack_labels: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     env_name = env_name or branch
     from oduflow.naming import PROD_ENV_PREFIX
@@ -1148,6 +1149,8 @@ def create_environment(
         labels["oduflow.auto_install_modules"] = ",".join(auto_install_modules)
     if env_vars:
         labels["oduflow.env_vars"] = json.dumps(env_vars)
+    if stack_labels:
+        labels.update(stack_labels)
 
     labels.update(build_env_traefik_labels(settings, team, env_name))
 
@@ -2242,6 +2245,9 @@ def list_environments(settings: Settings, team: TeamSettings) -> list[dict[str, 
                 "created_at": container.labels.get("oduflow.created_at", "")
                 or container.attrs.get("Created", ""),
                 "note": _get_note_text(env_name, team.workspaces_dir),
+                "stack": container.labels.get("oduflow.stack", ""),
+                "stack_resource": container.labels.get("oduflow.stack-resource", ""),
+                "stack_spec_hash": container.labels.get("oduflow.stack-spec-hash", ""),
             }
 
         try:
@@ -2529,6 +2535,9 @@ def get_environment_info(
             "oduflow.created_at", ""
         ) or odoo_container.attrs.get("Created", "")
         result["note"] = _get_note_text(env_name, team.workspaces_dir)
+        result["stack"] = labels.get("oduflow.stack", "")
+        result["stack_resource"] = labels.get("oduflow.stack-resource", "")
+        result["stack_spec_hash"] = labels.get("oduflow.stack-spec-hash", "")
 
         if settings.routing_mode == "traefik":
             result["url"] = (
@@ -3126,6 +3135,7 @@ def update_environment(
     extra_revision_overrides: dict[str, str] | None = None,
     pull_image: bool = True,
     install_dependencies: bool = True,
+    label_overrides: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Re-create an environment's container, preserving DB, repo and filestore.
 
@@ -3156,6 +3166,8 @@ def update_environment(
 
     # Labels
     labels = dict(container.labels)
+    if label_overrides:
+        labels.update(label_overrides)
 
     # Image (current → target). A digest-pinned recreation leaves Config.Image
     # as sha256:..., so prefer the persisted tag before falling back to it.

@@ -1,5 +1,7 @@
 fastmcp==2.14.3
 docker
+pydantic>=2.10,<3
+PyYAML>=6.0,<7
 python-dotenv
 setuptools
 fastapi
