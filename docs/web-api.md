@@ -150,7 +150,7 @@ environments.
 
 | Method | Endpoint | Description |
 |---|---|---|
-| `GET` | `/api/agent` | Agent enablement and effective default (`claude` or `codex`) |
+| `GET` | `/api/agent` | Agent enablement and effective default (`claude`, `codex`, or `opencode`) |
 | `GET` | `/api/environments/{branch}/agent-acp/info?type=` | ACP working directory, selected/recent sessions, and attachment limits |
 | `POST` | `/api/environments/{branch}/agent-acp/session` | Select, title, or clear the current session for body `type` |
 | `POST` | `/api/environments/{branch}/agent-acp/attachments?name=` | Stream an attachment into the agent checkout |

@@ -4,7 +4,13 @@ import stat
 
 from oduflow import agent_sessions
 from oduflow.settings import Settings, TeamSettings
-from oduflow.web_ui import _acp_adapter_cmd, _codex_cli_cmd, _wire_codex_acp_mcp
+from oduflow.web_ui import (
+    _acp_adapter_cmd,
+    _codex_cli_cmd,
+    _opencode_cli_cmd,
+    _opencode_config,
+    _wire_client_acp_mcp,
+)
 
 
 def _team(tmp_path) -> TeamSettings:
@@ -19,9 +25,11 @@ def test_set_get_roundtrip_per_branch_and_agent(tmp_path):
     t = _team(tmp_path)
     agent_sessions.set_session(t, "feature/x", "claude", "sid-1")
     agent_sessions.set_session(t, "feature/x", "codex", "sid-2")
+    agent_sessions.set_session(t, "feature/x", "opencode", "sid-4")
     agent_sessions.set_session(t, "main", "claude", "sid-3")
     assert agent_sessions.get_session(t, "feature/x", "claude") == "sid-1"
     assert agent_sessions.get_session(t, "feature/x", "codex") == "sid-2"
+    assert agent_sessions.get_session(t, "feature/x", "opencode") == "sid-4"
     assert agent_sessions.get_session(t, "main", "claude") == "sid-3"
 
 
@@ -166,6 +174,7 @@ def test_file_permissions_are_restrictive(tmp_path):
 def test_acp_adapter_cmd():
     assert _acp_adapter_cmd("claude") == ["claude-agent-acp"]
     assert _acp_adapter_cmd("codex") == ["codex-acp"]
+    assert _acp_adapter_cmd("opencode") == ["opencode", "acp"]
     # Unknown agent falls back to Claude (the configured default agent).
     assert _acp_adapter_cmd("something-else") == ["claude-agent-acp"]
 
@@ -183,7 +192,56 @@ def test_codex_cli_cmd_uses_docker_as_the_sandbox():
     ]
 
 
-def test_wire_codex_acp_mcp_adds_scoped_server_and_preserves_others():
+def test_opencode_cli_and_session_config():
+    assert _opencode_cli_cmd("anthropic/test-model") == [
+        "opencode",
+        "--auto",
+        "--model",
+        "anthropic/test-model",
+    ]
+    config = json.loads(
+        _opencode_config(
+            "http://scoped/mcp/env",
+            include_oduflow=True,
+            model="anthropic/test-model",
+        )
+    )
+    assert config["autoupdate"] is False
+    assert config["permission"] == "allow"
+    assert config["model"] == "anthropic/test-model"
+    assert config["mcp"]["agent_browser"]["command"] == [
+        "agent-browser",
+        "mcp",
+        "--tools",
+        "all",
+    ]
+    assert config["mcp"]["oduflow"] == {
+        "type": "remote",
+        "url": "http://scoped/mcp/env",
+        "enabled": True,
+        "oauth": False,
+        "headers": {
+            "Authorization": "Bearer {env:ODUFLOW_MCP_TOKEN}",
+        },
+    }
+    assert "scoped-token" not in json.dumps(config)
+
+
+def test_opencode_acp_config_omits_mcp_servers():
+    config = json.loads(
+        _opencode_config(
+            include_browser=False,
+            model="openai/test-model",
+        )
+    )
+    assert config == {
+        "autoupdate": False,
+        "permission": "allow",
+        "model": "openai/test-model",
+    }
+
+
+def test_wire_client_acp_mcp_adds_scoped_server_and_preserves_others():
     frame = json.dumps(
         {
             "jsonrpc": "2.0",
@@ -205,7 +263,7 @@ def test_wire_codex_acp_mcp_adds_scoped_server_and_preserves_others():
         }
     )
     wired = json.loads(
-        _wire_codex_acp_mcp(
+        _wire_client_acp_mcp(
             frame, "http://scoped/mcp/env", "scoped-token", "environment-x"
         )
     )
@@ -232,7 +290,7 @@ def test_wire_codex_acp_mcp_adds_scoped_server_and_preserves_others():
     ]
 
 
-def test_wire_codex_acp_mcp_handles_load_but_not_other_frames():
+def test_wire_client_acp_mcp_handles_load_but_not_other_frames():
     load = json.dumps(
         {
             "jsonrpc": "2.0",
@@ -242,13 +300,13 @@ def test_wire_codex_acp_mcp_handles_load_but_not_other_frames():
         }
     )
     assert (
-        json.loads(_wire_codex_acp_mcp(load, "http://scoped", "token", "env"))[
+        json.loads(_wire_client_acp_mcp(load, "http://scoped", "token", "env"))[
             "params"
         ]["mcpServers"][0]["name"]
         == "agent_browser"
     )
     load_servers = json.loads(
-        _wire_codex_acp_mcp(load, "http://scoped", "token", "env")
+        _wire_client_acp_mcp(load, "http://scoped", "token", "env")
     )["params"]["mcpServers"]
     assert [server["name"] for server in load_servers] == [
         "agent_browser",
@@ -256,13 +314,13 @@ def test_wire_codex_acp_mcp_handles_load_but_not_other_frames():
     ]
 
     prompt = '{"jsonrpc":"2.0","method":"session/prompt","params":{}}'
-    assert _wire_codex_acp_mcp(prompt, "http://scoped", "token", "env") == prompt
-    no_token = json.loads(_wire_codex_acp_mcp(load, "http://scoped", "", "env"))
+    assert _wire_client_acp_mcp(prompt, "http://scoped", "token", "env") == prompt
+    no_token = json.loads(_wire_client_acp_mcp(load, "http://scoped", "", "env"))
     assert [server["name"] for server in no_token["params"]["mcpServers"]] == [
         "agent_browser"
     ]
     assert (
-        _wire_codex_acp_mcp("not-json", "http://scoped", "token", "env") == "not-json"
+        _wire_client_acp_mcp("not-json", "http://scoped", "token", "env") == "not-json"
     )
 
 

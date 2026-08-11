@@ -11,7 +11,7 @@
 (function () {
   'use strict';
 
-  var AGENT_LABELS = { claude: 'Claude', codex: 'Codex' };
+  var AGENT_LABELS = { claude: 'Claude', codex: 'Codex', opencode: 'OpenCode' };
   var STATUS = {
     connecting: { label: 'Connecting…', cls: 'is-dim' },
     ready: { label: 'Ready', cls: 'is-green' },
@@ -677,8 +677,49 @@
     }
     sel.hidden = false;
     sel.onchange = function () {
-      if (inst.sessionId) inst.client.setModel(inst.sessionId, sel.value).catch(function () {});
+      if (inst.sessionId) {
+        inst.client.setModel(inst.sessionId, sel.value)
+          .then(function (res) { applySessionModels(inst, res); })
+          .catch(function () {});
+      }
     };
+  }
+
+  function flattenConfigOptions(options, result) {
+    if (!Array.isArray(options)) return result;
+    for (var i = 0; i < options.length; i++) {
+      var option = options[i];
+      if (!option) continue;
+      if (Array.isArray(option.options)) {
+        flattenConfigOptions(option.options, result);
+      } else if (option.value != null) {
+        result.push({ modelId: String(option.value), name: option.name || String(option.value) });
+      }
+    }
+    return result;
+  }
+
+  function sessionModels(res) {
+    if (!res) return null;
+    if (res.models) return res.models;
+    var configOptions = res.configOptions;
+    if (!Array.isArray(configOptions)) return null;
+    for (var i = 0; i < configOptions.length; i++) {
+      var option = configOptions[i];
+      if (!option || (option.id !== 'model' && option.category !== 'model')) continue;
+      var available = flattenConfigOptions(option.options || [], []);
+      if (!available.length) return null;
+      return {
+        availableModels: available,
+        currentModelId: String(option.currentValue || '')
+      };
+    }
+    return null;
+  }
+
+  function applySessionModels(inst, res) {
+    var models = sessionModels(res);
+    if (models) applyModels(inst, models);
   }
 
   function applyPromptCapabilities(inst, initializeResult) {
@@ -1202,7 +1243,7 @@
       inst.sessionId = res.sessionId;
       inst.titled = false;
       resetTranscript(inst);
-      applyModels(inst, res.models);
+      applySessionModels(inst, res);
       postSession(inst.branch, inst.type, res.sessionId)
         .then(function (saved) { refreshHistory(inst, saved); });
       setStatus(inst, 'ready');
@@ -1227,7 +1268,7 @@
     inst.client.loadSession(sid, inst.cwd).then(function (res) {
       finalizeTurn(inst);
       inst.sessionId = sid;
-      if (res && res.models) applyModels(inst, res.models);
+      applySessionModels(inst, res);
       addSystemLine(inst, 'Switched to a previous conversation.');
       setStatus(inst, 'ready');
       return postSession(inst.branch, inst.type, sid)
@@ -1238,7 +1279,7 @@
       return inst.client.loadSession(previousId, inst.cwd).then(function (res) {
         finalizeTurn(inst);
         inst.sessionId = previousId;
-        if (res && res.models) applyModels(inst, res.models);
+        applySessionModels(inst, res);
         addSystemLine(inst, 'Could not open that conversation. Restored the current conversation.');
         setStatus(inst, 'ready');
         return postSession(inst.branch, inst.type, previousId)
@@ -1257,7 +1298,7 @@
     return inst.client.newSession(inst.cwd).then(function (res) {
       inst.sessionId = res.sessionId;
       inst.titled = false;
-      applyModels(inst, res.models);
+      applySessionModels(inst, res);
       addSystemLine(inst, 'Could not restore the conversation. Started a new conversation.');
       setStatus(inst, 'ready');
       return postSession(inst.branch, inst.type, res.sessionId)
@@ -1295,7 +1336,7 @@
           return inst.client.loadSession(info.session_id, inst.cwd).then(function (res) {
             finalizeTurn(inst);
             inst.sessionId = info.session_id;
-            if (res && res.models) applyModels(inst, res.models);
+            applySessionModels(inst, res);
             renderHistoryMenu(inst);
             addSystemLine(inst, 'Resumed your previous conversation.');
           }).catch(function () {
@@ -1304,7 +1345,7 @@
             return inst.client.newSession(inst.cwd).then(function (res) {
               inst.sessionId = res.sessionId;
               inst.titled = false;
-              applyModels(inst, res.models);
+              applySessionModels(inst, res);
               return postSession(inst.branch, inst.type, res.sessionId)
                 .then(function (saved) { refreshHistory(inst, saved); });
             });
@@ -1313,7 +1354,7 @@
         return inst.client.newSession(inst.cwd).then(function (res) {
           inst.sessionId = res.sessionId;
           inst.titled = false;
-          applyModels(inst, res.models);
+          applySessionModels(inst, res);
           return postSession(inst.branch, inst.type, res.sessionId)
             .then(function (saved) { refreshHistory(inst, saved); });
         });
@@ -1330,7 +1371,7 @@
   // -- window manager ---------------------------------------------------------
   function open(branch, type) {
     type = (type || window.ODU_AGENT_DEFAULT || 'claude').toLowerCase();
-    if (type !== 'claude' && type !== 'codex') type = 'claude';
+    if (type !== 'claude' && type !== 'codex' && type !== 'opencode') type = 'claude';
     var key = keyOf(branch, type);
     if (instances[key]) { activate(instances[key]); return; }
     var inst = {

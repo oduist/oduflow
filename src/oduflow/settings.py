@@ -17,7 +17,7 @@ logger = logging.getLogger("oduflow")
 
 TRACE: bool = False
 
-DEFAULT_AGENT_IMAGE = "oduist/oduflow-coder:0.2.3"
+DEFAULT_AGENT_IMAGE = "oduist/oduflow-coder:0.3.0"
 _LEGACY_AGENT_IMAGE = "oduist/oduflow-coder:latest"
 
 # Active MCP transport for the running server ("stdio" | "http").
@@ -224,14 +224,15 @@ class Settings:
 
     # Coding agent — deployment-wide bits only; enabling the agent and its
     # credentials are per team (TeamSettings.agent_*). When enabled for a team,
-    # a single agent container (Claude Code + OpenAI Codex) serves all of its
-    # environments: one git checkout per environment on a persistent volume,
+    # a single agent container (Claude Code + OpenAI Codex + OpenCode) serves all
+    # of its environments: one git checkout per environment on a persistent volume,
     # driving environments only through the Oduflow MCP server. Container and
     # volume names are derived per team in naming.py.
     # See specs/0029-agent-console-and-chat.md.
     agent_image: str = DEFAULT_AGENT_IMAGE
     agent_claude_model: str = ""  # optional; empty = CLI default
     agent_codex_model: str = ""  # optional; empty = CLI default
+    agent_opencode_model: str = ""  # optional provider/model; empty = CLI default
 
     # Lifecycle: automatic stop of idle environments and cleanup of stopped
     # ones (see oduflow.reaper). 0 disables either behavior. Protected
@@ -597,6 +598,7 @@ class Settings:
             agent_image=_normalize_agent_image(agent.get("image")),
             agent_claude_model=str(agent.get("claude_model", "")).strip(),
             agent_codex_model=str(agent.get("codex_model", "")).strip(),
+            agent_opencode_model=str(agent.get("opencode_model", "")).strip(),
             auto_stop_hours=int(lifecycle.get("auto_stop_hours", 48)),
             auto_delete_hours=int(lifecycle.get("auto_delete_hours", 0)),
             oauth_base_url=str(oauth.get("oauth_base_url", "")).strip(),

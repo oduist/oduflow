@@ -179,12 +179,14 @@ auto_stop_hours = 48        # auto-stop environments idle for N hours (no MCP/da
 auto_delete_hours = 0       # auto-delete environments stopped for N hours; 0 disables (opt-in; DESTRUCTIVE, protected envs exempt)
 
 # ── Coding agent (optional) ───────────────────────────
-# One agent container per team (Claude Code + OpenAI Codex), driven from the
-# dashboard (Agent Chat / Agent CLI). Opt-in per team via agent_enabled below.
+# One agent container per team (Claude Code + OpenAI Codex + OpenCode), driven
+# from the dashboard (Agent Chat / Agent CLI). Opt-in per team via
+# agent_enabled below.
 # [agent]
-# image = "oduist/oduflow-coder:0.2.3"
+# image = "oduist/oduflow-coder:0.3.0"
 # claude_model = ""         # optional Claude model override; empty = CLI default
 # codex_model = ""          # optional Codex model override; empty = CLI default
+# opencode_model = ""       # optional provider/model override; empty = OpenCode default
 
 # ── Production hosting (optional) ─────────────────────
 # [production]
@@ -215,13 +217,14 @@ auth_token = ""                      # auto-filled in fresh configs; HTTP MCP Be
 ui_password = ""                     # auto-filled in fresh configs; Web UI password for admin
 port_range = [50000, 50100]          # port range for Odoo containers [start, end)
 # agent_enabled = false              # enable the per-team coding agent (Agent Chat / Agent CLI)
-# agent_default = "claude"           # "claude" | "codex" — default agent for consoles/chats
+# agent_default = "claude"           # "claude" | "codex" | "opencode" — default agent
 # db_quota_gb = 50                   # combined PostgreSQL database cap; 0 disables
 # disk_quota_gb = 0                  # XFS project quota for team files + databases; 0 disables
 # [team.1.agent_env]                 # provider credentials injected into the agent container
 # CLAUDE_CODE_OAUTH_TOKEN = ""
 # ANTHROPIC_API_KEY = ""
 # OPENAI_API_KEY = ""
+# OPENCODE_API_KEY = ""              # OpenCode Zen; arbitrary provider vars also work
 ```
 
 ### Server settings
@@ -273,9 +276,10 @@ The global `[agent]` section holds deployment-wide settings for the per-team cod
 
 | Key | Default | Description |
 |---|---|---|
-| `[agent].image` | `oduist/oduflow-coder:0.2.3` | Immutable image for the per-team coding-agent container (Claude Code + OpenAI Codex); the default is coupled to the Oduflow release |
+| `[agent].image` | `oduist/oduflow-coder:0.3.0` | Immutable image for the per-team coding-agent container (Claude Code + OpenAI Codex + OpenCode); the default is coupled to the Oduflow release |
 | `[agent].claude_model` | *(empty)* | Optional Claude model override for the agent; empty = CLI default |
 | `[agent].codex_model` | *(empty)* | Optional Codex model override for the agent; empty = CLI default |
+| `[agent].opencode_model` | *(empty)* | Optional OpenCode model override in `provider/model` format; empty = OpenCode default |
 
 ### Production settings
 
@@ -319,10 +323,10 @@ Each `[team.*]` section defines an isolated team with its own workspaces, templa
 | `ui_password` | *(generated in fresh config)* | Password for Web UI login (user: `admin`). Separate from MCP auth token. Empty disables UI auth only when explicitly allowed with `[server].allow_insecure_http = true`; otherwise HTTP startup refuses it |
 | `port_range` | `[50000, 50100]` | Port range for Odoo containers `[start, end)` — supports up to 100 concurrent environments |
 | `agent_enabled` | `false` | Enable the per-team coding agent (dashboard Agent Chat / Agent CLI). Off by default |
-| `agent_default` | `claude` | Which agent consoles/chats open by default: `claude` or `codex` |
+| `agent_default` | `claude` | Which agent consoles/chats open by default: `claude`, `codex`, or `opencode` |
 | `db_quota_gb` | `50` | Combined size cap for the team's environment and template PostgreSQL databases. `0` disables the check |
 | `disk_quota_gb` | `0` | Kernel-enforced cap for team files and databases when the data filesystem supports XFS project quotas. `0` disables it |
-| `[team.X.agent_env]` | *(empty)* | Sub-table of environment variables injected into the team's agent container — provider credentials (`CLAUDE_CODE_OAUTH_TOKEN`, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`) and any custom vars |
+| `[team.X.agent_env]` | *(empty)* | Sub-table of environment variables injected into the team's agent container — provider credentials (`CLAUDE_CODE_OAUTH_TOKEN`, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `OPENCODE_API_KEY`, or any provider-specific OpenCode variable) and custom vars |
 
 Team data is stored at `{data_dir}/team_{ID}/`:
 

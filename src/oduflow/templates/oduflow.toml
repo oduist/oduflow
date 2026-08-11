@@ -51,8 +51,8 @@ auto_stop_hours = 48              # stop idle environments after N hours (non-de
 auto_delete_hours = 0             # delete stopped environments after N hours (DESTRUCTIVE; opt-in)
 
 # ── Coding agent ──────────────────────────────────────
-# One agent container per team (Claude Code + OpenAI Codex), driven from the
-# dashboard: "Agent Chat" (structured browser chat) and "Agent CLI"
+# One agent container per team (Claude Code + OpenAI Codex + OpenCode), driven
+# from the dashboard: "Agent Chat" (structured browser chat) and "Agent CLI"
 # (terminal). The agent holds a git checkout per environment and reaches
 # environments only through the Oduflow MCP server. It is a HOSTING feature —
 # enable it per team (agent_enabled, below); local developers use their own
@@ -60,9 +60,10 @@ auto_delete_hours = 0             # delete stopped environments after N hours (D
 # deployment-wide bits; changes apply on server restart (the agent container
 # is recreated automatically when its config changed).
 # [agent]
-# image = "oduist/oduflow-coder:0.2.3"
+# image = "oduist/oduflow-coder:0.3.0"
 # claude_model = ""                # optional model override; empty = CLI default
 # codex_model = ""                 # optional model override; empty = CLI default
+# opencode_model = ""              # optional provider/model; empty = OpenCode default
 
 # ── OAuth (optional) ──────────────────────────────────
 # In traefik mode the self-hosted OAuth Authorization Server is enabled
@@ -119,7 +120,7 @@ port_range = [50000, 50100]       # port range for Odoo containers
 # disk_quota_gb = 0               # cap on team files + databases via XFS project quotas (needs data dir on XFS with prjquota)
 # agent_enabled = false           # per-team coding agent (dashboard Agent Chat / Agent CLI); off by default
 #                                  # Agent UI is hidden for local_path live-mount environments.
-# agent_default = "claude"        # "claude" | "codex" — which agent consoles/chats open by default
+# agent_default = "claude"        # "claude" | "codex" | "opencode" — default agent
 
 # Variables injected into the team's agent container — provider credentials
 # and anything custom. Uncomment together with agent_enabled above.
@@ -127,3 +128,4 @@ port_range = [50000, 50100]       # port range for Odoo containers
 # CLAUDE_CODE_OAUTH_TOKEN = ""    # Claude subscription token (`claude setup-token`); outranks the API key
 # ANTHROPIC_API_KEY = ""          # Claude API key (used when no OAuth token)
 # OPENAI_API_KEY = ""             # Codex API key (recommended over subscription)
+# OPENCODE_API_KEY = ""           # OpenCode Zen; other providers use their own variables

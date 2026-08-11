@@ -410,24 +410,27 @@ def _acp_adapter_cmd(agent_type: str) -> list[str]:
     ``docker/agent/Dockerfile``."""
     if agent_type == "codex":
         return ["codex-acp"]
+    if agent_type == "opencode":
+        return ["opencode", "acp"]
     return ["claude-agent-acp"]
 
 
 _CLAUDE_AUTH_GUIDANCE_MARKER = "Oduflow authentication guidance:"
+_OPENCODE_AUTH_GUIDANCE_MARKER = "Oduflow OpenCode authentication guidance:"
 
 
 def _annotate_acp_auth_error(
     frame: str, agent_type: str, auth_mode: str, team_id: str
 ) -> str:
-    """Add mode-specific recovery to Claude ACP authentication errors.
+    """Add mode-specific recovery to recognized ACP authentication errors.
 
-    The adapter returns provider failures as JSON-RPC response frames. Keep the
+    Adapters return provider failures as JSON-RPC response frames. Keep the
     provider's original code/data/message intact and append guidance only for
     recognizable authentication failures. In particular, quota/spend-limit
     failures must remain untouched: silently trying a different credential
     could switch accounts or billing modes.
     """
-    if agent_type != "claude":
+    if agent_type not in {"claude", "opencode"}:
         return frame
     try:
         message = json.loads(frame)
@@ -441,6 +444,22 @@ def _annotate_acp_auth_error(
         return frame
 
     lowered = error_message.lower()
+    if agent_type == "opencode":
+        if "provider authentication required" not in lowered:
+            return frame
+        if _OPENCODE_AUTH_GUIDANCE_MARKER in error_message:
+            return frame
+        guidance = (
+            "Open Agent CLI and run `opencode auth login`, or configure the "
+            "selected provider's credential in "
+            f"[team.{team_id}.agent_env] (or the single-team server environment), "
+            "then restart Oduflow."
+        )
+        error["message"] = (
+            f"{error_message}\n\n{_OPENCODE_AUTH_GUIDANCE_MARKER} {guidance}"
+        )
+        return json.dumps(message, separators=(",", ":"), ensure_ascii=False)
+
     specific_markers = (
         "invalid bearer token",
         "invalid api key",
@@ -503,17 +522,73 @@ def _codex_cli_cmd(mcp_url: str, model: str = "") -> list[str]:
     return cmd
 
 
-def _wire_codex_acp_mcp(
+def _opencode_cli_cmd(model: str = "") -> list[str]:
+    """Build the hosted OpenCode TUI command.
+
+    Docker and the unprivileged ``agent`` user are the security boundary, so
+    permission requests are auto-approved inside the container.
+    """
+    cmd = ["opencode", "--auto"]
+    if model:
+        cmd += ["--model", model]
+    return cmd
+
+
+def _opencode_config(
+    mcp_url: str = "",
+    *,
+    include_browser: bool = True,
+    include_oduflow: bool = False,
+    model: str = "",
+) -> str:
+    """Return session-local OpenCode config with no embedded credential.
+
+    ``OPENCODE_CONFIG_CONTENT`` has high precedence, so Oduflow's approval-free
+    trust model and scoped MCP wiring cannot be silently shadowed by a checkout
+    config. The bearer remains an environment placeholder resolved only inside
+    this docker-exec process.
+    """
+    config: dict[str, Any] = {
+        "autoupdate": False,
+        "permission": "allow",
+    }
+    if include_browser:
+        config["mcp"] = {
+            "agent_browser": {
+                "type": "local",
+                "command": ["agent-browser", "mcp", "--tools", "all"],
+                "environment": {
+                    "AGENT_BROWSER_SESSION": "{env:AGENT_BROWSER_SESSION}",
+                    "AGENT_BROWSER_EXECUTABLE_PATH": "/usr/bin/chromium",
+                },
+            },
+        }
+    if model:
+        config["model"] = model
+    if include_oduflow:
+        config.setdefault("mcp", {})["oduflow"] = {
+            "type": "remote",
+            "url": mcp_url,
+            "enabled": True,
+            "oauth": False,
+            "headers": {
+                "Authorization": "Bearer {env:ODUFLOW_MCP_TOKEN}",
+            },
+        }
+    return json.dumps(config, separators=(",", ":"))
+
+
+def _wire_client_acp_mcp(
     frame: str, mcp_url: str, mcp_token: str, browser_session: str
 ) -> str:
-    """Inject built-in MCP servers into Codex ACP session-open requests.
+    """Inject built-in MCP servers into client-configurable ACP sessions.
 
     The browser intentionally knows neither URL nor token. The WebSocket relay
     augments only ``session/new``/``session/load``/``session/resume`` frames on
-    their way to the adapter, using codex-acp's native client-provided MCP
-    contract. Agent Browser is a local credentialless stdio server. Oduflow is
-    added only when a scoped token exists; that credential lives only in this
-    exec's environment and stdio and is never returned to the browser or disk.
+    their way to Codex/OpenCode, using ACP's client-provided MCP contract. Agent
+    Browser is a local credentialless stdio server. Oduflow is added only when a
+    scoped token exists; that credential lives only in this exec's environment
+    and stdio and is never returned to the browser or disk.
     """
     try:
         message = json.loads(frame)
@@ -3495,7 +3570,7 @@ def _build_routes(
                 await websocket.close(code=1011)
                 return
 
-            # Which agent to run (claude | codex); default from config.
+            # Which agent to run (claude | codex | opencode); default from config.
             agent_type = agent_config.resolve_agent_type(
                 websocket.query_params.get("type"), team
             )
@@ -3590,6 +3665,16 @@ def _build_routes(
                 # server via CLI overrides. Docker is the outer sandbox, so
                 # Codex does not attempt a nested bubblewrap sandbox.
                 cmd = _codex_cli_cmd(mcp_url, settings.agent_codex_model)
+            elif agent_type == "opencode":
+                # OpenCode's high-precedence inline config carries only
+                # placeholders, never the scoped bearer itself. It also locks
+                # the hosted trust model and disables runtime self-updates.
+                exec_env["OPENCODE_CONFIG_CONTENT"] = _opencode_config(
+                    mcp_url,
+                    include_oduflow=bool(mcp_token),
+                    model=settings.agent_opencode_model,
+                )
+                cmd = _opencode_cli_cmd(settings.agent_opencode_model)
             else:
                 # Approval-free like Codex: Docker + the unprivileged `agent`
                 # user are the security boundary, so the console skips per-tool
@@ -3812,7 +3897,8 @@ def _build_routes(
                 return
 
             # Keep Claude ACP's project-scoped .mcp.json current for persistent
-            # checkouts. Codex receives the same URL through session wiring.
+            # checkouts. Codex/OpenCode receive the same URL through session
+            # wiring.
             await asyncio.get_event_loop().run_in_executor(
                 None,
                 lambda: env_ops.refresh_agent_mcp_config(
@@ -3823,8 +3909,8 @@ def _build_routes(
             # SCOPED per-env MCP credentials for THIS session only (see the
             # matching block in ws_agent_console). Claude's adapter picks them
             # up via the ${VAR} placeholders in the checkout's .mcp.json;
-            # Codex ACP receives the same server through its native session
-            # request contract in browser_to_docker below.
+            # Codex/OpenCode ACP receive the same server through their native
+            # session request contract in browser_to_docker below.
             try:
                 mcp_token = await asyncio.get_event_loop().run_in_executor(
                     None, lambda: env_ops.get_env_token(settings, team, branch)
@@ -3848,6 +3934,14 @@ def _build_routes(
                 # and dangerFullAccess. Docker + the unprivileged agent user
                 # remain the outer security boundary for browser chat.
                 exec_env["INITIAL_AGENT_MODE"] = "agent-full-access"
+            elif agent_type == "opencode":
+                # MCP servers arrive through the ACP session-open frame below,
+                # avoiding duplicate registrations. Runtime policy and the
+                # optional default model still come from inline config.
+                exec_env["OPENCODE_CONFIG_CONTENT"] = _opencode_config(
+                    include_browser=False,
+                    model=settings.agent_opencode_model,
+                )
 
             exec_id = client.api.exec_create(
                 container.id,
@@ -3915,8 +4009,8 @@ def _build_routes(
                         text = await websocket.receive_text()
                         if not text:
                             continue
-                        if agent_type == "codex":
-                            text = _wire_codex_acp_mcp(
+                        if agent_type in {"codex", "opencode"}:
+                            text = _wire_client_acp_mcp(
                                 text,
                                 mcp_url,
                                 mcp_token or "",

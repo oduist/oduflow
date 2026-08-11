@@ -323,9 +323,10 @@ class TestQuotas:
 class TestAgentSettings:
     def test_global_defaults(self):
         s = Settings()
-        assert s.agent_image == "oduist/oduflow-coder:0.2.3"
+        assert s.agent_image == "oduist/oduflow-coder:0.3.0"
         assert s.agent_claude_model == ""
         assert s.agent_codex_model == ""
+        assert s.agent_opencode_model == ""
 
     def test_default_image_matches_dockerfile_version(self):
         dockerfile = Path(__file__).parents[1] / "docker" / "agent" / "Dockerfile"
@@ -349,6 +350,7 @@ class TestAgentSettings:
             "[agent]\n"
             'image = "oduist/oduflow-coder:dev"\n'
             'claude_model = "claude-sonnet-4-6"\n'
+            'opencode_model = "anthropic/claude-sonnet-4-6"\n'
             "\n"
             '[team.1]\nhostname = "localhost"\n'
             "agent_enabled = true\n"
@@ -361,6 +363,7 @@ class TestAgentSettings:
         assert s.agent_image == "oduist/oduflow-coder:dev"
         assert s.agent_claude_model == "claude-sonnet-4-6"
         assert s.agent_codex_model == ""
+        assert s.agent_opencode_model == "anthropic/claude-sonnet-4-6"
         team = s.teams["1"]
         assert team.agent_enabled is True
         assert team.agent_default == "codex"  # normalised to lowercase

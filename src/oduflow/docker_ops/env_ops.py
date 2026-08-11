@@ -1488,6 +1488,7 @@ _AGENT_PROVIDER_CREDENTIALS = (
     "CLAUDE_CODE_OAUTH_TOKEN",
     "ANTHROPIC_API_KEY",
     "OPENAI_API_KEY",
+    "OPENCODE_API_KEY",
 )
 
 
@@ -1497,9 +1498,9 @@ def _agent_env_vars(settings: Settings, team: TeamSettings) -> dict[str, str]:
     Two sources, in order of increasing precedence:
       1. Known provider keys present in the SERVER environment (convenient for
          headless/prod: CLAUDE_CODE_OAUTH_TOKEN / ANTHROPIC_API_KEY /
-         OPENAI_API_KEY) — but only in single-team deployments; with several
-         teams a server-level key would leak the operator's credential into
-         every tenant's container.
+         OPENAI_API_KEY / OPENCODE_API_KEY) — but only in single-team
+         deployments; with several teams a server-level key would leak the
+         operator's credential into every tenant's container.
       2. The team's ``[team.X.agent_env]`` TOML table (arbitrary KEY=VALUE,
          including those same credentials).
 

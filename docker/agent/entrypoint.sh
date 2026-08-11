@@ -15,12 +15,13 @@
 #      redistribute them; the container downloads them directly, once.
 #   3. Write the base Codex config (feature flags + built-in Agent Browser MCP;
 #      NO Oduflow endpoint or token here) and add Agent Browser to existing
-#      Claude checkout configs; see the MCP note below.
+#      Claude checkout configs. OpenCode receives its high-precedence config per
+#      session; see the MCP note below.
 #   4. Resolve provider auth: subscription if a subscription credential is
 #      present, otherwise an API key (per provider).
 #   5. Stay alive. Per-env checkouts are created on demand by the env_ops hooks
 #      (`docker exec clone-env.sh ...`); the agent process itself is spawned on
-#      demand by the web console via `docker exec` (claude | codex).
+#      demand by the web console via `docker exec` (claude | codex | opencode).
 #
 # MCP wiring is per SESSION, not per container: the container holds no Oduflow
 # token at all (nothing in its env or on disk to read from a console). Each
@@ -28,14 +29,17 @@
 # token (see ADR 0028) — plus the /mcp/<env> URL into its own environment;
 # Claude reads them through the ${VAR} placeholders in the checkout's
 # .mcp.json. Codex CLI uses `-c mcp_servers.*` overrides; the web relay adds
-# the same scoped server to Codex ACP session-open requests. Agent Browser is a
-# local stdio MCP available to both agents and contains no Oduflow credential.
+# the same scoped server to Codex/OpenCode ACP session-open requests. OpenCode
+# CLI receives a session-local OPENCODE_CONFIG_CONTENT with environment
+# placeholders. Agent Browser is a local stdio MCP available to all agents and
+# contains no Oduflow credential.
 #
 # Expected environment (injected by _ensure_agent_container; team-wide):
 #   ODUFLOW_GIT_USER    credential username to match in the store (optional)
 # Provider auth (subscription takes precedence over key, per provider):
 #   CLAUDE_CODE_OAUTH_TOKEN | ANTHROPIC_API_KEY   (+ optional ANTHROPIC_MODEL)
 #   OPENAI_API_KEY                                 (+ optional CODEX_MODEL)
+#   OPENCODE_API_KEY | any provider-specific variables supported by OpenCode
 # Mounts:
 #   HOME already contains the copied team git credential store; a readable
 #   /run/oduflow/git-credentials is also accepted for standalone use.

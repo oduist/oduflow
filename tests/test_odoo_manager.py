@@ -2486,11 +2486,16 @@ class TestAgentContainer:
         )
 
         api_team = self._team(
-            agent_env={"ANTHROPIC_API_KEY": "  sk-ant-api  ", "MY_FLAG": "  keep  "}
+            agent_env={
+                "ANTHROPIC_API_KEY": "  sk-ant-api  ",
+                "OPENCODE_API_KEY": "  sk-open  ",
+                "MY_FLAG": "  keep  ",
+            }
         )
         api_settings = self._settings(team=api_team)
         api_env = env_ops._agent_env_vars(api_settings, api_team)
         assert api_env["ANTHROPIC_API_KEY"] == "sk-ant-api"
+        assert api_env["OPENCODE_API_KEY"] == "sk-open"
         assert api_env["MY_FLAG"] == "  keep  "
         assert env_ops._claude_auth_mode(api_settings, api_team) == "api_key"
 

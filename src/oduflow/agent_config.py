@@ -16,7 +16,7 @@ from oduflow.settings import TeamSettings
 # through resolve_agent_type() rather than their own literals. The browser keeps
 # a small mirror of this list in chat.js / dashboard.html (JS cannot import this
 # constant), so a new agent must be added there too.
-VALID_AGENTS: tuple[str, ...] = ("claude", "codex")
+VALID_AGENTS: tuple[str, ...] = ("claude", "codex", "opencode")
 FALLBACK_AGENT = "claude"
 
 
@@ -30,7 +30,7 @@ def effective_agent_default(team: TeamSettings) -> str:
 def resolve_agent_type(requested: str | None, team: TeamSettings) -> str:
     """Pick the agent for a connection: the client-requested type if it is one of
     :data:`VALID_AGENTS`, otherwise the team default. Always returns a valid
-    value, so callers never need their own ``("claude", "codex")`` check."""
+    value, so callers never need their own agent-name check."""
     candidate = (requested or "").strip().lower()
     if candidate in VALID_AGENTS:
         return candidate

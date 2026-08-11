@@ -31,6 +31,7 @@
     this._listeners = {};     // event -> [cb]
     this._heartbeat = null;
     this._rxBuffer = '';
+    this._configOptionSessions = {}; // session id -> modern ACP configOptions
   }
 
   // -- tiny event emitter -----------------------------------------------------
@@ -203,11 +204,20 @@
     });
   };
   AcpClient.prototype.newSession = function (cwd) {
-    return this._request('session/new', { cwd: cwd, mcpServers: [] });
+    var self = this;
+    return this._request('session/new', { cwd: cwd, mcpServers: [] }).then(function (result) {
+      if (result && result.sessionId) self._rememberConfigOptions(result.sessionId, result);
+      return result;
+    });
   };
   AcpClient.prototype.loadSession = function (sessionId, cwd) {
+    var self = this;
     // No timeout: replaying a long transcript legitimately takes a while.
-    return this._request('session/load', { sessionId: sessionId, cwd: cwd, mcpServers: [] }, 0);
+    return this._request('session/load', { sessionId: sessionId, cwd: cwd, mcpServers: [] }, 0)
+      .then(function (result) {
+        self._rememberConfigOptions(sessionId, result);
+        return result;
+      });
   };
   AcpClient.prototype.prompt = function (sessionId, content) {
     var prompt = Array.isArray(content)
@@ -223,6 +233,17 @@
     try { this._notify('session/cancel', { sessionId: sessionId }); } catch (e) { /* closed */ }
   };
   AcpClient.prototype.setModel = function (sessionId, modelId) {
+    var self = this;
+    if (this._configOptionSessions[sessionId]) {
+      return this._request('session/set_config_option', {
+        sessionId: sessionId,
+        configId: 'model',
+        value: modelId
+      }).then(function (result) {
+        self._rememberConfigOptions(sessionId, result);
+        return result;
+      });
+    }
     return this._request('session/set_model', { sessionId: sessionId, modelId: modelId });
   };
   AcpClient.prototype.setMode = function (sessionId, modeId) {
@@ -235,6 +256,17 @@
       this._sendResult(requestId, { outcome: { outcome: 'selected', optionId: optionId } });
     } else {
       this._sendResult(requestId, { outcome: { outcome: 'cancelled' } });
+    }
+  };
+
+  AcpClient.prototype._rememberConfigOptions = function (sessionId, result) {
+    var options = result && result.configOptions;
+    if (!Array.isArray(options)) return;
+    for (var i = 0; i < options.length; i++) {
+      if (options[i] && (options[i].id === 'model' || options[i].category === 'model')) {
+        this._configOptionSessions[sessionId] = true;
+        return;
+      }
     }
   };
 

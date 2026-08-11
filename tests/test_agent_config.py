@@ -11,6 +11,7 @@ def _team(default="claude") -> TeamSettings:
 def test_effective_uses_team_config():
     assert agent_config.effective_agent_default(_team("codex")) == "codex"
     assert agent_config.effective_agent_default(_team("claude")) == "claude"
+    assert agent_config.effective_agent_default(_team("opencode")) == "opencode"
 
 
 def test_effective_falls_back_on_invalid_config():
@@ -18,9 +19,18 @@ def test_effective_falls_back_on_invalid_config():
     assert agent_config.effective_agent_default(_team("")) == "claude"
 
 
-@pytest.mark.parametrize("requested", ["codex", " Codex ", "CODEX"])
-def test_resolve_uses_valid_request(requested):
-    assert agent_config.resolve_agent_type(requested, _team("claude")) == "codex"
+@pytest.mark.parametrize(
+    ("requested", "expected"),
+    [
+        ("codex", "codex"),
+        (" Codex ", "codex"),
+        ("CODEX", "codex"),
+        ("opencode", "opencode"),
+        (" OpenCode ", "opencode"),
+    ],
+)
+def test_resolve_uses_valid_request(requested, expected):
+    assert agent_config.resolve_agent_type(requested, _team("claude")) == expected
 
 
 @pytest.mark.parametrize("requested", [None, "", "  ", "gpt", "claude-code"])
