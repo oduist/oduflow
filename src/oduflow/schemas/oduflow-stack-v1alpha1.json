@@ -1,0 +1,419 @@
+{
+  "$defs": {
+    "Environment": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "branch": {
+          "minLength": 1,
+          "title": "Branch",
+          "type": "string"
+        },
+        "repoUrl": {
+          "minLength": 1,
+          "title": "Repourl",
+          "type": "string"
+        },
+        "odooImage": {
+          "minLength": 1,
+          "title": "Odooimage",
+          "type": "string"
+        },
+        "template": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Template"
+        },
+        "sanitize": {
+          "default": true,
+          "title": "Sanitize",
+          "type": "boolean"
+        },
+        "env": {
+          "patternProperties": {
+            "^[A-Za-z_][A-Za-z0-9_]*$": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "$ref": "#/$defs/ValueFrom"
+                }
+              ]
+            }
+          },
+          "title": "Env",
+          "type": "object"
+        },
+        "modules": {
+          "$ref": "#/$defs/Modules"
+        }
+      },
+      "required": [
+        "name",
+        "branch",
+        "repoUrl",
+        "odooImage"
+      ],
+      "title": "Environment",
+      "type": "object"
+    },
+    "ExtraRepository": {
+      "additionalProperties": false,
+      "properties": {
+        "repoUrl": {
+          "minLength": 1,
+          "title": "Repourl",
+          "type": "string"
+        },
+        "branch": {
+          "minLength": 1,
+          "title": "Branch",
+          "type": "string"
+        },
+        "gitUser": {
+          "default": "",
+          "title": "Gituser",
+          "type": "string"
+        }
+      },
+      "required": [
+        "repoUrl",
+        "branch"
+      ],
+      "title": "ExtraRepository",
+      "type": "object"
+    },
+    "Metadata": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$",
+          "title": "Name",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "title": "Metadata",
+      "type": "object"
+    },
+    "Modules": {
+      "additionalProperties": false,
+      "properties": {
+        "install": {
+          "items": {
+            "pattern": "^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$",
+            "type": "string"
+          },
+          "title": "Install",
+          "type": "array"
+        }
+      },
+      "title": "Modules",
+      "type": "object"
+    },
+    "Service": {
+      "additionalProperties": false,
+      "properties": {
+        "image": {
+          "minLength": 1,
+          "title": "Image",
+          "type": "string"
+        },
+        "port": {
+          "anyOf": [
+            {
+              "maximum": 65535,
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Port"
+        },
+        "hostname": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Hostname"
+        },
+        "env": {
+          "patternProperties": {
+            "^[A-Za-z_][A-Za-z0-9_]*$": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "$ref": "#/$defs/ValueFrom"
+                }
+              ]
+            }
+          },
+          "title": "Env",
+          "type": "object"
+        },
+        "hostMode": {
+          "default": false,
+          "title": "Hostmode",
+          "type": "boolean"
+        },
+        "volumes": {
+          "items": {
+            "$ref": "#/$defs/ServiceMount"
+          },
+          "title": "Volumes",
+          "type": "array"
+        },
+        "privileged": {
+          "default": false,
+          "title": "Privileged",
+          "type": "boolean"
+        },
+        "netAdmin": {
+          "default": false,
+          "title": "Netadmin",
+          "type": "boolean"
+        },
+        "routes": {
+          "items": {
+            "$ref": "#/$defs/ServiceRoute"
+          },
+          "title": "Routes",
+          "type": "array"
+        }
+      },
+      "required": [
+        "image"
+      ],
+      "title": "Service",
+      "type": "object"
+    },
+    "ServiceMount": {
+      "additionalProperties": false,
+      "properties": {
+        "source": {
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$",
+          "title": "Source",
+          "type": "string"
+        },
+        "target": {
+          "minLength": 1,
+          "title": "Target",
+          "type": "string"
+        },
+        "mode": {
+          "default": "rw",
+          "enum": [
+            "ro",
+            "rw"
+          ],
+          "title": "Mode",
+          "type": "string"
+        }
+      },
+      "required": [
+        "source",
+        "target"
+      ],
+      "title": "ServiceMount",
+      "type": "object"
+    },
+    "ServiceRoute": {
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "title": "Path",
+          "type": "string"
+        },
+        "port": {
+          "maximum": 65535,
+          "minimum": 1,
+          "title": "Port",
+          "type": "integer"
+        },
+        "stripPrefix": {
+          "default": false,
+          "title": "Stripprefix",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "path",
+        "port"
+      ],
+      "title": "ServiceRoute",
+      "type": "object"
+    },
+    "StackSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "environment": {
+          "$ref": "#/$defs/Environment"
+        },
+        "extraRepositories": {
+          "patternProperties": {
+            "^[A-Za-z0-9_-]{1,63}$": {
+              "$ref": "#/$defs/ExtraRepository"
+            }
+          },
+          "title": "Extrarepositories",
+          "type": "object"
+        },
+        "volumes": {
+          "patternProperties": {
+            "^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$": {
+              "$ref": "#/$defs/Volume"
+            }
+          },
+          "title": "Volumes",
+          "type": "object"
+        },
+        "files": {
+          "items": {
+            "$ref": "#/$defs/VolumeFile"
+          },
+          "title": "Files",
+          "type": "array"
+        },
+        "services": {
+          "patternProperties": {
+            "^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$": {
+              "$ref": "#/$defs/Service"
+            }
+          },
+          "title": "Services",
+          "type": "object"
+        }
+      },
+      "required": [
+        "environment"
+      ],
+      "title": "StackSpec",
+      "type": "object"
+    },
+    "ValueFrom": {
+      "additionalProperties": false,
+      "description": "A value loaded at apply time rather than persisted in the manifest.",
+      "properties": {
+        "fromEnv": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Fromenv"
+        },
+        "environmentField": {
+          "anyOf": [
+            {
+              "enum": [
+                "url",
+                "token"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Environmentfield"
+        }
+      },
+      "title": "ValueFrom",
+      "type": "object"
+    },
+    "Volume": {
+      "additionalProperties": false,
+      "properties": {
+        "description": {
+          "default": "",
+          "title": "Description",
+          "type": "string"
+        }
+      },
+      "title": "Volume",
+      "type": "object"
+    },
+    "VolumeFile": {
+      "additionalProperties": false,
+      "properties": {
+        "source": {
+          "minLength": 1,
+          "title": "Source",
+          "type": "string"
+        },
+        "volume": {
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$",
+          "title": "Volume",
+          "type": "string"
+        },
+        "path": {
+          "title": "Path",
+          "type": "string"
+        }
+      },
+      "required": [
+        "source",
+        "volume",
+        "path"
+      ],
+      "title": "VolumeFile",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "apiVersion": {
+      "const": "oduflow.dev/v1alpha1",
+      "default": "oduflow.dev/v1alpha1",
+      "title": "Apiversion",
+      "type": "string"
+    },
+    "kind": {
+      "const": "Stack",
+      "default": "Stack",
+      "title": "Kind",
+      "type": "string"
+    },
+    "metadata": {
+      "$ref": "#/$defs/Metadata"
+    },
+    "spec": {
+      "$ref": "#/$defs/StackSpec"
+    }
+  },
+  "required": [
+    "metadata",
+    "spec"
+  ],
+  "title": "StackManifest",
+  "type": "object"
+}

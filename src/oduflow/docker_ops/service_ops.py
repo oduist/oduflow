@@ -261,6 +261,7 @@ def create_service(
     cap_add: list[str] | None = None,
     privileged: bool = False,
     routes: list[dict[str, object]] | None = None,
+    stack_labels: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     container_name = get_service_container_name(name, settings.prefix, team.team_id)
     routes = normalize_http_routes(routes)
@@ -288,6 +289,8 @@ def create_service(
         "oduflow.service": name,
         "oduflow.created_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
     }
+    if stack_labels:
+        labels.update(stack_labels)
 
     run_kwargs: dict[str, Any] = {
         "image": image,
@@ -585,6 +588,9 @@ def _describe_service_container(
         "privileged": svc_privileged,
         "created_at": container.labels.get("oduflow.created_at", "")
         or container.attrs.get("Created", ""),
+        "stack": container.labels.get("oduflow.stack", ""),
+        "stack_resource": container.labels.get("oduflow.stack-resource", ""),
+        "stack_spec_hash": container.labels.get("oduflow.stack-spec-hash", ""),
     }
 
 
@@ -664,6 +670,7 @@ def update_service(
     cap_add_override: list[str] | None = None,
     privileged_override: bool | None = None,
     routes_override: list[dict[str, object]] | None = None,
+    stack_labels: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Pull the latest image for a service and re-create it with the same settings.
 
@@ -798,6 +805,18 @@ def update_service(
     # brought forward by an ordinary update, even when the image digest and
     # user-controlled settings are otherwise unchanged.
     config_changed = _needs_traefik_acme_mount(settings, container)
+    persisted_stack_labels = {
+        key: value
+        for key, value in container.labels.items()
+        if key.startswith("oduflow.stack")
+    }
+    effective_stack_labels = (
+        dict(stack_labels) if stack_labels is not None else persisted_stack_labels
+    )
+    if stack_labels is not None and any(
+        container.labels.get(key) != value for key, value in stack_labels.items()
+    ):
+        config_changed = True
     if env_override is not None and env_override != (env_vars or {}):
         env_vars = env_override or None
         config_changed = True
@@ -916,6 +935,7 @@ def update_service(
         cap_add=cap_add,
         privileged=privileged,
         routes=routes,
+        stack_labels=effective_stack_labels,
     )
 
     result["image_updated"] = image_updated

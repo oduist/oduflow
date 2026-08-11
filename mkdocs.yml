@@ -96,6 +96,7 @@ nav:
       - Coding Agent: agent.md
       - Auxiliary Services: services.md
       - Extra Addons Repositories: extra-addons.md
+      - Declarative Stacks: stacks.md
   - Reference:
       - Web Dashboard & REST API: web-api.md
       - MCP Tools Reference: mcp-tools.md

@@ -39,6 +39,7 @@ def create_volume(
     team: TeamSettings,
     name: str,
     description: str = "",
+    stack_labels: dict[str, str] | None = None,
 ) -> dict[str, str]:
     """Create a named Docker volume with oduflow labels."""
     if not name or not _VOLUME_NAME_RE.match(name):
@@ -63,6 +64,8 @@ def create_volume(
         "oduflow.volume": name,
         "oduflow.description": description,
     }
+    if stack_labels:
+        labels.update(stack_labels)
 
     client.volumes.create(name=docker_name, labels=labels)
     logger.info("Created volume %s", docker_name)
@@ -104,6 +107,9 @@ def list_volumes(settings: Settings, team: TeamSettings) -> list[dict[str, Any]]
                 "description": labels.get("oduflow.description", ""),
                 "created_at": vol.attrs.get("CreatedAt", ""),
                 "used_by": used_by,
+                "stack": labels.get("oduflow.stack", ""),
+                "stack_resource": labels.get("oduflow.stack-resource", ""),
+                "stack_spec_hash": labels.get("oduflow.stack-spec-hash", ""),
             }
         )
 
@@ -133,6 +139,9 @@ def inspect_volume(settings: Settings, team: TeamSettings, name: str) -> dict[st
         "driver": vol.attrs.get("Driver", ""),
         "mountpoint": vol.attrs.get("Mountpoint", ""),
         "used_by": used_by,
+        "stack": labels.get("oduflow.stack", ""),
+        "stack_resource": labels.get("oduflow.stack-resource", ""),
+        "stack_spec_hash": labels.get("oduflow.stack-spec-hash", ""),
     }
 
 

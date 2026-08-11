@@ -5,6 +5,20 @@
 ### Features
 
 - **OpenCode hosted agent** — OpenCode joins Claude Code and Codex as a full Agent CLI and Agent Chat runtime. The new immutable coder image includes the MIT-licensed `opencode` CLI and native ACP server; OpenCode gets generic provider authentication, an optional `provider/model` override, approval-free execution inside the existing container boundary, per-environment Agent Browser, scoped Oduflow MCP, modern ACP model selection, and isolated conversation history.
+
+- **Declarative Oduflow Stacks** — a versioned `oduflow.yaml` can now describe
+  one development environment together with its Git source, database template,
+  extra-addons repositories, required modules, auxiliary services, named
+  volumes, and text files copied into those volumes. `oduflow stack
+  validate/plan/apply/status` provide strict schema validation, read-only drift
+  previews, team-locked idempotent reconciliation, and machine-readable status;
+  `oduflow --stack ...` applies the same manifest before starting the MCP
+  server. Stack resources carry ownership/spec-hash labels, secret values can be
+  resolved from the launching process or generated environment outputs without
+  entering state files or plans, and V1 deliberately refuses replacement or
+  deletion rather than risking persisted data. See `docs/stacks.md` and
+  `specs/0046`.
+
 - **Non-interactive bundled-file upgrades** — `oduflow upgrade --force` prints
   the usual overwrite warning and affected paths but proceeds without waiting
   for terminal input, enabling unattended deployments while continuing to

@@ -30,6 +30,35 @@ Shared infrastructure (Docker network, PostgreSQL, team directories) is initiali
 Configuration is loaded from `oduflow.toml` (see [Installation](installation.md#configuration-reference)).
 See [Quick Start](quick-start.md) for MCP client configuration examples for both modes.
 
+To reconcile a declarative Stack before starting the server:
+
+```bash
+oduflow --stack /path/to/oduflow.yaml --stack-team 1 --transport http
+```
+
+Startup stops with a non-zero exit if Stack validation, preflight, or apply
+fails. See [Declarative Stacks](stacks.md).
+
+## Declarative Stack Commands
+
+```bash
+# Local syntax and schema validation (does not require Docker)
+oduflow stack validate oduflow.yaml
+
+# Read-only comparison with live resources
+oduflow stack plan oduflow.yaml --team 1
+
+# Reconcile under the team's lock
+oduflow stack apply oduflow.yaml --team 1
+
+# JSON status: drift plan plus the last successful apply record
+oduflow stack status oduflow.yaml --team 1
+```
+
+Stack apply is additive and non-destructive in V1. Existing resources owned by
+someone else and environment changes that require replacement are reported as
+conflicts; no automatic deletion or pruning is performed.
+
 ## System Commands
 
 ```bash
