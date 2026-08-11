@@ -2701,15 +2701,35 @@ def _build_routes(
         report_issue MCP tool.
         """
         try:
-            body = await request.json()
-            details = (body.get("details") or "").strip()
+            try:
+                body = await request.json()
+            except (UnicodeDecodeError, ValueError):
+                return JSONResponse(
+                    {"ok": False, "error": "Request body must be valid JSON."},
+                    status_code=400,
+                )
+
+            if not isinstance(body, dict):
+                return JSONResponse(
+                    {"ok": False, "error": "Request body must be a JSON object."},
+                    status_code=400,
+                )
+
+            for field in ("details", "kind", "title"):
+                if field in body and not isinstance(body[field], str):
+                    return JSONResponse(
+                        {"ok": False, "error": f"{field} must be a string."},
+                        status_code=400,
+                    )
+
+            details = body.get("details", "").strip()
             if not details:
                 return JSONResponse(
                     {"ok": False, "error": "Details are required."}, status_code=400
                 )
             url = feedback.build_issue_url(
                 kind=(body.get("kind") or feedback.DEFAULT_KIND).strip(),
-                title=(body.get("title") or "").strip(),
+                title=body.get("title", "").strip(),
                 details=details,
                 settings=get_settings(),
             )

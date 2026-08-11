@@ -114,6 +114,49 @@ def test_feedback_link_endpoint_requires_details(tmp_path):
     assert response.json()["ok"] is False
 
 
+@pytest.mark.parametrize("body", [[], 42, "feedback"])
+def test_feedback_link_endpoint_requires_a_json_object(tmp_path, body):
+    response = _client(tmp_path).post("/api/feedback/link", json=body)
+
+    assert response.status_code == 400
+    assert response.json() == {
+        "ok": False,
+        "error": "Request body must be a JSON object.",
+    }
+
+
+@pytest.mark.parametrize(
+    ("body", "field"),
+    [
+        ({"details": ["traceback"]}, "details"),
+        ({"details": "traceback", "kind": 1}, "kind"),
+        ({"details": "traceback", "title": {"text": "Sync fails"}}, "title"),
+    ],
+)
+def test_feedback_link_endpoint_rejects_non_string_fields(tmp_path, body, field):
+    response = _client(tmp_path).post("/api/feedback/link", json=body)
+
+    assert response.status_code == 400
+    assert response.json() == {
+        "ok": False,
+        "error": f"{field} must be a string.",
+    }
+
+
+def test_feedback_link_endpoint_rejects_malformed_json(tmp_path):
+    response = _client(tmp_path).post(
+        "/api/feedback/link",
+        content=b"{",
+        headers={"content-type": "application/json"},
+    )
+
+    assert response.status_code == 400
+    assert response.json() == {
+        "ok": False,
+        "error": "Request body must be valid JSON.",
+    }
+
+
 def test_every_kind_has_a_shipped_issue_form_with_the_prefilled_fields():
     for kind, filename in feedback.KINDS.items():
         form = (_ISSUE_TEMPLATE_DIR / filename).read_text(encoding="utf-8")
@@ -122,7 +165,14 @@ def test_every_kind_has_a_shipped_issue_form_with_the_prefilled_fields():
         assert "id: environment" in form
 
 
-def test_report_issue_tool_returns_a_link_without_filing_anything():
+def test_report_issue_tool_returns_a_link_without_filing_anything(
+    monkeypatch, tmp_path
+):
+    from oduflow import server
+
+    settings = Settings(base_data_dir=str(tmp_path))
+    monkeypatch.setattr(server, "_get_settings", lambda: settings)
+
     result = call_tool(
         "report_issue", details="Sync hangs", kind="bug", title="Sync hangs"
     )
