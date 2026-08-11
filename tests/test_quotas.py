@@ -158,8 +158,7 @@ class TestApplyAll:
 class TestReadMounts:
     def test_parses_proc_mounts(self):
         content = (
-            "/dev/sda1 / ext4 rw,relatime 0 0\n"
-            "/dev/sdb1 /srv xfs rw,prjquota 0 0\n"
+            "/dev/sda1 / ext4 rw,relatime 0 0\n/dev/sdb1 /srv xfs rw,prjquota 0 0\n"
         )
         with patch("builtins.open", mock_open(read_data=content)) as opened:
             mounts = quotas._read_mounts()

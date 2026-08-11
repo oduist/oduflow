@@ -143,9 +143,9 @@ class TestParallelism:
 
     def test_parallel_gather_is_half_the_cpus_up_to_two(self):
         def gather(cpu):
-            return _parse(
-                pg_tune.generate_postgresql_conf(16384, cpu)
-            )["max_parallel_workers_per_gather"]
+            return _parse(pg_tune.generate_postgresql_conf(16384, cpu))[
+                "max_parallel_workers_per_gather"
+            ]
 
         assert gather(1) == "0"
         assert gather(2) == "1"
@@ -154,9 +154,9 @@ class TestParallelism:
 
     def test_parallel_maintenance_workers_track_cpus_with_a_floor(self):
         def maint(cpu):
-            return _parse(
-                pg_tune.generate_postgresql_conf(16384, cpu)
-            )["max_parallel_maintenance_workers"]
+            return _parse(pg_tune.generate_postgresql_conf(16384, cpu))[
+                "max_parallel_maintenance_workers"
+            ]
 
         assert maint(1) == "1"  # floor
         assert maint(2) == "1"
@@ -165,9 +165,9 @@ class TestParallelism:
 
     def test_autovacuum_workers_scale_below_the_cap(self):
         def workers(cpu):
-            return _parse(
-                pg_tune.generate_postgresql_conf(16384, cpu)
-            )["autovacuum_max_workers"]
+            return _parse(pg_tune.generate_postgresql_conf(16384, cpu))[
+                "autovacuum_max_workers"
+            ]
 
         assert workers(1) == "1"
         assert workers(2) == "2"

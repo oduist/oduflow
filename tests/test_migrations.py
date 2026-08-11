@@ -1,6 +1,6 @@
 import json
-from unittest.mock import MagicMock
 import os
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -276,7 +276,6 @@ class TestTraefikYmlConfigMigration:
 
     def _run(self, monkeypatch, container, routing_mode="traefik"):
         import docker as _docker
-
         from oduflow.migrations import _migrate_traefik_yml_config
 
         client = MagicMock()

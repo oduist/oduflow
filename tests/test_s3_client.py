@@ -335,9 +335,7 @@ class TestMultipartUploadStream:
             raise RuntimeError("pg_dump died")
 
         with pytest.raises(RuntimeError, match="pg_dump died"):
-            s3_client.multipart_upload_stream(
-                client, "backups", "dump.sql", _frames()
-            )
+            s3_client.multipart_upload_stream(client, "backups", "dump.sql", _frames())
 
         client.abort_multipart_upload.assert_called_once_with(
             Bucket="backups", Key="dump.sql", UploadId="UP1"

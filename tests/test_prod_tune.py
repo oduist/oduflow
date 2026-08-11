@@ -71,12 +71,22 @@ class TestProdPostgresConf:
         assert _mb(settings["wal_buffers"]) == 15
 
     def test_effective_cache_floor_and_cap(self):
-        assert _mb(_parse(prod_tune.generate_prod_postgresql_conf(1024, 2))[
-            "effective_cache_size"
-        ]) == 1024
-        assert _mb(_parse(prod_tune.generate_prod_postgresql_conf(512 * 1024, 32))[
-            "effective_cache_size"
-        ]) == 65536
+        assert (
+            _mb(
+                _parse(prod_tune.generate_prod_postgresql_conf(1024, 2))[
+                    "effective_cache_size"
+                ]
+            )
+            == 1024
+        )
+        assert (
+            _mb(
+                _parse(prod_tune.generate_prod_postgresql_conf(512 * 1024, 32))[
+                    "effective_cache_size"
+                ]
+            )
+            == 65536
+        )
 
     def test_work_mem_floor_and_cap(self):
         # Floor 8 MB with a tiny shared_buffers, cap 64 MB with a large one.
@@ -103,9 +113,9 @@ class TestProdPostgresConf:
         # The unified plan gives production PostgreSQL roughly half the host
         # CPUs, then applies the below-4 / 4-and-up parallelism formula.
         def gather(cpu):
-            return _parse(
-                prod_tune.generate_prod_postgresql_conf(16384, cpu)
-            )["max_parallel_workers_per_gather"]
+            return _parse(prod_tune.generate_prod_postgresql_conf(16384, cpu))[
+                "max_parallel_workers_per_gather"
+            ]
 
         assert gather(1) == "1"
         assert gather(2) == "1"
@@ -117,9 +127,9 @@ class TestProdPostgresConf:
 
     def test_parallel_maintenance_workers_are_capped_at_four(self):
         def maint(cpu):
-            return _parse(
-                prod_tune.generate_prod_postgresql_conf(16384, cpu)
-            )["max_parallel_maintenance_workers"]
+            return _parse(prod_tune.generate_prod_postgresql_conf(16384, cpu))[
+                "max_parallel_maintenance_workers"
+            ]
 
         assert maint(1) == "1"
         assert maint(4) == "1"
@@ -128,9 +138,9 @@ class TestProdPostgresConf:
 
     def test_autovacuum_workers_are_clamped_between_three_and_six(self):
         def workers(cpu):
-            return _parse(
-                prod_tune.generate_prod_postgresql_conf(16384, cpu)
-            )["autovacuum_max_workers"]
+            return _parse(prod_tune.generate_prod_postgresql_conf(16384, cpu))[
+                "autovacuum_max_workers"
+            ]
 
         assert workers(1) == "3"  # floor
         assert workers(8) == "3"

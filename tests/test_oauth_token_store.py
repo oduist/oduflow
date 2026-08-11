@@ -104,7 +104,9 @@ class TestExpiry:
         assert store.get_access(access) is None
         assert store.get_refresh(refresh) is not None
 
-    def test_a_token_expiring_exactly_now_is_still_valid(self, store, path, monkeypatch):
+    def test_a_token_expiring_exactly_now_is_still_valid(
+        self, store, path, monkeypatch
+    ):
         # The check is `expires_at < now`, so the token survives its own
         # expiry second.
         access, _, expires_at = store.mint_pair("1", [])
@@ -250,9 +252,7 @@ class TestPersistenceAndCache:
         store = OAuthTokenStore(path, 3600)
         store.mint_pair("1", [])
         reloads = []
-        monkeypatch.setattr(
-            OAuthTokenStore, "_reload", lambda self: reloads.append(1)
-        )
+        monkeypatch.setattr(OAuthTokenStore, "_reload", lambda self: reloads.append(1))
 
         store.get_access("unknown")
         store.get_access("unknown")

@@ -24,8 +24,7 @@ from oduflow.errors import ExternalCommandError
 def cred_file(tmp_path):
     path = tmp_path / "git-credentials"
     path.write_text(
-        "https://ada:ghp_abcdef123456@github.com\n"
-        "https://bob:glpat_secret@gitlab.com\n"
+        "https://ada:ghp_abcdef123456@github.com\nhttps://bob:glpat_secret@gitlab.com\n"
     )
     return str(path)
 
@@ -76,9 +75,7 @@ class TestListCredentials:
     def test_entries_without_a_host_or_user_are_skipped(self, tmp_path):
         path = tmp_path / "creds"
         path.write_text(
-            "not-a-url\n"
-            "https://github.com\n"
-            "https://ada:tok12345@github.com\n"
+            "not-a-url\nhttps://github.com\nhttps://ada:tok12345@github.com\n"
         )
 
         entries = git_ops.list_credentials(str(path))

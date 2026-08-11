@@ -98,7 +98,11 @@ class TestSqlScripts:
             logs = _run(tmp_path, scripts)
 
         executed = [call.args[2] for call in exec_sql.call_args_list]
-        assert executed == ["SELECT '10_a.sql';", "SELECT '20_b.sql';", "SELECT '30_c.sql';"]
+        assert executed == [
+            "SELECT '10_a.sql';",
+            "SELECT '20_b.sql';",
+            "SELECT '30_c.sql';",
+        ]
         assert logs == [
             "[SANITIZE:system] Executed 10_a.sql",
             "[SANITIZE:system] Executed 20_b.sql",
@@ -166,7 +170,10 @@ class TestPyScripts:
         ):
             logs = _run(tmp_path, scripts, container=container)
 
-        cmd, kwargs = container.exec_run.call_args.args[0], container.exec_run.call_args.kwargs
+        cmd, kwargs = (
+            container.exec_run.call_args.args[0],
+            container.exec_run.call_args.kwargs,
+        )
         assert cmd == ["python3", "-c", "print('hi')"]
         assert kwargs["environment"] == {
             "ODOO_DB": "oduflow_1_main",
@@ -187,7 +194,9 @@ class TestPyScripts:
         with (
             caplog.at_level(logging.WARNING, logger="oduflow"),
             patch.object(
-                sanitizer, "load_credentials", return_value={"pg_user": "u", "pg_password": "p"}
+                sanitizer,
+                "load_credentials",
+                return_value={"pg_user": "u", "pg_password": "p"},
             ),
         ):
             logs = _run(tmp_path, scripts, container=container)
@@ -206,13 +215,13 @@ class TestPyScripts:
         container.exec_run.side_effect = RuntimeError("docker exploded")
 
         with patch.object(
-            sanitizer, "load_credentials", return_value={"pg_user": "u", "pg_password": "p"}
+            sanitizer,
+            "load_credentials",
+            return_value={"pg_user": "u", "pg_password": "p"},
         ):
             logs = _run(tmp_path, scripts, container=container)
 
-        assert logs == [
-            "[SANITIZE:system] WARNING: boom.py failed: docker exploded"
-        ]
+        assert logs == ["[SANITIZE:system] WARNING: boom.py failed: docker exploded"]
 
     def test_missing_container_skips_py_but_keeps_sql_results(self, tmp_path):
         scripts = tmp_path / "sanitize"
@@ -243,7 +252,9 @@ class TestPyScripts:
         with (
             patch.object(sanitizer, "_exec_sql"),
             patch.object(
-                sanitizer, "load_credentials", return_value={"pg_user": "u", "pg_password": "p"}
+                sanitizer,
+                "load_credentials",
+                return_value={"pg_user": "u", "pg_password": "p"},
             ),
         ):
             logs = _run(tmp_path, scripts, container=container)
@@ -268,22 +279,37 @@ class TestDetectOdooMajor:
     def test_reads_major_from_the_image_label(self):
         container = MagicMock()
         container.labels = {"oduflow.image": "odoo:18.0"}
-        assert sanitizer._detect_odoo_major_from_container(container, "oduflow.image") == 18
+        assert (
+            sanitizer._detect_odoo_major_from_container(container, "oduflow.image")
+            == 18
+        )
 
     def test_handles_registry_style_image_references(self):
         container = MagicMock()
         container.labels = {"oduflow.image": "ghcr.io/acme/odoo/17.0-custom"}
-        assert sanitizer._detect_odoo_major_from_container(container, "oduflow.image") == 17
+        assert (
+            sanitizer._detect_odoo_major_from_container(container, "oduflow.image")
+            == 17
+        )
 
     def test_unknown_or_missing_label_yields_none(self):
         container = MagicMock()
         container.labels = {"other": "odoo:18.0"}
-        assert sanitizer._detect_odoo_major_from_container(container, "oduflow.image") is None
+        assert (
+            sanitizer._detect_odoo_major_from_container(container, "oduflow.image")
+            is None
+        )
 
         container.labels = {"oduflow.image": "postgres:16"}
-        assert sanitizer._detect_odoo_major_from_container(container, "oduflow.image") is None
+        assert (
+            sanitizer._detect_odoo_major_from_container(container, "oduflow.image")
+            is None
+        )
 
     def test_non_dict_labels_yield_none(self):
         container = MagicMock()
         container.labels = ["not", "a", "dict"]
-        assert sanitizer._detect_odoo_major_from_container(container, "oduflow.image") is None
+        assert (
+            sanitizer._detect_odoo_major_from_container(container, "oduflow.image")
+            is None
+        )
