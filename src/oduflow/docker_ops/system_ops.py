@@ -3,6 +3,7 @@ from __future__ import annotations
 import contextlib
 import gzip
 import hashlib
+import io
 import json
 import logging
 import os
@@ -1123,28 +1124,64 @@ def _is_pg_restore_archive_version_error(output: str) -> bool:
     return "unsupported version" in output and "file header" in output
 
 
+class _ChunkReader(io.RawIOBase):
+    """Read-only file object over an iterator of byte chunks.
+
+    ``container.get_archive`` hands back a generator; wrapping it here lets
+    ``tarfile`` consume the archive as it arrives instead of spooling the whole
+    thing to a temp file first (a full-size extra write + read per dump).
+    """
+
+    def __init__(self, chunks: Any) -> None:
+        self._chunks = iter(chunks)
+        self._buf = b""
+
+    def readable(self) -> bool:
+        return True
+
+    def readinto(self, buffer: Any) -> int:
+        while not self._buf:
+            try:
+                self._buf = next(self._chunks)
+            except StopIteration:
+                return 0
+        size = min(len(buffer), len(self._buf))
+        buffer[:size] = self._buf[:size]
+        self._buf = self._buf[size:]
+        return size
+
+
+@contextlib.contextmanager
+def _container_archive_stream(
+    container: docker.models.containers.Container, container_path: str
+) -> Any:
+    """Open the container's tar stream for sequential reading (``r|``).
+
+    Stream mode has no random access: members must be extracted while the
+    iteration is positioned on them, and ``getmembers()`` is unavailable.
+    """
+    chunks, _ = container.get_archive(container_path)
+    reader = io.BufferedReader(_ChunkReader(chunks))
+    with tarfile.open(fileobj=reader, mode="r|") as tar:
+        yield tar
+
+
 def _copy_file_from_container(
     container: docker.models.containers.Container, container_path: str, dest_path: str
 ) -> None:
-    import tempfile
-
-    chunks, _ = container.get_archive(container_path)
-    with tempfile.NamedTemporaryFile(suffix=".tar", delete=False) as tmp:
-        for chunk in chunks:
-            tmp.write(chunk)
-        tmp_path = tmp.name
-    try:
-        with tarfile.open(tmp_path, mode="r") as tar:
-            member = tar.getmembers()[0]
-            f = tar.extractfile(member)
-            if f is None:
-                raise ExternalCommandError(
-                    "get_archive", -1, f"Could not extract {container_path} from tar"
-                )
+    with _container_archive_stream(container, container_path) as tar:
+        for member in tar:
+            if not member.isfile():
+                continue
+            src = tar.extractfile(member)
+            if src is None:
+                break
             with open(dest_path, "wb") as out:
-                shutil.copyfileobj(f, out)
-    finally:
-        os.remove(tmp_path)
+                shutil.copyfileobj(src, out)
+            return
+    raise ExternalCommandError(
+        "get_archive", -1, f"Could not extract {container_path} from tar"
+    )
 
 
 def _extract_archive_from_container(
@@ -1153,44 +1190,108 @@ def _extract_archive_from_container(
     dest_dir: str,
     prefix: str,
 ) -> int:
-    import tempfile
-
-    chunks, _ = container.get_archive(container_path)
-    with tempfile.NamedTemporaryFile(suffix=".tar", delete=False) as tmp:
-        for chunk in chunks:
-            tmp.write(chunk)
-        tmp_path = tmp.name
-    try:
-        extracted = 0
-        with tarfile.open(tmp_path, mode="r") as tar:
-            for member in tar.getmembers():
-                if not member.name.startswith(prefix) and member.name != prefix.rstrip(
-                    "/"
+    extracted = 0
+    with _container_archive_stream(container, container_path) as tar:
+        for member in tar:
+            if not member.name.startswith(prefix) and member.name != prefix.rstrip("/"):
+                continue
+            rel = member.name[len(prefix) :]
+            if not rel:
+                continue
+            member.name = rel
+            # Reject members that escape dest_dir via traversal or an
+            # absolute/symlink target (defence in depth; source is our own
+            # template-builder container).
+            if not _is_within_directory(dest_dir, os.path.join(dest_dir, rel)):
+                logger.warning("Skipping unsafe archive member: %s", rel)
+                continue
+            if member.issym() or member.islnk():
+                link_target = os.path.join(dest_dir, os.path.dirname(rel))
+                if not _is_within_directory(
+                    dest_dir, os.path.join(link_target, member.linkname)
                 ):
+                    logger.warning("Skipping unsafe link member: %s", rel)
                     continue
-                rel = member.name[len(prefix) :]
-                if not rel:
-                    continue
-                member.name = rel
-                # Reject members that escape dest_dir via traversal or an
-                # absolute/symlink target (defence in depth; source is our own
-                # template-builder container).
-                if not _is_within_directory(dest_dir, os.path.join(dest_dir, rel)):
-                    logger.warning("Skipping unsafe archive member: %s", rel)
-                    continue
-                if member.issym() or member.islnk():
-                    link_target = os.path.join(dest_dir, os.path.dirname(rel))
-                    if not _is_within_directory(
-                        dest_dir, os.path.join(link_target, member.linkname)
-                    ):
-                        logger.warning("Skipping unsafe link member: %s", rel)
-                        continue
-                tar.extract(member, dest_dir)
-                if not member.isdir():
-                    extracted += 1
-        return extracted
-    finally:
-        os.remove(tmp_path)
+            tar.extract(member, dest_dir)
+            if not member.isdir():
+                extracted += 1
+    return extracted
+
+
+_EXEC_EXIT_POLL_SECONDS = 5.0
+
+
+def _wait_exec_exit_code(api: Any, exec_id: str) -> int:
+    """Exit code of a finished exec, tolerating a briefly lagging daemon."""
+    deadline = time.monotonic() + _EXEC_EXIT_POLL_SECONDS
+    while True:
+        code = api.exec_inspect(exec_id).get("ExitCode")
+        if code is not None:
+            return int(code)
+        if time.monotonic() >= deadline:
+            return -1
+        time.sleep(0.05)
+
+
+def _stream_exec_to_file(
+    client: DockerClient,
+    container: docker.models.containers.Container,
+    cmd: list[str],
+    dest_path: str,
+    *,
+    tool: str,
+) -> int:
+    """Run ``cmd`` in ``container``, streaming its stdout straight to ``dest_path``.
+
+    Replaces the exec-to-/tmp + ``get_archive`` route, which wrote every dump
+    three times at full size (container writable layer, host temp tar, final
+    file) and left the container copy behind to grow the writable layer. Here
+    the payload lands only at its destination.
+
+    ``tty=False`` is required: with a TTY the daemon stops multiplexing the
+    streams and mangles binary output. ``demux=True`` then keeps stderr out of
+    the payload bytes. The exit code is checked explicitly — without it a
+    truncated dump looks like success.
+    """
+    api = client.api
+    exec_id = api.exec_create(container.id, cmd, tty=False, stdout=True, stderr=True)[
+        "Id"
+    ]
+    stderr = bytearray()
+    written = 0
+    part_path = dest_path + ".part"
+    try:
+        with open(part_path, "wb") as out:
+            for stdout_chunk, stderr_chunk in api.exec_start(
+                exec_id, stream=True, demux=True
+            ):
+                if stdout_chunk:
+                    out.write(stdout_chunk)
+                    written += len(stdout_chunk)
+                if stderr_chunk:
+                    stderr.extend(stderr_chunk)
+        exit_code = _wait_exec_exit_code(api, exec_id)
+        message = stderr.decode("utf-8", errors="replace")
+        if exit_code != 0:
+            raise ExternalCommandError(tool, exit_code, message)
+        os.replace(part_path, dest_path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.remove(part_path)
+        raise
+    if message.strip():
+        logger.debug("%s stderr: %s", tool, message.strip())
+    return written
+
+
+def _pg_restore_jobs() -> int:
+    """Worker count for parallel ``pg_restore``.
+
+    Derived from the host CPUs rather than configured: the shared PostgreSQL
+    container serves every team, so the cap keeps one restore from taking the
+    whole cluster.
+    """
+    return max(1, min(4, os.cpu_count() or 1))
 
 
 _PG_TABLESPACES_MOUNT = "/tablespaces"
@@ -1781,6 +1882,10 @@ def reload_template(
                     container_dump_path,
                 ]
             else:
+                # Parallel restore only here: -j needs a seekable archive, which
+                # rules out the gzip pipeline above (pg_restore reads a pipe) and
+                # the plain-SQL psql path. Odoo restores are dominated by index
+                # and constraint builds, which is exactly what -j parallelises.
                 restore_cmd = [
                     "pg_restore",
                     "--no-owner",
@@ -1788,8 +1893,11 @@ def reload_template(
                     settings.db_user,
                     "-d",
                     tpl_db,
-                    container_dump_path,
                 ]
+                jobs = _pg_restore_jobs()
+                if jobs > 1:
+                    restore_cmd += ["-j", str(jobs)]
+                restore_cmd.append(container_dump_path)
 
         logger.info(
             "DB restore started, template_db=%s, dump=%s", tpl_db, resolved_dump
@@ -2078,29 +2186,15 @@ def init_template(
     os.makedirs(os.path.dirname(template_sql_path), exist_ok=True)
 
     db_container = client.containers.get(settings.shared_db_container)
-    dump_cmd = [
-        "pg_dump",
-        "-U",
-        settings.db_user,
-        "-Fp",
-        "-f",
-        f"/tmp/{build_db}.dump",
-        build_db,
-    ]
-    exit_code_dump, output_dump = db_container.exec_run(dump_cmd)
-    if exit_code_dump != 0:
-        msg = (
-            output_dump.decode("utf-8")
-            if isinstance(output_dump, bytes)
-            else str(output_dump)
+    dump_cmd = ["pg_dump", "-U", settings.db_user, "-Fp", build_db]
+    try:
+        _stream_exec_to_file(
+            client, db_container, dump_cmd, template_sql_path, tool="pg_dump"
         )
+    except ExternalCommandError:
         temp_container.remove(v=True)
         _exec_sql(client, settings, f"DROP DATABASE IF EXISTS {build_db} WITH (FORCE);")
-        raise ExternalCommandError("pg_dump", exit_code_dump, msg)
-
-    logger.info("pg_dump completed, extracting dump file")
-
-    _copy_file_from_container(db_container, f"/tmp/{build_db}.dump", template_sql_path)
+        raise
 
     logger.info("Dump saved to %s", template_sql_path)
 
@@ -2274,16 +2368,10 @@ def publish_env_as_template(
     # ignored by pg_dump for the -Fc archive format.
     dump_path = team.get_template_sql_path(template_name)
     os.makedirs(os.path.dirname(dump_path), exist_ok=True)
-    dump_file = f"/tmp/{env_db}.dump"
-    dump_cmd = ["pg_dump", "-U", settings.db_user, "-Fc", "-f", dump_file, env_db]
+    dump_cmd = ["pg_dump", "-U", settings.db_user, "-Fc", env_db]
 
     logger.info("Dumping branch database %s", env_db)
-    exit_code, output = db_container.exec_run(dump_cmd)
-    if exit_code != 0:
-        msg = output.decode("utf-8") if isinstance(output, bytes) else str(output)
-        raise ExternalCommandError("pg_dump", exit_code, msg)
-
-    _copy_file_from_container(db_container, dump_file, dump_path)
+    _stream_exec_to_file(client, db_container, dump_cmd, dump_path, tool="pg_dump")
 
     logger.info("Branch dump saved to %s", dump_path)
 
