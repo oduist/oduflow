@@ -1,6 +1,6 @@
 """Unit tests for the pure .po reader in oduflow.po_tools (no Docker needed)."""
 
-from oduflow.po_tools import compare, parse_po, summarize
+from oduflow.po_tools import compare, merge_with_template, parse_po, summarize
 
 HEADER = """msgid ""
 msgstr ""
@@ -202,3 +202,37 @@ msgstr "Usługa Trans.eu jest niedostępna: %s"
     def test_identical_files_have_no_diff(self):
         entries = parse_po(WELL_FORMED)
         assert compare(entries, entries) == {"missing": [], "stale": []}
+
+
+class TestMergeWithTemplate:
+    def test_template_supplies_import_metadata_without_losing_translation(self):
+        translation = parse_po(
+            HEADER + 'msgid "Budget Ceiling"\nmsgstr "Limit budżetu"\n'
+        )
+        template = parse_po(WELL_FORMED)
+
+        merged = merge_with_template(translation, template)
+
+        assert [entry.msgid for entry in merged] == [
+            "Budget Ceiling",
+            "Publish",
+            "Only a dispatch manager may accept deals.",
+        ]
+        assert merged[0].msgstr == "Limit budżetu"
+        assert merged[0].module == "transeu_bridge"
+        assert merged[0].ref_types == {"model"}
+        assert merged[1].msgstr == ""
+
+    def test_entries_absent_from_template_are_obsolete_for_import(self):
+        translation = parse_po(
+            HEADER
+            + """#. module: transeu_bridge
+#: code:addons/transeu_bridge/models/old.py:0
+msgid "Old string"
+msgstr "Stary tekst"
+"""
+        )
+        merged = merge_with_template(translation, parse_po(WELL_FORMED))
+
+        assert merged
+        assert "Old string" not in {entry.msgid for entry in merged}

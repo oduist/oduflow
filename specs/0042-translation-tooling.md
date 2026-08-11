@@ -3,7 +3,7 @@
 **Status:** Adopted
 **Type:** MCP capability
 **First introduced:** this change (2026-07-27)
-**Key code today:** `po_tools.py` (`parse_po`, `summarize`, `compare`), `docker_ops/odoo_ops.py` (`export_module_translations`, `translation_status`, `_export_po`, `_export_command`, `_i18n_basename`), `server.py` (both tools, `_artifact_url`), `artifact_tokens.py`, `web_ui.py` (`/oduflow-artifact`), `scoped_access.py` (allowlist)
+**Key code today:** `po_tools.py` (`parse_po`, `summarize`, `merge_with_template`, `compare`), `docker_ops/odoo_ops.py` (`export_module_translations`, `translation_status`, `_export_po`, `_export_command`, `_i18n_basename`), `server.py` (both tools, `_artifact_url`), `artifact_tokens.py`, `web_ui.py` (`/oduflow-artifact`), `scoped_access.py` (allowlist)
 
 ## Context
 
@@ -15,10 +15,12 @@ by hand through `run_odoo_command` and wrote ad-hoc verification scripts in
 That would be a minor gap if the failure modes were loud. They are not. Odoo's
 `PoFileReader` derives a translation's type and target from the entry's `#:`
 reference line; an entry without one is skipped, so a perfectly valid gettext
-file imports as **zero translations** while the log says only "loading …".
-An entry without a `#. module:` comment is worse — the reader calls `.groups()`
-on a `None` match and the import aborts. Neither is visible without querying the
-result afterwards, which nobody does until they have been burned once. A real
+file can import as **zero translations** while the log says only "loading …".
+An entry without a `#. module:` comment can make the reader call `.groups()` on
+a `None` match and abort the import. Odoo avoids either outcome when a sibling
+`<module>.pot` supplies the missing metadata through its automatic polib merge;
+status therefore has to inspect the effective merged catalogue, not only the raw
+PO. Neither real defect is visible without querying the result afterwards. A real
 project shipped fully non-functional `pl.po`/`ru.po` files this way and only
 found out by chance.
 
@@ -95,8 +97,12 @@ Two version-shaped details are handled where they belong, alongside the existing
 
 `translation_status` lines up three sources per language: the `.pot` (what the
 module exposes), an export with `-l` (what the database holds), and the
-committed `.po` (what is in git). The `.po` is linted for the two silent
-failures, and diffed against the template for missing and stale entries.
+committed `.po` (what is in git). If the committed catalogue has a sibling
+`<module>.pot`, the status check reproduces the import-relevant part of Odoo's
+polib merge: translated strings remain, current module comments/references come
+from the POT, removed terms become obsolete, and new ones are untranslated. The
+effective result is linted for the two silent failures, while the raw PO is
+still diffed against a fresh export for missing and stale entries.
 
 `po_tools.py` holds the reading and counting as pure functions — no Docker, no
 database — so the interesting cases are ordinary unit tests.
@@ -105,9 +111,11 @@ Artifact egress mirrors [[0031-connect-as-user-impersonation]]'s token pattern
 and [[0036-cross-subdomain-connect-as-landing]]'s public landing route: the tool
 stashes the bytes behind a single-use token with a 10-minute TTL and returns a
 URL the agent fetches with `curl -o`. The token is the sole credential, so the
-path joins `_PUBLIC_PATHS` alongside `/oduflow-connect`. Under stdio no web
-server is mounted, so no URL is offered — but there Oduflow and the agent share
-a machine, and the response carries the file's host path instead.
+path joins `_PUBLIC_PATHS` alongside `/oduflow-connect`. Port-mode URLs use the
+configured team hostname rather than a listener bind address. Under stdio no web
+server is mounted, so no URL is offered — Oduflow and the agent share a machine,
+and the response carries the checkout path or, for read-only/core modules, a
+private bounded temporary file owned by the Oduflow process.
 
 ## Consequences
 
@@ -135,3 +143,5 @@ a machine, and the response carries the file's host path instead.
 - Verified end to end against a live Odoo 19 environment, which is what surfaced
   both the `odoo i18n` subcommand migration and the `get_iso_codes` filename
   rule.
+- Corrected status to model Odoo's sibling-POT merge and hardened catalogue I/O
+  and artifact egress after review, 2026-08-11.

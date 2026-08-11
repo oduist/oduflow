@@ -200,9 +200,8 @@ def _maybe_cache(output: str, header: str, source_tool: str, source_args: str) -
 def _artifact_url(settings: Settings, team: TeamSettings, token: str) -> str | None:
     """Public URL for a one-time artifact download, or None if unavailable.
 
-    Under stdio there is no web server to serve it from — but there the agent
-    runs on the same machine as Oduflow, so the file's host path is the better
-    answer anyway and the caller falls back to that.
+    Under stdio there is no web server to serve it from — the caller instead
+    returns a checkout path or materializes a local temporary artifact.
     """
     if _web_bind is None:
         return None
@@ -211,10 +210,14 @@ def _artifact_url(settings: Settings, team: TeamSettings, token: str) -> str | N
     elif settings.routing_mode == "traefik":
         base = f"https://{team.hostname}"
     else:
-        host, port = _web_bind
-        # 0.0.0.0 means "every interface", which is not a name anything can
-        # dial; localhost is the only honest rendering for a same-host caller.
-        base = f"http://{'localhost' if host in ('0.0.0.0', '::') else host}:{port}"
+        bind_host, port = _web_bind
+        # The bind address controls where the listener accepts connections; it
+        # is not necessarily a client-reachable name. Port mode already uses
+        # the team's configured hostname for every other public URL.
+        host = team.hostname or (
+            "localhost" if bind_host in ("0.0.0.0", "::") else bind_host
+        )
+        base = f"http://{host}:{port}"
     return f"{base}/oduflow-artifact?token={token}"
 
 
@@ -1822,7 +1825,7 @@ def export_module_translations(
     elif result["read_only_mount"]:
         lines.append(
             f"Not written: {result['module_dir']} is a shared extra-addons "
-            "checkout, mounted read-only. Use the download link below."
+            "checkout, mounted read-only."
         )
     else:
         lines.append(
@@ -1831,9 +1834,17 @@ def export_module_translations(
         )
 
     content = str(result["content"]).encode("utf-8")
-    token = artifact_tokens.issue(str(result["filename"]), content)
-    url = _artifact_url(settings, team, token)
-    if url:
+    if _web_bind is None:
+        if not result["host_path"]:
+            local_path = artifact_tokens.materialize(str(result["filename"]), content)
+            lines.append(
+                f"Host path: {local_path}  "
+                "(temporary; removed when this Oduflow process stops)"
+            )
+    else:
+        token = artifact_tokens.issue(str(result["filename"]), content)
+        url = _artifact_url(settings, team, token)
+        assert url is not None
         lines.append(f"Download:  {url}  (one-time, expires in 10 minutes)")
 
     header = f"{woke}Exported {module} ({kind}) from environment '{env_name}'."
@@ -1860,8 +1871,9 @@ def translation_status(
     ways a `.po` fails, and this is what makes them visible.
 
     - Entries with no `#:` reference line import as ZERO translations, with no
-      warning at all — the file is read and thrown away.
-    - Entries with no `#. module:` comment abort the import outright.
+      warning at all, unless a sibling `<module>.pot` supplies the metadata.
+    - Entries with no `#. module:` comment abort the import outright unless that
+      sibling template supplies it.
 
     It also reports terms present in the module but missing from the file, and
     stale entries left in the file after a source string changed.
@@ -1909,15 +1921,20 @@ def translation_status(
             continue
 
         po = entry["file"]
+        effective = entry.get("import_effective", po)
         lines.append(f"In {entry['file_path']}: {po.entries} entries")
-        if po.no_reference:
+        if entry.get("metadata_template_path"):
             lines.append(
-                f"  ! {po.no_reference} entries have no '#:' reference — Odoo "
+                f"  Import metadata: merged from {entry['metadata_template_path']}"
+            )
+        if effective.no_reference:
+            lines.append(
+                f"  ! {effective.no_reference} entries have no '#:' reference — Odoo "
                 "imports these as ZERO translations, silently."
             )
-        if po.no_module_comment:
+        if effective.no_module_comment:
             lines.append(
-                f"  ! {po.no_module_comment} entries have no '#. module:' "
+                f"  ! {effective.no_module_comment} entries have no '#. module:' "
                 "comment — these abort the import with an error."
             )
         diff = entry["diff"]

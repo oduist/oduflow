@@ -7,7 +7,6 @@ import secrets
 from typing import Any
 
 import docker
-
 from oduflow import po_tools
 from oduflow.docker_ops.client import get_client
 from oduflow.env_credentials import load_credentials
@@ -499,14 +498,16 @@ def write_file_in_environment(
     path: str,
     content: str,
     user: str = "odoo",
+    *,
+    max_bytes: int = _WRITE_FILE_LIMIT,
 ) -> dict[str, Any]:
     """Write a text file inside the Odoo container via tar stream."""
     import io
     import tarfile
 
-    if len(content.encode("utf-8")) > _WRITE_FILE_LIMIT:
+    if len(content.encode("utf-8")) > max_bytes:
         raise ExternalCommandError(
-            "write_file", 1, f"Content exceeds {_WRITE_FILE_LIMIT} byte limit."
+            "write_file", 1, f"Content exceeds {max_bytes} byte limit."
         )
 
     client = get_client()
@@ -1016,7 +1017,7 @@ def http_request_to_odoo(
 # Locale codes reaching the `odoo -l <lang>` command line get the same treatment
 # as module names above: exec_run tokenizes with shlex.split, so an unvalidated
 # value could smuggle a separate Odoo CLI flag into the invocation.
-_LANG_CODE_RE = re.compile(r"^[a-z]{2,3}(_[A-Z]{2})?$")
+_LANG_CODE_RE = re.compile(r"^[a-z]{2,3}(?:_[A-Z]{2})?(?:@[A-Za-z][A-Za-z0-9_-]*)?$")
 
 # A module's exported catalogue is tens of KB; the cap only exists so a runaway
 # export cannot be read into the server's memory in one piece.
@@ -1032,7 +1033,7 @@ def _validate_lang_codes(langs: "list[str] | tuple[str, ...]") -> None:
         if not _LANG_CODE_RE.match(lang or ""):
             raise ValueError(
                 f"Invalid language code '{lang}': expected a locale like "
-                "'pl_PL', 'ru_RU' or 'fr'."
+                "'pl_PL', 'sr@latin' or 'fr'."
             )
 
 
@@ -1201,9 +1202,13 @@ def _export_po(
     )
     export_code, export_output = container.exec_run(cmd, **kwargs)
     try:
+        if export_code != 0:
+            raise ExternalCommandError(label, export_code, _decode(export_output))
         size_code, size_out = container.exec_run(["stat", "-c", "%s", path])
         if size_code != 0:
-            raise ExternalCommandError(label, export_code, _decode(export_output))
+            raise ExternalCommandError(
+                "stat exported catalogue", size_code, _decode(size_out)
+            )
         size = int(_decode(size_out).strip() or 0)
         if size > _PO_EXPORT_LIMIT:
             raise ExternalCommandError(
@@ -1212,7 +1217,11 @@ def _export_po(
                 f"Exported catalogue is {size} bytes, above the "
                 f"{_PO_EXPORT_LIMIT} byte limit.",
             )
-        _, blob = container.exec_run(["cat", path])
+        read_code, blob = container.exec_run(["cat", path])
+        if read_code != 0:
+            raise ExternalCommandError(
+                "read exported catalogue", read_code, _decode(blob)
+            )
         return _decode(blob)
     finally:
         container.exec_run(["rm", "-f", *artifacts])
@@ -1244,6 +1253,38 @@ def _find_module_dir(container: Any, module: str) -> str:
         if line.endswith(marker):
             return line[: -len("/__manifest__.py")]
     return ""
+
+
+def _read_translation_catalog(container: Any, path: str) -> str | None:
+    """Read one bounded PO/POT file, returning ``None`` only when absent."""
+    exists_code, _ = container.exec_run(["test", "-f", path])
+    if exists_code != 0:
+        return None
+
+    size_code, size_out = container.exec_run(["stat", "-c", "%s", path])
+    if size_code != 0:
+        raise ExternalCommandError(
+            "stat translation catalogue", size_code, _decode(size_out)
+        )
+    try:
+        size = int(_decode(size_out).strip())
+    except ValueError as exc:
+        raise ExternalCommandError(
+            "stat translation catalogue", 1, _decode(size_out)
+        ) from exc
+    if size > _PO_EXPORT_LIMIT:
+        raise ExternalCommandError(
+            "read translation catalogue",
+            1,
+            f"Catalogue is {size} bytes, above the {_PO_EXPORT_LIMIT} byte limit.",
+        )
+
+    read_code, output = container.exec_run(["cat", path])
+    if read_code != 0:
+        raise ExternalCommandError(
+            "read translation catalogue", read_code, _decode(output)
+        )
+    return _decode(output)
 
 
 def _host_path(
@@ -1291,7 +1332,14 @@ def export_module_translations(
     read_only = False
     if module_dir.startswith(_MAIN_ADDONS_MOUNT + "/"):
         written = f"{module_dir}/i18n/{filename}"
-        write_file_in_environment(settings, team, env_name, written, content)
+        write_file_in_environment(
+            settings,
+            team,
+            env_name,
+            written,
+            content,
+            max_bytes=_PO_EXPORT_LIMIT,
+        )
     elif module_dir:
         # An extra-addons repo: shared across environments and mounted read-only,
         # so the file can only travel out via the download link.
@@ -1338,6 +1386,11 @@ def translation_status(
         _export_po(settings, team, env_name, container, module)
     )
     module_dir = _find_module_dir(container, module)
+    pot_path = f"{module_dir}/i18n/{module}.pot" if module_dir else ""
+    pot_content = _read_translation_catalog(container, pot_path) if pot_path else None
+    committed_template = (
+        po_tools.parse_po(pot_content) if pot_content is not None else None
+    )
 
     per_lang: list[dict[str, Any]] = []
     for lang in targets:
@@ -1348,17 +1401,24 @@ def translation_status(
             )
             entry["database"] = po_tools.summarize(db_entries)
         po_path = f"{module_dir}/i18n/{_i18n_basename(lang)}.po" if module_dir else ""
-        file_result = (
-            read_file_in_environment(settings, team, env_name, po_path)
-            if po_path
-            else {"error": "module directory not found"}
+        file_content = (
+            _read_translation_catalog(container, po_path) if po_path else None
         )
-        if "error" in file_result:
+        if file_content is None:
             entry["file_path"] = ""
         else:
-            file_entries = po_tools.parse_po(str(file_result["output"]))
+            file_entries = po_tools.parse_po(file_content)
+            effective_entries = (
+                po_tools.merge_with_template(file_entries, committed_template)
+                if committed_template is not None
+                else file_entries
+            )
             entry["file_path"] = po_path
             entry["file"] = po_tools.summarize(file_entries)
+            entry["import_effective"] = po_tools.summarize(effective_entries)
+            entry["metadata_template_path"] = (
+                pot_path if committed_template is not None else ""
+            )
             entry["diff"] = po_tools.compare(template_entries, file_entries)
         per_lang.append(entry)
 

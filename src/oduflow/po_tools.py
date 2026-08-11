@@ -3,11 +3,12 @@
 Odoo's translation importer is unusually silent about malformed input, and the
 two failure modes it hides are the expensive ones:
 
-* An entry with no ``#:`` reference line carries no type/target, so
+* After Odoo's optional sibling-POT merge, an entry with no ``#:`` reference
+  line carries no type/target, so
   ``PoFileReader.__iter__`` (``odoo/tools/translate.py``) simply yields nothing
   for it. A whole, perfectly valid gettext file can therefore import to *zero*
   translations while the log only says "loading …".
-* An entry with no ``#. module: <name>`` comment makes that same reader call
+* An entry still lacking ``#. module: <name>`` makes that same reader call
   ``.groups()`` on a ``None`` match, i.e. it aborts the import outright.
 
 So the counts here are deliberately built around what Odoo's *reader* would make
@@ -229,6 +230,38 @@ def summarize(entries: list[PoEntry]) -> PoSummary:
         no_module_comment=no_module,
         untranslated_msgids=untranslated,
     )
+
+
+def merge_with_template(
+    translation: list[PoEntry], template: list[PoEntry]
+) -> list[PoEntry]:
+    """Return the catalogue Odoo effectively imports beside a sibling POT.
+
+    Odoo asks polib to merge ``<module>.pot`` into a language catalogue before
+    iterating it.  Matching entries retain their translated ``msgstr`` but get
+    the template's current module comment and occurrences; entries removed from
+    the template become obsolete, while new template entries are added with an
+    empty translation.  Reproducing those import-relevant effects keeps status
+    warnings honest without making polib a runtime dependency.
+
+    The raw translation must still be passed separately to :func:`compare`, so
+    missing and stale terms describe the committed file rather than this merged
+    view.
+    """
+    translated_by_id = {entry.msgid: entry for entry in translation}
+    merged: list[PoEntry] = []
+    for template_entry in template:
+        translated = translated_by_id.get(template_entry.msgid)
+        merged.append(
+            PoEntry(
+                msgid=template_entry.msgid,
+                msgstr=translated.msgstr if translated else "",
+                module=template_entry.module,
+                occurrences=template_entry.occurrences,
+                line=translated.line if translated else template_entry.line,
+            )
+        )
+    return merged
 
 
 def compare(

@@ -8,6 +8,7 @@ been used or has aged out.
 
 from __future__ import annotations
 
+import os
 import tempfile
 
 import pytest
@@ -65,6 +66,27 @@ class TestTokenStore:
         ]
         alive = [t for t in tokens if artifact_tokens.consume(t, now=1.0) is not None]
         assert len(alive) <= 20
+
+    def test_materializes_a_private_process_lifetime_file_for_stdio(self):
+        path = artifact_tokens.materialize("sale.pot", b'msgid "x"\n')
+
+        assert path.endswith("-sale.pot")
+        assert open(path, "rb").read() == b'msgid "x"\n'
+        assert os.stat(path).st_mode & 0o777 == 0o600
+
+    def test_materialized_filename_cannot_escape_the_temp_directory(self):
+        path = artifact_tokens.materialize("../../sale.pot", b"body")
+        assert path.endswith("-sale.pot")
+        assert ".." not in os.path.basename(path)
+
+    def test_materialized_store_is_bounded(self):
+        paths = [
+            artifact_tokens.materialize("f.pot", b"body", now=1e12 + i)
+            for i in range(25)
+        ]
+
+        assert sum(os.path.exists(path) for path in paths) <= 20
+        assert all(os.path.exists(path) for path in paths[-20:])
 
 
 class TestDownloadRoute:

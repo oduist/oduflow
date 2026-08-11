@@ -13,13 +13,16 @@ conversation. Authentication is the token itself — like ``connect_tokens``, th
 entry is consumed exactly once and expires quickly, so a link left in a
 transcript is useless afterwards.
 
-The store is in-process and bounded: the server is single-process, and artifacts
-are large enough that an unbounded dict would be a memory leak with a URL
-attached.
+The stores are in-process and bounded: HTTP artifacts remain in memory, while
+stdio artifacts that have no checkout path are private temporary files owned by
+the process. The server is single-process, and generated files are large enough
+that either store would otherwise grow without limit.
 """
 
 from __future__ import annotations
 
+import os
+import tempfile
 import threading
 import time
 
@@ -36,6 +39,12 @@ _MAX_ENTRIES = 20
 _lock = threading.Lock()
 # token -> (filename, content, expiry_monotonic)
 _store: dict[str, tuple[str, bytes, float]] = {}
+# Files materialized for stdio callers live only as long as this process (or
+# until bounded-store eviction).  Keeping the TemporaryDirectory object alive
+# is what owns and eventually removes the directory.
+_local_dir: tempfile.TemporaryDirectory[str] | None = None
+# path -> creation_monotonic
+_local_store: dict[str, float] = {}
 
 
 def _now(now: float | None) -> float:
@@ -85,3 +94,39 @@ def consume(token: str, *, now: float | None = None) -> tuple[str, bytes] | None
     if expiry <= ts:
         return None
     return filename, content
+
+
+def materialize(filename: str, content: bytes, *, now: float | None = None) -> str:
+    """Write a bounded, process-lifetime artifact for a local stdio caller."""
+    if len(content) > _MAX_BYTES:
+        raise ValueError(
+            f"Artifact is too large to materialize "
+            f"({len(content)} bytes, limit {_MAX_BYTES})."
+        )
+
+    safe_name = os.path.basename(filename) or "artifact"
+    ts = _now(now)
+    with _lock:
+        global _local_dir
+        while len(_local_store) >= _MAX_ENTRIES:
+            oldest = min(_local_store, key=lambda path: _local_store[path])
+            _local_store.pop(oldest, None)
+            try:
+                os.unlink(oldest)
+            except FileNotFoundError:
+                pass
+        if _local_dir is None:
+            _local_dir = tempfile.TemporaryDirectory(prefix="oduflow-artifacts-")
+        path = os.path.join(_local_dir.name, f"{generate_token()}-{safe_name}")
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        try:
+            with os.fdopen(fd, "wb") as artifact:
+                artifact.write(content)
+        except Exception:
+            try:
+                os.unlink(path)
+            except FileNotFoundError:
+                pass
+            raise
+        _local_store[path] = ts
+    return path

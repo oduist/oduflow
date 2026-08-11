@@ -83,14 +83,16 @@ In live-mount mode, you as the agent must track the intent of your own edits. If
 
 | Tool | When to use |
 |---|---|
-| `export_module_translations(env_name, module, lang?)` | Export the module's catalogue with Odoo's own exporter. No `lang` → the `.pot` template (all translatable terms, including `_()` messages from Python). With `lang` → a `.po` filled from the database. Writes into the module's `i18n/` and returns a **summary plus a one-time download URL**, never the file body. |
+| `export_module_translations(env_name, module, lang?)` | Export the module's catalogue with Odoo's own exporter. No `lang` → the `.pot` template (all translatable terms, including `_()` messages from Python). With `lang` → a `.po` filled from the database. Writes into the module's `i18n/` and returns a **summary plus a one-time download URL** over HTTP or a temporary host path under stdio, never the file body. |
 | `translation_status(env_name, module, langs?)` | Compare the module's terms, the database, and the committed `i18n/*.po`. **Run this after loading translations** — Odoo is silent about both ways a `.po` fails. |
 
 > **Odoo does not warn you when translations fail to load.** A `.po` entry with
 > no `#:` reference line is read and discarded — a whole valid file can import as
 > zero translations with nothing in the log. An entry with no `#. module:`
-> comment aborts the import. `translation_status` is what makes these visible;
-> do not assume a `.po` worked because the upgrade succeeded.
+> comment aborts the import. Odoo first merges a sibling `<module>.pot`, when
+> present, and that template can supply both kinds of metadata;
+> `translation_status` models that effective import instead of raising a false
+> warning. Do not assume a `.po` worked because the upgrade succeeded.
 
 > Write English source strings (`string=`, `help=`, `_()`), never a national
 > language: Odoo's whole translation mechanism assumes an English `msgid`.

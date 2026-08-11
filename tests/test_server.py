@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 import pytest
 from fastmcp.exceptions import ToolError
+
 from oduflow.po_tools import PoSummary
 from oduflow.settings import Settings, TeamSettings
 
@@ -1565,6 +1566,8 @@ class TestResetAdminPasswordDropsSessions:
         _get_tool_fn("reset_admin_password")(env_name="main")
 
         assert ("1", "main", "") not in odoo_rpc._SESSIONS
+
+
 class TestTranslationTools:
     """The two i18n tools, at the layer that turns backend data into a report."""
 
@@ -1633,6 +1636,22 @@ class TestTranslationTools:
         # 0.0.0.0 is not a name anything can dial.
         assert "http://localhost:8000/oduflow-artifact?token=" in result
 
+    def test_port_mode_download_uses_the_configured_public_hostname(self):
+        import oduflow.server
+
+        remote_team = replace(TEST_TEAM, hostname="oduflow.example.com")
+        oduflow.server._web_bind = ("0.0.0.0", 8000)
+        try:
+            url = oduflow.server._artifact_url(
+                TEST_SETTINGS, remote_team, "download-token"
+            )
+        finally:
+            oduflow.server._web_bind = None
+
+        assert url == (
+            "http://oduflow.example.com:8000/oduflow-artifact?token=download-token"
+        )
+
     @patch("oduflow.docker_ops.env_ops.ensure_running", return_value=False)
     @patch("oduflow.docker_ops.odoo_ops.export_module_translations")
     def test_export_without_web_ui_falls_back_to_the_host_path(
@@ -1676,6 +1695,29 @@ class TestTranslationTools:
             env_name="main", module="mymod"
         )
         assert "mounted read-only" in result
+        assert "Host path:" in result
+        path = result.split("Host path: ", 1)[1].split("  ", 1)[0]
+        with open(path, "rb") as artifact:
+            assert artifact.read() == b'msgid "Budget Ceiling"\nmsgstr ""\n'
+
+    @patch("oduflow.docker_ops.env_ops.ensure_running", return_value=False)
+    @patch("oduflow.docker_ops.odoo_ops.export_module_translations")
+    def test_export_materializes_core_module_artifact_under_stdio(
+        self, mock_export, mock_ensure
+    ):
+        mock_export.return_value = self._export_result(
+            module_dir="",
+            written_path="",
+            host_path="",
+            read_only_mount=False,
+        )
+
+        result = _get_tool_fn("export_module_translations")(
+            env_name="main", module="mymod"
+        )
+
+        assert "Core Odoo modules" in result
+        assert "Host path:" in result
 
     @patch("oduflow.docker_ops.env_ops.ensure_running", return_value=False)
     @patch("oduflow.docker_ops.odoo_ops.export_module_translations")
@@ -1715,6 +1757,8 @@ class TestTranslationTools:
                     "database": empty,
                     "file_path": "/mnt/extra-addons/mymod/i18n/pl_PL.po",
                     "file": broken,
+                    "import_effective": broken,
+                    "metadata_template_path": "",
                     "diff": {"missing": ["Active"], "stale": ["Old string"]},
                 }
             ],
@@ -1730,6 +1774,41 @@ class TestTranslationTools:
         mock_status.assert_called_once_with(
             TEST_SETTINGS, TEST_TEAM, "main", "mymod", None
         )
+
+    @patch("oduflow.docker_ops.env_ops.ensure_running", return_value=False)
+    @patch("oduflow.docker_ops.odoo_ops.translation_status")
+    def test_status_does_not_warn_when_sibling_pot_supplies_metadata(
+        self, mock_status, mock_ensure
+    ):
+        empty = PoSummary(0, 0, 0, {}, 0, 0, [])
+        raw = PoSummary(1, 1, 0, {}, 1, 1, [])
+        effective = PoSummary(1, 1, 0, {"model": 1}, 0, 0, [])
+        mock_status.return_value = {
+            "module": "mymod",
+            "module_dir": "/mnt/extra-addons/mymod",
+            "template": self._SUMMARY,
+            "active_langs": ["en_US", "pl_PL"],
+            "langs": [
+                {
+                    "lang": "pl_PL",
+                    "active": True,
+                    "database": empty,
+                    "file_path": "/mnt/extra-addons/mymod/i18n/pl.po",
+                    "file": raw,
+                    "import_effective": effective,
+                    "metadata_template_path": (
+                        "/mnt/extra-addons/mymod/i18n/mymod.pot"
+                    ),
+                    "diff": {"missing": [], "stale": []},
+                }
+            ],
+        }
+
+        result = _get_tool_fn("translation_status")(env_name="main", module="mymod")
+
+        assert "Import metadata: merged from" in result
+        assert "imports these as ZERO" not in result
+        assert "abort the import" not in result
 
     @patch("oduflow.docker_ops.env_ops.ensure_running", return_value=False)
     @patch("oduflow.docker_ops.odoo_ops.translation_status")
