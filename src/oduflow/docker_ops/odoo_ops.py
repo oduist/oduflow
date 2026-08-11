@@ -78,8 +78,68 @@ def _longpoll_port_flag(container: Any, image_label: str) -> str:
     return "--gevent-port"
 
 
+def _validate_test_tags(test_tags: str) -> None:
+    """Reject anything that is not an Odoo ``--test-tags`` expression.
+
+    Same argument-injection concern as module names: the value lands in a
+    command string that ``exec_run`` tokenizes with ``shlex.split``, so a token
+    containing whitespace would become a separate argv entry and smuggle extra
+    Odoo CLI flags into the run. Odoo's own grammar
+    (``[-][tag][/module][:Class][.method]``, comma-separated) needs no spaces.
+    """
+    if not re.match(r"^[A-Za-z0-9_,:./+*-]+$", test_tags):
+        raise ValueError(
+            f"Invalid test_tags '{test_tags}': expected a comma-separated Odoo "
+            "test-tags expression such as '/my_module:TestClass.test_method' "
+            "(no spaces)."
+        )
+
+
+def _scope_test_tags_without_upgrade(test_tags: str, module_list: list[str]) -> str:
+    """Keep an upgrade-free test run inside the requested modules.
+
+    Without ``-u`` Odoo considers post-install tests from every initialized
+    module, so ``modules`` does not scope collection by itself. Positive tag
+    selectors must therefore name one of the requested modules. An
+    exclusion-only expression (for example ``-slow``) is prefixed with module
+    selectors so it subtracts from the requested modules rather than from the
+    entire registry.
+    """
+    if not test_tags:
+        return ",".join(f"/{module}" for module in module_list)
+
+    selectors = test_tags.split(",")
+    positive_modules: list[str] = []
+    for selector in selectors:
+        if selector.startswith("-"):
+            continue
+        body = selector[1:] if selector.startswith("+") else selector
+        if "/" not in body:
+            raise ValueError(
+                "With upgrade=False, positive test_tags must include a module "
+                "scope, for example 'slow/sale' or '/sale:TestClass'."
+            )
+        module = body.split("/", 1)[1].split(":", 1)[0]
+        if not module or module not in module_list:
+            raise ValueError(
+                f"test_tags selector '{selector}' is outside the requested "
+                f"modules: {','.join(module_list)}."
+            )
+        positive_modules.append(module)
+
+    if positive_modules:
+        return test_tags
+    module_scope = [f"/{module}" for module in module_list]
+    return ",".join([*module_scope, *selectors])
+
+
 def run_environment_tests(
-    settings: Settings, team: TeamSettings, env_name: str, modules: str
+    settings: Settings,
+    team: TeamSettings,
+    env_name: str,
+    modules: str,
+    test_tags: str = "",
+    upgrade: bool = True,
 ) -> str:
     client = get_client()
     odoo_container_name = get_resource_name(
@@ -94,7 +154,20 @@ def run_environment_tests(
             f"Environment '{env_name}' does not exist. Use create_environment first."
         )
 
-    _validate_module_names([m.strip() for m in modules.split(",") if m.strip()])
+    module_list = [m.strip() for m in modules.split(",") if m.strip()]
+    if not module_list:
+        # An empty list would produce a bare `-u` (no value), or with
+        # upgrade=False an unscoped run over every installed module's tests.
+        raise ValueError("modules is required: name the modules to test.")
+    _validate_module_names(module_list)
+    if test_tags:
+        _validate_test_tags(test_tags)
+    if not upgrade:
+        # Without an upgrade nothing narrows the run to the requested modules —
+        # Odoo would sweep the post-install tests of every installed module.
+        # Preserve an explicit module-qualified selector, or combine an
+        # exclusion-only expression with derived module filters.
+        test_tags = _scope_test_tags_without_upgrade(test_tags, module_list)
     # allow_fallback=False: tests run tenant-controlled code inside the odoo
     # container, so the shared superuser password must never be exposed there
     # (cross-tenant DB access on legacy environments predating per-env
@@ -112,22 +185,37 @@ def run_environment_tests(
     # template, and -i on an installed module is a no-op that never enters the test
     # phase (→ "0 of 0 tests"). -u re-runs the module's tests on the existing DB.
     #
+    # upgrade=False drops -u for a fast re-run. Odoo then takes the test set from
+    # `registry._init_modules` instead of `registry.updated_modules` and builds a
+    # 'post_install' suite only (odoo/service/server.py, identical on 15–19), so
+    # at_install tests — the default position for TestCase/TransactionCase — are
+    # NOT collected. Keep the default (-u) unless the target class is post_install.
+    #
     # --no-http has no effect under --test-enable (tests need a live HTTP server),
     # so instead of disabling HTTP we move the test server's HTTP and gevent ports
     # off the defaults (8069/8072) already held by the running Odoo container.
     # Odoo 16.0 renamed --longpolling-port to --gevent-port, so pick the flag the
     # environment's Odoo version actually understands.
     port_flag = _longpoll_port_flag(container, settings.image_label)
+    upgrade_flag = f"-u {modules} " if upgrade else ""
+    # --test-tags=VALUE (not a separate argv token): a leading '-' in an
+    # exclusion expression like '-slow' would otherwise parse as a CLI flag.
+    tags_flag = f"--test-tags={test_tags} " if test_tags else ""
     cmd = (
         f"odoo --test-enable --stop-after-init --workers 0 "
-        f"--http-port 8089 {port_flag} 8090 -u {modules} "
+        f"--http-port 8089 {port_flag} 8090 {upgrade_flag}{tags_flag}"
         f"--db_host={settings.shared_db_container} "
         f"-r {creds['pg_user']} "
         f"--database={env_db}"
     )
     logger.info(
         "Running tests",
-        extra={"env_name": env_name, "modules": modules},
+        extra={
+            "env_name": env_name,
+            "modules": modules,
+            "test_tags": test_tags,
+            "upgrade": upgrade,
+        },
     )
     exit_code, output = container.exec_run(
         cmd, environment={"PGPASSWORD": creds["pg_password"]}
@@ -361,7 +449,17 @@ def run_command_in_environment(
     env_name: str,
     command: str,
     user: str = "odoo",
+    shell: bool = True,
 ) -> dict[str, Any]:
+    """Run *command* inside the environment's Odoo container.
+
+    By default the command goes through ``sh -c``, so pipes, redirections,
+    ``&&``, ``cd x && y`` and variable expansion behave as written. Docker's
+    bare exec has no shell: it splits the string with ``shlex.split`` and runs
+    argv[0] directly, which silently passes ``|``/``>``/``&&`` to the program as
+    literal arguments. Pass ``shell=False`` for exact argv semantics (no
+    globbing, no expansion, metacharacters stay literal).
+    """
     client = get_client()
     odoo_container_name = get_resource_name(
         env_name, "odoo", settings.prefix, team.team_id
@@ -376,9 +474,16 @@ def run_command_in_environment(
 
     logger.info(
         "Executing command in environment",
-        extra={"env_name": env_name, "command": command, "user": user},
+        extra={
+            "env_name": env_name,
+            "command": command,
+            "user": user,
+            "shell": shell,
+        },
     )
-    exit_code, output = container.exec_run(command, user=user)
+    exit_code, output = container.exec_run(
+        ["sh", "-c", command] if shell else command, user=user
+    )
     output_str = output.decode("utf-8") if isinstance(output, bytes) else str(output)
 
     return {

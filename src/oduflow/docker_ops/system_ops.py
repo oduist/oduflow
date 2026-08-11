@@ -2043,7 +2043,10 @@ def init_template(
     logger.info("Template generation complete, loading into template DB")
     result = reload_template(settings, team, template_name=template_name)
 
-    metadata: dict[str, Any] = {"odoo_image": odoo_image}
+    metadata: dict[str, Any] = {
+        "odoo_image": odoo_image,
+        "snapshot_at": _utc_now_iso(),
+    }
     from oduflow.docker_ops.env_ops import _dir_size_mb
 
     fs_size = _dir_size_mb(template_filestore_path)
@@ -2061,6 +2064,42 @@ def init_template(
         1 for _ in pathlib.Path(template_filestore_path).rglob("*") if _.is_file()
     )
     return result
+
+
+def _utc_now_iso() -> str:
+    import datetime
+
+    return datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+
+def _code_provenance(
+    team: TeamSettings, env_name: str, labels: dict[str, Any]
+) -> dict[str, str]:
+    """Which code the template's database was snapshotted from.
+
+    A template DB is a snapshot of a branch at a moment in time; without that
+    anchor nothing can tell a later environment whether its checkout predates
+    the data it was handed. Recorded best-effort — a missing checkout only means
+    the lineage check is skipped later (see git_analysis.template_lineage).
+    """
+    from oduflow.git_ops import is_git_repository, rev_parse
+    from oduflow.naming import get_repo_path
+
+    provenance: dict[str, str] = {"snapshot_at": _utc_now_iso()}
+    branch = labels.get("oduflow.git_branch", "")
+    if branch:
+        provenance["source_branch"] = branch
+    repo_path = labels.get("oduflow.local_path", "") or get_repo_path(
+        env_name, team.workspaces_dir
+    )
+    if is_git_repository(repo_path):
+        try:
+            provenance["source_commit"] = rev_parse(repo_path)
+        except (ExternalCommandError, OSError) as exc:
+            logger.debug(
+                "No snapshot commit for template source %s: %s", repo_path, exc
+            )
+    return provenance
 
 
 def _source_env_metadata(settings: Settings, labels: dict[str, Any]) -> dict[str, Any]:
@@ -2255,12 +2294,13 @@ def publish_env_as_template(
 
     # Save template metadata from source environment
     promoted_container_name = f"{settings.prefix}{env_name.replace('/', '-')}-odoo"
-    metadata = {}
+    metadata: dict[str, Any] = {}
     try:
         pc = client.containers.get(promoted_container_name)
         metadata = _source_env_metadata(settings, pc.labels)
+        metadata.update(_code_provenance(team, env_name, pc.labels))
     except docker.errors.NotFound:
-        pass
+        metadata = {"snapshot_at": _utc_now_iso()}
     fs_size = (
         env_ops._dir_size_mb(template_filestore_path)
         if os.path.isdir(template_filestore_path)
@@ -2784,6 +2824,9 @@ def import_from_odoo(
         "pg_version": manifest.get("pg_version", ""),
         "modules": manifest.get("modules", {}),
         "includes_filestore": not without_filestore,
+        # No source_commit: an imported database has no branch of ours behind
+        # it, so the lineage check has nothing to compare against and is skipped.
+        "snapshot_at": _utc_now_iso(),
     }
     _update_template_sizes(team, settings, template_name, metadata)
     logger.info("Metadata saved for template %s", template_name)
@@ -3467,6 +3510,11 @@ def list_templates(settings: Settings, team: TeamSettings) -> list[dict[str, Any
                 "filestore_size_mb": metadata.get("filestore_size_mb"),
                 "dump_size_mb": metadata.get("dump_size_mb"),
                 "auto_install_modules": metadata.get("auto_install_modules", ""),
+                # Code the snapshot was taken from — the anchor for the lineage
+                # check run at environment creation.
+                "source_branch": metadata.get("source_branch", ""),
+                "source_commit": metadata.get("source_commit", ""),
+                "snapshot_at": metadata.get("snapshot_at", ""),
             }
         )
     return result

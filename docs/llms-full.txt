@@ -163,10 +163,10 @@ For OAuth-based MCP clients like Claude.ai Remote MCP, Oduflow runs its own OAut
 - `upgrade_odoo_modules` — upgrade Odoo modules
 - `export_module_translations` — export a module's .pot/.po translation catalogue
 - `translation_status` — check what translations actually loaded, and lint the .po files
-- `run_odoo_tests` — run Odoo tests for specific modules
+- `run_odoo_tests` — run Odoo tests for specific modules (`test_tags` narrows to one class/method; `upgrade=False` skips the `-u`, collects `post_install` tests only, and requires module-scoped positive tags)
 - `pull_and_apply` — pull latest code and auto-install/upgrade/restart as needed
 - `get_environment_logs` — retrieve container logs
-- `run_odoo_command` — execute shell commands inside the Odoo container
+- `run_odoo_command` — execute shell commands inside the Odoo container (through `sh -c`, so pipes and redirections work; `shell=False` for exact argv)
 - `run_odoo_shell` — execute Python code in the Odoo shell with full ORM access
 - `odoo_search_read` / `odoo_create` / `odoo_write` / `odoo_unlink` / `odoo_call` / `odoo_schema` — XML-RPC `execute_kw`-equivalent ORM tools. Structured JSON in and out, no Python to write; every one takes `as_user` (login or id, empty = the environment's admin) and runs in a real session for that user, so `ir.model.access` and `ir.rule` apply as they do in the web client. `odoo_call` handles other public methods (`read_group`, `name_search`, `action_*`, custom methods), while policy-visible `create`/`write`/`unlink` must use their dedicated tools; `odoo_schema` pages through models or returns `fields_get`. They hit the **running** server: edited Python is invisible until the environment restarts, and each call is its own committed transaction — use `run_odoo_shell` for a fresh registry, `sudo()`, private methods, a dry run, or multi-step atomicity
 - `read_file_in_odoo` — read a text file or list a directory inside the container (supports line ranges)
@@ -2755,11 +2755,11 @@ All tools are accessible via MCP clients (Cursor, Cline, Amp, etc.) and the CLI 
 | `pull_and_apply` | ✓ | Git pull + smart analysis → auto install/upgrade/restart |
 | `install_odoo_modules` | ✓ | Install Odoo modules (`-i`) |
 | `upgrade_odoo_modules` | ✓ | Upgrade Odoo modules (`-u`) |
-| `run_odoo_tests` | ✓ | Run Odoo tests for specific modules |
 | `export_module_translations` | ✓ | Export a module's `.pot`/`.po` with Odoo's own exporter, write it into the module's `i18n/`, and return a summary plus an HTTP download URL or local temporary path |
 | `translation_status` | ✓ | Compare a module's terms, database translations and committed `.po` files, including the sibling-POT metadata merge Odoo performs before import |
+| `run_odoo_tests` | ✓ | Run Odoo tests for specific modules; `test_tags` narrows the run to one class or method, `upgrade=False` skips the `-u` for a fast re-run (collects `post_install` tests only and requires module-scoped positive tags) |
 | `get_environment_logs` | | Retrieve recent container logs |
-| `run_odoo_command` | ✓ | Execute an arbitrary shell command inside the Odoo container |
+| `run_odoo_command` | ✓ | Execute an arbitrary shell command inside the Odoo container (runs through `sh -c`, so pipes, redirections and `&&` work; `shell=False` for exact argv) |
 | `run_odoo_shell` | ✓ | Execute Python code in the Odoo shell context with full ORM access; `auto_commit=True` commits successful writes, while `False` leaves the shell transaction uncommitted |
 | `odoo_search_read` | ✓ | Search and read records (XML-RPC `search_read`/`search_count`) as any user, with ACLs and record rules applied |
 | `odoo_create` | ✓ | Create one or many records (XML-RPC `create`). Committed immediately |
@@ -2778,7 +2778,7 @@ All tools are accessible via MCP clients (Cursor, Cline, Amp, etc.) and the CLI 
 | `read_output` | | Read from a cached tool output by ID (paginate, grep, errors, tail) |
 | **Template Management** | | |
 | `save_as_template` | ✓ | ⚠️ Save a branch DB + filestore as a new template |
-| `list_templates` | | List available template profiles |
+| `list_templates` | | List available template profiles, including the branch/commit each database snapshot was taken from |
 | `delete_template` | ✓ | ⚠️ Delete a template profile (DB + files) |
 | `rename_template` | ✓ | Rename a template (directory + PostgreSQL template DB); refused if any environment uses it |
 | `import_template_from_odoo` | ✓ | Import a template from a running Odoo instance via database manager API; optional `without_filestore` requests a database-only PostgreSQL custom dump |
@@ -2792,7 +2792,7 @@ All tools are accessible via MCP clients (Cursor, Cline, Amp, etc.) and the CLI 
 | `list_services` | | List all managed service containers |
 | `get_service_info` | | Full live state of a single service (image+digest, port/routes, hostname, host_mode, volumes, env, capabilities, restart count, preset). Call before recreating it |
 | `get_service_logs` | | Retrieve service container logs |
-| `run_service_command` | | Execute a shell command inside a service container |
+| `run_service_command` | | Execute a shell command inside a service container (through `sh -c`; `shell=False` for exact argv) |
 | **Volumes** | | |
 | `create_volume` | ✓ | Create a named Docker volume for use with services |
 | `list_volumes` | | List all managed Docker volumes and their usage by services |
@@ -2838,7 +2838,7 @@ All tools are accessible via MCP clients (Cursor, Cline, Amp, etc.) and the CLI 
 | `get_odoo_development_guide` | | Get Odoo development standards guide for a specific version (15–19) |
 
 !!! info "Locking"
-    Tools marked with ✓ acquire a per-branch or per-team lock. Operations on different branches run in parallel. If another operation on the **same branch** (or team, for team-level tools) is already in progress, the call is rejected with `BusyError`.
+    Tools marked with ✓ acquire a per-branch or per-team lock. Operations on different branches run in parallel. If another operation on the **same branch** (or team, for team-level tools) is already in progress, the call is rejected with `BusyError`. The rejection names the operation holding the lock and how long it has held it (e.g. *"Another operation on environment 'main' (pull_and_apply, running for 4m12s) is in progress"*), so a long install is distinguishable from a hung one. A lock is released when its operation finishes — including when the client that started it timed out and stopped waiting, which is why restarting the environment is the wrong response.
 
 The exact current signature and defaults for every tool are also available from
 `oduflow list` (`oduflow list --verbose` adds descriptions). The production
@@ -4174,6 +4174,88 @@ This is intentional. A template's filestore is the overlay **lower layer** for
 every environment built from it; deleting the template would pull the base out
 from under those live overlays and break them. Delete the listed environments
 first (or keep the template). The same guard applies to renaming a template.
+
+---
+
+## A brand-new environment fails its first upgrade
+
+An environment is a *new* database cloned from a template plus *your* branch's
+code. The template database is a snapshot of some branch at some commit, so the
+two can drift in either direction — and the failure only surfaces on the first
+`-u`.
+
+```bash
+# What the template was snapshotted from:
+oduflow call list_templates
+# → - prod: DB=loaded, ..., Source=prod @ c0ffee12 @ snapshot 2026-08-01
+```
+
+`create_environment` compares that commit with the branch checkout and reports
+the drift in its response:
+
+* **"Code is behind the template database"** — your branch does not contain the
+  snapshot commit. The database already holds views and records written by newer
+  code, so upgrading the older branch fails validation (typically a `ParseError`
+  on a view referencing a method your branch does not have). **Merge the
+  template's source branch** into yours, push, then `pull_and_apply`.
+* **"Code is ahead of the template database"** — the database predates your
+  code. Apply the drift explicitly with the arguments reported by Oduflow, for
+  example `pull_and_apply(install="new_module", upgrade="a,b,c")`, listing
+  dependencies before dependents. Brand-new modules need `install=`; existing
+  modules with schema/data drift need `upgrade=`. Modules whose manifest version
+  was not bumped are never upgraded automatically, so a `column ... does not
+  exist` or a missing external ID means "find the module that owns it and add it
+  to `upgrade=`".
+
+Templates created before Oduflow recorded provenance — and templates imported
+from a running Odoo — have no commit to compare against, so no drift is
+reported. That is not an error; the rule above still applies, you just have to
+apply it by hand.
+
+!!! warning "Recreating the environment does not fix it"
+    The template is unchanged, so the same drift comes straight back — and the
+    environment's data is gone. Reconcile with a merge or an explicit
+    install/upgrade action.
+
+---
+
+## `BusyError`: "Another operation ... is in progress"
+
+The message names the holder and its age:
+
+```
+Another operation on environment 'main' (pull_and_apply, running for 4m12s) is in progress.
+```
+
+Locks are held for exactly as long as the operation runs and are released when
+it finishes. A long-running install, upgrade or test run legitimately holds one
+for minutes — including when the *client* gave up waiting and timed out, because
+the work continues server-side. Wait for it to finish and retry; restarting or
+recreating the environment interrupts real work instead of clearing anything.
+
+Background operations take the same locks and are named too: `auto-stop`,
+`auto-delete`, `scheduled backup`, `webhook deploy`.
+
+---
+
+## The Odoo web client loads blank
+
+The page is served, the JS bundles arrive, the browser console is clean — and
+nothing renders. This is an Odoo-side asset/registry problem (commonly a custom
+systray or a legacy widget that never resolves during `startWebClient`), not an
+environment provisioning problem: restarting the container or rebuilding assets
+does not help, and headless browser tooling tends to hang on such a page.
+
+Verify server-side instead — it works normally while the web client does not:
+
+```bash
+oduflow call run_odoo_shell '{"env_name": "my-branch", "python_code":
+  "print(env[\"res.partner\"].fields_get([\"name\"]).keys())", "auto_commit": false}'
+oduflow call run_odoo_tests '{"env_name": "my-branch", "modules": "my_module"}'
+```
+
+Then narrow the failing asset with `get_environment_logs` and by disabling the
+suspect module's assets.
 
 ---
 

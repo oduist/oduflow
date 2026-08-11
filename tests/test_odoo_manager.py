@@ -1702,6 +1702,188 @@ class TestRunEnvironmentTests:
         assert "--longpolling-port 8090" in test_cmd
         assert "--gevent-port" not in test_cmd
 
+    @patch(
+        "oduflow.docker_ops.odoo_ops.load_credentials",
+        return_value={"pg_user": "u_1_main", "pg_password": "test-pw"},
+    )
+    def test_test_tags_narrow_the_run(self, mock_load_creds, mock_docker_client):
+        container = MagicMock()
+        container.labels = {TEST_SETTINGS.image_label: "odoo:17.0"}
+        container.exec_run.return_value = (0, b"1 test")
+        mock_docker_client.containers.get.return_value = container
+
+        odoo_ops.run_environment_tests(
+            TEST_SETTINGS,
+            TEST_TEAM,
+            "main",
+            "sale",
+            test_tags="/sale:TestInvoice.test_total",
+        )
+
+        args = container.exec_run.call_args[0][0]
+        # --test-tags=VALUE, not a separate token: an exclusion expression like
+        # '-slow' would otherwise be parsed as a CLI flag.
+        assert "--test-tags=/sale:TestInvoice.test_total" in args
+        assert "-u sale" in args  # upgrade still on by default
+
+    @patch(
+        "oduflow.docker_ops.odoo_ops.load_credentials",
+        return_value={"pg_user": "u_1_main", "pg_password": "test-pw"},
+    )
+    def test_upgrade_false_drops_u_and_scopes_by_module(
+        self, mock_load_creds, mock_docker_client
+    ):
+        container = MagicMock()
+        container.labels = {TEST_SETTINGS.image_label: "odoo:17.0"}
+        container.exec_run.return_value = (0, b"ok")
+        mock_docker_client.containers.get.return_value = container
+
+        odoo_ops.run_environment_tests(
+            TEST_SETTINGS, TEST_TEAM, "main", "sale,crm", upgrade=False
+        )
+
+        args = container.exec_run.call_args[0][0]
+        assert "-u " not in args
+        # Without -u, Odoo would otherwise sweep every installed module's
+        # post-install tests; the module filter keeps the run scoped.
+        assert "--test-tags=/sale,/crm" in args
+
+    @patch(
+        "oduflow.docker_ops.odoo_ops.load_credentials",
+        return_value={"pg_user": "u_1_main", "pg_password": "test-pw"},
+    )
+    def test_explicit_tags_win_over_derived_ones(
+        self, mock_load_creds, mock_docker_client
+    ):
+        container = MagicMock()
+        container.labels = {TEST_SETTINGS.image_label: "odoo:17.0"}
+        container.exec_run.return_value = (0, b"ok")
+        mock_docker_client.containers.get.return_value = container
+
+        odoo_ops.run_environment_tests(
+            TEST_SETTINGS,
+            TEST_TEAM,
+            "main",
+            "sale",
+            test_tags="/sale:TestX",
+            upgrade=False,
+        )
+
+        args = container.exec_run.call_args[0][0]
+        assert "--test-tags=/sale:TestX" in args
+
+    @patch(
+        "oduflow.docker_ops.odoo_ops.load_credentials",
+        return_value={"pg_user": "u_1_main", "pg_password": "test-pw"},
+    )
+    def test_upgrade_false_scopes_exclusion_to_requested_modules(
+        self, mock_load_creds, mock_docker_client
+    ):
+        container = MagicMock()
+        container.labels = {TEST_SETTINGS.image_label: "odoo:17.0"}
+        container.exec_run.return_value = (0, b"ok")
+        mock_docker_client.containers.get.return_value = container
+
+        odoo_ops.run_environment_tests(
+            TEST_SETTINGS,
+            TEST_TEAM,
+            "main",
+            "sale,crm",
+            test_tags="-slow",
+            upgrade=False,
+        )
+
+        args = container.exec_run.call_args[0][0]
+        assert "--test-tags=/sale,/crm,-slow" in args
+
+    def test_upgrade_false_rejects_unscoped_positive_tag(self, mock_docker_client):
+        container = MagicMock()
+        container.labels = {TEST_SETTINGS.image_label: "odoo:17.0"}
+        mock_docker_client.containers.get.return_value = container
+
+        with pytest.raises(ValueError, match="must include a module scope"):
+            odoo_ops.run_environment_tests(
+                TEST_SETTINGS,
+                TEST_TEAM,
+                "main",
+                "sale",
+                test_tags="slow",
+                upgrade=False,
+            )
+
+    def test_upgrade_false_rejects_tag_for_another_module(self, mock_docker_client):
+        container = MagicMock()
+        container.labels = {TEST_SETTINGS.image_label: "odoo:17.0"}
+        mock_docker_client.containers.get.return_value = container
+
+        with pytest.raises(ValueError, match="outside the requested modules"):
+            odoo_ops.run_environment_tests(
+                TEST_SETTINGS,
+                TEST_TEAM,
+                "main",
+                "sale",
+                test_tags="/stock:TestMove",
+                upgrade=False,
+            )
+
+    def test_empty_modules_rejected(self, mock_docker_client):
+        # A bare `-u` (no value) with upgrade=True, and an unscoped sweep over
+        # every installed module's post-install tests with upgrade=False.
+        container = MagicMock()
+        container.labels = {TEST_SETTINGS.image_label: "odoo:17.0"}
+        mock_docker_client.containers.get.return_value = container
+
+        with pytest.raises(ValueError, match="modules is required"):
+            odoo_ops.run_environment_tests(TEST_SETTINGS, TEST_TEAM, "main", "")
+
+    def test_test_tags_with_whitespace_rejected(self, mock_docker_client):
+        # Same argument-injection guard as module names: exec_run splits the
+        # command with shlex, so a space would smuggle a second CLI flag.
+        container = MagicMock()
+        container.labels = {TEST_SETTINGS.image_label: "odoo:17.0"}
+        mock_docker_client.containers.get.return_value = container
+
+        with pytest.raises(ValueError, match="Invalid test_tags"):
+            odoo_ops.run_environment_tests(
+                TEST_SETTINGS,
+                TEST_TEAM,
+                "main",
+                "sale",
+                test_tags="/sale --load=web,base",
+            )
+
+
+class TestRunCommandInEnvironment:
+    """Docker exec has no shell — pipes and redirections would reach the program
+    as literal argv entries. Commands go through `sh -c` unless asked otherwise."""
+
+    def test_shell_by_default(self, mock_docker_client):
+        container = MagicMock()
+        container.exec_run.return_value = (0, b"2\n")
+        mock_docker_client.containers.get.return_value = container
+
+        odoo_ops.run_command_in_environment(
+            TEST_SETTINGS, TEST_TEAM, "main", "ls /mnt/extra-addons | wc -l"
+        )
+
+        assert container.exec_run.call_args[0][0] == [
+            "sh",
+            "-c",
+            "ls /mnt/extra-addons | wc -l",
+        ]
+        assert container.exec_run.call_args.kwargs["user"] == "odoo"
+
+    def test_shell_false_passes_the_raw_command(self, mock_docker_client):
+        container = MagicMock()
+        container.exec_run.return_value = (0, b"")
+        mock_docker_client.containers.get.return_value = container
+
+        odoo_ops.run_command_in_environment(
+            TEST_SETTINGS, TEST_TEAM, "main", "odoo --version", shell=False
+        )
+
+        assert container.exec_run.call_args[0][0] == "odoo --version"
+
 
 class TestRunOdooShell:
     @patch(

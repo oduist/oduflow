@@ -19,11 +19,11 @@ All tools are accessible via MCP clients (Cursor, Cline, Amp, etc.) and the CLI 
 | `pull_and_apply` | ✓ | Git pull + smart analysis → auto install/upgrade/restart |
 | `install_odoo_modules` | ✓ | Install Odoo modules (`-i`) |
 | `upgrade_odoo_modules` | ✓ | Upgrade Odoo modules (`-u`) |
-| `run_odoo_tests` | ✓ | Run Odoo tests for specific modules |
 | `export_module_translations` | ✓ | Export a module's `.pot`/`.po` with Odoo's own exporter, write it into the module's `i18n/`, and return a summary plus an HTTP download URL or local temporary path |
 | `translation_status` | ✓ | Compare a module's terms, database translations and committed `.po` files, including the sibling-POT metadata merge Odoo performs before import |
+| `run_odoo_tests` | ✓ | Run Odoo tests for specific modules; `test_tags` narrows the run to one class or method, `upgrade=False` skips the `-u` for a fast re-run (collects `post_install` tests only and requires module-scoped positive tags) |
 | `get_environment_logs` | | Retrieve recent container logs |
-| `run_odoo_command` | ✓ | Execute an arbitrary shell command inside the Odoo container |
+| `run_odoo_command` | ✓ | Execute an arbitrary shell command inside the Odoo container (runs through `sh -c`, so pipes, redirections and `&&` work; `shell=False` for exact argv) |
 | `run_odoo_shell` | ✓ | Execute Python code in the Odoo shell context with full ORM access; `auto_commit=True` commits successful writes, while `False` leaves the shell transaction uncommitted |
 | `odoo_search_read` | ✓ | Search and read records (XML-RPC `search_read`/`search_count`) as any user, with ACLs and record rules applied |
 | `odoo_create` | ✓ | Create one or many records (XML-RPC `create`). Committed immediately |
@@ -42,7 +42,7 @@ All tools are accessible via MCP clients (Cursor, Cline, Amp, etc.) and the CLI 
 | `read_output` | | Read from a cached tool output by ID (paginate, grep, errors, tail) |
 | **Template Management** | | |
 | `save_as_template` | ✓ | ⚠️ Save a branch DB + filestore as a new template |
-| `list_templates` | | List available template profiles |
+| `list_templates` | | List available template profiles, including the branch/commit each database snapshot was taken from |
 | `delete_template` | ✓ | ⚠️ Delete a template profile (DB + files) |
 | `rename_template` | ✓ | Rename a template (directory + PostgreSQL template DB); refused if any environment uses it |
 | `import_template_from_odoo` | ✓ | Import a template from a running Odoo instance via database manager API; optional `without_filestore` requests a database-only PostgreSQL custom dump |
@@ -56,7 +56,7 @@ All tools are accessible via MCP clients (Cursor, Cline, Amp, etc.) and the CLI 
 | `list_services` | | List all managed service containers |
 | `get_service_info` | | Full live state of a single service (image+digest, port/routes, hostname, host_mode, volumes, env, capabilities, restart count, preset). Call before recreating it |
 | `get_service_logs` | | Retrieve service container logs |
-| `run_service_command` | | Execute a shell command inside a service container |
+| `run_service_command` | | Execute a shell command inside a service container (through `sh -c`; `shell=False` for exact argv) |
 | **Volumes** | | |
 | `create_volume` | ✓ | Create a named Docker volume for use with services |
 | `list_volumes` | | List all managed Docker volumes and their usage by services |
@@ -102,7 +102,7 @@ All tools are accessible via MCP clients (Cursor, Cline, Amp, etc.) and the CLI 
 | `get_odoo_development_guide` | | Get Odoo development standards guide for a specific version (15–19) |
 
 !!! info "Locking"
-    Tools marked with ✓ acquire a per-branch or per-team lock. Operations on different branches run in parallel. If another operation on the **same branch** (or team, for team-level tools) is already in progress, the call is rejected with `BusyError`.
+    Tools marked with ✓ acquire a per-branch or per-team lock. Operations on different branches run in parallel. If another operation on the **same branch** (or team, for team-level tools) is already in progress, the call is rejected with `BusyError`. The rejection names the operation holding the lock and how long it has held it (e.g. *"Another operation on environment 'main' (pull_and_apply, running for 4m12s) is in progress"*), so a long install is distinguishable from a hung one. A lock is released when its operation finishes — including when the client that started it timed out and stopped waiting, which is why restarting the environment is the wrong response.
 
 The exact current signature and defaults for every tool are also available from
 `oduflow list` (`oduflow list --verbose` adds descriptions). The production

@@ -281,7 +281,7 @@ def with_env_lock(fn: Callable[P, R]) -> Callable[P, R]:
                 f"'{env_name}' is a production environment. Use the "
                 "*_production tools instead of the dev environment tools."
             )
-        _locks.acquire_env(env_name, team.team_id)
+        _locks.acquire_env(env_name, team.team_id, operation=fn.__name__)
         try:
             try:
                 activity.touch(team, env_name)
@@ -316,7 +316,7 @@ def with_team_lock(fn: Callable[P, R]) -> Callable[P, R]:
     def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
         ctx = cast("Context | None", kwargs.get("ctx"))
         team = _resolve_team(ctx)
-        _locks.acquire_team(team.team_id)
+        _locks.acquire_team(team.team_id, operation=fn.__name__)
         try:
             return fn(*args, **kwargs)
         finally:
@@ -361,7 +361,7 @@ def with_prod_lock(fn: Callable[P, R]) -> Callable[P, R]:
         ctx = cast("Context | None", kwargs.get("ctx"))
         team = _resolve_team(ctx)
         key = prod_lock_key(team.team_id, name)
-        _locks.acquire_env(key)
+        _locks.acquire_env(key, operation=fn.__name__)
         try:
             return fn(*args, **kwargs)
         finally:
@@ -558,7 +558,7 @@ def create_environment(
     resolved_env_name = validate_env_name(env_name or branch)
     settings = _get_settings()
     team = _resolve_team(ctx)
-    _locks.acquire_env(resolved_env_name, team.team_id)
+    _locks.acquire_env(resolved_env_name, team.team_id, operation="create_environment")
     try:
         resolved_template: str | None
         if not template_name or template_name.lower() == "none":
@@ -709,6 +709,14 @@ def create_environment(
             lines.append(
                 "Env vars: " + ", ".join(f"{k}={v}" for k, v in parsed_env.items())
             )
+        lineage = result.get("template_lineage") or {}
+        if lineage.get("message"):
+            label = (
+                "Code is behind the template database"
+                if lineage.get("status") == "diverged"
+                else "Code is ahead of the template database"
+            )
+            lines.append(f"\n⚠️ {label} — {lineage['message']}")
         setup_logs: list[str] = result.get("setup_logs", [])
         if setup_logs:
             lines.append("\n--- Setup Log ---")
@@ -815,7 +823,17 @@ def list_templates(ctx: Context | None = None) -> str:
             size_info = f", Filestore size={fs_str}, Dump size={dump_str}"
         auto_install = r.get("auto_install_modules", "")
         auto_info = f", Auto-install={auto_install}" if auto_install else ""
-        output += f"- {r['template_name']}: DB={db_status}, SQL={r['has_sql']}, Filestore={r['has_filestore']}, Mode={overlay_status}{size_info}{auto_info}\n"
+        # Provenance: which code this database snapshot came from. A branch that
+        # does not contain that commit will hit upgrade failures against newer data.
+        origin_parts = []
+        if r.get("source_branch"):
+            origin_parts.append(str(r["source_branch"]))
+        if r.get("source_commit"):
+            origin_parts.append(str(r["source_commit"])[:8])
+        if r.get("snapshot_at"):
+            origin_parts.append(f"snapshot {str(r['snapshot_at'])[:10]}")
+        origin_info = f", Source={' @ '.join(origin_parts)}" if origin_parts else ""
+        output += f"- {r['template_name']}: DB={db_status}, SQL={r['has_sql']}, Filestore={r['has_filestore']}, Mode={overlay_status}{size_info}{auto_info}{origin_info}\n"
     return output
 
 
@@ -1195,25 +1213,53 @@ def list_environments(ctx: Context | None = None) -> str:
 @mcp.tool()
 @handle_errors
 @with_env_lock
-def run_odoo_tests(env_name: str, modules: str, ctx: Context | None = None) -> str:
+def run_odoo_tests(
+    env_name: str,
+    modules: str,
+    test_tags: str = "",
+    upgrade: bool = True,
+    ctx: Context | None = None,
+) -> str:
     """
     Run Odoo tests for specific modules in an environment.
 
-    The module must already be installed in the environment (it runs the tests via
-    an upgrade, `-u`). Install it first with install_odoo_modules or pull_and_apply
-    if it is not present; testing an uninstalled module yields "0 of 0 tests".
+    The module must already be installed in the environment (by default it runs the
+    tests via an upgrade, `-u`). Install it first with install_odoo_modules or
+    pull_and_apply if it is not present; testing an uninstalled module yields
+    "0 of 0 tests".
+
+    Narrow a run to a single class or method with test_tags — a full module upgrade
+    to re-run one test is usually wasted minutes.
 
     Args:
         env_name: The name of the environment.
         modules: Comma-separated list of already-installed modules to test.
+        test_tags: Odoo `--test-tags` expression narrowing which tests run, e.g.
+            "/my_module:TestInvoice" (one class), "/my_module:TestInvoice.test_total"
+            (one method), or "-slow" (exclude a tag). Comma-separated, no spaces.
+            Empty (default) runs every test of the listed modules. With
+            upgrade=False, positive selectors must include one of the requested
+            modules (for example "slow/my_module"); exclusion-only selectors such
+            as "-slow" are automatically scoped to the requested modules.
+        upgrade: Upgrade the modules before testing (default True, `odoo -u`). Set
+            False to skip the upgrade for a much faster re-run when the code under
+            test is already loaded in the database — but note that without an
+            upgrade Odoo only collects **post_install** tests, so classes at the
+            default at_install position (plain TransactionCase/TestCase) will report
+            "0 tests". If a class you expect does not run, re-run with upgrade=True.
     """
     settings = _get_settings()
     team = _resolve_team(ctx)
     woke = _wake_for_work(settings, team, env_name)
-    output = odoo_ops.run_environment_tests(settings, team, env_name, modules)
+    output = odoo_ops.run_environment_tests(
+        settings, team, env_name, modules, test_tags=test_tags, upgrade=upgrade
+    )
     header = woke + f"Test Results for {env_name}:"
     return _maybe_cache(
-        output, header, "run_odoo_tests", f"env={env_name}, modules={modules}"
+        output,
+        header,
+        "run_odoo_tests",
+        f"env={env_name}, modules={modules}, test_tags={test_tags}, upgrade={upgrade}",
     )
 
 
@@ -2232,21 +2278,32 @@ def list_installed_modules(
 @handle_errors
 @with_env_lock
 def run_odoo_command(
-    env_name: str, command: str, user: str = "odoo", ctx: Context | None = None
+    env_name: str,
+    command: str,
+    user: str = "odoo",
+    shell: bool = True,
+    ctx: Context | None = None,
 ) -> str:
     """
     Execute an arbitrary shell command inside the Odoo container for a specific environment.
 
+    The command runs through `sh -c`, so pipes, redirections, `&&`, `cd x && y`,
+    `$VAR` and quoting all behave as written — one call, one shell line.
+
     Args:
         env_name: The name of the environment.
-        command: The shell command to execute (e.g. "ls /mnt/extra-addons", "python3 -c 'print(1)'").
+        command: The shell command to execute (e.g. "ls /mnt/extra-addons | head", "python3 -c 'print(1)'").
         user: The OS user to run the command as (default "odoo"). Use "root" for privileged operations.
+        shell: Run via `sh -c` (default True). Pass False for exact argv semantics —
+            the string is then split on whitespace and executed directly, so `|`, `>`,
+            `&&`, `*` and `$VAR` reach the program as literal arguments instead of
+            being interpreted.
     """
     settings = _get_settings()
     team = _resolve_team(ctx)
     woke = _wake_for_work(settings, team, env_name)
     result = odoo_ops.run_command_in_environment(
-        settings, team, env_name, command, user
+        settings, team, env_name, command, user, shell=shell
     )
     exit_code = result["exit_code"]
     output = result.get("output", "")
@@ -3364,18 +3421,26 @@ def get_service_logs(name: str, n_lines: int = 100, ctx: Context | None = None) 
 @mcp.tool()
 @handle_errors
 def run_service_command(
-    name: str, command: str, user: str = "root", ctx: Context | None = None
+    name: str,
+    command: str,
+    user: str = "root",
+    shell: bool = True,
+    ctx: Context | None = None,
 ) -> str:
     """
     Execute an arbitrary shell command inside a managed auxiliary service container.
 
+    The command runs through `sh -c`, so pipes, redirections and `&&` work as written.
+
     Args:
         name: The name of the service (e.g. "redis", "meilisearch").
-        command: The shell command to execute (e.g. "redis-cli ping", "ls /data").
+        command: The shell command to execute (e.g. "redis-cli ping", "ls /data | wc -l").
         user: The OS user to run the command as (default "root").
+        shell: Run via `sh -c` (default True). Pass False for exact argv semantics, or
+            when the image ships no shell at all (scratch/distroless).
     """
     result = service_ops.run_command_in_service(
-        _get_settings(), _resolve_team(ctx), name, command, user
+        _get_settings(), _resolve_team(ctx), name, command, user, shell=shell
     )
     exit_code = result["exit_code"]
     output = cast(str, result.get("output", ""))
@@ -4089,7 +4154,7 @@ def prune_production_backups(ctx: Context | None = None) -> str:
 
     settings = _get_settings()
     team = _resolve_team(ctx)
-    _locks.acquire_team(team.team_id)
+    _locks.acquire_team(team.team_id, operation="prune_backups")
     try:
         result = backup_ops.prune_backups(settings, team)
     finally:
@@ -4130,7 +4195,7 @@ def restore_cluster_pitr(
 
     settings = _get_settings()
     _resolve_team(ctx)  # authenticate the caller; PITR spans all teams
-    _locks.acquire_env("prod:__cluster__")
+    _locks.acquire_env("prod:__cluster__", operation="restore_cluster_pitr")
     try:
         from oduflow.docker_ops.client import get_client
 

@@ -47,7 +47,7 @@ def _auto_stop(
     settings: Settings, team: TeamSettings, locks: LockManager, env_name: str
 ) -> None:
     try:
-        locks.acquire_env(env_name, team.team_id)
+        locks.acquire_env(env_name, team.team_id, operation="auto-stop")
     except BusyError:
         return  # an operation is in flight; it counts as activity anyway
     try:
@@ -70,7 +70,7 @@ def _auto_delete(
     settings: Settings, team: TeamSettings, locks: LockManager, env_name: str
 ) -> None:
     try:
-        locks.acquire_env(env_name, team.team_id)
+        locks.acquire_env(env_name, team.team_id, operation="auto-delete")
     except BusyError:
         return
     try:
