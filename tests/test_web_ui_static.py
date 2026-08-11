@@ -77,3 +77,10 @@ def test_save_as_template_shows_elapsed_progress(tmp_path):
     assert "elapsed.textContent = _fmtElapsed" in dashboard.text
     assert "progress.textContent = 'Saving database and filestore" not in dashboard.text
     assert "setBusy(branch, 'Saving template')" in dashboard.text
+
+
+def test_feedback_modal_is_registered_for_escape_key(tmp_path):
+    dashboard = _client(tmp_path).get("/")
+
+    assert dashboard.status_code == 200
+    assert re.search(r"'feedback-modal':\s*closeFeedbackModal", dashboard.text)

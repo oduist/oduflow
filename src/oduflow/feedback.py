@@ -45,6 +45,7 @@ DEFAULT_KIND = "feedback"
 # GitHub answers 414 for over-long URLs; browsers and proxies add their own
 # limits. Stay well below any of them and truncate the free-form text instead.
 MAX_URL_LEN = 4000
+MAX_TITLE_LEN = 256
 _TRUNCATION_NOTE = "\n\n[truncated — please paste the rest here]"
 
 
@@ -99,8 +100,9 @@ def build_issue_url(
         environment = format_diagnostics(diagnostics(settings))
 
     params = {"template": template, "environment": environment}
-    if title.strip():
-        params["title"] = title.strip()
+    title = title.strip()
+    if title:
+        params["title"] = title[:MAX_TITLE_LEN].rstrip()
     params["details"] = details.strip()
 
     # Percent-encoding can triple a character, so shrink the free-form text by

@@ -62,6 +62,13 @@ def test_long_details_are_truncated_to_keep_the_url_usable():
     assert "truncated" in _params(url)["details"]
 
 
+def test_long_title_is_bounded_to_keep_the_url_usable():
+    url = feedback.build_issue_url("bug", "😀" * 5_000, "details")
+
+    assert len(url) <= feedback.MAX_URL_LEN
+    assert len(_params(url)["title"]) == feedback.MAX_TITLE_LEN
+
+
 def test_diagnostics_carry_no_identifying_deployment_data(tmp_path):
     team = TeamSettings(
         team_id="acme", hostname="odoo.acme.example", data_dir=str(tmp_path)

@@ -3871,7 +3871,7 @@ async function submitFeedback() {
         details: details,
       })
     });
-    var d = await r.json();
+    var d = await readResult(r);
     if (!d.ok) throw new Error(d.error || 'Could not build the issue link.');
     if (tab) { tab.location = d.url; } else { window.location.href = d.url; }
     hideModal('feedback-modal');
@@ -5513,6 +5513,7 @@ window.addEventListener('resize', function() {
 var MODAL_CLOSERS = {
   'sync-result-modal': closeSyncResult,
   'create-modal': closeCreateModal,
+  'feedback-modal': closeFeedbackModal,
   'logs-modal': closeLogsModal,
   'svc-info-modal': closeServiceInfo,
   'console-modal': closeConsole,
