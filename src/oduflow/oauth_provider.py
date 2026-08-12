@@ -23,10 +23,18 @@ import re
 from typing import Any
 from urllib.parse import urlparse
 
+# FastMCP's AccessToken (a subclass of the MCP SDK's that adds ``claims``) —
+# never the SDK's own. ``fastmcp.server.dependencies.get_access_token()``, which
+# scoped_access uses to read a token's env scope, rejects a plain SDK token: it
+# tries to convert it and passes ``claims=None`` (the SDK's default) into a
+# field typed ``dict``, so validation fails and the request is denied outright.
+from fastmcp.server.auth.auth import AccessToken
 from fastmcp.server.auth.providers.in_memory import InMemoryOAuthProvider
 from mcp.server.auth.json_response import PydanticJSONResponse
 from mcp.server.auth.provider import (
-    AccessToken,
+    AccessToken as SDKAccessToken,
+)
+from mcp.server.auth.provider import (
     AuthorizationCode,
     RefreshToken,
 )
@@ -69,6 +77,24 @@ def public_client_id(team_id: str) -> str:
     """The non-secret OAuth ``client_id`` for a team, safe to appear in the
     ``/authorize`` URL. The team's ``auth_token`` is the ``client_secret``."""
     return f"team_{team_id}"
+
+
+def _as_fastmcp_token(token: SDKAccessToken) -> AccessToken:
+    """Return ``token`` as a FastMCP ``AccessToken``.
+
+    Every token this provider hands out must be the FastMCP subclass:
+    ``fastmcp.server.dependencies.get_access_token()`` (used by
+    :mod:`oduflow.scoped_access` to read a token's env scope) raises on a plain
+    SDK token, because converting one passes the SDK's ``claims=None`` into a
+    field typed ``dict``. A raise there denies the whole request, so a token
+    that arrives from the base class's SDK-typed store is normalised here rather
+    than trusted to be the right type.
+    """
+    if isinstance(token, AccessToken):
+        return token
+    data = token.model_dump()
+    data["claims"] = data.get("claims") or {}
+    return AccessToken(**data)
 
 
 def _forwarded_scheme_host(
@@ -378,13 +404,13 @@ class OduflowOAuthProvider(InMemoryOAuthProvider):
     async def get_client(self, client_id: str) -> OAuthClientInformationFull | None:
         return await super().get_client(client_id)
 
-    async def load_access_token(  # type: ignore[override]
-        self, token: str
-    ) -> AccessToken | None:
-        # 1. Preseeded team auth_token (direct Bearer, non-expiring).
+    async def load_access_token(self, token: str) -> AccessToken | None:
+        # 1. Preseeded team auth_token (direct Bearer, non-expiring). The base
+        # class types its store with the SDK's AccessToken, so normalise what
+        # comes back — see _as_fastmcp_token.
         existing = await super().load_access_token(token)
         if existing is not None:
-            return existing
+            return _as_fastmcp_token(existing)
         # 2. A minted OAuth access token from the persistent store. Its stored
         # client_id is the numeric team_id, so it routes like the auth_token.
         # get_access() drops the token and returns None once expired.
@@ -487,7 +513,7 @@ class OduflowOAuthProvider(InMemoryOAuthProvider):
             scope=" ".join(minted_scopes) if minted_scopes else None,
         )
 
-    async def revoke_token(self, token: AccessToken | RefreshToken) -> None:
+    async def revoke_token(self, token: SDKAccessToken | RefreshToken) -> None:
         # Really delete the minted token (and its paired token) from the store.
         # The preseeded auth_token and per-env tokens are not in the store, so
         # revoking them is a no-op (rotate auth_token in oduflow.toml instead).
