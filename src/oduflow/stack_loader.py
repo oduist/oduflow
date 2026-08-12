@@ -149,6 +149,14 @@ def read_stack_file(manifest_path: str | os.PathLike[str], source: str) -> str:
         ) from exc
 
 
+def validate_stack_files(
+    manifest: StackManifest, manifest_path: str | os.PathLike[str]
+) -> None:
+    """Validate every local file referenced by a manifest without mutating state."""
+    for item in manifest.spec.files:
+        read_stack_file(manifest_path, item.source)
+
+
 def write_json_schema(path: str | os.PathLike[str]) -> None:
     """Write the public v1alpha1 JSON Schema generated from typed models."""
     target = Path(path)

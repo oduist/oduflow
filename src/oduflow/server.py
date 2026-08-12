@@ -5731,9 +5731,10 @@ def _run_cli() -> None:
         return
 
     if args.command == "stack" and args.stack_command == "validate":
-        from oduflow.stack_loader import load_stack
+        from oduflow.stack_loader import load_stack, validate_stack_files
 
         manifest = load_stack(args.manifest)
+        validate_stack_files(manifest, args.manifest)
         print(f"Stack '{manifest.metadata.name}' is valid ({manifest.api_version}).")
         return
 

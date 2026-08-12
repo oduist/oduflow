@@ -189,7 +189,7 @@ class ServiceRoute(StackModel):
             or any(ord(ch) < 32 or ch.isspace() for ch in value)
         ):
             raise ValueError("route path must be a safe absolute URL path")
-        return value
+        return value.rstrip("/") or "/"
 
 
 class Service(StackModel):

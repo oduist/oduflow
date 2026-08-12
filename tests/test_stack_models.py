@@ -2,13 +2,14 @@ import json
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
 from oduflow.stack_loader import (
     StackValidationError,
     load_stack,
     read_stack_file,
 )
-from oduflow.stack_models import StackManifest
+from oduflow.stack_models import Service, ServiceRoute, StackManifest
 
 VALID = """\
 apiVersion: oduflow.dev/v1alpha1
@@ -110,6 +111,20 @@ def test_stack_file_must_stay_inside_manifest_directory(tmp_path):
 
     with pytest.raises(StackValidationError, match="escapes the stack directory"):
         read_stack_file(path, "../outside.txt")
+
+
+def test_service_route_paths_are_canonicalized_before_duplicate_validation():
+    route = ServiceRoute(path="/api/", port=8080)
+
+    assert route.path == "/api"
+    with pytest.raises(ValidationError, match="duplicate paths"):
+        Service(
+            image="example/service:1",
+            routes=[
+                ServiceRoute(path="/api", port=8080),
+                ServiceRoute(path="/api/", port=8081),
+            ],
+        )
 
 
 def test_shipped_json_schema_matches_models():

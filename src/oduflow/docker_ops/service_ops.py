@@ -495,6 +495,18 @@ def _describe_service_container(
             if key not in _SYSTEM_ENV_KEYS:
                 env_vars[key] = value
 
+    image_env_vars: dict[str, str] = {}
+    try:
+        raw_image_env = container.image.attrs.get("Config", {}).get("Env", [])
+    except Exception:
+        raw_image_env = []
+    if isinstance(raw_image_env, list):
+        for entry in raw_image_env:
+            if isinstance(entry, str) and "=" in entry:
+                key, value = entry.split("=", 1)
+                if key not in _SYSTEM_ENV_KEYS:
+                    image_env_vars[key] = value
+
     port_num: int | None = None
     url: str | None = None
     hostname: str | None = None
@@ -582,6 +594,7 @@ def _describe_service_container(
         "url": url,
         "routes": _routes_with_urls(routes, hostname),
         "env_vars": env_vars,
+        "image_env_vars": image_env_vars,
         "host_mode": is_host_mode,
         "volumes": svc_volumes,
         "cap_add": svc_cap_add,

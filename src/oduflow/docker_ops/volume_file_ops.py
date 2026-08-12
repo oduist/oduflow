@@ -64,6 +64,8 @@ def read_file_in_volume(
     name: str,
     path: str,
     read_range: str = "",
+    *,
+    max_bytes: int = _FILE_SIZE_LIMIT,
 ) -> dict[str, Any]:
     """Read a text file or list a directory inside a Docker volume."""
     docker_name, client = _validate_volume(team, name)
@@ -90,7 +92,6 @@ def read_file_in_volume(
     else:
         read_cmd = 'cat "$FILE"'
 
-    size_limit = _FILE_SIZE_LIMIT
     quoted = shlex.quote(full_path)
     script = f"""\
 FILE={quoted}
@@ -104,7 +105,7 @@ elif [ -f "$FILE" ]; then
     if [ "$NULL_COUNT" -gt 0 ]; then
         echo "TYPE:BINARY"
         echo "SIZE:$SIZE"
-    elif [ {0 if read_range else 1} -eq 1 ] && [ "$SIZE" -gt {size_limit} ]; then
+    elif [ {0 if read_range else 1} -eq 1 ] && [ "$SIZE" -gt {max_bytes} ]; then
         echo "TYPE:TOOLARGE"
         echo "SIZE:$SIZE"
     else
@@ -155,7 +156,7 @@ fi
     if type_line == "TYPE:TOOLARGE":
         size_str = lines[1].replace("SIZE:", "").strip() if len(lines) > 1 else "?"
         size_kb = int(size_str) // 1024 if size_str.isdigit() else "?"
-        limit_kb = _FILE_SIZE_LIMIT // 1024
+        limit_kb = max_bytes // 1024
         return {
             "error": (
                 f"File is too large ({size_kb}KB, limit {limit_kb}KB). "
