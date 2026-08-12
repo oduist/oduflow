@@ -507,6 +507,66 @@ class TestOduflowOAuthProvider:
         assert "evil.com" not in hdr
 
 
+class TestAccessTokenType:
+    """Every token this provider hands out must be FastMCP's ``AccessToken``.
+
+    ``fastmcp.server.dependencies.get_access_token()`` raises on a plain MCP-SDK
+    ``AccessToken`` (converting one passes the SDK's ``claims=None`` into a field
+    typed ``dict``). ``oduflow.scoped_access`` calls it on every request to read
+    a token's env scope, and a raise there fails closed — so an SDK-typed token
+    silently turns into "no tools, every call denied" for OAuth-mode servers.
+    """
+
+    def _provider(self, monkeypatch):
+        from oduflow import oauth_provider as op
+
+        mapping = {"env-secret": ("2", "feature/x"), "tok-a": ("1", None)}
+        monkeypatch.setattr(
+            op.env_tokens,
+            "resolve_token",
+            lambda settings, token: mapping.get(token),
+        )
+        return OduflowOAuthProvider(_settings())
+
+    def test_every_load_path_returns_a_fastmcp_token(self, monkeypatch):
+        from fastmcp.server.auth.auth import AccessToken as FastMCPAccessToken
+
+        provider = self._provider(monkeypatch)
+        minted = _mint(provider, scopes=["mcp"]).access_token
+
+        for label, value in (
+            ("preseeded auth_token", "tok-a"),
+            ("minted OAuth token", minted),
+            ("per-env token", "env-secret"),
+        ):
+            access = _run(provider.load_access_token(value))
+            assert access is not None, label
+            assert isinstance(access, FastMCPAccessToken), label
+            assert access.claims == {}, label
+
+    def test_fastmcp_reads_the_env_scope_off_a_live_token(self, monkeypatch):
+        # End-to-end proxy of the request path: park the token where the SDK's
+        # auth middleware would, then let scoped_access resolve the env through
+        # the real fastmcp dependency.
+        from mcp.server.auth.middleware.auth_context import auth_context_var
+        from mcp.server.auth.middleware.bearer_auth import AuthenticatedUser
+
+        from oduflow import scoped_access
+
+        provider = self._provider(monkeypatch)
+        access = _run(provider.load_access_token("env-secret"))
+        assert access is not None
+        auth_context_var.set(AuthenticatedUser(access))
+        # Inside a request scoped_access re-raises instead of degrading to None,
+        # so a failure here is the deny-everything outage, not a quiet miss.
+        active = scoped_access._HTTP_REQUEST_ACTIVE.set(True)
+        try:
+            assert scoped_access.env_from_access_token() == "feature/x"
+        finally:
+            scoped_access._HTTP_REQUEST_ACTIVE.reset(active)
+            auth_context_var.set(None)
+
+
 class TestRedirectUriValidation:
     """The redirect_uri is where the authorization code is delivered, so an
     over-permissive check hands the code to an attacker."""

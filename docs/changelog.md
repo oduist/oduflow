@@ -47,6 +47,15 @@
 
 ### Bug Fixes
 
+- **OAuth clients see the tools again** — in OAuth mode (Traefik routing or an
+  explicit `oauth_base_url`) every authenticated request was denied: the OAuth
+  provider handed out the MCP SDK's `AccessToken`, and FastMCP's
+  `get_access_token()` rejects that type, so the scoped-access middleware — which
+  calls it to read a token's environment scope, and fails closed — returned an
+  empty tool list on `tools/list` and refused every `tools/call`, on both `/mcp`
+  and `/mcp/<env>`. The provider now issues FastMCP's `AccessToken` on every
+  path. Deployments using static Bearer tokens were unaffected.
+
 - **A wedged Docker call can no longer take the server down silently** — startup
   runs migrations, `init_system` and quotas before the HTTP listener binds, and
   docker-py disables the socket timeout while reading exec output, so a Docker
