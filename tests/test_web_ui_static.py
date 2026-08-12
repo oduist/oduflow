@@ -173,7 +173,9 @@ def test_template_settings_form_round_trips_attribute_and_prototype_key_values()
         _js_function(dashboard, name)
         for name in ("escHtmlAttr", "_tsetNormalizeExtras", "_tsetCollectForm")
     )
-    harness = functions + r"""
+    harness = (
+        functions
+        + r"""
 var fields = {
   'template-settings-error': {style: {}},
   'tset-image': {value: 'odoo:19.0'},
@@ -201,6 +203,7 @@ process.stdout.write(JSON.stringify({
   collected: collected
 }));
 """
+    )
 
     assert _run_node(harness) == {
         "escaped": "feature'quote&amp;&quot;&lt;&gt;",
