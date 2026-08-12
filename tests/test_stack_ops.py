@@ -10,6 +10,7 @@ from oduflow.stack_models import ServiceRoute, ValueFrom
 from oduflow.stack_ops import (
     PlanAction,
     StackPlan,
+    _environment_hash_with_sanitize,
     _file_matches,
     _resource_hash,
     apply_stack,
@@ -133,9 +134,10 @@ def test_plan_rejects_unavailable_template_before_apply(
     with patch("oduflow.stack_ops.system_ops.list_templates", return_value=[]):
         plan = build_plan(settings, team, manifest, path)
 
-    assert PlanAction(
-        "conflict", "environment", "template 'default' is not available"
-    ) in plan.actions
+    assert (
+        PlanAction("conflict", "environment", "template 'default' is not available")
+        in plan.actions
+    )
 
 
 @patch("oduflow.extra_addons.list_extra_repos", return_value=[])
@@ -221,6 +223,44 @@ def test_plan_treats_sanitize_change_as_immutable(
             "extra_addons": {},
             "odoo_image": "odoo:18.0",
             "stack_sanitize": "false",
+        }
+    ]
+    env_info.return_value = {"env_vars": {"LOG_LEVEL": "info"}}
+
+    plan = build_plan(settings, team, manifest, path)
+
+    conflict = next(item for item in plan.actions if item.resource == "environment")
+    assert conflict.operation == "conflict"
+    assert "sanitize" in conflict.detail
+
+
+@patch("oduflow.extra_addons.list_extra_repos", return_value=[])
+@patch("oduflow.stack_ops.volume_ops.list_volumes", return_value=[])
+@patch("oduflow.stack_ops.service_ops.list_services", return_value=[])
+@patch("oduflow.stack_ops.env_ops.get_environment_info")
+@patch("oduflow.stack_ops.env_ops.list_environments")
+def test_plan_refuses_ambiguous_legacy_sanitize_drift(
+    envs, env_info, _services, _volumes, _repos, stack_fixture
+):
+    settings, team, manifest, path = stack_fixture
+    manifest.spec.extra_repositories = {}
+    manifest.spec.volumes = {}
+    manifest.spec.files = []
+    manifest.spec.services = {}
+    manifest.spec.environment.modules.install = []
+    legacy = manifest.model_copy(deep=True)
+    legacy.spec.environment.odoo_image = "odoo:17.0"
+    envs.return_value = [
+        {
+            "env_name": "acme-dev",
+            "stack": "acme",
+            "stack_resource": "environment",
+            "stack_spec_hash": _environment_hash_with_sanitize(legacy, True),
+            "repo_url": "https://github.com/acme/addons.git",
+            "git_branch": "main",
+            "template_name": "default",
+            "extra_addons": {},
+            "odoo_image": "odoo:17.0",
         }
     ]
     env_info.return_value = {"env_vars": {"LOG_LEVEL": "info"}}
