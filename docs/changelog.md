@@ -47,6 +47,14 @@
 
 ### Bug Fixes
 
+- **Declarative Stack plans now converge on the runtime they create** — apply
+  rejects unavailable database templates before creating anything and treats a
+  changed sanitization policy as replacement-only drift. Service image defaults
+  no longer look like undeclared environment variables, text files up to the
+  documented 1 MB limit compare cleanly, route paths are canonicalized before
+  duplicate checks and hashing, and `stack validate` verifies every referenced
+  local file.
+
 - **OAuth clients see the tools again** — in OAuth mode (Traefik routing or an
   explicit `oauth_base_url`) every authenticated request was denied: the OAuth
   provider handed out the MCP SDK's `AccessToken`, and FastMCP's

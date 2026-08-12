@@ -17,6 +17,7 @@ from oduflow.docker_ops import (
     env_ops,
     odoo_ops,
     service_ops,
+    system_ops,
     volume_file_ops,
     volume_ops,
 )
@@ -34,6 +35,8 @@ from oduflow.stack_state import load_state, save_state
 STACK_LABEL = "oduflow.stack"
 STACK_RESOURCE_LABEL = "oduflow.stack-resource"
 STACK_SPEC_HASH_LABEL = "oduflow.stack-spec-hash"
+STACK_SANITIZE_LABEL = "oduflow.stack-sanitize"
+_STACK_FILE_LIMIT = 1_000_000
 
 
 @dataclass(frozen=True)
@@ -89,7 +92,18 @@ def _environment_labels(stack: str, manifest: StackManifest) -> dict[str, str]:
     """
     value = manifest.spec.environment.model_dump(mode="json", by_alias=True)
     value.pop("modules", None)
-    return _stack_labels(stack, "environment", value)
+    labels = _stack_labels(stack, "environment", value)
+    labels[STACK_SANITIZE_LABEL] = str(manifest.spec.environment.sanitize).lower()
+    return labels
+
+
+def _environment_hash_with_sanitize(
+    manifest: StackManifest, sanitize: bool
+) -> str:
+    value = manifest.spec.environment.model_dump(mode="json", by_alias=True)
+    value.pop("modules", None)
+    value["sanitize"] = sanitize
+    return _resource_hash(value)
 
 
 def _owned_by(info: Mapping[str, Any], stack: str, resource: str) -> bool:
@@ -181,10 +195,28 @@ def _file_matches(
     expected: str,
 ) -> bool:
     try:
-        result = volume_file_ops.read_file_in_volume(settings, team, volume, path)
+        result = volume_file_ops.read_file_in_volume(
+            settings, team, volume, path, max_bytes=_STACK_FILE_LIMIT
+        )
     except NotFoundError:
         return False
     return "error" not in result and result.get("output") == expected
+
+
+def _service_env_matches(
+    actual: Mapping[str, Any], desired: Mapping[str, str]
+) -> bool:
+    """Compare declared values while ignoring untouched image defaults."""
+    effective = actual.get("env_vars", {})
+    image_defaults = actual.get("image_env_vars", {})
+    if not isinstance(effective, dict) or not isinstance(image_defaults, dict):
+        return False
+    if any(effective.get(key) != value for key, value in desired.items()):
+        return False
+    return not any(
+        key not in desired and image_defaults.get(key) != value
+        for key, value in effective.items()
+    )
 
 
 def build_plan(
@@ -259,6 +291,20 @@ def build_plan(
     env_needs_create = actual_env is None
     if actual_env is None:
         actions.append(PlanAction("create", env_resource, desired_env.name))
+        if desired_env.template is not None:
+            templates = {
+                item["template_name"]: item
+                for item in system_ops.list_templates(settings, team)
+            }
+            template = templates.get(desired_env.template)
+            if template is None or not template.get("db_loaded", False):
+                actions.append(
+                    PlanAction(
+                        "conflict",
+                        env_resource,
+                        f"template '{desired_env.template}' is not available",
+                    )
+                )
     elif not _owned_by(actual_env, stack, env_resource):
         actions.append(
             PlanAction(
@@ -284,6 +330,17 @@ def build_plan(
         }
         if actual_env.get("extra_addons", {}) != desired_extras:
             immutable_drift.append("extraRepositories")
+        actual_sanitize = actual_env.get("stack_sanitize", "")
+        sanitize_changed = (
+            actual_sanitize in ("true", "false")
+            and (actual_sanitize == "true") != desired_env.sanitize
+        )
+        if not actual_sanitize and actual_env.get("stack_spec_hash"):
+            sanitize_changed = actual_env.get(
+                "stack_spec_hash"
+            ) == _environment_hash_with_sanitize(manifest, not desired_env.sanitize)
+        if sanitize_changed:
+            immutable_drift.append("sanitize")
         if immutable_drift:
             actions.append(
                 PlanAction(
@@ -384,6 +441,10 @@ def build_plan(
             else []
         )
         drift: list[str] = []
+        if desired_service_env is not None and not _service_env_matches(
+            actual, desired_service_env
+        ):
+            drift.append("env")
         comparisons = (
             ("image", actual.get("image"), desired_service.image),
             ("port", actual.get("port"), desired_service.port),
@@ -391,13 +452,6 @@ def build_plan(
                 "hostname",
                 actual.get("hostname"),
                 _desired_hostname(settings, team, name, desired_service.hostname),
-            ),
-            (
-                "env",
-                actual.get("env_vars", {}),
-                desired_service_env
-                if desired_service_env is not None
-                else "<pending environment outputs>",
             ),
             ("hostMode", bool(actual.get("host_mode")), desired_service.host_mode),
             (

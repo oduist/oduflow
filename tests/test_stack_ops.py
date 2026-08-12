@@ -7,7 +7,14 @@ from oduflow.errors import ConflictError
 from oduflow.settings import Settings, TeamSettings
 from oduflow.stack_loader import StackValidationError, load_stack, resolve_env_values
 from oduflow.stack_models import ServiceRoute, ValueFrom
-from oduflow.stack_ops import PlanAction, StackPlan, apply_stack, build_plan
+from oduflow.stack_ops import (
+    PlanAction,
+    StackPlan,
+    _file_matches,
+    _resource_hash,
+    apply_stack,
+    build_plan,
+)
 
 MANIFEST = """\
 apiVersion: oduflow.dev/v1alpha1
@@ -51,7 +58,13 @@ spec:
 
 @pytest.fixture(autouse=True)
 def allow_example_repo_urls():
-    with patch("oduflow.stack_ops.git_ops.validate_repo_url"):
+    with (
+        patch("oduflow.stack_ops.git_ops.validate_repo_url"),
+        patch(
+            "oduflow.stack_ops.system_ops.list_templates",
+            return_value=[{"template_name": "default", "db_loaded": True}],
+        ),
+    ):
         yield
 
 
@@ -110,6 +123,23 @@ def test_plan_new_stack_has_dependency_ordered_actions(
 
 @patch("oduflow.extra_addons.list_extra_repos", return_value=[])
 @patch("oduflow.stack_ops.volume_ops.list_volumes", return_value=[])
+@patch("oduflow.stack_ops.env_ops.list_environments", return_value=[])
+@patch("oduflow.stack_ops.service_ops.list_services", return_value=[])
+def test_plan_rejects_unavailable_template_before_apply(
+    _services, _envs, _volumes, _repos, stack_fixture
+):
+    settings, team, manifest, path = stack_fixture
+
+    with patch("oduflow.stack_ops.system_ops.list_templates", return_value=[]):
+        plan = build_plan(settings, team, manifest, path)
+
+    assert PlanAction(
+        "conflict", "environment", "template 'default' is not available"
+    ) in plan.actions
+
+
+@patch("oduflow.extra_addons.list_extra_repos", return_value=[])
+@patch("oduflow.stack_ops.volume_ops.list_volumes", return_value=[])
 @patch("oduflow.stack_ops.env_ops.list_environments")
 def test_plan_refuses_to_adopt_existing_environment(
     envs, _volumes, _repos, stack_fixture
@@ -156,6 +186,7 @@ def test_plan_is_empty_when_owned_environment_matches(
             "template_name": "default",
             "extra_addons": {},
             "odoo_image": "odoo:18.0",
+            "stack_sanitize": "true",
         }
     ]
     env_info.return_value = {"env_vars": {"LOG_LEVEL": "info"}}
@@ -163,6 +194,111 @@ def test_plan_is_empty_when_owned_environment_matches(
     plan = build_plan(settings, team, manifest, path)
 
     assert plan.actions == ()
+
+
+@patch("oduflow.extra_addons.list_extra_repos", return_value=[])
+@patch("oduflow.stack_ops.volume_ops.list_volumes", return_value=[])
+@patch("oduflow.stack_ops.service_ops.list_services", return_value=[])
+@patch("oduflow.stack_ops.env_ops.get_environment_info")
+@patch("oduflow.stack_ops.env_ops.list_environments")
+def test_plan_treats_sanitize_change_as_immutable(
+    envs, env_info, _services, _volumes, _repos, stack_fixture
+):
+    settings, team, manifest, path = stack_fixture
+    manifest.spec.extra_repositories = {}
+    manifest.spec.volumes = {}
+    manifest.spec.files = []
+    manifest.spec.services = {}
+    manifest.spec.environment.modules.install = []
+    envs.return_value = [
+        {
+            "env_name": "acme-dev",
+            "stack": "acme",
+            "stack_resource": "environment",
+            "repo_url": "https://github.com/acme/addons.git",
+            "git_branch": "main",
+            "template_name": "default",
+            "extra_addons": {},
+            "odoo_image": "odoo:18.0",
+            "stack_sanitize": "false",
+        }
+    ]
+    env_info.return_value = {"env_vars": {"LOG_LEVEL": "info"}}
+
+    plan = build_plan(settings, team, manifest, path)
+
+    conflict = next(item for item in plan.actions if item.resource == "environment")
+    assert conflict.operation == "conflict"
+    assert "sanitize" in conflict.detail
+
+
+@patch("oduflow.extra_addons.list_extra_repos", return_value=[])
+@patch("oduflow.stack_ops.volume_ops.list_volumes", return_value=[])
+@patch("oduflow.stack_ops.env_ops.get_environment_info")
+@patch("oduflow.stack_ops.env_ops.list_environments")
+def test_plan_ignores_service_image_environment_defaults(
+    envs, env_info, _volumes, _repos, stack_fixture
+):
+    settings, team, manifest, path = stack_fixture
+    manifest.spec.extra_repositories = {}
+    manifest.spec.volumes = {}
+    manifest.spec.files = []
+    manifest.spec.environment.modules.install = []
+    service = manifest.spec.services["fs"]
+    service.env = {"CACHE_SIZE": "256"}
+    service.volumes = []
+    envs.return_value = [
+        {
+            "env_name": "acme-dev",
+            "stack": "acme",
+            "stack_resource": "environment",
+            "repo_url": "https://github.com/acme/addons.git",
+            "git_branch": "main",
+            "template_name": "default",
+            "extra_addons": {},
+            "odoo_image": "odoo:18.0",
+            "stack_sanitize": "true",
+        }
+    ]
+    env_info.return_value = {"env_vars": {"LOG_LEVEL": "info"}}
+    actual_service = {
+        "name": "fs",
+        "image": "example/fs:1",
+        "port": 8080,
+        "hostname": None,
+        "env_vars": {"CACHE_SIZE": "256", "IMAGE_VERSION": "1.0"},
+        "image_env_vars": {"IMAGE_VERSION": "1.0"},
+        "host_mode": False,
+        "volumes": [],
+        "cap_add": [],
+        "privileged": False,
+        "routes": [],
+        "stack": "acme",
+        "stack_resource": "services.fs",
+        "stack_spec_hash": _resource_hash(service),
+    }
+
+    with patch(
+        "oduflow.stack_ops.service_ops.list_services", return_value=[actual_service]
+    ):
+        plan = build_plan(settings, team, manifest, path)
+
+    assert plan.actions == ()
+
+
+def test_stack_file_comparison_uses_manifest_size_limit(stack_fixture):
+    settings, team, _manifest, _path = stack_fixture
+    content = "x" * 200_000
+
+    with patch(
+        "oduflow.stack_ops.volume_file_ops.read_file_in_volume",
+        return_value={"type": "file", "output": content},
+    ) as read_file:
+        assert _file_matches(settings, team, "fs-data", "large.conf", content)
+
+    read_file.assert_called_once_with(
+        settings, team, "fs-data", "large.conf", max_bytes=1_000_000
+    )
 
 
 def test_apply_preflights_conflicts_before_mutation(stack_fixture):

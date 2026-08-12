@@ -2248,6 +2248,7 @@ def list_environments(settings: Settings, team: TeamSettings) -> list[dict[str, 
                 "stack": container.labels.get("oduflow.stack", ""),
                 "stack_resource": container.labels.get("oduflow.stack-resource", ""),
                 "stack_spec_hash": container.labels.get("oduflow.stack-spec-hash", ""),
+                "stack_sanitize": container.labels.get("oduflow.stack-sanitize", ""),
             }
 
         try:
@@ -2538,6 +2539,7 @@ def get_environment_info(
         result["stack"] = labels.get("oduflow.stack", "")
         result["stack_resource"] = labels.get("oduflow.stack-resource", "")
         result["stack_spec_hash"] = labels.get("oduflow.stack-spec-hash", "")
+        result["stack_sanitize"] = labels.get("oduflow.stack-sanitize", "")
 
         if settings.routing_mode == "traefik":
             result["url"] = (

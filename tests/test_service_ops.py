@@ -488,6 +488,9 @@ class TestListServices:
         container.name = "oduflow-1-svc-redis"
         container.status = "running"
         container.image.tags = ["redis:7"]
+        container.image.attrs = {
+            "Config": {"Env": ["REDIS_VERSION=7.4", "PATH=/usr/local/bin"]}
+        }
         container.attrs = {
             "NetworkSettings": {
                 "Ports": {"6379/tcp": [{"HostIp": "0.0.0.0", "HostPort": "6379"}]}
@@ -508,6 +511,7 @@ class TestListServices:
         assert svc["url"] == "http://localhost:6379"
         # Env vars: system vars filtered out, only custom remain
         assert svc["env_vars"] == {"REDIS_PASSWORD": "secret"}
+        assert svc["image_env_vars"] == {"REDIS_VERSION": "7.4"}
 
     def test_list_with_services_traefik_mode(self, mock_docker_client):
         container = MagicMock()

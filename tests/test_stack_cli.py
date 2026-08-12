@@ -1,7 +1,10 @@
 import sys
 from unittest.mock import patch
 
+import pytest
+
 from oduflow.settings import Settings, TeamSettings
+from oduflow.stack_loader import StackValidationError
 from oduflow.stack_ops import StackPlan
 
 
@@ -27,6 +30,37 @@ spec:
         server._run_cli()
 
     assert "Stack 'demo' is valid" in capsys.readouterr().out
+
+
+def test_stack_validate_cli_checks_referenced_files(tmp_path):
+    manifest = tmp_path / "oduflow.yaml"
+    manifest.write_text(
+        """\
+apiVersion: oduflow.dev/v1alpha1
+kind: Stack
+metadata: {name: demo}
+spec:
+  environment:
+    name: demo
+    branch: main
+    repoUrl: https://github.com/acme/demo.git
+    odooImage: odoo:18.0
+  volumes:
+    config: {}
+  files:
+    - source: missing.conf
+      volume: config
+      path: app.conf
+""",
+        encoding="utf-8",
+    )
+    from oduflow import server
+
+    with (
+        patch.object(sys, "argv", ["oduflow", "stack", "validate", str(manifest)]),
+        pytest.raises(StackValidationError, match="cannot read file source"),
+    ):
+        server._run_cli()
 
 
 def test_startup_stack_is_applied_before_server(tmp_path):
