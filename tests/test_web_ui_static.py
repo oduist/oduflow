@@ -2,14 +2,49 @@
 
 from __future__ import annotations
 
+import json
 import re
+import shutil
+import subprocess
+from pathlib import Path
 
+import pytest
 from starlette.applications import Starlette
 from starlette.testclient import TestClient
 
 from oduflow.locking import LockManager
 from oduflow.settings import Settings, TeamSettings
 from oduflow.web_ui import mount_web_ui
+
+_DASHBOARD = (
+    Path(__file__).parents[1] / "src" / "oduflow" / "templates" / "dashboard.html"
+)
+
+
+def _js_function(source: str, name: str) -> str:
+    """Extract one top-level dashboard function for a focused Node harness."""
+    start = source.index(f"function {name}(")
+    brace = source.index("{", start)
+    depth = 0
+    for index in range(brace, len(source)):
+        if source[index] == "{":
+            depth += 1
+        elif source[index] == "}":
+            depth -= 1
+            if depth == 0:
+                return source[start : index + 1]
+    raise AssertionError(f"unterminated JavaScript function {name}")
+
+
+def _run_node(source: str) -> dict[str, object]:
+    result = subprocess.run(
+        ["node", "-"],
+        input=source,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    return json.loads(result.stdout)
 
 
 def _client(tmp_path) -> TestClient:
@@ -129,3 +164,84 @@ def test_odoo_sh_import_exposes_best_effort_addon_policy(tmp_path):
         "addon_error_policy: document.getElementById('import-best-effort').checked "
         "? 'best_effort' : 'strict'" in dashboard
     )
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="Node.js is not installed")
+def test_template_settings_form_round_trips_attribute_and_prototype_key_values():
+    dashboard = _DASHBOARD.read_text(encoding="utf-8")
+    functions = "\n".join(
+        _js_function(dashboard, name)
+        for name in ("escHtmlAttr", "_tsetNormalizeExtras", "_tsetCollectForm")
+    )
+    harness = (
+        functions
+        + r"""
+var fields = {
+  'template-settings-error': {style: {}},
+  'tset-image': {value: 'odoo:19.0'},
+  'tset-repo': {value: 'https://example.test/addons.git'},
+  'tset-git-user': {value: "O'Reilly"},
+  'tset-auto-install': {value: ''},
+  'tset-local-path': {value: ''},
+  'tset-overlay': {value: 'auto'}
+};
+function checkbox(value, branch) {
+  return {
+    value: value,
+    closest: function (selector) {
+      if (selector !== '.check-item') throw new Error('Unexpected row selector');
+      return {
+        querySelector: function (inputSelector) {
+          if (inputSelector !== '.tset-extra-branch') {
+            throw new Error('Unexpected input selector');
+          }
+          return {value: branch};
+        }
+      };
+    }
+  };
+}
+global.document = {
+  querySelectorAll: function () {
+    return [
+      checkbox('__proto__', "feature'quote"),
+      checkbox('missing"repo\\name', 'release\\candidate')
+    ];
+  },
+  querySelector: function () {
+    throw new Error('Repository names must not be interpolated into selectors');
+  },
+  getElementById: function (id) { return fields[id]; }
+};
+var _templateSettingsMeta = JSON.parse(
+  '{"__proto__":{"keep":true},"custom":{"preserved":true}}'
+);
+var normalized = _tsetNormalizeExtras(JSON.parse(
+  '{"__proto__":"main","constructor":"stable"}'
+));
+var collected = _tsetCollectForm();
+process.stdout.write(JSON.stringify({
+  escaped: escHtmlAttr("feature'quote&\"<>"),
+  normalized: normalized,
+  collected: collected
+}));
+"""
+    )
+
+    assert _run_node(harness) == {
+        "escaped": "feature'quote&amp;&quot;&lt;&gt;",
+        "normalized": {"__proto__": "main", "constructor": "stable"},
+        "collected": {
+            "__proto__": {"keep": True},
+            "custom": {"preserved": True},
+            "odoo_image": "odoo:19.0",
+            "repo_url": "https://example.test/addons.git",
+            "git_user": "O'Reilly",
+            "auto_install_modules": "",
+            "extra_addons": {
+                "__proto__": "feature'quote",
+                'missing"repo\\name': "release\\candidate",
+            },
+            "use_overlay": None,
+        },
+    }

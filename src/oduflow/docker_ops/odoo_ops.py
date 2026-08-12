@@ -306,6 +306,9 @@ def _run_odoo_module_command(
             f"Environment '{env_name}' does not exist. Use create_environment first."
         )
 
+    if flag == "-u":
+        _require_upgradeable_modules(settings, team, env_name, modules)
+
     modules_str = ",".join(modules)
     cmd = f"/entrypoint.sh odoo -d {env_db} --stop-after-init --no-http {flag} {modules_str}"
 
@@ -323,6 +326,66 @@ def _run_odoo_module_command(
         "exit_code": exit_code,
         "output": output_str,
     }
+
+
+def _require_upgradeable_modules(
+    settings: Settings,
+    team: TeamSettings,
+    env_name: str,
+    modules: tuple[str, ...],
+) -> None:
+    """Fail before ``odoo -u`` when a requested module is not installed.
+
+    Odoo exits successfully when ``-u`` names an unknown or uninstalled module,
+    even though it does not upgrade it. Checking the database first prevents both
+    direct upgrades and ``pull_and_apply(upgrade=...)`` from reporting that no-op
+    as a success.
+    """
+    names = ", ".join(f"'{module}'" for module in modules)
+    result = run_db_query(
+        settings,
+        team,
+        env_name,
+        f"SELECT name, state FROM ir_module_module WHERE name IN ({names})",
+    )
+    states: dict[str, str] = {}
+    for row in result["output"].splitlines()[1:]:
+        name, separator, state = row.strip().partition(",")
+        if separator:
+            states[name] = state
+
+    unknown = [module for module in modules if module not in states]
+    if unknown:
+        module_list = ", ".join(unknown)
+        install_arg = ",".join(unknown)
+        subject = "Module" if len(unknown) == 1 else "Modules"
+        verb = "is" if len(unknown) == 1 else "are"
+        pronoun = "it is" if len(unknown) == 1 else "they are"
+        raise NotFoundError(
+            f"{subject} {module_list} {verb} unknown in environment '{env_name}' "
+            f"and cannot be upgraded. If {pronoun} new, install with "
+            "install_odoo_modules or "
+            f"pull_and_apply(install='{install_arg}')."
+        )
+
+    not_installed = [
+        f"{module} ({states[module]})"
+        for module in modules
+        if states[module] != "installed"
+    ]
+    if not_installed:
+        module_list = ", ".join(not_installed)
+        install_arg = ",".join(
+            module for module in modules if states[module] != "installed"
+        )
+        subject = "Module" if len(not_installed) == 1 else "Modules"
+        verb = "is" if len(not_installed) == 1 else "are"
+        pronoun = "it" if len(not_installed) == 1 else "them"
+        raise PrerequisiteNotMetError(
+            f"{subject} {module_list} {verb} not installed and cannot be upgraded. "
+            f"Install {pronoun} first with install_odoo_modules or "
+            f"pull_and_apply(install='{install_arg}')."
+        )
 
 
 def upgrade_odoo_modules(
