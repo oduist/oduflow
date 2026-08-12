@@ -595,6 +595,27 @@
     line-height: 1.5;
     tab-size: 2;
   }
+  #tset-extra-addons { max-height: 190px; }
+  #template-settings-form .tag {
+    display: inline-block;
+    padding: 1px 7px;
+    border-radius: 12px;
+    border: 1px solid transparent;
+    font-size: var(--text-2xs);
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    white-space: nowrap;
+  }
+  .meta-facts {
+    display: grid;
+    grid-template-columns: max-content minmax(0, 1fr);
+    gap: 4px 14px;
+    margin: 0;
+    font-size: var(--text-xs);
+  }
+  .meta-facts dt { color: var(--text-dim); }
+  .meta-facts dd { margin: 0; color: var(--text); overflow-wrap: anywhere; }
   /* Unified large modal size (chat / terminals) — almost fullscreen, with margins */
   .modal-terminal, .modal-chat { width: 92vw; max-width: 92vw; height: 90vh; max-height: 90vh; }
   /* --- ACP chat (chat.js) — Engineer's Console tokens only (DESIGN.md) --- */
@@ -1171,6 +1192,12 @@
   .check-list { max-height: 120px; overflow-y: auto; padding: 4px 0; }
   .check-item { display: flex; align-items: center; gap: 8px; padding: 3px 0; font-size: var(--text-sm); cursor: pointer; }
   .branch-input { width: 100px; font-size: var(--text-xs); padding: 2px 6px; margin-left: auto; }
+  /* Checkbox rows live inside a .form-group, whose label rule would otherwise
+     turn them into full-width blocks and stretch the branch input. */
+  .form-group .check-item { display: flex; margin-bottom: 0; font-weight: 400; }
+  .form-group input.branch-input { width: 120px; flex: 0 0 auto; padding: 2px 6px; font-size: var(--text-xs); }
+  /* Long repo URLs truncate instead of scrolling the row sideways. */
+  .form-group .check-item > .hint { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .section-subtitle { font-size: var(--text-md); font-weight: 600; margin-bottom: 10px; color: var(--text-dim); }
   .modal-note { font-size: var(--text-sm); color: var(--text-dim); margin-bottom: 16px; }
   .modal-note a { color: var(--accent); }
@@ -1798,12 +1825,59 @@
     </div>
     <div class="modal-body">
       <div class="form-error" id="template-settings-error"></div>
-      <div class="form-group">
+      <div class="hint" id="template-settings-loading">Loading metadata.json...</div>
+      <div id="template-settings-form" style="display:none;">
+        <div class="form-group">
+          <label for="tset-image">Odoo image</label>
+          <input type="text" id="tset-image" placeholder="e.g. odoo:19.0">
+        </div>
+        <div class="form-group">
+          <label for="tset-repo">Repository URL</label>
+          <input type="text" id="tset-repo" placeholder="https://github.com/owner/repo.git">
+        </div>
+        <div class="form-group">
+          <label for="tset-local-path">Live-mount path</label>
+          <input type="text" id="tset-local-path" placeholder="/path/to/local/checkout">
+          <div class="hint">Used instead of a repository URL when local live-mounts are enabled. Leave empty to drop the setting.</div>
+        </div>
+        <div class="form-group">
+          <label for="tset-git-user">Git credential</label>
+          <select id="tset-git-user">
+            <option value="">— None —</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Extra addons repos</label>
+          <div id="tset-extra-addons" class="check-list"></div>
+          <div class="hint">Checked repos are mounted into environments created from this template. Each one needs a branch.</div>
+        </div>
+        <div class="form-group">
+          <label for="tset-auto-install">Auto-install modules</label>
+          <input type="text" id="tset-auto-install" placeholder="e.g. sale,purchase,stock">
+          <div class="hint">Comma-separated list of modules to install after provisioning</div>
+        </div>
+        <div class="form-group">
+          <label for="tset-overlay">Filestore mode</label>
+          <select id="tset-overlay">
+            <option value="auto">Auto — decide from filestore size</option>
+            <option value="overlay">Overlay (fuse-overlayfs)</option>
+            <option value="copy">Copy</option>
+          </select>
+          <div class="hint">How environments created from this template get their filestore.</div>
+        </div>
+        <div class="form-group" id="tset-facts-group" style="display:none;">
+          <label>Provenance</label>
+          <dl class="meta-facts" id="tset-facts"></dl>
+          <div class="hint">Recorded when the template was created. Read-only here; edit it in raw JSON if needed.</div>
+        </div>
+      </div>
+      <div class="form-group" id="template-settings-raw-group" style="display:none;">
         <label for="template-metadata-editor">metadata.json</label>
         <textarea id="template-metadata-editor" rows="18" spellcheck="false" autocomplete="off" aria-describedby="template-metadata-hint" disabled></textarea>
         <div class="hint" id="template-metadata-hint">This is the complete template metadata file. Changes affect environments created from this template.</div>
       </div>
       <div class="form-actions">
+        <button class="btn" id="template-settings-mode" style="margin-right:auto;" onclick="toggleTemplateSettingsMode()" disabled>Edit raw JSON</button>
         <button class="btn" onclick="closeTemplateSettingsModal()">Cancel</button>
         <button class="btn-create" id="template-settings-submit" onclick="submitTemplateSettings()" disabled>Save settings</button>
       </div>
@@ -2745,6 +2819,16 @@ function escAttr(s) {
     .replace(/>/g, '&gt;');
 }
 
+// Safe for plain double-quoted HTML attributes. Unlike escAttr, this does not
+// add JavaScript-string backslashes, so form values round-trip unchanged.
+function escHtmlAttr(s) {
+  return String(s || '')
+    .replace(/&/g, '&amp;')
+    .replace(/"/g, '&quot;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
 function isAmbiguousGatewayStatus(status) {
   return [408, 502, 503, 504, 524].indexOf(status) !== -1;
 }
@@ -3425,41 +3509,273 @@ var _renameTplName = '';
 var _templateSettingsName = '';
 var _templateSettingsRevision = '';
 var _templateSettingsLoadToken = 0;
+// Parsed metadata.json as loaded/last applied. Saving merges the form fields
+// into this object so keys the form does not know about survive a round-trip.
+var _templateSettingsMeta = {};
+var _templateSettingsRawMode = false;
+
+// Provenance and size keys: recorded by the import/snapshot code, not editable
+// in the form (raw JSON mode can still change them).
+var TSET_FACTS = [
+  ['source', 'Source'],
+  ['source_url', 'Source URL'],
+  ['source_db', 'Source database'],
+  ['source_repository', 'Source repository'],
+  ['source_revision', 'Source revision'],
+  ['source_branch', 'Source branch'],
+  ['source_commit', 'Source commit'],
+  ['snapshot_at', 'Snapshot at'],
+  ['backup_datetime_utc', 'Backup (UTC)'],
+  ['odoo_version', 'Odoo version'],
+  ['pg_version', 'PostgreSQL version'],
+  ['includes_filestore', 'Includes filestore'],
+  ['filestore_size_mb', 'Filestore size (MB)'],
+  ['dump_size_mb', 'Dump size (MB)']
+];
+
+function _tsetNormalizeExtras(raw) {
+  // Mirrors _normalize_extra_addons on the server: only the {name: branch}
+  // dict form carries branch information; the legacy list form is dropped.
+  var extras = Object.create(null);
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return extras;
+  Object.keys(raw).forEach(function(name) {
+    var branch = raw[name];
+    extras[name] = (typeof branch === 'string') ? branch : '';
+  });
+  return extras;
+}
+
+function _tsetBranchOptions(branches) {
+  var seen = Object.create(null);
+  var out = [];
+  (branches || []).forEach(function(b) {
+    var name = (b || '').indexOf('origin/') === 0 ? b.slice(7) : b;
+    if (!name || name === 'HEAD' || seen[name]) return;
+    seen[name] = true;
+    out.push(name);
+  });
+  return out;
+}
+
+function _tsetExtraRow(name, repoUrl, branches, extras, idx, missing) {
+  var checked = Object.prototype.hasOwnProperty.call(extras, name);
+  var branch = checked ? (extras[name] || '') : '';
+  var listId = 'tset-branches-' + idx;
+  var options = _tsetBranchOptions(branches);
+  var note = missing
+    ? ' <span class="tag tag-missing" title="Referenced by this template but not registered as an extra repo">missing</span>'
+    : (repoUrl ? ' <span class="hint" style="margin-top:0;">(' + esc(repoUrl) + ')</span>' : '');
+  return '<label class="check-item">' +
+    '<input type="checkbox" class="tset-extra-cb" value="' + escHtmlAttr(name) + '"' + (checked ? ' checked' : '') + '>' +
+    esc(name) + note +
+    '<input type="text" class="tset-extra-branch branch-input" data-repo="' + escHtmlAttr(name) + '"' +
+      ' placeholder="branch" list="' + listId + '" value="' + escHtmlAttr(branch) + '">' +
+    (options.length
+      ? '<datalist id="' + listId + '">' + options.map(function(b) {
+          return '<option value="' + escHtmlAttr(b) + '"></option>';
+        }).join('') + '</datalist>'
+      : '') +
+  '</label>';
+}
+
+function _tsetRenderExtraAddons(extras) {
+  var container = document.getElementById('tset-extra-addons');
+  var repos = cachedExtraRepos || [];
+  var known = Object.create(null);
+  var rows = repos.map(function(r, i) {
+    known[r.name] = true;
+    return _tsetExtraRow(r.name, r.repo_url, r.branches, extras, i, false);
+  });
+  Object.keys(extras).forEach(function(name, i) {
+    if (!known[name]) rows.push(_tsetExtraRow(name, '', [], extras, 'x' + i, true));
+  });
+  container.innerHTML = rows.length
+    ? rows.join('')
+    : '<span class="hint" style="margin-top:0;">No extra repos available</span>';
+}
+
+function _tsetRenderCredentials(current) {
+  var sel = document.getElementById('tset-git-user');
+  var html = '<option value="">— None —</option>';
+  var found = false;
+  (cachedCredentials || []).forEach(function(c) {
+    if (c.username === current) found = true;
+    html += '<option value="' + escHtmlAttr(c.username) + '">' + esc(c.username) + ' (' + esc(c.host) + ')</option>';
+  });
+  if (current && !found) {
+    html += '<option value="' + escHtmlAttr(current) + '">' + esc(current) + ' (not configured)</option>';
+  }
+  sel.innerHTML = html;
+  sel.value = current || '';
+}
+
+function _tsetRenderFacts(meta) {
+  var rows = [];
+  TSET_FACTS.forEach(function(entry) {
+    var key = entry[0];
+    if (!(key in meta)) return;
+    var value = meta[key];
+    if (value === null || value === '' || typeof value === 'object') return;
+    rows.push('<dt>' + esc(entry[1]) + '</dt><dd>' + esc(String(value)) + '</dd>');
+  });
+  var modules = meta.modules;
+  if (modules && typeof modules === 'object') {
+    var count = Array.isArray(modules) ? modules.length : Object.keys(modules).length;
+    rows.push('<dt>Installed modules</dt><dd>' + count + '</dd>');
+  }
+  document.getElementById('tset-facts').innerHTML = rows.join('');
+  document.getElementById('tset-facts-group').style.display = rows.length ? '' : 'none';
+}
+
+function _tsetFillForm(meta) {
+  document.getElementById('tset-image').value = meta.odoo_image || '';
+  document.getElementById('tset-repo').value = meta.repo_url || '';
+  document.getElementById('tset-local-path').value = meta.local_path || '';
+  document.getElementById('tset-auto-install').value = meta.auto_install_modules || '';
+  var overlay = meta.use_overlay;
+  document.getElementById('tset-overlay').value =
+    overlay === true ? 'overlay' : (overlay === false ? 'copy' : 'auto');
+  _tsetRenderCredentials(meta.git_user || '');
+  _tsetRenderExtraAddons(_tsetNormalizeExtras(meta.extra_addons));
+  _tsetRenderFacts(meta);
+}
+
+// Merge the form back into the loaded metadata. Returns null (and shows the
+// error) when a checked extra repo has no branch.
+function _tsetCollectForm() {
+  var errEl = document.getElementById('template-settings-error');
+  var extras = Object.create(null);
+  var missingBranch = [];
+  document.querySelectorAll('.tset-extra-cb:checked').forEach(function(cb) {
+    var repoName = cb.value;
+    var input = document.querySelector('.tset-extra-branch[data-repo="' + repoName + '"]');
+    var branch = input ? input.value.trim() : '';
+    if (!branch) { missingBranch.push(repoName); }
+    else { extras[repoName] = branch; }
+  });
+  if (missingBranch.length) {
+    errEl.textContent = 'Branch is required for extra addon(s): ' + missingBranch.join(', ') + '.';
+    errEl.style.display = 'block';
+    return null;
+  }
+
+  var meta = Object.assign(Object.create(null), _templateSettingsMeta);
+  meta.odoo_image = document.getElementById('tset-image').value.trim();
+  meta.repo_url = document.getElementById('tset-repo').value.trim();
+  meta.git_user = document.getElementById('tset-git-user').value;
+  meta.auto_install_modules = document.getElementById('tset-auto-install').value.trim();
+  meta.extra_addons = extras;
+  var localPath = document.getElementById('tset-local-path').value.trim();
+  if (localPath) { meta.local_path = localPath; }
+  else { delete meta.local_path; }
+  var overlay = document.getElementById('tset-overlay').value;
+  meta.use_overlay = overlay === 'overlay' ? true : (overlay === 'copy' ? false : null);
+  errEl.style.display = 'none';
+  return meta;
+}
+
+function _tsetSetMode(rawMode) {
+  _templateSettingsRawMode = rawMode;
+  document.getElementById('template-settings-form').style.display = rawMode ? 'none' : '';
+  document.getElementById('template-settings-raw-group').style.display = rawMode ? '' : 'none';
+  document.getElementById('template-settings-mode').textContent =
+    rawMode ? 'Back to form' : 'Edit raw JSON';
+}
+
+function toggleTemplateSettingsMode() {
+  var editor = document.getElementById('template-metadata-editor');
+  var errEl = document.getElementById('template-settings-error');
+  if (!_templateSettingsRawMode) {
+    var collected = _tsetCollectForm();
+    if (!collected) return;
+    editor.value = JSON.stringify(collected, null, 2) + '\n';
+    _tsetSetMode(true);
+    editor.focus();
+    return;
+  }
+  var parsed;
+  try {
+    parsed = JSON.parse(editor.value);
+  } catch (e) {
+    errEl.textContent = 'Invalid JSON: ' + e.message;
+    errEl.style.display = 'block';
+    editor.focus();
+    return;
+  }
+  if (!parsed || Array.isArray(parsed) || typeof parsed !== 'object') {
+    errEl.textContent = 'Template metadata must be a JSON object.';
+    errEl.style.display = 'block';
+    editor.focus();
+    return;
+  }
+  errEl.style.display = 'none';
+  _templateSettingsMeta = parsed;
+  _tsetFillForm(parsed);
+  _tsetSetMode(false);
+}
 
 async function openTemplateSettingsModal(name) {
   _templateSettingsName = name;
   _templateSettingsRevision = '';
+  _templateSettingsMeta = {};
   var token = ++_templateSettingsLoadToken;
   var editor = document.getElementById('template-metadata-editor');
   var errEl = document.getElementById('template-settings-error');
   var btn = document.getElementById('template-settings-submit');
+  var modeBtn = document.getElementById('template-settings-mode');
   document.getElementById('template-settings-title').textContent = 'Template settings — ' + name;
-  editor.value = 'Loading metadata.json...';
+  document.getElementById('template-settings-loading').style.display = '';
+  document.getElementById('template-settings-form').style.display = 'none';
+  document.getElementById('template-settings-raw-group').style.display = 'none';
+  editor.value = '';
   editor.disabled = true;
   btn.disabled = true;
   btn.textContent = 'Save settings';
+  modeBtn.disabled = true;
+  _templateSettingsRawMode = false;
   errEl.style.display = 'none';
   errEl.textContent = '';
   showModal('template-settings-modal');
 
+  // The pickers need the same lists the create-environment modal uses.
+  var lists = Promise.all([loadExtraRepos(), loadCredentials()]);
   try {
     var r = await fetch(API_TEMPLATES + '/' + encodeURIComponent(name) + '/metadata');
     var data = await readResult(r);
+    await lists;
     if (token !== _templateSettingsLoadToken) return;
-    if (data.ok) {
-      editor.value = data.content;
-      _templateSettingsRevision = data.revision;
-      editor.disabled = false;
-      btn.disabled = false;
-      editor.focus();
-    } else {
-      editor.value = '';
+    document.getElementById('template-settings-loading').style.display = 'none';
+    if (!data.ok) {
       errEl.textContent = data.error || 'Failed to load template settings';
       errEl.style.display = 'block';
+      return;
     }
+    _templateSettingsRevision = data.revision;
+    editor.value = data.content;
+    editor.disabled = false;
+    btn.disabled = false;
+    modeBtn.disabled = false;
+    var parsed = null;
+    try {
+      parsed = JSON.parse(data.content);
+    } catch (e) {
+      parsed = null;
+    }
+    if (!parsed || Array.isArray(parsed) || typeof parsed !== 'object') {
+      // Broken metadata: open the raw editor so it can be repaired.
+      _tsetSetMode(true);
+      errEl.textContent = 'metadata.json is not a valid JSON object. Repair it here, then switch back to the form.';
+      errEl.style.display = 'block';
+      editor.focus();
+      return;
+    }
+    _templateSettingsMeta = parsed;
+    _tsetFillForm(parsed);
+    _tsetSetMode(false);
+    document.getElementById('tset-image').focus();
   } catch (e) {
     if (token !== _templateSettingsLoadToken) return;
-    editor.value = '';
+    document.getElementById('template-settings-loading').style.display = 'none';
     errEl.textContent = 'Connection error: ' + e.message;
     errEl.style.display = 'block';
   }
@@ -3478,17 +3794,24 @@ async function submitTemplateSettings() {
   var name = _templateSettingsName;
   var revision = _templateSettingsRevision;
   var token = _templateSettingsLoadToken;
-  var content = editor.value;
-  try {
-    var parsed = JSON.parse(content);
-    if (!parsed || Array.isArray(parsed) || typeof parsed !== 'object') {
-      throw new Error('Template metadata must be a JSON object.');
+  var content;
+  if (_templateSettingsRawMode) {
+    content = editor.value;
+    try {
+      var parsed = JSON.parse(content);
+      if (!parsed || Array.isArray(parsed) || typeof parsed !== 'object') {
+        throw new Error('Template metadata must be a JSON object.');
+      }
+    } catch (e) {
+      errEl.textContent = 'Invalid JSON: ' + e.message;
+      errEl.style.display = 'block';
+      editor.focus();
+      return;
     }
-  } catch (e) {
-    errEl.textContent = 'Invalid JSON: ' + e.message;
-    errEl.style.display = 'block';
-    editor.focus();
-    return;
+  } else {
+    var collected = _tsetCollectForm();
+    if (!collected) return;
+    content = JSON.stringify(collected, null, 2) + '\n';
   }
 
   errEl.style.display = 'none';
@@ -3508,6 +3831,11 @@ async function submitTemplateSettings() {
     if (data.ok) {
       editor.value = data.content;
       _templateSettingsRevision = data.revision;
+      try {
+        _templateSettingsMeta = JSON.parse(data.content);
+      } catch (e) {
+        _templateSettingsMeta = {};
+      }
       showToast('Template "' + name + '" settings saved');
       closeTemplateSettingsModal();
       await loadTemplates();
