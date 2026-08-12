@@ -3648,7 +3648,8 @@ function _tsetCollectForm() {
   var missingBranch = [];
   document.querySelectorAll('.tset-extra-cb:checked').forEach(function(cb) {
     var repoName = cb.value;
-    var input = document.querySelector('.tset-extra-branch[data-repo="' + repoName + '"]');
+    var row = cb.closest('.check-item');
+    var input = row ? row.querySelector('.tset-extra-branch') : null;
     var branch = input ? input.value.trim() : '';
     if (!branch) { missingBranch.push(repoName); }
     else { extras[repoName] = branch; }

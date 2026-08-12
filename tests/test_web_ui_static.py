@@ -185,9 +185,32 @@ var fields = {
   'tset-local-path': {value: ''},
   'tset-overlay': {value: 'auto'}
 };
+function checkbox(value, branch) {
+  return {
+    value: value,
+    closest: function (selector) {
+      if (selector !== '.check-item') throw new Error('Unexpected row selector');
+      return {
+        querySelector: function (inputSelector) {
+          if (inputSelector !== '.tset-extra-branch') {
+            throw new Error('Unexpected input selector');
+          }
+          return {value: branch};
+        }
+      };
+    }
+  };
+}
 global.document = {
-  querySelectorAll: function () { return [{value: '__proto__'}]; },
-  querySelector: function () { return {value: "feature'quote"}; },
+  querySelectorAll: function () {
+    return [
+      checkbox('__proto__', "feature'quote"),
+      checkbox('missing"repo\\name', 'release\\candidate')
+    ];
+  },
+  querySelector: function () {
+    throw new Error('Repository names must not be interpolated into selectors');
+  },
   getElementById: function (id) { return fields[id]; }
 };
 var _templateSettingsMeta = JSON.parse(
@@ -215,7 +238,10 @@ process.stdout.write(JSON.stringify({
             "repo_url": "https://example.test/addons.git",
             "git_user": "O'Reilly",
             "auto_install_modules": "",
-            "extra_addons": {"__proto__": "feature'quote"},
+            "extra_addons": {
+                "__proto__": "feature'quote",
+                'missing"repo\\name': "release\\candidate",
+            },
             "use_overlay": None,
         },
     }
