@@ -97,9 +97,7 @@ def _environment_labels(stack: str, manifest: StackManifest) -> dict[str, str]:
     return labels
 
 
-def _environment_hash_with_sanitize(
-    manifest: StackManifest, sanitize: bool
-) -> str:
+def _environment_hash_with_sanitize(manifest: StackManifest, sanitize: bool) -> str:
     value = manifest.spec.environment.model_dump(mode="json", by_alias=True)
     value.pop("modules", None)
     value["sanitize"] = sanitize
@@ -203,9 +201,7 @@ def _file_matches(
     return "error" not in result and result.get("output") == expected
 
 
-def _service_env_matches(
-    actual: Mapping[str, Any], desired: Mapping[str, str]
-) -> bool:
+def _service_env_matches(actual: Mapping[str, Any], desired: Mapping[str, str]) -> bool:
     """Compare declared values while ignoring untouched image defaults."""
     effective = actual.get("env_vars", {})
     image_defaults = actual.get("image_env_vars", {})
@@ -331,14 +327,16 @@ def build_plan(
         if actual_env.get("extra_addons", {}) != desired_extras:
             immutable_drift.append("extraRepositories")
         actual_sanitize = actual_env.get("stack_sanitize", "")
-        sanitize_changed = (
-            actual_sanitize in ("true", "false")
-            and (actual_sanitize == "true") != desired_env.sanitize
-        )
-        if not actual_sanitize and actual_env.get("stack_spec_hash"):
+        if actual_sanitize in ("true", "false"):
+            sanitize_changed = (actual_sanitize == "true") != desired_env.sanitize
+        else:
+            # Older Stack environments predate the explicit policy label. Their
+            # spec hash can prove the current manifest has the same policy, but
+            # any other mismatch is ambiguous: sanitization happens only during
+            # creation, so never stamp a policy through an ordinary update.
             sanitize_changed = actual_env.get(
                 "stack_spec_hash"
-            ) == _environment_hash_with_sanitize(manifest, not desired_env.sanitize)
+            ) != _environment_hash_with_sanitize(manifest, desired_env.sanitize)
         if sanitize_changed:
             immutable_drift.append("sanitize")
         if immutable_drift:
