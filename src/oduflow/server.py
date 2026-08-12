@@ -1875,7 +1875,10 @@ def upgrade_odoo_modules(
     env_name: str, modules: str, ctx: Context | None = None
 ) -> str:
     """
-    Upgrade Odoo modules in an environment.
+    Upgrade installed Odoo modules in an environment.
+
+    Unknown or uninstalled modules are rejected with a suggestion to use
+    install_odoo_modules or pull_and_apply(install=...) instead.
 
     Args:
         env_name: The name of the environment.

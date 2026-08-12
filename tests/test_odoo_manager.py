@@ -1733,7 +1733,11 @@ class TestInstallModules:
 
 
 class TestUpgradeModules:
-    def test_upgrade(self, mock_docker_client):
+    @patch(
+        "oduflow.docker_ops.odoo_ops.run_db_query",
+        return_value={"exit_code": 0, "output": "name,state\nsale,installed\n"},
+    )
+    def test_upgrade(self, mock_query, mock_docker_client):
         container = MagicMock()
         container.exec_run.return_value = (0, b"OK")
         mock_docker_client.containers.get.return_value = container
@@ -1744,6 +1748,36 @@ class TestUpgradeModules:
         args = container.exec_run.call_args[0][0]
         assert "-d oduflow_1_main" in args
         assert "-u sale" in args
+
+    @patch(
+        "oduflow.docker_ops.odoo_ops.run_db_query",
+        return_value={"exit_code": 0, "output": "name,state\nwebsite,uninstalled\n"},
+    )
+    def test_uninstalled_module_is_refused(self, mock_query, mock_docker_client):
+        container = MagicMock()
+        mock_docker_client.containers.get.return_value = container
+
+        with pytest.raises(
+            PrerequisiteNotMetError, match="not installed.*install_odoo_modules"
+        ):
+            odoo_ops.upgrade_odoo_modules(TEST_SETTINGS, TEST_TEAM, "main", "website")
+
+        container.exec_run.assert_not_called()
+
+    @patch(
+        "oduflow.docker_ops.odoo_ops.run_db_query",
+        return_value={"exit_code": 0, "output": "name,state\n"},
+    )
+    def test_unknown_module_is_refused(self, mock_query, mock_docker_client):
+        container = MagicMock()
+        mock_docker_client.containers.get.return_value = container
+
+        with pytest.raises(NotFoundError, match="unknown.*install_odoo_modules"):
+            odoo_ops.upgrade_odoo_modules(
+                TEST_SETTINGS, TEST_TEAM, "main", "not_a_module"
+            )
+
+        container.exec_run.assert_not_called()
 
 
 class TestRunEnvironmentTests:
@@ -2232,6 +2266,28 @@ class TestApplyActionsConf:
         container.restart.assert_called_once()
         assert result["action"] == "upgrade"
         assert "Reapplied odoo.conf." in result["message"]
+
+    @patch(
+        "oduflow.docker_ops.odoo_ops.upgrade_odoo_modules",
+        side_effect=PrerequisiteNotMetError("module is not installed"),
+    )
+    def test_rejected_upgrade_does_not_restart(self, mock_upgrade):
+        client, container = self._client_with_container()
+
+        with pytest.raises(PrerequisiteNotMetError, match="not installed"):
+            env_ops._apply_actions(
+                client,
+                TEST_SETTINGS,
+                TEST_TEAM,
+                "feature/x",
+                "oduflow-1-feature-x-odoo",
+                to_install=[],
+                to_upgrade=["website"],
+                do_restart=False,
+                changed_files=[],
+            )
+
+        container.restart.assert_not_called()
 
 
 class TestApplyActionsDeps:
