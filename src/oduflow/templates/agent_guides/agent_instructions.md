@@ -1,5 +1,5 @@
 # Oduflow — Agentic Odoo Development
-Version: 5
+Version: 6
 
 ## Purpose
 
@@ -21,21 +21,32 @@ version (15–19).
   what Oduflow applies.
 
 Use `list_environments` before creating anything. Reuse the environment for
-the current branch when it exists; otherwise call `create_environment` with
-the branch, correct Odoo image, and either `repo_url` or `local_path`. Show the
-returned URL to the user.
+the current branch when it exists. If none exists, prepare the selected
+delivery mode before calling `create_environment`:
+
+- **`repo_url`: first run `git push -u origin HEAD`** so the current branch
+  exists in the remote repository, then create the environment. Oduflow can
+  clone only pushed commits; it cannot see a local-only branch or uncommitted
+  changes.
+- **`local_path`:** create the environment from the absolute checkout path;
+  no push is required.
+
+Call `create_environment` with the branch, correct Odoo image, and either
+`repo_url` or `local_path`. Show the returned URL to the user.
 
 ## Core workflow
 
 ```text
-1. list_environments; create_environment only if needed
-2. get_odoo_development_guide before module code changes
-3. edit code locally
-4. repo_url: commit + push; local_path: no delivery step
-5. pull_and_apply with the action required by the edit
-6. read that response; if it failed, fix and repeat from step 3
-7. run_odoo_tests for the changed modules
-8. delete_environment when the task is done or cancelled and nobody still
+1. list_environments
+2. if creation is needed: repo_url must git push -u origin HEAD first;
+   local_path needs no push; then call create_environment
+3. get_odoo_development_guide before module code changes
+4. edit code locally
+5. repo_url: commit + push; local_path: no delivery step
+6. pull_and_apply with the action required by the edit
+7. read that response; if it failed, fix and repeat from step 4
+8. run_odoo_tests for the changed modules
+9. delete_environment when the task is done or cancelled and nobody still
    needs the URL or its test data
 ```
 

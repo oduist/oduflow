@@ -406,6 +406,9 @@ class TestAgentInstructionsTool:
 
         assert len(guide) < 16_000
         assert "Per-environment Odoo configuration" in guide
+        assert "Version: 6" in guide
+        assert "git push -u origin HEAD" in guide
+        assert "cannot see a local-only branch" in guide
         assert "db_maxconn" in guide
         assert "max_cron_threads" in guide
         assert "workers" in guide
@@ -433,13 +436,30 @@ class TestAgentInstructionsTool:
 
     @patch("oduflow.docker_ops.env_ops.list_environments")
     def test_instructions_preface_repo_url_mode(self, mock_list):
-        mock_list.return_value = []
+        mock_list.return_value = [{"env_name": "test-git", "local_path": None}]
 
         result = _call_tool("get_agent_instructions")
 
         assert result.startswith("## Current Code Delivery Mode")
         assert "No live-mount/local_path environment was detected" in result
-        assert "commit, push, then call `pull_and_apply`" in result
+        assert "Before the first `create_environment`" in result
+        assert "git push -u origin HEAD" in result
+        assert "cannot clone a local-only branch" in result
+        assert "commit, push, and call `pull_and_apply`" in result
+
+    @patch("oduflow.docker_ops.env_ops.list_environments")
+    def test_instructions_preface_before_first_environment(self, mock_list):
+        mock_list.return_value = []
+
+        result = _call_tool("get_agent_instructions")
+
+        assert result.startswith("## Current Code Delivery Mode")
+        assert "No environment was detected yet" in result
+        assert "Choose the delivery mode" in result
+        assert "For `repo_url`" in result
+        assert "git push -u origin HEAD" in result
+        assert "For `local_path`" in result
+        assert "do not push" in result
 
 
 class TestInfoTool:
