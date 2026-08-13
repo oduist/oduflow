@@ -66,9 +66,9 @@ _SUMMARY_ERROR_CONTEXT = 5
 _output_cache = OutputCache()
 
 _MCP_INSTRUCTIONS = """
-Before using Oduflow tools, call get_agent_instructions to load the current
-Oduflow workflow guide. It includes the active code delivery mode, including
-repo_url versus local_path/live-mount guidance.
+Once at the start of the session, call get_agent_instructions to load the
+current Oduflow workflow guide and active code-delivery mode. Use that guide
+for the rest of the session; do not call it again before each tool.
 
 Before writing or refactoring Odoo module code, call
 get_odoo_development_guide(version="<major>") for the target Odoo version.
@@ -1009,7 +1009,7 @@ def attach_filestore(
 @mcp.tool()
 @handle_errors
 def get_agent_instructions(ctx: Context | None = None) -> str:
-    """Get instructions for AI coding agents on how to use Oduflow MCP tools."""
+    """Load the Oduflow agent workflow once at the start of a session."""
     import pathlib
 
     def _mode_preface() -> str:
@@ -1027,19 +1027,17 @@ def get_agent_instructions(ctx: Context | None = None) -> str:
             return (
                 "## Current Code Delivery Mode\n\n"
                 f"Live-mount/local_path mode is active for: {names}\n\n"
-                "Use the local live-mount workflow for these environments:\n"
-                "1. Edit files directly in the mounted local folder; no git push is required.\n"
-                "2. Call `pull_and_apply` after edits. Prefer explicit actions when you authored the changes.\n"
-                '3. If you add/change fields, models, `_inherit`/`_name`, manifest `data`/`depends`, security/data XML, `ir.cron`, mail templates, `i18n/*.po` translations, or anything loaded into the database, call `pull_and_apply(..., upgrade="module")`.\n'
-                '4. If you add a new module, call `pull_and_apply(..., install="module")`.\n'
-                "5. Use `restart=True` only for Python logic changes that do not require registry/schema/data updates.\n"
-                "6. Git commits are optional in live-mount mode and are not used by Oduflow to detect applied changes.\n\n"
+                "Edit those mounted folders directly; no push is required. "
+                "After edits, call `pull_and_apply` with the explicit action "
+                "required by the change.\n\n"
                 "---\n\n"
             )
 
         return (
             "## Current Code Delivery Mode\n\n"
-            "No live-mount/local_path environment was detected. Use the `repo_url` workflow unless you create an environment with `local_path`: edit locally, commit, push, then call `pull_and_apply` so Oduflow can pull the pushed commits.\n\n"
+            "No live-mount/local_path environment was detected. Use the "
+            "`repo_url` workflow: edit locally, commit, push, then call "
+            "`pull_and_apply`.\n\n"
             "---\n\n"
         )
 

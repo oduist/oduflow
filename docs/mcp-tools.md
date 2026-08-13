@@ -98,7 +98,7 @@ All tools are accessible via MCP clients (Cursor, Cline, Amp, etc.) and the CLI 
 | `restore_cluster_pitr` | ✓ | ⚠️ Restore the entire production PostgreSQL cluster from WAL-G; requires `confirm="RESTORE-CLUSTER"` |
 | `delete_production` | ✓ | Remove a production; requires its name in `confirm`, and preserves its database unless `drop_database=True` |
 | **Agent Instructions** | | |
-| `get_agent_instructions` | | Get AI agent instructions for using Oduflow MCP tools |
+| `get_agent_instructions` | | Load the compact Oduflow agent workflow once at the start of a session |
 | `get_odoo_development_guide` | | Get Odoo development standards guide for a specific version (15–19) |
 | **Feedback** | | |
 | `report_issue` | | Build a prefilled link for the user to file a bug, feature request, or feedback about Oduflow on GitHub |
