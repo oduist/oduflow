@@ -193,7 +193,7 @@ class TestBackupRestore:
         src = tmp_path / "src"
         _make_tree(str(src), spec)
 
-        chunkstore.backup(str(src), small_config_storage, "erp")
+        first = chunkstore.backup(str(src), small_config_storage, "erp")
 
         counting = CountingStorage(small_config_storage)
         # Change ONE file.
@@ -202,9 +202,12 @@ class TestBackupRestore:
         result = chunkstore.backup(str(src), counting, "erp")
         assert result.revision == 2
         assert result.unchanged_files == 9
-        # Only the changed file's chunks + metadata chunks are uploaded.
-        assert result.new_chunks <= 8
-        assert counting.counts["put"] <= 10  # chunks + revision file
+        # Only the changed file's chunks + metadata chunks are uploaded — a
+        # small fraction of the full backup's ~50 KB of incompressible data.
+        # Chunk *counts* are seed-dependent (the store seed is random and
+        # file mtimes shift metadata chunk boundaries), so assert on bytes.
+        assert result.uploaded_bytes < first.uploaded_bytes / 3
+        assert counting.counts["put"] == result.new_chunks + 1  # + revision file
 
         # Both revisions restore correctly.
         dst = tmp_path / "dst"
