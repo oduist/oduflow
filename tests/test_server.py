@@ -406,6 +406,9 @@ class TestAgentInstructionsTool:
 
         assert len(guide) < 16_000
         assert "Per-environment Odoo configuration" in guide
+        assert "Version: 6" in guide
+        assert "git push -u origin HEAD" in guide
+        assert "cannot see a local-only branch" in guide
         assert "db_maxconn" in guide
         assert "max_cron_threads" in guide
         assert "workers" in guide
@@ -439,7 +442,10 @@ class TestAgentInstructionsTool:
 
         assert result.startswith("## Current Code Delivery Mode")
         assert "No live-mount/local_path environment was detected" in result
-        assert "commit, push, then call `pull_and_apply`" in result
+        assert "Before the first `create_environment`" in result
+        assert "git push -u origin HEAD" in result
+        assert "cannot clone a local-only branch" in result
+        assert "commit, push, and call `pull_and_apply`" in result
 
 
 class TestInfoTool:

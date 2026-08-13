@@ -1036,7 +1036,10 @@ def get_agent_instructions(ctx: Context | None = None) -> str:
         return (
             "## Current Code Delivery Mode\n\n"
             "No live-mount/local_path environment was detected. Use the "
-            "`repo_url` workflow: edit locally, commit, push, then call "
+            "`repo_url` workflow. Before the first `create_environment` for "
+            "the current branch, publish that branch with "
+            "`git push -u origin HEAD`; Oduflow cannot clone a local-only "
+            "branch. Then edit locally, commit, push, and call "
             "`pull_and_apply`.\n\n"
             "---\n\n"
         )
