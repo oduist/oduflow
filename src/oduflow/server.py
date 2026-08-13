@@ -30,6 +30,7 @@ from oduflow import (
     artifact_tokens,
     git_ops,
     migrations,
+    po_tools,
     production_registry,
     quotas,
     reaper,
@@ -49,6 +50,7 @@ from oduflow.docker_ops import (
 from oduflow.errors import FlowError, NotFoundError, PrerequisiteNotMetError
 from oduflow.locking import LockManager
 from oduflow.output_cache import CachedOutput, OutputCache
+from oduflow.po_tools import PoEntry
 from oduflow.settings import Settings, TeamSettings, find_toml
 from oduflow.stack_loader import StackValidationError
 
@@ -1911,8 +1913,12 @@ _TERM_KINDS = {
     "code": "Python _() / _lt(), JS _t()",
     "other": "unrecognised reference kind",
 }
-# Long lists of terms belong in the cached output, not in the headline report.
-_TERM_PREVIEW = 15
+# A list this short is a to-do list; a longer one is a statement about the file
+# as a whole, which the counts already make. The full set is in the exported
+# catalogue either way, so nothing is lost by not printing it.
+_TERM_LIST_MAX = 20
+# Enough of the source string to recognise the term next to its reference.
+_TERM_SNIPPET = 60
 
 
 def _format_term_counts(by_type: dict[str, int]) -> list[str]:
@@ -1922,16 +1928,82 @@ def _format_term_counts(by_type: dict[str, int]) -> list[str]:
     ]
 
 
-def _format_term_list(label: str, msgids: list[str]) -> list[str]:
-    """A capped bullet list, nested one level under its own label's indent."""
-    if not msgids:
+def _format_term(entry: PoEntry) -> str:
+    """One term on one line: where it lives, then what it says.
+
+    A ``model_terms`` msgid is a whole view or report body, newlines included,
+    so printing it verbatim buries the report. The ``#:`` reference is the part
+    that says which field or view to open.
+    """
+    text = " ".join(entry.msgid.split())
+    if len(text) > _TERM_SNIPPET:
+        text = text[: _TERM_SNIPPET - 1].rstrip() + "…"
+    reference = entry.occurrences[0] if entry.occurrences else ""
+    return f'{reference}  "{text}"' if reference else f'"{text}"'
+
+
+_VERDICT_LABEL = {
+    po_tools.OK: "OK",
+    po_tools.PARTIAL: "PARTIAL",
+    po_tools.NOT_LOADED: "NOT LOADED",
+    po_tools.NOT_TRANSLATED: "NOT TRANSLATED",
+    po_tools.IMPORT_DROPPED: "IMPORT SILENTLY DROPPED",
+    po_tools.IMPORT_ABORTS: "IMPORT ABORTS",
+    po_tools.NO_FILE: "NO FILE",
+    po_tools.NOT_ACTIVATED: "NOT ACTIVATED",
+}
+
+
+def _format_next_step(
+    status: po_tools.LangStatus, env_name: str, module: str, lang: str
+) -> list[str]:
+    """The one action that moves this language forward, as a callable line.
+
+    The verdict is only half an answer; the caller ran this tool to find out
+    what to do, and the fix differs per failure — a catalogue that was never
+    loaded and one that Odoo read and discarded look identical in the counts.
+    """
+    export = f'export_module_translations("{env_name}", "{module}", "{lang}")'
+    export_pot = f'export_module_translations("{env_name}", "{module}")'
+    upgrade = f'upgrade_odoo_modules("{env_name}", "{module}")'
+    fill_in = f"Next: {export}, fill in the msgstr values, then {upgrade}."
+
+    if status.code == po_tools.OK:
+        return []
+    if status.code == po_tools.NOT_ACTIVATED:
+        return [
+            f"Next: activate {lang} in Odoo (Settings → Translations → "
+            f"Languages), then {upgrade}."
+        ]
+    if status.code in (po_tools.NO_FILE, po_tools.NOT_TRANSLATED):
+        return [fill_in]
+    if status.code in (po_tools.IMPORT_DROPPED, po_tools.IMPORT_ABORTS):
+        return [
+            f"Next: {export_pot} writes the sibling .pot that Odoo merges for "
+            f"this metadata — commit it beside the .po, then {upgrade}.",
+        ]
+    if status.code == po_tools.NOT_LOADED:
+        return [f"Next: {upgrade} loads the file into the database."]
+    if status.not_applied:
+        return [f"Next: {upgrade} re-reads the file into the database."]
+    return [f"Next: {export} merges the module's new terms into the file."]
+
+
+def _format_term_list(label: str, terms: list[PoEntry]) -> list[str]:
+    """A bullet list, nested one level under its own label's indent.
+
+    Beyond :data:`_TERM_LIST_MAX` only the count is printed: a truncated list of
+    alphabetically-first terms is not a to-do list, and the reader still has to
+    export the catalogue to act on it.
+    """
+    if not terms:
         return []
     indent = " " * (len(label) - len(label.lstrip()) + 2)
-    lines = [f"{label} ({len(msgids)}):"]
-    lines += [f"{indent}- {m}" for m in msgids[:_TERM_PREVIEW]]
-    if len(msgids) > _TERM_PREVIEW:
-        lines.append(f"{indent}... and {len(msgids) - _TERM_PREVIEW} more")
-    return lines
+    if len(terms) > _TERM_LIST_MAX:
+        return [f"{label} ({len(terms)}) — too many to list; export the catalogue."]
+    return [f"{label} ({len(terms)}):"] + [
+        f"{indent}- {_format_term(term)}" for term in terms
+    ]
 
 
 @mcp.tool()
@@ -1980,7 +2052,7 @@ def export_module_translations(
             f"Translated: {summary.translated} / {summary.entries} "
             f"({summary.untranslated} missing)"
         )
-        lines += [""] + _format_term_list("Untranslated", summary.untranslated_msgids)
+        lines += [""] + _format_term_list("Untranslated", summary.untranslated_terms)
     if not summary.by_type.get("code"):
         # The exporter finds these by walking addons_path and reading the
         # module's sources, so an empty count usually means the module's
@@ -2038,20 +2110,24 @@ def translation_status(
     env_name: str, module: str, langs: str = "", ctx: Context | None = None
 ) -> str:
     """
-    Report what a module's translations look like across all three places they live.
+    Report whether a module's translations actually landed, and what to do next.
 
     Compares the term template Odoo derives from the module, the translations
-    actually stored in the database, and the committed `i18n/<lang>.po` files.
-    Use this after loading translations: Odoo's importer is silent about the two
-    ways a `.po` fails, and this is what makes them visible.
+    actually stored in the database, and the committed `i18n/<lang>.po` files,
+    and returns a verdict per language rather than three catalogues to
+    reconcile. Use this after loading translations: Odoo's importer is silent
+    about the two ways a `.po` fails, and this is what makes them visible.
 
     - Entries with no `#:` reference line import as ZERO translations, with no
       warning at all, unless a sibling `<module>.pot` supplies the metadata.
     - Entries with no `#. module:` comment abort the import outright unless that
       sibling template supplies it.
 
-    It also reports terms present in the module but missing from the file, and
-    stale entries left in the file after a source string changed.
+    Each language gets a verdict (OK, PARTIAL, NOT LOADED, NOT TRANSLATED,
+    IMPORT SILENTLY DROPPED, IMPORT ABORTS, NO FILE, NOT ACTIVATED), the
+    coverage behind it, and the call that fixes it. Terms missing from the file
+    or left stale in it are listed only when few enough to act on — otherwise
+    export the catalogue, which holds them all.
 
     Args:
         env_name: The name of the environment.
@@ -2080,41 +2156,49 @@ def translation_status(
         ]
 
     for entry in result["langs"]:
-        lines += ["", f"--- {entry['lang']} ---"]
+        status = entry["status"]
+        lines += ["", f"--- {entry['lang']} ---  {_VERDICT_LABEL[status.code]}"]
+        lines.append(
+            f"Coverage:  file {status.covered_terms}/{status.template_terms} "
+            f"module terms, database {status.db_terms}/{status.template_terms} "
+            f"translated ({status.coverage:.0%})."
+        )
         if not entry["active"]:
             lines.append(
                 "Language is NOT activated in this database, so translations "
                 "have nowhere to load. Activate it first."
             )
+        elif entry["file_path"]:
+            po = entry["file"]
+            effective = entry.get("import_effective", po)
+            lines.append(f"File:      {entry['file_path']} — {po.entries} entries")
+            if entry.get("metadata_template_path"):
+                lines.append(
+                    f"  Import metadata: merged from {entry['metadata_template_path']}"
+                )
+            if effective.no_reference:
+                lines.append(
+                    f"  ! {effective.no_reference} entries have no '#:' reference — "
+                    "Odoo imports these as ZERO translations, silently."
+                )
+            if effective.no_module_comment:
+                lines.append(
+                    f"  ! {effective.no_module_comment} entries have no '#. module:' "
+                    "comment — these abort the import with an error."
+                )
+            if status.not_applied:
+                lines.append(
+                    f"  ! {status.not_applied} translated entries in the file are "
+                    "not in the database."
+                )
+            diff = entry["diff"]
+            lines += _format_term_list("  Missing from the file", diff["missing"])
+            lines += _format_term_list(
+                "  Stale (no longer in the module)", diff["stale"]
+            )
         else:
-            db = entry["database"]
-            counts = ", ".join(f"{k} {v}" for k, v in db.by_type.items())
-            lines.append(f"In database:  {db.translated} translated ({counts})")
-
-        if not entry["file_path"]:
-            lines.append(f"No i18n/{entry['lang']}.po in the module.")
-            continue
-
-        po = entry["file"]
-        effective = entry.get("import_effective", po)
-        lines.append(f"In {entry['file_path']}: {po.entries} entries")
-        if entry.get("metadata_template_path"):
-            lines.append(
-                f"  Import metadata: merged from {entry['metadata_template_path']}"
-            )
-        if effective.no_reference:
-            lines.append(
-                f"  ! {effective.no_reference} entries have no '#:' reference — Odoo "
-                "imports these as ZERO translations, silently."
-            )
-        if effective.no_module_comment:
-            lines.append(
-                f"  ! {effective.no_module_comment} entries have no '#. module:' "
-                "comment — these abort the import with an error."
-            )
-        diff = entry["diff"]
-        lines += _format_term_list("  Missing from the file", diff["missing"])
-        lines += _format_term_list("  Stale (no longer in the module)", diff["stale"])
+            lines.append(f"File:      no i18n/{entry['lang']}.po in the module.")
+        lines += _format_next_step(status, env_name, module, entry["lang"])
 
     header = f"{woke}Translation status for {module} in environment '{env_name}'."
     return _maybe_cache(

@@ -1,6 +1,14 @@
 """Unit tests for the pure .po reader in oduflow.po_tools (no Docker needed)."""
 
-from oduflow.po_tools import compare, merge_with_template, parse_po, summarize
+from oduflow import po_tools
+from oduflow.po_tools import (
+    PoSummary,
+    compare,
+    diagnose,
+    merge_with_template,
+    parse_po,
+    summarize,
+)
 
 HEADER = """msgid ""
 msgstr ""
@@ -128,9 +136,15 @@ class TestSummarize:
         assert summary.entries == 3
         assert summary.by_type == {"model": 1, "model_terms": 1, "code": 1}
         assert summary.translated == 2
-        assert summary.untranslated_msgids == [
+        assert [e.msgid for e in summary.untranslated_terms] == [
             "Only a dispatch manager may accept deals."
         ]
+
+    def test_untranslated_terms_keep_their_reference(self):
+        # The reference is what a caller needs to find the term; the msgid of a
+        # view term can be a whole page of markup.
+        (term,) = summarize(parse_po(WELL_FORMED)).untranslated_terms
+        assert term.occurrences == ("code:addons/transeu_bridge/models/freight.py:0",)
 
     def test_entries_without_reference_are_flagged(self):
         # A valid gettext file that Odoo imports as *zero* translations: with no
@@ -193,11 +207,22 @@ msgstr "Usługa Trans.eu jest niedostępna: %s"
 """
         )
         diff = compare(template, translation)
-        assert diff["missing"] == [
+        assert [e.msgid for e in diff["missing"]] == [
             "Only a dispatch manager may accept deals.",
             "Publish",
         ]
-        assert diff["stale"] == ["The Trans.eu service is unreachable: %s"]
+        assert [e.msgid for e in diff["stale"]] == [
+            "The Trans.eu service is unreachable: %s"
+        ]
+
+    def test_diff_entries_carry_the_reference_that_locates_them(self):
+        template = parse_po(WELL_FORMED)
+        (publish,) = [
+            e for e in compare(template, [])["missing"] if e.msgid == "Publish"
+        ]
+        assert publish.occurrences == (
+            "model_terms:ir.ui.view,arch_db:transeu_bridge.view_freight_form",
+        )
 
     def test_identical_files_have_no_diff(self):
         entries = parse_po(WELL_FORMED)
@@ -236,3 +261,134 @@ msgstr "Stary tekst"
 
         assert merged
         assert "Old string" not in {entry.msgid for entry in merged}
+
+
+def _summary(entries: int, translated: int, **overrides) -> PoSummary:
+    """A PoSummary with only the numbers a verdict is made of."""
+    base = dict(
+        entries=entries,
+        translated=translated,
+        untranslated=entries - translated,
+        by_type={},
+        no_reference=0,
+        no_module_comment=0,
+        untranslated_terms=[],
+    )
+    base.update(overrides)
+    return PoSummary(**base)  # type: ignore[arg-type]
+
+
+class TestDiagnose:
+    """The verdict is the answer callers came for; these are its edges."""
+
+    TEMPLATE = _summary(442, 442)
+
+    def test_an_inactive_language_hides_every_other_problem(self):
+        # Nothing can load, so a broken file is not the thing to report.
+        status = diagnose(
+            self.TEMPLATE,
+            active=False,
+            file=_summary(435, 435, no_reference=435),
+            effective=_summary(435, 435, no_reference=435),
+        )
+        assert status.code == po_tools.NOT_ACTIVATED
+
+    def test_no_file_at_all(self):
+        status = diagnose(self.TEMPLATE, active=True, database=_summary(442, 0))
+        assert status.code == po_tools.NO_FILE
+
+    def test_a_file_odoo_reads_and_discards(self):
+        # 311 valid-looking entries, none with a "#:" line: the silent case.
+        broken = _summary(311, 311, no_reference=311)
+        status = diagnose(
+            self.TEMPLATE,
+            active=True,
+            database=_summary(442, 0),
+            file=broken,
+            effective=broken,
+            missing=131,
+        )
+        assert status.code == po_tools.IMPORT_DROPPED
+
+    def test_a_missing_module_comment_outranks_a_missing_reference(self):
+        # Both are present, but this one aborts the import outright.
+        broken = _summary(311, 311, no_reference=311, no_module_comment=311)
+        status = diagnose(
+            self.TEMPLATE,
+            active=True,
+            database=_summary(442, 0),
+            file=broken,
+            effective=broken,
+        )
+        assert status.code == po_tools.IMPORT_ABORTS
+
+    def test_a_handful_of_bad_entries_is_not_the_headline(self):
+        # Four bad entries in an otherwise loaded file: still a warning, but the
+        # verdict describes the file as a whole.
+        file = _summary(442, 442, no_reference=4)
+        status = diagnose(
+            self.TEMPLATE,
+            active=True,
+            database=_summary(442, 438),
+            file=file,
+            effective=file,
+        )
+        assert status.code == po_tools.OK
+
+    def test_a_file_covering_almost_nothing_reads_as_untranslated(self):
+        status = diagnose(
+            self.TEMPLATE,
+            active=True,
+            database=_summary(442, 20),
+            file=_summary(3, 3),
+            effective=_summary(3, 3),
+            missing=439,
+        )
+        assert status.code == po_tools.NOT_TRANSLATED
+        assert status.covered_terms == 3
+        assert status.coverage == 20 / 442
+
+    def test_a_good_file_that_never_reached_the_database(self):
+        file = _summary(435, 435)
+        status = diagnose(
+            self.TEMPLATE,
+            active=True,
+            database=_summary(442, 0),
+            file=file,
+            effective=file,
+            missing=7,
+        )
+        assert status.code == po_tools.NOT_LOADED
+
+    def test_loaded_but_incomplete_counts_what_did_not_apply(self):
+        file = _summary(435, 435)
+        status = diagnose(
+            self.TEMPLATE,
+            active=True,
+            database=_summary(442, 379),
+            file=file,
+            effective=file,
+            missing=7,
+        )
+        assert status.code == po_tools.PARTIAL
+        assert status.not_applied == 56
+        assert status.covered_terms == 435
+
+    def test_complete_translation_is_ok(self):
+        file = _summary(442, 442)
+        status = diagnose(
+            self.TEMPLATE,
+            active=True,
+            database=_summary(442, 442),
+            file=file,
+            effective=file,
+        )
+        assert status.code == po_tools.OK
+        assert status.not_applied == 0
+
+    def test_a_module_with_no_terms_does_not_divide_by_zero(self):
+        empty = _summary(0, 0)
+        status = diagnose(
+            empty, active=True, database=empty, file=empty, effective=empty
+        )
+        assert status.coverage == 0.0

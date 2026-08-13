@@ -3,7 +3,7 @@
 **Status:** Adopted
 **Type:** MCP capability
 **First introduced:** this change (2026-07-27)
-**Key code today:** `po_tools.py` (`parse_po`, `summarize`, `merge_with_template`, `compare`), `docker_ops/odoo_ops.py` (`export_module_translations`, `translation_status`, `_export_po`, `_export_command`, `_i18n_basename`), `server.py` (both tools, `_artifact_url`), `artifact_tokens.py`, `web_ui.py` (`/oduflow-artifact`), `scoped_access.py` (allowlist)
+**Key code today:** `po_tools.py` (`parse_po`, `summarize`, `merge_with_template`, `compare`, `diagnose`), `docker_ops/odoo_ops.py` (`export_module_translations`, `translation_status`, `_export_po`, `_export_command`, `_i18n_basename`), `server.py` (both tools, `_artifact_url`), `artifact_tokens.py`, `web_ui.py` (`/oduflow-artifact`), `scoped_access.py` (allowlist)
 
 ## Context
 
@@ -135,6 +135,34 @@ private bounded temporary file owned by the Oduflow process.
   its own layout is per-module; mixing modules into one catalogue would produce
   something no module could ship.
 
+## Evolution
+
+**Status reports a verdict, not three catalogues (2026-08-13).** The first
+version printed what it measured: the term counts, the database counts, the file
+counts, and the raw missing/stale msgid lists behind a preview cap. On a module
+whose Russian catalogue covered 3 of 442 terms that came back as ~450 lines —
+fifteen multi-line view bodies and a `... and 424 more` — to say something the
+first two numbers had already said. The client was left to reconcile three
+catalogues and infer the conclusion, which is work the server was in a better
+position to do: it holds all three sources, and the inference is mechanical.
+
+So the same data now yields a judgement. `po_tools.diagnose` classifies each
+language (`OK`, `PARTIAL`, `NOT LOADED`, `NOT TRANSLATED`, `IMPORT SILENTLY
+DROPPED`, `IMPORT ABORTS`, `NO FILE`, `NOT ACTIVATED`) from the numbers alone,
+ordered so that the failures which mask each other are reported in the order
+they must be fixed; the report adds coverage against the module's own term count
+and the one call that moves that language forward. The distinction that matters
+most is between a catalogue Odoo read and discarded and one it never read — the
+counts look alike, the fixes do not.
+
+Two supporting changes follow from that. Terms are identified by their `#:`
+reference rather than by msgid, because the reference names the field or view to
+open while a report's msgid is a page of markup; and a diff is listed only when
+it is short enough to act on, since a truncated alphabetical slice of 439 terms
+is not a to-do list and the exported catalogue holds them all anyway. Verdicts
+live in `po_tools` with the rest of the pure logic, so they stay unit-testable
+and every caller reads the same conclusion.
+
 ## History
 
 - Motivated by a field report on translating an Odoo 15 module under Oduflow
@@ -145,3 +173,6 @@ private bounded temporary file owned by the Oduflow process.
   rule.
 - Corrected status to model Odoo's sibling-POT merge and hardened catalogue I/O
   and artifact egress after review, 2026-08-11.
+- Turned the status report into a per-language verdict with a prescribed next
+  step after a real call returned ~450 lines of term dump for an untranslated
+  language, 2026-08-13.
