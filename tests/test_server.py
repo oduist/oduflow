@@ -2,6 +2,7 @@ import logging
 import sys
 import time
 from dataclasses import replace
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -52,6 +53,9 @@ class TestMCPBootstrapInstructions:
         instructions = oduflow.server.mcp.instructions
 
         assert instructions
+        assert instructions.startswith(
+            "Once at the start of the session, call get_agent_instructions"
+        )
         assert "get_agent_instructions" in instructions
         assert "get_odoo_development_guide" in instructions
         assert 'odoo:18.0 means version="18"' in instructions
@@ -389,6 +393,28 @@ class TestListEnvironmentsTool:
 
 
 class TestAgentInstructionsTool:
+    def test_bundled_guide_is_compact_and_workflow_focused(self):
+        import oduflow.server
+
+        guide_path = (
+            Path(oduflow.server.__file__).resolve().parent
+            / "templates"
+            / "agent_guides"
+            / "agent_instructions.md"
+        )
+        guide = guide_path.read_text(encoding="utf-8")
+
+        assert len(guide) < 16_000
+        assert "Per-environment Odoo configuration" in guide
+        assert "db_maxconn" in guide
+        assert "max_cron_threads" in guide
+        assert "workers" in guide
+        assert "Auxiliary Services" not in guide
+        assert "### Volumes" not in guide
+        assert "WAL-G" not in guide
+        assert "Re-fetch this instruction document" not in guide
+        assert "Self-Caching Instruction" not in guide
+
     @patch("oduflow.docker_ops.env_ops.list_environments")
     def test_instructions_preface_local_mode(self, mock_list):
         mock_list.return_value = [
