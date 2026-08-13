@@ -1033,6 +1033,17 @@ def get_agent_instructions(ctx: Context | None = None) -> str:
                 "---\n\n"
             )
 
+        if not envs:
+            return (
+                "## Current Code Delivery Mode\n\n"
+                "No environment was detected yet. Choose the delivery mode "
+                "before calling `create_environment`. For `repo_url`, first "
+                "publish the current branch with `git push -u origin HEAD`; "
+                "Oduflow cannot clone a local-only branch. For `local_path`, "
+                "pass the absolute checkout path and do not push.\n\n"
+                "---\n\n"
+            )
+
         return (
             "## Current Code Delivery Mode\n\n"
             "No live-mount/local_path environment was detected. Use the "

@@ -436,7 +436,7 @@ class TestAgentInstructionsTool:
 
     @patch("oduflow.docker_ops.env_ops.list_environments")
     def test_instructions_preface_repo_url_mode(self, mock_list):
-        mock_list.return_value = []
+        mock_list.return_value = [{"env_name": "test-git", "local_path": None}]
 
         result = _call_tool("get_agent_instructions")
 
@@ -446,6 +446,20 @@ class TestAgentInstructionsTool:
         assert "git push -u origin HEAD" in result
         assert "cannot clone a local-only branch" in result
         assert "commit, push, and call `pull_and_apply`" in result
+
+    @patch("oduflow.docker_ops.env_ops.list_environments")
+    def test_instructions_preface_before_first_environment(self, mock_list):
+        mock_list.return_value = []
+
+        result = _call_tool("get_agent_instructions")
+
+        assert result.startswith("## Current Code Delivery Mode")
+        assert "No environment was detected yet" in result
+        assert "Choose the delivery mode" in result
+        assert "For `repo_url`" in result
+        assert "git push -u origin HEAD" in result
+        assert "For `local_path`" in result
+        assert "do not push" in result
 
 
 class TestInfoTool:
