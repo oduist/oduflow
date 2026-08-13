@@ -1560,6 +1560,7 @@ def translation_status(
         po_tools.parse_po(pot_content) if pot_content is not None else None
     )
 
+    template = po_tools.summarize(template_entries)
     per_lang: list[dict[str, Any]] = []
     for lang in targets:
         entry: dict[str, Any] = {"lang": lang, "active": lang in active}
@@ -1588,12 +1589,22 @@ def translation_status(
                 pot_path if committed_template is not None else ""
             )
             entry["diff"] = po_tools.compare(template_entries, file_entries)
+        # The caller wants a conclusion, not three catalogues to reconcile, so
+        # the verdict is reached here where all three are already in hand.
+        entry["status"] = po_tools.diagnose(
+            template,
+            active=entry["active"],
+            database=entry.get("database"),
+            file=entry.get("file"),
+            effective=entry.get("import_effective"),
+            missing=len(entry["diff"]["missing"]) if "diff" in entry else 0,
+        )
         per_lang.append(entry)
 
     return {
         "module": module,
         "module_dir": module_dir,
-        "template": po_tools.summarize(template_entries),
+        "template": template,
         "active_langs": active,
         "langs": per_lang,
     }

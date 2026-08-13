@@ -8,6 +8,7 @@ from urllib.parse import urlsplit
 import pytest
 
 import docker
+from oduflow import po_tools
 from oduflow.docker_ops import env_ops, odoo_ops, system_ops
 from oduflow.errors import ConflictError, NotFoundError, PrerequisiteNotMetError
 from oduflow.settings import DEFAULT_AGENT_IMAGE, Settings, TeamSettings
@@ -3399,11 +3400,14 @@ class TestTranslationStatus:
         assert entry["database"].entries == 0
         assert entry["file"].entries == 1
         assert entry["file"].no_reference == 1
-        assert entry["diff"]["missing"] == [
+        assert [e.msgid for e in entry["diff"]["missing"]] == [
             "Only a dispatch manager may accept deals.",
             "Publish",
         ]
         assert result["template"].entries == 3
+        # The backend reaches the verdict, so every caller reads the same one.
+        assert entry["status"].code == po_tools.IMPORT_DROPPED
+        assert entry["status"].covered_terms == 1
 
     @patch("oduflow.docker_ops.odoo_ops.run_db_query")
     def test_inactive_language_is_reported_not_silently_empty(

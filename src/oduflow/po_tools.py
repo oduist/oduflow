@@ -22,6 +22,7 @@ from __future__ import annotations
 import re
 from collections import Counter
 from dataclasses import dataclass, field
+from functools import partial
 
 # The reference kinds Odoo derives a translation's type from. ``model_terms``
 # must be tested before ``model`` — it is a longer prefix of the same shape.
@@ -200,8 +201,10 @@ class PoSummary:
     no_reference: int
     #: Entries with no ``#. module:`` comment — these abort the import.
     no_module_comment: int
-    #: msgids with an empty msgstr, in file order.
-    untranslated_msgids: list[str]
+    #: Entries with an empty msgstr, in file order. Whole entries rather than
+    #: bare msgids: a term is identified by *where* it lives, and a report's
+    #: msgid can be a page of markup.
+    untranslated_terms: list[PoEntry]
 
 
 def summarize(entries: list[PoEntry]) -> PoSummary:
@@ -209,7 +212,7 @@ def summarize(entries: list[PoEntry]) -> PoSummary:
     by_type: Counter[str] = Counter()
     no_reference = 0
     no_module = 0
-    untranslated: list[str] = []
+    untranslated: list[PoEntry] = []
 
     for entry in entries:
         ref_types = entry.ref_types
@@ -219,7 +222,7 @@ def summarize(entries: list[PoEntry]) -> PoSummary:
         if not entry.module:
             no_module += 1
         if not entry.msgstr:
-            untranslated.append(entry.msgid)
+            untranslated.append(entry)
 
     return PoSummary(
         entries=len(entries),
@@ -228,7 +231,7 @@ def summarize(entries: list[PoEntry]) -> PoSummary:
         by_type={name: by_type[name] for name in TYPE_ORDER if by_type[name]},
         no_reference=no_reference,
         no_module_comment=no_module,
-        untranslated_msgids=untranslated,
+        untranslated_terms=untranslated,
     )
 
 
@@ -264,19 +267,140 @@ def merge_with_template(
     return merged
 
 
+def _absent_from(entries: list[PoEntry], other: set[str]) -> list[PoEntry]:
+    """Entries whose msgid is not in *other*, one per msgid, sorted by msgid."""
+    seen: set[str] = set()
+    picked: list[PoEntry] = []
+    for entry in entries:
+        if entry.msgid in other or entry.msgid in seen:
+            continue
+        seen.add(entry.msgid)
+        picked.append(entry)
+    return sorted(picked, key=lambda entry: entry.msgid)
+
+
 def compare(
     template: list[PoEntry], translation: list[PoEntry]
-) -> dict[str, list[str]]:
+) -> dict[str, list[PoEntry]]:
     """Diff a ``.pot`` against a ``.po`` by msgid.
 
     ``missing`` are terms the module exposes but the file never mentions — new
     strings someone forgot. ``stale`` are the reverse: entries left over after
     the source string changed or stopped being translatable, which is how dead
     translations survive unnoticed.
+
+    Whole entries come back rather than msgids, because the useful handle on a
+    term is its ``#:`` reference: it names the field or view to fix and stays
+    short, while the msgid of a report term can be a screenful of markup.
     """
     template_ids = {entry.msgid for entry in template}
     translation_ids = {entry.msgid for entry in translation}
     return {
-        "missing": sorted(template_ids - translation_ids),
-        "stale": sorted(translation_ids - template_ids),
+        "missing": _absent_from(template, translation_ids),
+        "stale": _absent_from(translation, template_ids),
     }
+
+
+# -- Verdicts -----------------------------------------------------------------
+#
+# The three catalogues are only raw material; what a caller wants to know is
+# whether the translation landed and what to do next. That judgement is made
+# here, from the numbers alone, so every caller reads the same conclusion.
+
+#: The language is not activated, so nothing can load into the database at all.
+NOT_ACTIVATED = "not_activated"
+#: The module ships no catalogue for this language.
+NO_FILE = "no_file"
+#: Entries lack ``#. module:`` — Odoo's reader raises instead of importing.
+IMPORT_ABORTS = "import_aborts"
+#: Entries lack ``#:`` — Odoo reads them and stores nothing, without a warning.
+IMPORT_DROPPED = "import_dropped"
+#: A catalogue exists but barely covers the module: nobody translated this yet.
+NOT_TRANSLATED = "not_translated"
+#: The file is fine and the database is empty — it was never loaded.
+NOT_LOADED = "not_loaded"
+#: Loaded, with terms still missing or not applied.
+PARTIAL = "partial"
+#: File, database and module agree.
+OK = "ok"
+
+# A defect this widespread is the headline; a handful of bad entries in an
+# otherwise good file is reported as a warning beside the real verdict.
+_DEFECT_SHARE = 0.5
+# Below this share of the module's terms, listing what is missing is the same
+# statement as "this language was never translated", only much longer.
+_COVERED_SHARE = 0.1
+# What did reach the database, as a share of what the file offers.
+_LOADED_SHARE = 0.1
+# Terms may legitimately resist translation (identifiers, symbols), so the
+# database is never expected to match the module term for term.
+_COMPLETE_SHARE = 0.95
+
+
+@dataclass(frozen=True)
+class LangStatus:
+    """What became of one language, and the numbers behind that conclusion."""
+
+    code: str
+    #: Translatable terms the module exposes — the denominator for everything.
+    template_terms: int
+    #: Module terms the committed file actually carries.
+    covered_terms: int
+    #: Module terms the database holds a translation for.
+    db_terms: int
+    #: Translated file entries with no counterpart in the database.
+    not_applied: int
+
+    @property
+    def coverage(self) -> float:
+        """Share of the module's terms translated in the database."""
+        if not self.template_terms:
+            return 0.0
+        return self.db_terms / self.template_terms
+
+
+def diagnose(
+    template: PoSummary,
+    *,
+    active: bool,
+    database: PoSummary | None = None,
+    file: PoSummary | None = None,
+    effective: PoSummary | None = None,
+    missing: int = 0,
+) -> LangStatus:
+    """Judge one language from the three catalogues.
+
+    *effective* is the file as Odoo would import it (after the sibling-POT
+    merge, when there is one); *missing* is how many of the module's terms the
+    file never mentions. The order of the checks is the order in which the
+    failures mask each other: an inactive language hides a broken file, and a
+    broken file hides an empty translation.
+    """
+    db_terms = database.translated if database else 0
+    in_file = file.translated if file else 0
+    # With no file there is no diff to subtract, and "all terms covered" is the
+    # one thing that must not be reported for a catalogue that does not exist.
+    covered = max(template.entries - missing, 0) if file else 0
+    status = partial(
+        LangStatus,
+        template_terms=template.entries,
+        covered_terms=covered,
+        db_terms=db_terms,
+        not_applied=max(in_file - db_terms, 0),
+    )
+
+    if not active:
+        return status(NOT_ACTIVATED)
+    if file is None or effective is None:
+        return status(NO_FILE)
+    if effective.no_module_comment >= max(effective.entries * _DEFECT_SHARE, 1):
+        return status(IMPORT_ABORTS)
+    if effective.no_reference >= max(effective.entries * _DEFECT_SHARE, 1):
+        return status(IMPORT_DROPPED)
+    if template.entries and covered <= template.entries * _COVERED_SHARE:
+        return status(NOT_TRANSLATED)
+    if in_file and db_terms <= in_file * _LOADED_SHARE:
+        return status(NOT_LOADED)
+    if not missing and db_terms >= template.entries * _COMPLETE_SHARE:
+        return status(OK)
+    return status(PARTIAL)

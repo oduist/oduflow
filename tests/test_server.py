@@ -7,7 +7,8 @@ from unittest.mock import patch
 import pytest
 from fastmcp.exceptions import ToolError
 
-from oduflow.po_tools import PoSummary
+from oduflow import po_tools
+from oduflow.po_tools import PoEntry, PoSummary
 from oduflow.settings import Settings, TeamSettings
 
 TEST_TEAM = TeamSettings(
@@ -1585,6 +1586,15 @@ class TestResetAdminPasswordDropsSessions:
         assert ("1", "main", "") not in odoo_rpc._SESSIONS
 
 
+def _po_entry(msgid: str, reference: str = "") -> PoEntry:
+    return PoEntry(
+        msgid=msgid,
+        msgstr="",
+        module="mymod",
+        occurrences=(reference,) if reference else (),
+    )
+
+
 class TestTranslationTools:
     """The two i18n tools, at the layer that turns backend data into a report."""
 
@@ -1595,8 +1605,33 @@ class TestTranslationTools:
         by_type={"model": 161, "model_terms": 82, "code": 68},
         no_reference=0,
         no_module_comment=0,
-        untranslated_msgids=["Active", "Company"],
+        untranslated_terms=[_po_entry("Active"), _po_entry("Company")],
     )
+
+    def _lang(self, lang="pl_PL", *, active=True, missing=(), stale=(), **entry):
+        """One backend language record, verdict included as the backend adds it."""
+        record = {"lang": lang, "active": active, "file_path": "", **entry}
+        if record["file_path"]:
+            record["diff"] = {"missing": list(missing), "stale": list(stale)}
+            record.setdefault("metadata_template_path", "")
+        record["status"] = po_tools.diagnose(
+            self._SUMMARY,
+            active=active,
+            database=record.get("database"),
+            file=record.get("file"),
+            effective=record.get("import_effective"),
+            missing=len(missing),
+        )
+        return record
+
+    def _status_result(self, *langs):
+        return {
+            "module": "mymod",
+            "module_dir": "/mnt/extra-addons/mymod",
+            "template": self._SUMMARY,
+            "active_langs": ["en_US", "pl_PL"],
+            "langs": list(langs),
+        }
 
     def _export_result(self, **overrides):
         base = {
@@ -1760,34 +1795,29 @@ class TestTranslationTools:
             by_type={},
             no_reference=311,
             no_module_comment=4,
-            untranslated_msgids=[],
+            untranslated_terms=[],
         )
-        mock_status.return_value = {
-            "module": "mymod",
-            "module_dir": "/mnt/extra-addons/mymod",
-            "template": self._SUMMARY,
-            "active_langs": ["en_US", "pl_PL"],
-            "langs": [
-                {
-                    "lang": "pl_PL",
-                    "active": True,
-                    "database": empty,
-                    "file_path": "/mnt/extra-addons/mymod/i18n/pl_PL.po",
-                    "file": broken,
-                    "import_effective": broken,
-                    "metadata_template_path": "",
-                    "diff": {"missing": ["Active"], "stale": ["Old string"]},
-                }
-            ],
-        }
+        mock_status.return_value = self._status_result(
+            self._lang(
+                database=empty,
+                file_path="/mnt/extra-addons/mymod/i18n/pl_PL.po",
+                file=broken,
+                import_effective=broken,
+                missing=[_po_entry("Active")],
+                stale=[_po_entry("Old string")],
+            )
+        )
         result = _get_tool_fn("translation_status")(env_name="main", module="mymod")
 
+        assert "IMPORT SILENTLY DROPPED" in result
         assert "311 entries have no '#:' reference" in result
         assert "ZERO translations" in result
         assert "4 entries have no '#. module:' comment" in result
-        assert "In database:  0 translated" in result
+        assert "database 0/311 translated (0%)" in result
         assert "Active" in result
         assert "Old string" in result
+        # The fix is the sibling template, not another upgrade on its own.
+        assert 'Next: export_module_translations("main", "mymod") writes' in result
         mock_status.assert_called_once_with(
             TEST_SETTINGS, TEST_TEAM, "main", "mymod", None
         )
@@ -1797,56 +1827,131 @@ class TestTranslationTools:
     def test_status_does_not_warn_when_sibling_pot_supplies_metadata(
         self, mock_status, mock_ensure
     ):
-        empty = PoSummary(0, 0, 0, {}, 0, 0, [])
-        raw = PoSummary(1, 1, 0, {}, 1, 1, [])
-        effective = PoSummary(1, 1, 0, {"model": 1}, 0, 0, [])
-        mock_status.return_value = {
-            "module": "mymod",
-            "module_dir": "/mnt/extra-addons/mymod",
-            "template": self._SUMMARY,
-            "active_langs": ["en_US", "pl_PL"],
-            "langs": [
-                {
-                    "lang": "pl_PL",
-                    "active": True,
-                    "database": empty,
-                    "file_path": "/mnt/extra-addons/mymod/i18n/pl.po",
-                    "file": raw,
-                    "import_effective": effective,
-                    "metadata_template_path": (
-                        "/mnt/extra-addons/mymod/i18n/mymod.pot"
-                    ),
-                    "diff": {"missing": [], "stale": []},
-                }
-            ],
-        }
+        raw = PoSummary(311, 311, 0, {}, 311, 311, [])
+        effective = PoSummary(311, 311, 0, {"model": 311}, 0, 0, [])
+        mock_status.return_value = self._status_result(
+            self._lang(
+                database=PoSummary(311, 311, 0, {"model": 311}, 0, 0, []),
+                file_path="/mnt/extra-addons/mymod/i18n/pl.po",
+                file=raw,
+                import_effective=effective,
+                metadata_template_path="/mnt/extra-addons/mymod/i18n/mymod.pot",
+            )
+        )
 
         result = _get_tool_fn("translation_status")(env_name="main", module="mymod")
 
         assert "Import metadata: merged from" in result
         assert "imports these as ZERO" not in result
         assert "abort the import" not in result
+        # Nothing left to do, so nothing is prescribed.
+        assert "--- pl_PL ---  OK" in result
+        assert "Next:" not in result
 
     @patch("oduflow.docker_ops.env_ops.ensure_running", return_value=False)
     @patch("oduflow.docker_ops.odoo_ops.translation_status")
     def test_status_says_so_when_a_language_is_not_activated(
         self, mock_status, mock_ensure
     ):
-        mock_status.return_value = {
-            "module": "mymod",
-            "module_dir": "/mnt/extra-addons/mymod",
-            "template": self._SUMMARY,
-            "active_langs": ["en_US"],
-            "langs": [{"lang": "ru_RU", "active": False, "file_path": ""}],
-        }
+        mock_status.return_value = self._status_result(
+            self._lang("ru_RU", active=False)
+        )
         result = _get_tool_fn("translation_status")(
             env_name="main", module="mymod", langs="ru_RU"
         )
 
         assert "NOT activated" in result
+        assert "Next: activate ru_RU in Odoo" in result
+        # A language with no catalogue must never be counted as fully covered.
+        assert "file 0/311 module terms" in result
         mock_status.assert_called_once_with(
             TEST_SETTINGS, TEST_TEAM, "main", "mymod", ["ru_RU"]
         )
+
+    @patch("oduflow.docker_ops.env_ops.ensure_running", return_value=False)
+    @patch("oduflow.docker_ops.odoo_ops.translation_status")
+    def test_status_answers_an_untranslated_language_in_a_few_lines(
+        self, mock_status, mock_ensure
+    ):
+        # A file covering 3 of 311 terms says "nobody translated this", and the
+        # other 308 msgids say it again, at 100x the length.
+        tiny = PoSummary(3, 3, 0, {}, 0, 0, [])
+        mock_status.return_value = self._status_result(
+            self._lang(
+                database=PoSummary(311, 20, 291, {}, 0, 0, []),
+                file_path="/mnt/extra-addons/mymod/i18n/ru.po",
+                file=tiny,
+                import_effective=tiny,
+                missing=[_po_entry(f"Term {i}") for i in range(308)],
+            )
+        )
+
+        result = _get_tool_fn("translation_status")(env_name="main", module="mymod")
+
+        assert "NOT TRANSLATED" in result
+        assert "file 3/311 module terms, database 20/311 translated (6%)" in result
+        assert "Missing from the file (308) — too many to list" in result
+        assert "Term 42" not in result
+        assert "and 293 more" not in result
+        assert "Next: export_module_translations" in result
+        # The whole language fits well inside what the old preview alone cost.
+        assert len(result.splitlines()) < 20
+
+    @patch("oduflow.docker_ops.env_ops.ensure_running", return_value=False)
+    @patch("oduflow.docker_ops.odoo_ops.translation_status")
+    def test_status_lists_a_short_diff_by_reference_on_one_line(
+        self, mock_status, mock_ensure
+    ):
+        # A report term's msgid is a page of markup; the "#:" reference is the
+        # part that names the view to open.
+        arch = _po_entry(
+            "Place / Place\n     On / On\n     Signature and stamp of the "
+            "consignee, plus a great deal more boilerplate",
+            "model_terms:ir.ui.view,arch_db:mymod.report_cmr",
+        )
+        loaded = PoSummary(310, 310, 0, {}, 0, 0, [])
+        mock_status.return_value = self._status_result(
+            self._lang(
+                database=PoSummary(311, 310, 1, {}, 0, 0, []),
+                file_path="/mnt/extra-addons/mymod/i18n/pl.po",
+                file=loaded,
+                import_effective=loaded,
+                missing=[arch],
+            )
+        )
+
+        result = _get_tool_fn("translation_status")(env_name="main", module="mymod")
+
+        (line,) = [ln for ln in result.splitlines() if "report_cmr" in ln]
+        assert line.startswith("    - model_terms:ir.ui.view,arch_db:mymod.report_cmr")
+        # One line, a readable snippet, and the rest of the markup left behind.
+        assert line.endswith('…"')
+        assert "boilerplate" not in result
+
+    @patch("oduflow.docker_ops.env_ops.ensure_running", return_value=False)
+    @patch("oduflow.docker_ops.odoo_ops.translation_status")
+    def test_status_counts_what_the_file_holds_but_the_database_does_not(
+        self, mock_status, mock_ensure
+    ):
+        # The gap between a good file and the database is the whole reason to
+        # run this tool a second time; it must not be left for the reader to
+        # subtract.
+        file = PoSummary(304, 304, 0, {}, 0, 0, [])
+        mock_status.return_value = self._status_result(
+            self._lang(
+                database=PoSummary(311, 248, 63, {}, 0, 0, []),
+                file_path="/mnt/extra-addons/mymod/i18n/pl.po",
+                file=file,
+                import_effective=file,
+                missing=[_po_entry(f"Term {i}") for i in range(7)],
+            )
+        )
+
+        result = _get_tool_fn("translation_status")(env_name="main", module="mymod")
+
+        assert "--- pl_PL ---  PARTIAL" in result
+        assert "! 56 translated entries in the file are not in the database." in result
+        assert 'Next: upgrade_odoo_modules("main", "mymod") re-reads' in result
 
     def test_translation_tools_in_scoped_allowlist(self):
         from oduflow.scoped_access import SCOPED_ALLOWLIST
