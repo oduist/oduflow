@@ -3,6 +3,7 @@ import os
 import re
 import tarfile
 from unittest.mock import MagicMock, patch
+from unittest.mock import call as mock_call
 from urllib.parse import urlsplit
 
 import pytest
@@ -3109,6 +3110,7 @@ class TestExportModuleTranslations:
         self, mock_docker_client
     ):
         container = MagicMock()
+        container.exec_run.return_value = (0, b"")
         mock_docker_client.containers.get.return_value = container
         content = "x" * 1_500_000
 
@@ -3123,6 +3125,93 @@ class TestExportModuleTranslations:
 
         assert result["size"] == len(content)
         container.put_archive.assert_called_once()
+
+    def test_write_creates_missing_parent_as_root_without_chowning_checkout(
+        self, mock_docker_client
+    ):
+        container = MagicMock()
+        parent = "/mnt/extra-addons/mymod/i18n"
+        path = f"{parent}/pl.po"
+        container.exec_run.side_effect = [
+            (1, b"Permission denied"),  # mkdir as odoo
+            (1, b""),  # i18n does not exist
+            (0, b""),  # module directory exists
+            (0, b""),  # mkdir as root
+            (0, b""),  # chown new i18n directory
+            (0, b""),  # chown written file
+        ]
+        mock_docker_client.containers.get.return_value = container
+
+        result = odoo_ops.write_file_in_environment(
+            TEST_SETTINGS, TEST_TEAM, "main", path, 'msgid ""\n'
+        )
+
+        assert result == {"path": path, "size": 9}
+        assert container.exec_run.call_args_list == [
+            mock_call(["mkdir", "-p", parent], user="odoo"),
+            mock_call(["test", "-d", parent], user="root"),
+            mock_call(["test", "-d", "/mnt/extra-addons/mymod"], user="root"),
+            mock_call(["mkdir", "-p", parent], user="root"),
+            mock_call(["chown", "-R", "odoo", parent], user="root"),
+            mock_call(["chown", "odoo", path], user="root"),
+        ]
+        container.put_archive.assert_called_once()
+
+    def test_write_reports_root_mkdir_failure(self, mock_docker_client):
+        container = MagicMock()
+        parent = "/mnt/extra-addons/mymod/i18n"
+        container.exec_run.side_effect = [
+            (1, b"Permission denied"),
+            (1, b""),
+            (0, b""),
+            (1, b"Read-only file system"),
+        ]
+        mock_docker_client.containers.get.return_value = container
+
+        with pytest.raises(
+            odoo_ops.ExternalCommandError, match="Read-only file system"
+        ):
+            odoo_ops.write_file_in_environment(
+                TEST_SETTINGS,
+                TEST_TEAM,
+                "main",
+                f"{parent}/pl.po",
+                "content",
+            )
+
+        container.put_archive.assert_not_called()
+
+    def test_write_wraps_docker_archive_error(self, mock_docker_client):
+        container = MagicMock()
+        container.exec_run.return_value = (0, b"")
+        container.put_archive.side_effect = docker.errors.NotFound(
+            "parent directory not found"
+        )
+        mock_docker_client.containers.get.return_value = container
+        path = "/mnt/extra-addons/mymod/i18n/pl.po"
+
+        with pytest.raises(
+            odoo_ops.ExternalCommandError,
+            match=r"Could not write '.*/i18n/pl\.po'.*parent directory",
+        ):
+            odoo_ops.write_file_in_environment(
+                TEST_SETTINGS, TEST_TEAM, "main", path, "content"
+            )
+
+    def test_write_reports_chown_failure(self, mock_docker_client):
+        container = MagicMock()
+        container.exec_run.side_effect = [
+            (0, b""),
+            (1, b"Operation not permitted"),
+        ]
+        mock_docker_client.containers.get.return_value = container
+
+        with pytest.raises(
+            odoo_ops.ExternalCommandError, match="Operation not permitted"
+        ):
+            odoo_ops.write_file_in_environment(
+                TEST_SETTINGS, TEST_TEAM, "main", "/tmp/output.txt", "content"
+            )
 
     def test_public_write_limit_remains_one_mb(self, mock_docker_client):
         with pytest.raises(odoo_ops.ExternalCommandError, match="1000000 byte limit"):

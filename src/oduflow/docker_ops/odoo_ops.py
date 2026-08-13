@@ -691,7 +691,42 @@ def write_file_in_environment(
         )
 
     parent = path.rsplit("/", 1)[0] if "/" in path else "/"
-    container.exec_run(["mkdir", "-p", parent], user=user)
+    mkdir_code, mkdir_output = container.exec_run(["mkdir", "-p", parent], user=user)
+    if mkdir_code != 0:
+        # Source checkouts are mounted root-owned, so the requested user may be
+        # unable to create the first missing directory (commonly ``i18n``).
+        # Find the highest missing directory and chown only the tree that this
+        # operation creates; existing repository content must keep its owner.
+        missing_root: str | None = None
+        candidate = parent
+        while candidate and candidate != "/":
+            exists_code, _ = container.exec_run(["test", "-d", candidate], user="root")
+            if exists_code == 0:
+                break
+            missing_root = candidate
+            candidate = (
+                candidate.rsplit("/", 1)[0] if "/" in candidate else "/"
+            ) or "/"
+
+        if missing_root is None:
+            raise ExternalCommandError("mkdir -p", mkdir_code, _decode(mkdir_output))
+
+        root_mkdir_code, root_mkdir_output = container.exec_run(
+            ["mkdir", "-p", parent], user="root"
+        )
+        if root_mkdir_code != 0:
+            raise ExternalCommandError(
+                "mkdir -p", root_mkdir_code, _decode(root_mkdir_output)
+            )
+
+        if user != "root":
+            chown_code, chown_output = container.exec_run(
+                ["chown", "-R", user, missing_root], user="root"
+            )
+            if chown_code != 0:
+                raise ExternalCommandError(
+                    "chown created directory", chown_code, _decode(chown_output)
+                )
 
     data = content.encode("utf-8")
     tar_stream = io.BytesIO()
@@ -701,10 +736,24 @@ def write_file_in_environment(
         info.size = len(data)
         tar.addfile(info, io.BytesIO(data))
     tar_stream.seek(0)
-    container.put_archive(parent, tar_stream)
+    try:
+        container.put_archive(parent, tar_stream)
+    except docker.errors.APIError as exc:
+        raise ExternalCommandError(
+            "write file archive",
+            1,
+            f"Could not write '{path}' inside the container. "
+            f"Verify that parent directory '{parent}' exists and is writable: {exc}",
+        ) from exc
 
     if user != "root":
-        container.exec_run(["chown", user, path], user="root")
+        chown_code, chown_output = container.exec_run(
+            ["chown", user, path], user="root"
+        )
+        if chown_code != 0:
+            raise ExternalCommandError(
+                "chown written file", chown_code, _decode(chown_output)
+            )
 
     logger.info(
         "File written in environment",
