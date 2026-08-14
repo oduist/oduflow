@@ -1718,8 +1718,31 @@ class TestGetEnvironmentInfo:
         assert result["local_path"] == "/Users/dev/addons"
 
 
+class TestRunDbQuery:
+    def test_arbitrary_query_rejects_legacy_db_credentials(
+        self, tmp_path, mock_docker_client
+    ):
+        team = TeamSettings(team_id="1", data_dir=str(tmp_path))
+        db_container = MagicMock()
+        mock_docker_client.containers.get.return_value = db_container
+
+        with pytest.raises(
+            PrerequisiteNotMetError, match="no scoped database credentials"
+        ):
+            odoo_ops.run_db_query(TEST_SETTINGS, team, "main", "SELECT 1")
+
+        db_container.exec_run.assert_not_called()
+
+
 class TestInstallModules:
-    def test_install(self, mock_docker_client):
+    @patch(
+        "oduflow.docker_ops.odoo_ops._execute_db_query",
+        return_value={
+            "exit_code": 0,
+            "output": "name,state\nsale,installed\ncrm,installed\n",
+        },
+    )
+    def test_install(self, mock_query, mock_docker_client):
         container = MagicMock()
         container.exec_run.return_value = (0, b"OK")
         mock_docker_client.containers.get.return_value = container
@@ -1733,10 +1756,116 @@ class TestInstallModules:
         assert "-d oduflow_1_main" in args
         assert "-i sale,crm" in args
 
+    def test_install_verification_allows_legacy_db_credentials(
+        self, tmp_path, mock_docker_client
+    ):
+        team = TeamSettings(team_id="1", data_dir=str(tmp_path))
+        odoo_container = MagicMock()
+        odoo_container.exec_run.return_value = (0, b"OK")
+        db_container = MagicMock()
+        db_container.exec_run.return_value = (
+            0,
+            b"name,state\nsale,installed\n",
+        )
+
+        def get_container(name):
+            if name == TEST_SETTINGS.shared_db_container:
+                return db_container
+            return odoo_container
+
+        mock_docker_client.containers.get.side_effect = get_container
+
+        result = odoo_ops.install_odoo_modules(TEST_SETTINGS, team, "main", "sale")
+
+        assert result["exit_code"] == 0
+        query_cmd = db_container.exec_run.call_args.args[0]
+        assert query_cmd[:6] == [
+            "psql",
+            "-U",
+            TEST_SETTINGS.db_user,
+            "-d",
+            "oduflow_1_main",
+            "--csv",
+        ]
+
+    @patch(
+        "oduflow.docker_ops.odoo_ops._execute_db_query",
+        return_value={"exit_code": 0, "output": "name,state\n"},
+    )
+    def test_unknown_module_after_success_exit_is_refused(
+        self, mock_query, mock_docker_client
+    ):
+        container = MagicMock()
+        container.exec_run.return_value = (
+            0,
+            b"WARNING invalid module names, ignored: prt_email_from",
+        )
+        mock_docker_client.containers.get.return_value = container
+
+        with pytest.raises(NotFoundError, match="not found.*successful installation"):
+            odoo_ops.install_odoo_modules(
+                TEST_SETTINGS, TEST_TEAM, "main", "prt_email_from"
+            )
+
+    @patch(
+        "oduflow.docker_ops.odoo_ops._execute_db_query",
+        return_value={
+            "exit_code": 0,
+            "output": "name,state\nwebsite,uninstalled\n",
+        },
+    )
+    def test_uninstalled_module_after_success_exit_is_refused(
+        self, mock_query, mock_docker_client
+    ):
+        container = MagicMock()
+        container.exec_run.return_value = (0, b"install command completed")
+        mock_docker_client.containers.get.return_value = container
+
+        with pytest.raises(
+            PrerequisiteNotMetError,
+            match=r"website \(uninstalled\).*successful installation",
+        ):
+            odoo_ops.install_odoo_modules(TEST_SETTINGS, TEST_TEAM, "main", "website")
+
+    @patch(
+        "oduflow.docker_ops.odoo_ops._execute_db_query",
+        return_value={
+            "exit_code": 0,
+            "output": "name,state\nsale,installed\ncrm,uninstalled\n",
+        },
+    )
+    def test_partial_install_after_success_exit_is_refused(
+        self, mock_query, mock_docker_client
+    ):
+        container = MagicMock()
+        container.exec_run.return_value = (0, b"install command completed")
+        mock_docker_client.containers.get.return_value = container
+
+        with pytest.raises(PrerequisiteNotMetError, match=r"crm \(uninstalled\)"):
+            odoo_ops.install_odoo_modules(
+                TEST_SETTINGS, TEST_TEAM, "main", "sale", "crm"
+            )
+
+    @patch("oduflow.docker_ops.odoo_ops._execute_db_query")
+    def test_failed_command_is_not_masked_by_state_verification(
+        self, mock_query, mock_docker_client
+    ):
+        container = MagicMock()
+        container.exec_run.return_value = (1, b"manifest parse error")
+        mock_docker_client.containers.get.return_value = container
+
+        result = odoo_ops.install_odoo_modules(
+            TEST_SETTINGS, TEST_TEAM, "main", "broken_module"
+        )
+
+        assert result["exit_code"] == 1
+        assert result["output"] == "manifest parse error"
+        mock_query.assert_not_called()
+
 
 class TestUpgradeModules:
     @patch(
-        "oduflow.docker_ops.odoo_ops.run_db_query",
+        "oduflow.docker_ops.odoo_ops._execute_db_query",
         return_value={"exit_code": 0, "output": "name,state\nsale,installed\n"},
     )
     def test_upgrade(self, mock_query, mock_docker_client):
@@ -1752,7 +1881,7 @@ class TestUpgradeModules:
         assert "-u sale" in args
 
     @patch(
-        "oduflow.docker_ops.odoo_ops.run_db_query",
+        "oduflow.docker_ops.odoo_ops._execute_db_query",
         return_value={"exit_code": 0, "output": "name,state\nwebsite,uninstalled\n"},
     )
     def test_uninstalled_module_is_refused(self, mock_query, mock_docker_client):
@@ -1767,7 +1896,7 @@ class TestUpgradeModules:
         container.exec_run.assert_not_called()
 
     @patch(
-        "oduflow.docker_ops.odoo_ops.run_db_query",
+        "oduflow.docker_ops.odoo_ops._execute_db_query",
         return_value={"exit_code": 0, "output": "name,state\n"},
     )
     def test_unknown_module_is_refused(self, mock_query, mock_docker_client):
@@ -2285,6 +2414,28 @@ class TestApplyActionsConf:
                 "oduflow-1-feature-x-odoo",
                 to_install=[],
                 to_upgrade=["website"],
+                do_restart=False,
+                changed_files=[],
+            )
+
+        container.restart.assert_not_called()
+
+    @patch(
+        "oduflow.docker_ops.odoo_ops.install_odoo_modules",
+        side_effect=NotFoundError("module was not found after installation"),
+    )
+    def test_rejected_install_does_not_restart(self, mock_install):
+        client, container = self._client_with_container()
+
+        with pytest.raises(NotFoundError, match="not found after installation"):
+            env_ops._apply_actions(
+                client,
+                TEST_SETTINGS,
+                TEST_TEAM,
+                "feature/x",
+                "oduflow-1-feature-x-odoo",
+                to_install=["missing_module"],
+                to_upgrade=[],
                 do_restart=False,
                 changed_files=[],
             )
