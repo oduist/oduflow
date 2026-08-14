@@ -321,11 +321,73 @@ def _run_odoo_module_command(
     exit_code, output = container.exec_run(cmd)
     output_str = output.decode("utf-8") if isinstance(output, bytes) else str(output)
 
+    if flag == "-i" and exit_code == 0:
+        _require_installed_modules(settings, team, env_name, modules)
+
     return {
         "modules": list(modules),
         "exit_code": exit_code,
         "output": output_str,
     }
+
+
+def _get_module_states(
+    settings: Settings,
+    team: TeamSettings,
+    env_name: str,
+    modules: tuple[str, ...],
+) -> dict[str, str]:
+    names = ", ".join(f"'{module}'" for module in modules)
+    # This is a fixed, validated SELECT, so legacy environments may safely use
+    # the cluster credential that their Odoo container already runs with.
+    result = _execute_db_query(
+        settings,
+        team,
+        env_name,
+        f"SELECT name, state FROM ir_module_module WHERE name IN ({names})",
+        allow_fallback=True,
+    )
+    states: dict[str, str] = {}
+    for row in result["output"].splitlines()[1:]:
+        name, separator, state = row.strip().partition(",")
+        if separator:
+            states[name] = state
+    return states
+
+
+def _require_installed_modules(
+    settings: Settings,
+    team: TeamSettings,
+    env_name: str,
+    modules: tuple[str, ...],
+) -> None:
+    """Verify that an exit-code-0 ``odoo -i`` actually installed every module."""
+    states = _get_module_states(settings, team, env_name, modules)
+
+    unknown = [module for module in modules if module not in states]
+    if unknown:
+        module_list = ", ".join(unknown)
+        subject = "Module" if len(unknown) == 1 else "Modules"
+        verb = "was" if len(unknown) == 1 else "were"
+        raise NotFoundError(
+            f"{subject} {module_list} {verb} not found in environment '{env_name}' "
+            "after Odoo reported a successful installation. Check the module "
+            "name, addons path, and manifest validity."
+        )
+
+    not_installed = [
+        f"{module} ({states[module]})"
+        for module in modules
+        if states[module] != "installed"
+    ]
+    if not_installed:
+        module_list = ", ".join(not_installed)
+        subject = "Module" if len(not_installed) == 1 else "Modules"
+        verb = "is" if len(not_installed) == 1 else "are"
+        raise PrerequisiteNotMetError(
+            f"{subject} {module_list} {verb} not installed in environment "
+            f"'{env_name}' after Odoo reported a successful installation."
+        )
 
 
 def _require_upgradeable_modules(
@@ -341,18 +403,7 @@ def _require_upgradeable_modules(
     direct upgrades and ``pull_and_apply(upgrade=...)`` from reporting that no-op
     as a success.
     """
-    names = ", ".join(f"'{module}'" for module in modules)
-    result = run_db_query(
-        settings,
-        team,
-        env_name,
-        f"SELECT name, state FROM ir_module_module WHERE name IN ({names})",
-    )
-    states: dict[str, str] = {}
-    for row in result["output"].splitlines()[1:]:
-        name, separator, state = row.strip().partition(",")
-        if separator:
-            states[name] = state
+    states = _get_module_states(settings, team, env_name, modules)
 
     unknown = [module for module in modules if module not in states]
     if unknown:
@@ -610,13 +661,16 @@ def reset_admin_password(
     return {"status": "ok", "login": "admin", "psql_output": output_str}
 
 
-def run_db_query(
+def _execute_db_query(
     settings: Settings,
     team: TeamSettings,
     env_name: str,
     query: str,
     output_format: str = "csv",
+    *,
+    allow_fallback: bool,
 ) -> dict[str, Any]:
+    """Execute SQL; legacy fallback is only safe for fixed internal queries."""
     client = get_client()
     env_db = get_db_name(env_name, team.team_id)
 
@@ -633,7 +687,7 @@ def run_db_query(
         team.workspaces_dir,
         settings.db_user,
         settings.db_password,
-        allow_fallback=False,
+        allow_fallback=allow_fallback,
     )
     if output_format == "human":
         cmd = ["psql", "-U", creds["pg_user"], "-d", env_db, "-c", query]
@@ -654,6 +708,24 @@ def run_db_query(
         "exit_code": exit_code,
         "output": output_str,
     }
+
+
+def run_db_query(
+    settings: Settings,
+    team: TeamSettings,
+    env_name: str,
+    query: str,
+    output_format: str = "csv",
+) -> dict[str, Any]:
+    """Run arbitrary SQL using only the environment's scoped credentials."""
+    return _execute_db_query(
+        settings,
+        team,
+        env_name,
+        query,
+        output_format,
+        allow_fallback=False,
+    )
 
 
 _WRITE_FILE_LIMIT = 1_000_000  # 1 MB
