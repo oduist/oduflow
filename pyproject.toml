@@ -11,7 +11,7 @@ requires-python = ">=3.10"
 keywords = ["odoo", "mcp", "docker", "development", "ci"]
 dependencies = [
     "fastmcp==2.14.3",
-    "docker",
+    "docker>=3.3.0",
     # Declarative Oduflow Stack manifests: typed validation + YAML input.
     "pydantic>=2.10,<3",
     "PyYAML>=6.0,<7",
