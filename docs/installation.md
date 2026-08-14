@@ -103,26 +103,40 @@ oduflow upgrade --force
 ```
 
 The first command upgrades the Python package. The second is a separate,
-interactive migration of deployed bundled files: it shows the files that would
-be replaced and waits for confirmation before updating agent guides,
-`postgresql.conf`, sanitize scripts, and per-team `odoo.conf` files. Package
-upgrade alone does not overwrite those deployed copies.
+interactive reconciliation of each team's deployed `odoo.conf`, agent guides,
+and bundled sanitize script. Package upgrade alone does not update those
+deployed copies. `postgresql.conf` is intentionally separate: preview and apply
+resource-tuning changes with `oduflow retune-postgres [--apply]`.
 
-For unattended upgrades, pass `--force`. Oduflow still prints the warning and
-affected paths but proceeds without reading from stdin. Files protected by
-`# KEEP` remain untouched.
+Oduflow keeps the previous pristine bundle under
+`<team-data>/.bundled_upgrade/baselines/` and performs a three-way merge. An
+unmodified deployed file receives the new bundle directly; local-only changes
+stay untouched; disjoint local and upstream changes are merged. The pre-update
+live file is retained under `.bundled_upgrade/backups/`.
 
-If you have customized any of these files and want to prevent `oduflow upgrade`
-from overwriting it, add `# KEEP` as the **very first line** of the file:
+For an installation created before baselines existed, the first upgrade keeps
+the live file and writes the new bundle beside it as `*.oduflow-new`. Merge that
+file manually into the live file, then delete the sidecar. A true merge conflict
+similarly leaves the live file untouched and writes `*.oduflow-merge`; resolve
+that file, install the resolved content as the live file, and remove the
+sidecar. Until the sidecar is resolved, `oduflow upgrade` exits non-zero.
+
+For unattended upgrades, pass `--force`. It skips only the stdin confirmation:
+legacy files and conflicts are still preserved and still produce a non-zero
+exit code.
+
+Automatic merging is the default. To opt a file out of all bundled changes,
+add `# KEEP` as the **very first line**:
 
 ```conf
 # KEEP
-# My custom postgresql.conf
-listen_addresses = '*'
+[options]
+# Keep this odoo.conf entirely operator-managed.
 ...
 ```
 
-Files marked with `# KEEP` will be skipped during upgrade and listed as `(kept)` in the upgrade output.
+Files marked with `# KEEP` are skipped and listed as `(kept)` in the upgrade
+output.
 
 ## Configuration Reference
 

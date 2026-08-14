@@ -96,11 +96,14 @@ oduflow upgrade
 oduflow upgrade --force
 ```
 
-Package upgrade and deployed-file refresh are separate. `oduflow upgrade` lists
-bundled config/guides/sanitize files that changed and asks before overwriting;
-add `# KEEP` as the first line of a customized deployed file to preserve it.
-Pass `--force` to skip the stdin confirmation in unattended automation; the
-warning is still printed and `# KEEP` files are still preserved.
+Package upgrade and deployed-file reconciliation are separate. `oduflow
+upgrade` three-way merges each team's bundled `odoo.conf`, agent guides, and
+sanitize script against a stored pristine baseline. Conflicts preserve the live
+file and create `*.oduflow-merge`; pre-baseline installations create
+`*.oduflow-new` for one-time manual reconciliation. Both cases exit non-zero
+until the sidecar is resolved and removed. `--force` skips only the stdin
+confirmation. A first-line `# KEEP` opts a file out entirely. PostgreSQL config
+changes use `oduflow retune-postgres`, not `oduflow upgrade`.
 
 ### Set up a template
 

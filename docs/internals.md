@@ -69,6 +69,7 @@ src/oduflow/
   locking.py           # LockManager with per-branch, per-team, and system locks
   git_ops.py           # Git clone, pull, credential management, manifest parsing
   git_analysis.py      # Classify changed files → install / upgrade / restart / refresh
+  bundled_upgrade.py   # Three-way merge bundled files using persistent baselines
   port_registry.py     # Stable port allocation with JSON persistence
   web_ui.py            # Starlette dashboard, REST/WS API, session+Basic auth middleware
   extra_addons.py      # Extra addon repo management (clone, worktree, odoo.conf generation)

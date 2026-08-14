@@ -28,6 +28,7 @@ from fastmcp.exceptions import ToolError
 from oduflow import (
     activity,
     artifact_tokens,
+    bundled_upgrade,
     git_ops,
     migrations,
     po_tools,
@@ -4498,6 +4499,41 @@ def delete_production(
 # =============================================================================
 
 
+def _managed_bundled_files(
+    bundled_dir: pathlib.Path, team_id: str, team: TeamSettings
+) -> list[bundled_upgrade.ManagedFile]:
+    """Return the bundled files reconciled for one team."""
+    label = f"[team.{team_id}]"
+    state_root = pathlib.Path(team.data_dir) / ".bundled_upgrade"
+    entries: list[tuple[pathlib.Path, pathlib.Path]] = [
+        (bundled_dir / "odoo.conf", pathlib.Path("odoo.conf")),
+        (
+            bundled_dir / "01_disable_mail.sql",
+            pathlib.Path("odoo_sanitize") / "01_disable_mail.sql",
+        ),
+    ]
+
+    guides_dir = bundled_dir / "agent_guides"
+    if guides_dir.is_dir():
+        entries.extend(
+            (guide, pathlib.Path("agent_guides") / guide.name)
+            for guide in sorted(guides_dir.iterdir())
+            if guide.is_file() and guide.suffix == ".md"
+        )
+
+    return [
+        bundled_upgrade.ManagedFile(
+            label=label,
+            source=source,
+            destination=pathlib.Path(team.data_dir) / relative,
+            state_root=state_root,
+            relative_path=relative,
+        )
+        for source, relative in entries
+        if source.is_file()
+    ]
+
+
 def _apply_agent_feedback(settings: Settings) -> None:
     """Expose ``submit_agent_feedback`` only while the hidden option is on.
 
@@ -4530,9 +4566,6 @@ def _ensure_initialized(settings: Settings) -> None:
 
     backup_ops.register_pre_update_hook()
 
-    import pathlib
-    import shutil
-
     bundled_dir = pathlib.Path(__file__).resolve().parent / "templates"
 
     for team_id, team in settings.teams.items():
@@ -4546,34 +4579,11 @@ def _ensure_initialized(settings: Settings) -> None:
             with open(presets_path, "w") as f:
                 f.write("{}\n")
 
-        # Copy bundled odoo.conf to team data dir
-        odoo_conf_dest = os.path.join(team.data_dir, "odoo.conf")
-        if not os.path.isfile(odoo_conf_dest):
-            bundled_odoo_conf = bundled_dir / "odoo.conf"
-            if bundled_odoo_conf.is_file():
-                shutil.copy2(str(bundled_odoo_conf), odoo_conf_dest)
-                logger.info("[team.%s] Config: %s", team_id, odoo_conf_dest)
-
-        # Seed team-level sanitization scripts
-        sanitize_dest = os.path.join(team.data_dir, "odoo_sanitize")
-        os.makedirs(sanitize_dest, exist_ok=True)
-        bundled_sql = bundled_dir / "01_disable_mail.sql"
-        dest_sql = os.path.join(sanitize_dest, "01_disable_mail.sql")
-        if not os.path.isfile(dest_sql) and bundled_sql.is_file():
-            shutil.copy2(str(bundled_sql), dest_sql)
-            logger.info("[team.%s] Sanitize script: %s", team_id, dest_sql)
-
-        # Copy bundled agent guides
-        agent_guides_dest = os.path.join(team.data_dir, "agent_guides")
-        os.makedirs(agent_guides_dest, exist_ok=True)
-        bundled_guides_dir = bundled_dir / "agent_guides"
-        if bundled_guides_dir.is_dir():
-            for guide_file in bundled_guides_dir.iterdir():
-                if guide_file.is_file() and guide_file.suffix == ".md":
-                    dest_file = os.path.join(agent_guides_dest, guide_file.name)
-                    if not os.path.isfile(dest_file):
-                        shutil.copy2(str(guide_file), dest_file)
-                        logger.info("[team.%s] Agent guide: %s", team_id, dest_file)
+        os.makedirs(os.path.join(team.data_dir, "odoo_sanitize"), exist_ok=True)
+        os.makedirs(os.path.join(team.data_dir, "agent_guides"), exist_ok=True)
+        for managed in _managed_bundled_files(bundled_dir, team_id, team):
+            if bundled_upgrade.seed_managed_file(managed):
+                logger.info("[team.%s] Bundled file: %s", team_id, managed.destination)
 
         logger.info(
             "Team %s initialized (workspaces=%s, templates=%s)",
@@ -4590,99 +4600,53 @@ def _ensure_initialized(settings: Settings) -> None:
     )
 
 
-def _run_upgrade(settings: Settings, *, force: bool = False) -> None:
-    """Overwrite bundled files, optionally without an interactive prompt."""
-    import pathlib
-    import shutil
-
+def _run_upgrade(settings: Settings, *, force: bool = False) -> bool:
+    """Three-way merge deployed bundled files with the current package."""
     bundled_dir = pathlib.Path(__file__).resolve().parent / "templates"
-    bundled_guides_dir = bundled_dir / "agent_guides"
-    etc_dir = pathlib.Path(settings.etc_dir)
-
-    # --- Collect files that will be written ---
-    files_to_write: list[tuple[str, str, str]] = []  # (label, src, dest)
-
-    # System-level: postgresql.conf
-    pg_conf_src = bundled_dir / "postgresql.conf"
-    pg_conf_dest = etc_dir / "postgresql.conf"
-    if pg_conf_src.is_file():
-        files_to_write.append(("[system]", str(pg_conf_src), str(pg_conf_dest)))
-
-    # Per-team files
+    managed_files: list[bundled_upgrade.ManagedFile] = []
     for team_id, team in settings.teams.items():
-        label = f"[team.{team_id}]"
+        managed_files.extend(_managed_bundled_files(bundled_dir, team_id, team))
 
-        # odoo.conf
-        bundled_odoo_conf = bundled_dir / "odoo.conf"
-        if bundled_odoo_conf.is_file():
-            dest = os.path.join(team.data_dir, "odoo.conf")
-            files_to_write.append((label, str(bundled_odoo_conf), dest))
-
-        # Agent guides
-        agent_guides_dest = os.path.join(team.data_dir, "agent_guides")
-        if bundled_guides_dir.is_dir():
-            for guide_file in sorted(bundled_guides_dir.iterdir()):
-                if guide_file.is_file() and guide_file.suffix == ".md":
-                    dest = os.path.join(agent_guides_dest, guide_file.name)
-                    files_to_write.append((label, str(guide_file), dest))
-
-        # Sanitize scripts
-        bundled_sql = bundled_dir / "01_disable_mail.sql"
-        if bundled_sql.is_file():
-            dest = os.path.join(team.data_dir, "odoo_sanitize", "01_disable_mail.sql")
-            files_to_write.append((label, str(bundled_sql), dest))
-
-    if not files_to_write:
+    if not managed_files:
         print("Nothing to upgrade — no bundled files found.")
-        return
+        return True
 
-    # --- Filter to only new or changed files (compare by size) ---
-    files_to_update: list[tuple[str, str, str, str]] = []  # (label, src, dest, tag)
-    files_kept: list[tuple[str, str]] = []  # (label, dest)
-    for label, src, dest in files_to_write:
-        if not os.path.isfile(dest):
-            files_to_update.append((label, src, dest, "new"))
-        elif os.path.getsize(src) != os.path.getsize(dest):
-            # Check if the deployed file is marked with # KEEP on the first line
-            try:
-                with open(dest, "r", encoding="utf-8", errors="replace") as f:
-                    first_line = f.readline().strip()
-                if first_line == "# KEEP":
-                    files_kept.append((label, dest))
-                    continue
-            except OSError:
-                pass
-            files_to_update.append((label, src, dest, "changed"))
+    plans = [bundled_upgrade.plan_reconcile(managed) for managed in managed_files]
+    actionable = [plan for plan in plans if plan.needs_confirmation]
+    kept = [plan for plan in plans if plan.kind == "keep"]
 
-    if not files_to_update and not files_kept:
-        print("\nAll bundled files are already up to date. Nothing to do.")
-        return
+    if not actionable:
+        success = _apply_upgrade_plans(plans)
+        if not success:
+            return False
+        if not kept:
+            print("\nAll bundled files are already up to date. Nothing to do.")
+            return True
+        print("\nNo bundled files require reconciliation.")
+        print("Files marked with # KEEP remain untouched:")
+        for plan in kept:
+            print(f"  {plan.managed.label} {plan.managed.destination} (kept)")
+        return True
 
-    if not files_to_update and files_kept:
-        print("\nAll changed files are marked with # KEEP. Nothing to overwrite.")
-        for label, dest in files_kept:
-            print(f"  {label} {dest} (kept)")
-        return
-
-    # --- Warning banner ---
     print()
     print("=" * 70)
-    print("  WARNING: The following files will be OVERWRITTEN")
-    print("  with bundled versions from this Oduflow release.")
+    print("  The following bundled files will be reconciled.")
+    print("  Local changes are preserved through three-way merge.")
     print("=" * 70)
     print()
-    for label, _src, dest, tag in files_to_update:
-        print(f"  {label} {dest} ({tag})")
-    if files_kept:
-        print()
+    for plan in actionable:
         print(
-            "  The following files are marked with # KEEP and will NOT be overwritten:"
+            f"  {plan.managed.label} {plan.managed.destination} "
+            f"({_upgrade_plan_description(plan)})"
         )
-        for label, dest in files_kept:
-            print(f"  {label} {dest} (kept)")
+    if kept:
+        print()
+        print("  Files marked with # KEEP will remain untouched:")
+        for plan in kept:
+            print(f"  {plan.managed.label} {plan.managed.destination} (kept)")
     print()
-    print("  If you have made custom changes to any of these files,")
-    print("  press Ctrl+C NOW and back them up before proceeding.")
+    print("  Conflicts and legacy files keep the live file unchanged and create")
+    print("  a sidecar for manual resolution.")
     print()
 
     if not force:
@@ -4690,17 +4654,73 @@ def _run_upgrade(settings: Settings, *, force: bool = False) -> None:
             input("  Press Enter to continue or Ctrl+C to abort... ")
         except KeyboardInterrupt:
             print("\n\nAborted. No files were changed.")
-            return
+            return True
 
-    # --- Overwrite ---
-    count = 0
-    for label, src, dest, tag in files_to_update:
-        os.makedirs(os.path.dirname(dest), exist_ok=True)
-        shutil.copy2(src, dest)
-        count += 1
-        print(f"  Updated: {dest}")
+    success = _apply_upgrade_plans(plans)
+    if success:
+        changed = sum(plan.kind in {"create", "update", "merge"} for plan in plans)
+        print(
+            f"\nDone. Reconciled {changed} file(s) across "
+            f"{len(settings.teams)} team(s)."
+        )
+    else:
+        print(
+            "\nUpgrade needs attention. Live files with conflicts or legacy "
+            "state were not overwritten."
+        )
+    return success
 
-    print(f"\nDone. Updated {count} file(s) across {len(settings.teams)} team(s).")
+
+def _upgrade_plan_description(plan: bundled_upgrade.ReconcilePlan) -> str:
+    descriptions = {
+        "create": "new",
+        "update": "upstream update",
+        "merge": "clean merge",
+        "legacy": f"legacy; review {plan.managed.new_path}",
+        "legacy-pending": f"pending review; update {plan.managed.new_path}",
+        "conflict": f"conflict; resolve {plan.managed.merge_path}",
+        "error": f"merge unavailable; review {plan.managed.error_path}",
+    }
+    return descriptions.get(plan.kind, plan.kind)
+
+
+def _apply_upgrade_plans(plans: list[bundled_upgrade.ReconcilePlan]) -> bool:
+    success = True
+    for plan in plans:
+        try:
+            bundled_upgrade.apply_reconcile(plan)
+        except bundled_upgrade.BundledUpgradeError as exc:
+            print(f"  ERROR: {plan.managed.destination}: {exc}")
+            success = False
+            continue
+
+        destination = plan.managed.destination
+        if plan.kind == "create":
+            print(f"  Created: {destination}")
+        elif plan.kind == "update":
+            print(f"  Updated: {destination}")
+        elif plan.kind == "merge":
+            print(f"  Merged: {destination}")
+        elif plan.kind in {"legacy", "legacy-pending"}:
+            print(
+                f"  REVIEW: {destination} kept; merge {plan.managed.new_path} "
+                "manually, then delete the sidecar"
+            )
+            success = False
+        elif plan.kind == "conflict":
+            print(
+                f"  CONFLICT: {destination} kept; resolve "
+                f"{plan.managed.merge_path}, install it as the live file, "
+                "then remove the sidecar"
+            )
+            success = False
+        elif plan.kind == "error":
+            print(
+                f"  ERROR: {destination} kept; {plan.error}; "
+                f"new bundle saved to {plan.managed.error_path}"
+            )
+            success = False
+    return success
 
 
 def _copy_bundled_configs() -> None:
@@ -5612,12 +5632,12 @@ def _run_cli() -> None:
     sub.add_parser("destroy", help="Destroy all shared infrastructure")
     p_upgrade = sub.add_parser(
         "upgrade",
-        help="Overwrite bundled agent guides and sanitize scripts with the latest version",
+        help="Merge bundled configs, agent guides, and sanitize scripts",
     )
     p_upgrade.add_argument(
         "--force",
         action="store_true",
-        help="overwrite changed bundled files without prompting",
+        help="reconcile changed bundled files without prompting",
     )
     p_retune = sub.add_parser(
         "retune-postgres",
@@ -5954,7 +5974,8 @@ def _run_cli() -> None:
         return
 
     if args.command == "upgrade":
-        _run_upgrade(_settings, force=args.force)
+        if not _run_upgrade(_settings, force=args.force):
+            sys.exit(1)
         return
 
     if args.command == "retune-postgres":

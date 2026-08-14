@@ -65,10 +65,10 @@ conflicts; no automatic deletion or pruning is performed.
 # Destroy all shared infrastructure (requires no active environments)
 oduflow destroy
 
-# Refresh deployed files bundled with the installed Oduflow version
+# Three-way merge deployed files with the installed bundled versions
 oduflow upgrade
 
-# Refresh non-interactively (for scripts and automated deployments)
+# Skip the confirmation prompt (conflicts still fail safely)
 oduflow upgrade --force
 
 # Preview the unified host resource plan and managed config diffs
@@ -85,14 +85,24 @@ then lists every PostgreSQL and Odoo container that should be restarted. It
 refuses to replace a custom PostgreSQL config unless `--apply --force` is
 given. See [PostgreSQL resource planning](installation.md#configuration-file-overrides).
 
-`oduflow upgrade` compares and interactively refreshes the system
-`postgresql.conf` plus each team's `odoo.conf`, agent guides, and bundled
-sanitize script. It prints the affected paths and asks for confirmation before
-overwriting them. A deployed file whose first line is exactly `# KEEP` is left
-unchanged. This command is separate from upgrading the Python package (for
-example, `uv tool upgrade oduflow`). Pass `--force` to accept the listed
-overwrites without reading from the terminal; the warning and affected-file
-list are still printed, and `# KEEP` files are still preserved.
+`oduflow upgrade` reconciles each team's `odoo.conf`, agent guides, and bundled
+sanitize script against a stored pristine baseline. It compares complete file
+contents, updates an untouched file, preserves local-only changes, and uses
+`git merge-file` when both the local and bundled versions changed. Before a live
+update, the previous file is saved under
+`<team-data>/.bundled_upgrade/backups/`.
+
+On a clean merge the live file and baseline advance together. On conflict the
+live file and accepted baseline stay untouched; the merge result is written to
+`*.oduflow-merge`. Existing customized installations with no baseline receive
+`*.oduflow-new` for a one-time manual reconciliation. Resolve/install the
+sidecar and remove it; until then the command exits with status 1. `--force`
+only skips the confirmation prompt and never overwrites a conflict. A first-line
+`# KEEP` remains an unconditional opt-out.
+
+This command is separate from upgrading the Python package (for example,
+`uv tool upgrade oduflow`). It does not manage `postgresql.conf`; use
+`oduflow retune-postgres` for PostgreSQL planning and updates.
 
 ## Template Commands
 
