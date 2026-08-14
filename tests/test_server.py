@@ -104,6 +104,19 @@ class TestCLIInitDestroy:
 
         mock_upgrade.assert_called_once_with(TEST_SETTINGS, force=True)
 
+    def test_cli_upgrade_exits_nonzero_when_attention_is_required(self):
+        from oduflow import server
+
+        with (
+            patch.object(sys, "argv", ["oduflow", "upgrade", "--force"]),
+            patch.object(server, "_get_settings", return_value=TEST_SETTINGS),
+            patch.object(server, "_run_upgrade", return_value=False),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            server._run_cli()
+
+        assert exc_info.value.code == 1
+
 
 class TestCLIUpgrade:
     @staticmethod
@@ -113,14 +126,19 @@ class TestCLIUpgrade:
         package_dir = tmp_path / "package"
         bundled_guides = package_dir / "templates" / "agent_guides"
         bundled_guides.mkdir(parents=True)
-        (bundled_guides / "guide.md").write_text("bundled\n", encoding="utf-8")
+        (bundled_guides / "guide.md").write_text("bundled v2\n", encoding="utf-8")
         monkeypatch.setattr(server, "__file__", str(package_dir / "server.py"))
 
         team_dir = tmp_path / "team"
         deployed_guides = team_dir / "agent_guides"
         deployed_guides.mkdir(parents=True)
         deployed_guide = deployed_guides / "guide.md"
-        deployed_guide.write_text("custom content\n", encoding="utf-8")
+        deployed_guide.write_text("bundled v1\n", encoding="utf-8")
+        baseline = (
+            team_dir / ".bundled_upgrade" / "baselines" / "agent_guides" / "guide.md"
+        )
+        baseline.parent.mkdir(parents=True)
+        baseline.write_text("bundled v1\n", encoding="utf-8")
         team = replace(
             TEST_TEAM,
             data_dir=str(team_dir),
@@ -146,7 +164,7 @@ class TestCLIUpgrade:
         mock_input.assert_called_once_with(
             "  Press Enter to continue or Ctrl+C to abort... "
         )
-        assert deployed_guide.read_text(encoding="utf-8") == "bundled\n"
+        assert deployed_guide.read_text(encoding="utf-8") == "bundled v2\n"
 
     def test_upgrade_force_skips_prompt(self, tmp_path, monkeypatch):
         server, settings, deployed_guide = self._settings_with_changed_guide(
@@ -156,7 +174,54 @@ class TestCLIUpgrade:
         with patch("builtins.input", side_effect=AssertionError("unexpected prompt")):
             server._run_upgrade(settings, force=True)
 
-        assert deployed_guide.read_text(encoding="utf-8") == "bundled\n"
+        assert deployed_guide.read_text(encoding="utf-8") == "bundled v2\n"
+
+    def test_upgrade_legacy_file_requires_review_without_overwriting(
+        self, tmp_path, monkeypatch
+    ):
+        server, settings, deployed_guide = self._settings_with_changed_guide(
+            tmp_path, monkeypatch
+        )
+        baseline = (
+            Path(settings.teams["1"].data_dir)
+            / ".bundled_upgrade"
+            / "baselines"
+            / "agent_guides"
+            / "guide.md"
+        )
+        baseline.unlink()
+        deployed_guide.write_text("custom legacy\n", encoding="utf-8")
+
+        assert server._run_upgrade(settings, force=True) is False
+
+        assert deployed_guide.read_text(encoding="utf-8") == "custom legacy\n"
+        assert (
+            Path(f"{deployed_guide}.oduflow-new").read_text(encoding="utf-8")
+            == "bundled v2\n"
+        )
+
+    def test_upgrade_does_not_manage_postgresql_conf(self, tmp_path, monkeypatch):
+        from oduflow import server
+
+        package_dir = tmp_path / "package"
+        templates = package_dir / "templates"
+        templates.mkdir(parents=True)
+        (templates / "postgresql.conf").write_text("bundled\n", encoding="utf-8")
+        monkeypatch.setattr(server, "__file__", str(package_dir / "server.py"))
+
+        conf_dir = tmp_path / "conf"
+        conf_dir.mkdir()
+        deployed = conf_dir / "postgresql.conf"
+        deployed.write_text("custom\n", encoding="utf-8")
+        settings = replace(
+            TEST_SETTINGS,
+            base_data_dir=str(tmp_path),
+            etc_dir=str(conf_dir),
+            teams={},
+        )
+
+        assert server._run_upgrade(settings, force=True) is True
+        assert deployed.read_text(encoding="utf-8") == "custom\n"
 
 
 class TestImportTemplateFromOdoo:

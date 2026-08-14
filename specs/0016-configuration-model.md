@@ -72,8 +72,10 @@ aggressively rather than expose knobs.
   conservative fallbacks, never raising), and `generate_postgresql_conf()`
   produces a lean, SSD-oriented config sized for "one host running many
   lightweight single-user Odoo envs". The generated file is written with a
-  `# KEEP` marker so [[0006-git-driven-change-classification]]'s upgrade never
-  overwrites a hand-edited copy. No new TOML settings were added for it.
+  `# KEEP` marker and is outside the bundled-file upgrade path; explicit
+  resource-plan changes go through `retune-postgres`
+  ([[0044-unified-host-resource-planning]]). No new TOML settings were added for
+  it.
 
 ## Consequences
 

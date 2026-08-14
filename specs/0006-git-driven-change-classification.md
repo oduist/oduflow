@@ -65,9 +65,9 @@ The rules, refined incrementally from real misfires:
   request looks like an *under*-action (a missing install/upgrade/restart),
   leaving the agent in charge.
 - **`# KEEP` protection.** A file whose first line is `# KEEP` is never
-  overwritten by `oduflow upgrade`; it is reported as `(kept)` instead. This lets
-  generated/hand-tuned files (e.g. a locally edited `odoo.conf`,
-  `postgresql.conf`) survive a sync.
+  changed by `oduflow upgrade`; it is reported as `(kept)` instead. The later
+  bundled-file reconciler ([[0047-three-way-bundled-upgrades]]) preserves this
+  complete opt-out alongside automatic merging for ordinary local edits.
 - **Trace logging.** `ODUFLOW_TRACE=1` emits a per-file decision trace through
   the classify/sync pipeline, for debugging why an action was (or wasn't) chosen.
 

@@ -19,10 +19,16 @@
   deletion rather than risking persisted data. See `docs/stacks.md` and
   `specs/0046`.
 
-- **Non-interactive bundled-file upgrades** — `oduflow upgrade --force` prints
-  the usual overwrite warning and affected paths but proceeds without waiting
-  for terminal input, enabling unattended deployments while continuing to
-  preserve files marked with `# KEEP`.
+- **Three-way bundled-file upgrades** — `oduflow upgrade` no longer compares
+  only file sizes and overwrites every differing deployed copy. Each team's
+  `odoo.conf`, agent guides, and sanitize script now keep a pristine bundled
+  baseline and merge local and upstream changes through `git merge-file`, with
+  an atomic pre-update backup. Conflicts never put markers into a live config:
+  they create `*.oduflow-merge`, preserve the old baseline, and exit non-zero.
+  Existing customized installations without a baseline receive a conservative
+  one-time `*.oduflow-new` sidecar. `--force` remains automation-friendly but
+  skips only confirmation, `# KEEP` remains a complete opt-out, and generated
+  `postgresql.conf` is now exclusively managed by `retune-postgres`.
 
 - **Structured Odoo ORM tools** — six new MCP tools give agents the semantics of
   standard Odoo XML-RPC `execute_kw` without writing Python: `odoo_search_read`,
