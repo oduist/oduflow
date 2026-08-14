@@ -2206,7 +2206,11 @@ def list_environments(settings: Settings, team: TeamSettings) -> list[dict[str, 
             f"{settings.team_label}={team.team_id}",
         ]
     }
-    containers = client.containers.list(all=True, filters=filters)
+    containers = client.containers.list(
+        all=True,
+        filters=filters,
+        ignore_removed=True,
+    )
 
     envs: dict[str, dict[str, Any]] = {}
     for container in containers:

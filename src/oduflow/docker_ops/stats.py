@@ -83,6 +83,7 @@ def get_container_stats(settings: Settings, team: TeamSettings) -> list[dict[str
                     f"{settings.team_label}={team.team_id}",
                 ]
             },
+            ignore_removed=True,
         )
         if c.name.startswith(settings.prefix)
     ]
