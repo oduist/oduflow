@@ -2019,7 +2019,7 @@
       </div>
       <div class="form-actions">
         <button class="btn" onclick="closeConnect()">Close</button>
-        <button class="btn btn-connect" id="connect-submit" onclick="submitConnect()">Connect</button>
+        <button class="btn-create" id="connect-submit" onclick="submitConnect()">Connect</button>
       </div>
     </div>
   </div>
@@ -2593,7 +2593,9 @@ function renderEnvironments(envs, force) {
             (env.protected ? ' disabled title="Protected environments are excluded from bulk actions"' : '') +
             ' onclick="envSelectClick(event, \'' + escAttr(env.branch) + '\', ' + idx + ')"' +
             ' aria-label="Select ' + esc(env.branch) + '"></label>' +
-          '<span class="branch-name">' + esc(env.branch) + '</span>' +
+          '<span class="branch-name copy-db" role="button" tabindex="0" ' +
+            'title="Copy environment name" aria-label="Copy environment name" ' +
+            'onclick="copyToClipboard(\'' + escAttr(env.branch) + '\')">' + esc(env.branch) + '</span>' +
           (env.git_branch && env.git_branch !== env.branch ? '<span class="git-branch">⎇ ' + esc(env.git_branch) + '</span>' : '') +
           repoLinksHtml +
           '<span class="badge ' + badgeClass(env.status) + '"' +
@@ -5884,7 +5886,7 @@ var MODAL_CLOSERS = {
 };
 
 document.addEventListener('keydown', function(e) {
-  // Enter/Space activate non-native role="button" elements (db name, note, guide cards)
+  // Enter/Space activate non-native role="button" elements (copyable names, notes, guides).
   if ((e.key === 'Enter' || e.key === ' ') && e.target.getAttribute &&
       e.target.getAttribute('role') === 'button' && e.target.tagName !== 'BUTTON') {
     e.preventDefault();

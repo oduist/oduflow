@@ -92,6 +92,29 @@ def test_environment_metadata_shows_live_mount_path(tmp_path):
     assert "env.local_path ? '<span>Live-mount:" in dashboard.text
 
 
+def test_environment_name_is_copyable(tmp_path):
+    dashboard = _client(tmp_path).get("/")
+
+    assert dashboard.status_code == 200
+    assert '<span class="branch-name copy-db" role="button" tabindex="0" ' in dashboard.text
+    assert (
+        'title="Copy environment name" aria-label="Copy environment name" '
+        in dashboard.text
+    )
+    assert "copyToClipboard(\\'' + escAttr(env.branch)" in dashboard.text
+
+
+def test_connect_modal_emphasizes_primary_action(tmp_path):
+    dashboard = _client(tmp_path).get("/")
+
+    assert dashboard.status_code == 200
+    assert '<button class="btn" onclick="closeConnect()">Close</button>' in dashboard.text
+    assert (
+        '<button class="btn-create" id="connect-submit" '
+        'onclick="submitConnect()">Connect</button>' in dashboard.text
+    )
+
+
 def test_dashboard_uses_safe_json_response_reader(tmp_path):
     dashboard = _client(tmp_path).get("/")
 
