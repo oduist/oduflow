@@ -520,6 +520,15 @@ def _parse_extra_addons(raw: str) -> dict[str, str]:
     return result
 
 
+def _parse_env_vars(raw: str) -> dict[str, str]:
+    """Parse env assignments without treating commas inside values as separators."""
+    items = re.split(
+        r"\r?\n|,(?=\s*[A-Za-z_][A-Za-z0-9_]*=)",
+        raw,
+    )
+    return dict(item.strip().split("=", 1) for item in items if "=" in item)
+
+
 # =============================================================================
 # MCP Tools — Environments
 # =============================================================================
@@ -3238,7 +3247,7 @@ def create_service(
         image: Docker image with tag (e.g. "redis:7", "getmeili/meilisearch:v1.6").
         port: Catch-all exposure mode: forward every path to this one container port. Required outside Traefik. Mutually exclusive with routes.
         hostname: Custom hostname for traefik routing (optional, traefik mode only).
-        env_vars: Comma-separated KEY=VALUE pairs (e.g. "MEILI_MASTER_KEY=abc,MEILI_ENV=production").
+        env_vars: Comma- or newline-separated KEY=VALUE pairs (e.g. "MEILI_MASTER_KEY=abc,MEILI_ENV=production"). Commas inside values are preserved, so "CONNECT_MCP_TOOL_GROUPS=write,collaboration,documents" is one variable.
         host_mode: Run the container in host network mode instead of the shared Docker network. Use when the service needs direct host network access. Traefik routing still works.
         volumes: Comma-separated volume mounts (e.g. "mydata:/data,config:/etc/app:ro"). Each entry is volume_name:/container/path[:ro|rw]. Volumes must be created first via create_volume. In Traefik TLS mode the system ACME volume is mounted automatically at /etc/traefik:ro; do not include it here.
         privileged: Run the container in privileged mode (full host access). Use with care — implies all Linux capabilities. Mutually exclusive with net_admin (privileged already grants NET_ADMIN).
@@ -3249,9 +3258,7 @@ def create_service(
     team = _resolve_team(ctx)
     parsed_env = None
     if env_vars:
-        parsed_env = dict(
-            item.split("=", 1) for item in env_vars.split(",") if "=" in item
-        )
+        parsed_env = _parse_env_vars(env_vars)
     parsed_volumes = volume_ops.parse_volume_mounts(volumes) if volumes else None
     cap_add = ["NET_ADMIN"] if net_admin else None
     result = service_ops.create_service(
@@ -3318,7 +3325,7 @@ def update_service(
 
     Args:
         name: The name of the service to update (e.g. "redis", "meilisearch").
-        env_vars: Comma-separated KEY=VALUE pairs that fully replace existing env vars (e.g. "MEILI_MASTER_KEY=abc,MEILI_ENV=production"). Leave empty to keep current env vars.
+        env_vars: Comma- or newline-separated KEY=VALUE pairs that fully replace existing env vars (e.g. "MEILI_MASTER_KEY=abc,MEILI_ENV=production"). Commas inside values are preserved. Leave empty to keep current env vars.
         image: New Docker image with tag (e.g. "redis:8"). Leave empty to keep current image.
         port: New container port. Pass 0 to keep current port.
         hostname: New hostname for traefik routing. Leave empty to keep current hostname.
@@ -3334,9 +3341,7 @@ def update_service(
     # Parse optional overrides
     parsed_env = None
     if env_vars:
-        parsed_env = dict(
-            item.split("=", 1) for item in env_vars.split(",") if "=" in item
-        )
+        parsed_env = _parse_env_vars(env_vars)
 
     parsed_volumes = None
     if volumes:
