@@ -13,6 +13,7 @@ import shlex
 import shutil
 import stat
 import subprocess
+import sys
 import tarfile
 import time
 import uuid
@@ -811,26 +812,301 @@ def get_team_db_usage_bytes(
 
 
 def check_db_quota(
-    client: DockerClient, settings: Settings, team: TeamSettings
+    client: DockerClient,
+    settings: Settings,
+    team: TeamSettings,
+    estimated_new_db_bytes: int = 0,
 ) -> None:
     """Raise if the team's PostgreSQL usage is at or over its ``db_quota_gb``.
 
     Called before operations that create a *new* database (environment or
     template); replacement operations (refresh/reload) are not gated so a
     team at its quota can still shrink or refresh what it has. 0 disables
-    the quota.
+    the quota. ``estimated_new_db_bytes`` (the predicted size of the database
+    about to be created) makes the check predictive: a clone that would land
+    over the quota is refused before CREATE DATABASE starts, not after it
+    fails halfway.
     """
     if team.db_quota_gb <= 0:
         return
     used = get_team_db_usage_bytes(client, settings, team.team_id)
     quota = team.db_quota_gb * 1024**3
-    if used >= quota:
+    projected = used + max(estimated_new_db_bytes, 0)
+    if projected >= quota:
         raise PrerequisiteNotMetError(
             f"Team '{team.team_id}' database quota exceeded: "
-            f"{used / 1024**3:.1f} GB of {team.db_quota_gb} GB used "
+            f"{used / 1024**3:.1f} GB used plus an estimated "
+            f"{max(estimated_new_db_bytes, 0) / 1024**3:.1f} GB for the new "
+            f"database exceeds the {team.db_quota_gb} GB quota "
             "(db_quota_gb in oduflow.toml). Delete unused environments or "
             "templates, or raise the quota."
         )
+
+
+# Disk admission control for environment creation: refuse to start when a
+# target filesystem would be left without breathing room. Deliberately
+# constants, not TOML options — the reserve exists so PostgreSQL never hits
+# 0 bytes free (at which point even deleting environments fails).
+_DISK_MIN_FREE_GB = 5.0  # absolute floor that must remain free
+_DISK_MIN_FREE_PERCENT = 5.0  # relative floor for small disks
+_DISK_RESERVE_CAP_GB = 10.0  # cap on the percent leg (large/dev-machine disks)
+_DISK_ESTIMATE_MARGIN = 1.2  # safety multiplier on the write estimate
+_CLONE_BUDGET_BYTES = 512 * 1024**2  # remote git checkout allowance
+_OVERLAY_HEADROOM_BYTES = 512 * 1024**2  # upper/work layer of an overlay
+_GREENFIELD_DB_BYTES = 1024**3  # `-i base` init without a template
+
+
+def estimate_new_db_bytes(
+    client: DockerClient,
+    settings: Settings,
+    team: TeamSettings,
+    template_name: str | None,
+) -> int:
+    """Predicted on-disk size of the environment database about to be created.
+
+    ``CREATE DATABASE ... TEMPLATE`` physically copies the template, so
+    ``pg_database_size()`` of the template DB is the exact answer. Estimation
+    failures fall back to the greenfield budget rather than blocking creation.
+    """
+    if template_name is None:
+        return _GREENFIELD_DB_BYTES
+    tpl_db = get_template_db_name(template_name, team.team_id)
+    try:
+        return int(_exec_sql(client, settings, f"SELECT pg_database_size('{tpl_db}');"))
+    except Exception:
+        logger.warning("Could not measure template DB '%s' size", tpl_db, exc_info=True)
+        return _GREENFIELD_DB_BYTES
+
+
+def _estimate_template_filestore_bytes(
+    settings: Settings, team: TeamSettings, template_name: str
+) -> int:
+    """Bytes the new environment's filestore will occupy on the host.
+
+    Mirrors the mode selection in ``env_ops._mount_filestore``: an overlay
+    mount (Linux only) does not copy the lower layer and needs only headroom
+    for the upper/work dirs; a plain copy needs the full template size.
+    """
+    fs_path = team.get_template_filestore_path(template_name)
+    if not os.path.isdir(fs_path):
+        return 0
+    metadata: dict[str, Any] = {}
+    metadata_path = team.get_template_metadata_path(template_name)
+    if os.path.isfile(metadata_path):
+        try:
+            with open(metadata_path) as f:
+                metadata = json.load(f)
+        except (json.JSONDecodeError, OSError):
+            metadata = {}
+    fs_size_mb = metadata.get("filestore_size_mb")
+    if not isinstance(fs_size_mb, (int, float)):
+        from oduflow.docker_ops.env_ops import _dir_size_mb
+
+        logger.info(
+            "Template '%s' metadata lacks filestore_size_mb; scanning filestore",
+            template_name,
+        )
+        fs_size_mb = _dir_size_mb(fs_path)
+    use_overlay = metadata.get("use_overlay")
+    if use_overlay is None:
+        use_overlay = fs_size_mb >= settings.overlay_threshold_mb
+    if use_overlay and sys.platform.startswith("linux"):
+        return _OVERLAY_HEADROOM_BYTES
+    return int(fs_size_mb * 1024**2)
+
+
+def _existing_anchor(path: str) -> str | None:
+    """Nearest existing ancestor of ``path`` (which may not exist yet)."""
+    p = os.path.realpath(path)
+    while p and not os.path.exists(p):
+        parent = os.path.dirname(p)
+        if parent == p:
+            return None
+        p = parent
+    return p or None
+
+
+def _reserve_bytes(total: int) -> int:
+    """max(5 GiB, min(5% of the disk, 10 GiB)) — the percent leg is capped so
+    a large disk (e.g. a 1 TB dev machine) is not held to a ~50 GiB reserve."""
+    percent_leg = min(
+        total * _DISK_MIN_FREE_PERCENT / 100, _DISK_RESERVE_CAP_GB * 1024**3
+    )
+    return int(max(_DISK_MIN_FREE_GB * 1024**3, percent_leg))
+
+
+def _pgdata_usage_via_df(
+    client: DockerClient, settings: Settings
+) -> tuple[int, int] | None:
+    """(total, free) bytes of PGDATA measured inside the shared DB container.
+
+    Fallback for hosts where the named volume's mountpoint is not visible
+    (macOS / Docker Desktop). Returns None when the container or df is
+    unavailable — the check is then skipped, never fatal.
+    """
+    try:
+        container = client.containers.get(settings.shared_db_container)
+        exit_code, output = container.exec_run(
+            ["df", "-Pk", "/var/lib/postgresql/data"]
+        )
+        if exit_code != 0:
+            return None
+        text = output.decode("utf-8") if isinstance(output, bytes) else str(output)
+        fields = text.strip().splitlines()[-1].split()
+        # POSIX df -Pk: Filesystem 1024-blocks Used Available Capacity Mounted
+        return int(fields[1]) * 1024, int(fields[3]) * 1024
+    except Exception:
+        logger.warning("Could not measure PGDATA disk usage via df", exc_info=True)
+        return None
+
+
+def check_disk_space(
+    client: DockerClient,
+    settings: Settings,
+    team: TeamSettings,
+    template_name: str | None,
+    *,
+    estimated_db_bytes: int,
+    local_mount: bool = False,
+    env_name: str = "",
+) -> None:
+    """Refuse environment creation when a target filesystem lacks room.
+
+    Estimates the bytes each target directory will receive (database
+    tablespace, workspace filestore + checkout), groups targets that share a
+    device via ``st_dev``, and requires ``free - estimate*margin`` to stay
+    above ``max(5 GiB, min(5%, 10 GiB))`` on every device. The PGDATA volume (WAL +
+    catalogs live there, not in the tablespace) is held to the same floor.
+    Like ``check_db_quota``, only new creation is gated — delete/cleanup paths
+    stay available so a full disk can always be recovered.
+    """
+    fs_bytes = (
+        _estimate_template_filestore_bytes(settings, team, template_name)
+        if template_name is not None
+        else 0
+    )
+    clone_bytes = 0 if local_mount else _CLONE_BUDGET_BYTES
+    targets: list[tuple[str, str, int]] = [
+        (
+            "database tablespace",
+            os.path.join(_pg_tablespaces_host_dir(settings), f"team_{team.team_id}"),
+            max(estimated_db_bytes, 0),
+        ),
+        (
+            "workspace (filestore + checkout)",
+            team.workspaces_dir,
+            fs_bytes + clone_bytes,
+        ),
+    ]
+
+    pgdata_df: tuple[int, int] | None = None
+    mountpoint = ""
+    try:
+        volume = client.volumes.get(settings.shared_db_volume)
+        attrs = volume.attrs if isinstance(volume.attrs, dict) else {}
+        raw = attrs.get("Mountpoint", "")
+        mountpoint = raw if isinstance(raw, str) else ""
+    except Exception:
+        logger.warning("Could not inspect shared DB volume", exc_info=True)
+    if mountpoint and os.path.isdir(mountpoint):
+        targets.append(("PostgreSQL data (WAL)", mountpoint, 0))
+    else:
+        pgdata_df = _pgdata_usage_via_df(client, settings)
+
+    groups: dict[int, dict[str, Any]] = {}
+    for label, path, nbytes in targets:
+        anchor = _existing_anchor(path)
+        if anchor is None:
+            logger.warning("Disk check: no existing ancestor for %s (%s)", path, label)
+            continue
+        try:
+            dev = os.stat(anchor).st_dev
+        except OSError:
+            logger.warning("Disk check: cannot stat %s (%s)", anchor, label)
+            continue
+        group = groups.setdefault(dev, {"anchor": anchor, "bytes": 0, "labels": []})
+        group["bytes"] += nbytes
+        group["labels"].append(label)
+
+    problems: list[str] = []
+    checked: list[dict[str, Any]] = []
+    for group in groups.values():
+        try:
+            usage = shutil.disk_usage(group["anchor"])
+        except OSError:
+            logger.warning("Disk check: disk_usage failed for %s", group["anchor"])
+            continue
+        required = int(group["bytes"] * _DISK_ESTIMATE_MARGIN)
+        reserve = _reserve_bytes(usage.total)
+        checked.append(
+            {
+                "anchor": group["anchor"],
+                "components": group["labels"],
+                "free_gb": round(usage.free / 1024**3, 1),
+                "required_gb": round(required / 1024**3, 1),
+                "reserve_gb": round(reserve / 1024**3, 1),
+            }
+        )
+        if usage.free - required < reserve:
+            problems.append(
+                f"{' + '.join(group['labels'])} on '{group['anchor']}': "
+                f"{usage.free / 1024**3:.1f} GiB free, creation needs "
+                f"~{required / 1024**3:.1f} GiB and {reserve / 1024**3:.1f} GiB "
+                "must stay free"
+            )
+    if pgdata_df is not None:
+        total, free = pgdata_df
+        reserve = _reserve_bytes(total)
+        checked.append(
+            {
+                "anchor": "PGDATA (in-container)",
+                "components": ["PostgreSQL data (WAL)"],
+                "free_gb": round(free / 1024**3, 1),
+                "required_gb": 0.0,
+                "reserve_gb": round(reserve / 1024**3, 1),
+            }
+        )
+        if free < reserve:
+            problems.append(
+                f"PostgreSQL data volume '{settings.shared_db_volume}': "
+                f"{free / 1024**3:.1f} GiB free, {reserve / 1024**3:.1f} GiB "
+                "must stay free"
+            )
+
+    logger.info(
+        "Disk space check for environment creation",
+        extra={
+            "env_name": env_name,
+            "template": template_name or "none",
+            "estimated_db_bytes": estimated_db_bytes,
+            "estimated_filestore_bytes": fs_bytes,
+            "clone_budget_bytes": clone_bytes,
+            "filesystems": checked,
+            "problems": len(problems),
+        },
+    )
+    if problems:
+        raise PrerequisiteNotMetError(
+            f"Not enough free disk space to create environment '{env_name}'. "
+            + "; ".join(problems)
+            + ". Delete unused environments or templates and retry."
+        )
+
+
+def pg_clone_strategy_clause(client: DockerClient, settings: Settings) -> str:
+    """`` STRATEGY FILE_COPY`` when the server supports it (PG 15+), else "".
+
+    PG 15 changed the CREATE DATABASE default to WAL_LOG, which writes the
+    whole template clone through WAL — a large template can transiently double
+    its disk cost and fill PGDATA mid-clone. FILE_COPY copies at file level
+    and keeps WAL small.
+    """
+    try:
+        version = int(_exec_sql(client, settings, "SHOW server_version_num;"))
+    except Exception:
+        logger.warning("Could not determine PostgreSQL version", exc_info=True)
+        return ""
+    return " STRATEGY FILE_COPY" if version >= 150000 else ""
 
 
 def _create_pg_role(

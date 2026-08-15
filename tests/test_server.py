@@ -721,6 +721,29 @@ class TestCreateServiceTool:
         assert parsed_env == {"MEILI_MASTER_KEY": "abc", "MEILI_ENV": "production"}
 
     @patch("oduflow.docker_ops.service_ops.create_service")
+    def test_create_preserves_commas_inside_env_value(self, mock_create):
+        mock_create.return_value = {
+            "name": "connect-mcp-server",
+            "container_name": "oduflow-1-svc-connect-mcp-server",
+            "url": "http://localhost:8080",
+            "image": "example/connect-mcp-server:latest",
+        }
+
+        _get_tool_fn("create_service")(
+            name="connect-mcp-server",
+            image="example/connect-mcp-server:latest",
+            port=8080,
+            env_vars=(
+                "CONNECT_MCP_TOOL_GROUPS=write,collaboration,documents,LOG_LEVEL=info"
+            ),
+        )
+
+        assert mock_create.call_args.kwargs["env_vars"] == {
+            "CONNECT_MCP_TOOL_GROUPS": "write,collaboration,documents",
+            "LOG_LEVEL": "info",
+        }
+
+    @patch("oduflow.docker_ops.service_ops.create_service")
     def test_create_empty_env_vars(self, mock_create):
         mock_create.return_value = {
             "name": "redis",
@@ -798,6 +821,26 @@ class TestUpdateServiceTool:
             "Internal hostname: host network — reach it via host.docker.internal"
             in result
         )
+
+    @patch("oduflow.docker_ops.service_ops.update_service")
+    def test_update_preserves_commas_inside_env_value(self, mock_update):
+        mock_update.return_value = {
+            "name": "connect-mcp-server",
+            "container_name": "oduflow-1-svc-connect-mcp-server",
+            "url": "http://localhost:8080",
+            "image": "example/connect-mcp-server:latest",
+            "image_updated": False,
+            "config_updated": True,
+        }
+
+        _get_tool_fn("update_service")(
+            name="connect-mcp-server",
+            env_vars="CONNECT_MCP_TOOL_GROUPS=write,collaboration,documents",
+        )
+
+        assert mock_update.call_args.kwargs["env_override"] == {
+            "CONNECT_MCP_TOOL_GROUPS": "write,collaboration,documents"
+        }
 
     @patch("oduflow.docker_ops.service_ops.update_service")
     def test_update_routes_mapping(self, mock_update):

@@ -1023,6 +1023,25 @@ def _build_routes(
             env_vars = json.loads(labels.get("oduflow.env_vars", "{}")) or None
             local_path = labels.get("oduflow.local_path", "")
 
+            # Check disk space BEFORE deleting the old environment: refusing
+            # here loses nothing, while failing after delete_environment would
+            # destroy a working environment. Conservative on purpose — the old
+            # environment's own space is not yet freed at measurement time.
+            from oduflow.docker_ops import system_ops
+
+            est_db_bytes = system_ops.estimate_new_db_bytes(
+                client, settings, team, template_name
+            )
+            system_ops.check_disk_space(
+                client,
+                settings,
+                team,
+                template_name,
+                estimated_db_bytes=est_db_bytes,
+                local_mount=bool(local_path),
+                env_name=branch,
+            )
+
             env_ops.delete_environment(settings, team, branch)
             result = env_ops.create_environment(
                 settings,
