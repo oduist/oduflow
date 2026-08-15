@@ -26,9 +26,12 @@ from oduflow.docker_ops.system_ops import (
     _exec_sql,
     _resolve_instance_conf,
     check_db_quota,
+    check_disk_space,
     drop_signaling_sequences,
     ensure_team_network,
     ensure_team_tablespace,
+    estimate_new_db_bytes,
+    pg_clone_strategy_clause,
     reassign_db_ownership,
 )
 from oduflow.env_credentials import create_credentials, load_credentials
@@ -1095,7 +1098,17 @@ def create_environment(
                 "that does not normalise to the same database."
             )
 
-    check_db_quota(client, settings, team)
+    est_db_bytes = estimate_new_db_bytes(client, settings, team, template_name)
+    check_db_quota(client, settings, team, estimated_new_db_bytes=est_db_bytes)
+    check_disk_space(
+        client,
+        settings,
+        team,
+        template_name,
+        estimated_db_bytes=est_db_bytes,
+        local_mount=bool(local_path),
+        env_name=env_name,
+    )
     ensure_team_network(client, settings, team)
 
     _cleanup_old_environment(client, settings, team, env_name)
@@ -1217,10 +1230,15 @@ def create_environment(
     ts_name = ensure_team_tablespace(client, settings, team)
     if template_name is not None:
         tpl_db = get_template_db_name(template_name, team.team_id)
+        # PG 15+ defaults to STRATEGY WAL_LOG, which writes the entire clone
+        # through WAL — a large template transiently doubles its disk cost and
+        # can fill PGDATA mid-clone. FILE_COPY keeps transient WAL small.
+        strategy = pg_clone_strategy_clause(client, settings)
         _exec_sql(
             client,
             settings,
-            f'CREATE DATABASE "{env_db}" TEMPLATE "{tpl_db}" TABLESPACE "{ts_name}";',
+            f'CREATE DATABASE "{env_db}" TEMPLATE "{tpl_db}"{strategy} '
+            f'TABLESPACE "{ts_name}";',
         )
     else:
         _exec_sql(

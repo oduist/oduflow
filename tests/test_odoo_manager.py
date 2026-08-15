@@ -41,6 +41,16 @@ def _no_db_quota(monkeypatch):
     monkeypatch.setattr(
         "oduflow.docker_ops.env_ops.check_db_quota", lambda *a, **kw: None
     )
+    # Disk admission is covered by tests/test_disk_space.py.
+    monkeypatch.setattr(
+        "oduflow.docker_ops.env_ops.estimate_new_db_bytes", lambda *a, **kw: 0
+    )
+    monkeypatch.setattr(
+        "oduflow.docker_ops.env_ops.check_disk_space", lambda *a, **kw: None
+    )
+    monkeypatch.setattr(
+        "oduflow.docker_ops.env_ops.pg_clone_strategy_clause", lambda *a, **kw: ""
+    )
     # Tablespace provisioning is covered by tests/test_tablespaces.py.
     monkeypatch.setattr(
         "oduflow.docker_ops.env_ops.ensure_team_tablespace",
