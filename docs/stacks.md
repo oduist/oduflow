@@ -45,6 +45,7 @@ metadata:
 spec:
   environment:
     name: acme-dev
+    hostname: qa                # optional; dev.example.com -> qa.example.com
     branch: "18.0"
     repoUrl: https://github.com/acme/odoo-addons.git
     odooImage: odoo:18.0
@@ -183,4 +184,3 @@ descriptions are also immutable in V1. There is no automatic deletion or
 V1 supports one development environment per manifest. Production stacks,
 portable database artifacts, binary volume files, lockfiles, lifecycle shell
 hooks, dashboard controls, and OCI distribution are intentionally deferred.
-

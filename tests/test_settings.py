@@ -119,6 +119,54 @@ class TestSettings:
         with pytest.raises(ValueError, match="invalid port range"):
             s.validate()
 
+    def test_team_slots_from_toml(self, tmp_path):
+        toml = tmp_path / "oduflow.toml"
+        toml.write_text(
+            '[routing]\nmode = "traefik"\ntls = false\n'
+            '[team.1]\nhostname = "dev.example.com"\n'
+            "environment_slots = 7\nservice_slots = 3\n"
+        )
+
+        team = Settings.from_toml(str(toml)).get_team("1")
+
+        assert team.environment_slots == 7
+        assert team.service_slots == 3
+        assert team.hostname_registry_path.endswith("team_1/hostnames.json")
+
+    def test_team_slot_defaults(self, tmp_path):
+        toml = tmp_path / "oduflow.toml"
+        toml.write_text("[team.1]\n")
+
+        team = Settings.from_toml(str(toml)).get_team("1")
+
+        assert team.environment_slots == 20
+        assert team.service_slots == 10
+
+    def test_negative_environment_slots_rejected(self):
+        team = TeamSettings(team_id="1", environment_slots=-1)
+        settings = Settings(teams={"1": team})
+
+        with pytest.raises(ValueError, match="environment_slots"):
+            settings.validate()
+
+    def test_negative_service_slots_rejected(self):
+        team = TeamSettings(team_id="1", service_slots=-1)
+        settings = Settings(teams={"1": team})
+
+        with pytest.raises(ValueError, match="service_slots"):
+            settings.validate()
+
+    def test_environment_slots_require_prefixed_domain(self):
+        team = TeamSettings(team_id="1", hostname="localhost", environment_slots=2)
+        settings = Settings(
+            routing_mode="traefik",
+            routing_tls=False,
+            teams={"1": team},
+        )
+
+        with pytest.raises(ValueError, match="dev.example.com"):
+            settings.validate()
+
     def test_validate_overlapping_port_ranges(self):
         # Two teams left on the default (identical) range would draw host ports
         # from the same pool — issue #46.

@@ -246,6 +246,8 @@ auto_delete_hours = 0       # auto-delete environments stopped for N hours; 0 di
 
 [team.1]
 hostname = "localhost"               # port mode: http://{hostname}:{port}, traefik mode: https://{slug}.{hostname}
+environment_slots = 20               # traefik: dev.example.com + N => dev1.example.com..devN.example.com; 0 = legacy hostnames
+service_slots = 10                   # maximum managed auxiliary services; 0 = unlimited
 auth_token = ""                      # auto-filled in fresh configs; HTTP MCP Bearer token
 ui_password = ""                     # auto-filled in fresh configs; Web UI password for admin
 port_range = [50000, 50100]          # port range for Odoo containers [start, end)
@@ -352,6 +354,8 @@ Each `[team.*]` section defines an isolated team with its own workspaces, templa
 | Key | Default | Description |
 |---|---|---|
 | `hostname` | `localhost` | Team hostname. In port mode: `http://{hostname}:{port}`. In traefik mode: `https://{slug}.{hostname}` |
+| `environment_slots` | `20` | Traefik reusable hostname pool and concurrent environment cap. `0` keeps branch-derived hostnames; with `dev.example.com`, `N` allocates `dev1.example.com` through `devN.example.com` |
+| `service_slots` | `10` | Maximum number of managed auxiliary services for the team. Stopped services count; deleting a service frees its slot. `0` disables the cap |
 | `auth_token` | *(generated in fresh config)* | Bearer token for MCP HTTP auth and OAuth client secret. Empty disables MCP auth only when explicitly allowed with `[server].allow_insecure_http = true`; otherwise HTTP startup refuses it |
 | `ui_password` | *(generated in fresh config)* | Password for Web UI login (user: `admin`). Separate from MCP auth token. Empty disables UI auth only when explicitly allowed with `[server].allow_insecure_http = true`; otherwise HTTP startup refuses it |
 | `port_range` | `[50000, 50100]` | Port range for Odoo containers `[start, end)` — supports up to 100 concurrent environments |
@@ -361,6 +365,10 @@ Each `[team.*]` section defines an isolated team with its own workspaces, templa
 | `disk_quota_gb` | `0` | Kernel-enforced cap for team files and databases when the data filesystem supports XFS project quotas. `0` disables it |
 | `[team.X.agent_env]` | *(empty)* | Sub-table of environment variables injected into the team's agent container — provider credentials (`CLAUDE_CODE_OAUTH_TOKEN`, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `OPENCODE_API_KEY`, or any provider-specific OpenCode variable) and custom vars |
 
+`environment_slots > 0` requires a hostname with a distinct host prefix and
+parent domain, such as `dev.example.com`. A bare registrable domain such as
+`example.com` has no prefix to number and is rejected.
+
 Team data is stored at `{data_dir}/team_{ID}/`:
 
 ```
@@ -369,6 +377,7 @@ team_{ID}/
 ├── templates/            # Reusable database snapshots
 ├── shared_repos/         # Extra addon repositories (bare clones)
 ├── ports.json            # Port registry
+├── hostnames.json        # Reusable Traefik hostname reservations
 ├── .git-credentials      # Git credentials for this team
 └── agent_guides/         # AI agent guides (markdown)
 ```

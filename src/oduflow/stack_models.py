@@ -15,7 +15,11 @@ from pydantic import (
     model_validator,
 )
 
-from oduflow.naming import validate_env_name, validate_template_name
+from oduflow.naming import (
+    validate_env_hostname,
+    validate_env_name,
+    validate_template_name,
+)
 
 STACK_API_VERSION = "oduflow.dev/v1alpha1"
 STACK_KIND = "Stack"
@@ -98,6 +102,7 @@ class Modules(StackModel):
 
 class Environment(StackModel):
     name: str
+    hostname: str | None = None
     branch: NonEmptyString
     repo_url: NonEmptyString
     odoo_image: NonEmptyString
@@ -110,6 +115,11 @@ class Environment(StackModel):
     @classmethod
     def valid_environment_name(cls, value: str) -> str:
         return validate_env_name(value)
+
+    @field_validator("hostname")
+    @classmethod
+    def valid_environment_hostname(cls, value: str | None) -> str | None:
+        return validate_env_hostname(value) if value else None
 
     @field_validator("template", mode="before")
     @classmethod

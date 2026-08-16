@@ -14,11 +14,22 @@ oduflow call create_environment feature-login "" none https://github.com/owner/r
 # Create with JSON arguments (more explicit)
 oduflow call create_environment '{"branch":"feature-login","template_name":"myproject","repo_url":"https://github.com/owner/repo.git","odoo_image":"odoo:19.0"}'
 
+# Override the numbered Traefik prefix (dev.example.com -> qa.example.com)
+oduflow call create_environment '{"branch":"feature-login","hostname":"qa","template_name":"myproject"}'
+
 # Inject container environment variables (comma-separated KEY=VALUE)
 oduflow call create_environment '{"branch":"feature-login","template_name":"myproject","env_vars":"WORKERS=2,LIMIT_TIME_CPU=600"}'
 ```
 
 `env_vars` are added on top of the database connection variables (`HOST`/`USER`/`PASSWORD`). They are stored on the container and can later be replaced with [`update_environment`](#lifecycle-management).
+
+In Traefik mode, a team with `environment_slots = N` numbers the first label of
+its hostname. For `dev.example.com`, the reusable pool is `dev1.example.com`
+through `devN.example.com`. The assignment survives stops and container updates
+and is released only when the environment is deleted. Pass `hostname` to replace
+the numbered prefix: `hostname="qa"` produces `qa.example.com`. The default is
+20 concurrent environment slots; set `environment_slots = 0` to retain legacy
+branch-derived hostnames.
 
 When creating an environment, Oduflow:
 

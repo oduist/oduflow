@@ -335,6 +335,28 @@ class TestCreateEnvironmentTool:
         )
         assert mock_create.call_args.kwargs["env_vars"] is None
 
+    @patch("oduflow.docker_ops.env_ops.create_environment")
+    def test_create_with_short_hostname(self, mock_create):
+        mock_create.return_value = {
+            "url": "https://dev3.example.com",
+            "hostname": "dev3",
+            "odoo_container": "oduflow-main-odoo",
+            "database": "oduflow_1_main",
+            "workspace": "/tmp/ws",
+        }
+
+        result = _call_tool(
+            "create_environment",
+            branch="main",
+            hostname="dev3",
+            template_name="none",
+            repo_url="https://8.8.8.8/repo.git",
+            odoo_image="odoo:17.0",
+        )
+
+        assert mock_create.call_args.kwargs["hostname"] == "dev3"
+        assert "Hostname: dev3" in result
+
 
 class TestUpdateEnvironmentTool:
     @patch("oduflow.docker_ops.env_ops.update_environment")

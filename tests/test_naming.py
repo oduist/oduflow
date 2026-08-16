@@ -2,6 +2,7 @@ import pytest
 
 from oduflow.naming import (
     get_db_name,
+    get_env_hostname,
     get_filestore_paths,
     get_repo_path,
     get_resource_name,
@@ -9,9 +10,43 @@ from oduflow.naming import (
     get_template_db_name,
     get_workspace_path,
     slugify_branch,
+    split_team_hostname,
+    validate_env_hostname,
     validate_service_name,
     validate_template_name,
 )
+
+
+class TestEnvironmentHostname:
+    def test_short_hostname_is_normalized(self):
+        assert validate_env_hostname("  Env-12 ") == "env-12"
+
+    @pytest.mark.parametrize("value", ["", "env.example.com", "-env", "env-", "env_1"])
+    def test_invalid_short_hostname_is_rejected(self, value):
+        with pytest.raises(ValueError, match="Invalid environment hostname"):
+            validate_env_hostname(value)
+
+    def test_numbered_hostname_replaces_team_prefix(self):
+        assert (
+            get_env_hostname("feature-a", "dev.example.com", "dev3")
+            == "dev3.example.com"
+        )
+
+    def test_legacy_hostname_still_uses_branch_subdomain(self):
+        assert (
+            get_env_hostname("feature-a", "dev.example.com")
+            == "feature-a.dev.example.com"
+        )
+
+    def test_team_hostname_splits_first_label(self):
+        assert split_team_hostname("odoo.dev.example.com") == (
+            "odoo",
+            "dev.example.com",
+        )
+
+    def test_team_hostname_requires_parent_domain(self):
+        with pytest.raises(ValueError, match="host prefix and parent domain"):
+            split_team_hostname("localhost")
 
 
 class TestSlugifyBranch:

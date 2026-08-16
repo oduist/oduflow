@@ -7,6 +7,18 @@
           "title": "Name",
           "type": "string"
         },
+        "hostname": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Hostname"
+        },
         "branch": {
           "minLength": 1,
           "title": "Branch",

@@ -23,18 +23,28 @@ For production-like access with HTTPS, Oduflow can deploy a **Traefik** reverse 
 
    [team.1]
    hostname = "dev.example.com"
+   environment_slots = 20
    ```
 
 3. **Start (or restart) Oduflow.** On startup, Oduflow will create a Traefik v3 container that:
    - Listens on ports 80 and 443
    - Automatically redirects HTTP to HTTPS
-   - Obtains a separate TLS certificate from Let's Encrypt for each environment subdomain via HTTP-01 challenge
+   - Obtains a separate TLS certificate from Let's Encrypt for each reusable environment hostname via HTTP-01 challenge
    - Routes requests to the correct Odoo container based on the subdomain
    - Also routes the Oduflow server itself via the team `hostname`
 
 ## How certificates work
 
-Traefik requests a **per-subdomain certificate** from Let's Encrypt each time a new environment is created. This works out of the box with any DNS provider since it uses HTTP-01 validation (Traefik responds to the ACME challenge on port 80).
+With `hostname = "dev.example.com"` and `environment_slots = 20`, Oduflow
+allocates `dev1.example.com` through `dev20.example.com`: it removes the first
+hostname label, adds the slot number to it, and keeps the parent domain.
+Deleting an environment returns its hostname to the pool, so later environments
+reuse the same certificates from Traefik's persistent ACME store instead of
+continuously issuing certificates for branch names.
+`create_environment(hostname="qa")` requests `qa.example.com`. Set
+`environment_slots = 0` to retain the legacy branch-derived hostname behavior.
+The configured hostname must include a distinct prefix (`dev.example.com`, not
+bare `example.com`) so Oduflow has a label to number.
 
 Wildcard certificates (`*.dev.example.com`) via DNS-01 validation are also possible but require additional Traefik configuration with a provider-specific plugin.
 

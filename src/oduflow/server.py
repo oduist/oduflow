@@ -547,6 +547,7 @@ def create_environment(
     auto_install_modules: str = "",
     env_vars: str = "",
     local_path: str = "",
+    hostname: str = "",
     ctx: Context | None = None,
 ) -> str:
     """
@@ -555,6 +556,7 @@ def create_environment(
     Args:
         branch: The git branch to clone (e.g. "19.0", "feature/my-feature").
         env_name: Optional environment name. If empty, defaults to the branch name. Use this to create multiple environments from the same branch (e.g. env_name="client-a" with branch="19.0").
+        hostname: Optional short Traefik hostname (for example "qa"). If omitted and the team configures environment_slots, Oduflow numbers the team hostname prefix: dev.example.com produces dev1.example.com through devN.example.com. An explicit value replaces that prefix, so hostname="qa" produces qa.example.com.
         template_name: Name of the template profile to use as database template. Pass "none" to skip template and initialise Odoo from scratch with -i base. When a template is specified, repo_url and odoo_image are loaded from template metadata (but can be overridden). A template saved from a live-mounted environment supplies local_path instead of repo_url and recreates the live-mount when allow_local_path is enabled.
         repo_url: URL of the git repository to clone. Optional when template_name is specified (loaded from template metadata).
         odoo_image: Full Docker image name with tag (e.g. "odoo:19.0"). Optional when template_name is specified (loaded from template metadata).
@@ -683,6 +685,7 @@ def create_environment(
             auto_install_modules=auto_install_list or None,
             env_vars=parsed_env,
             local_path=local_path,
+            hostname=hostname,
         )
 
         from oduflow.telemetry import record_env_created
@@ -698,6 +701,7 @@ def create_environment(
             "Environment provisioned successfully!",
             f"Environment: {resolved_env_name}",
             f"URL: {result['url']}",
+            f"Hostname: {result.get('hostname', '')}",
             f"Odoo Container: {result['odoo_container']}",
             f"Database: {result['database']}",
             f"Workspace: {result['workspace']}",
@@ -1518,6 +1522,7 @@ def update_environment(
     lines = [
         "Environment updated successfully!",
         f"URL: {result['url']}",
+        f"Hostname: {result.get('hostname', '')}",
         f"Odoo Container: {result['odoo_container']}",
         f"Database: {result['database']}",
         f"Workspace: {result['workspace']}",
@@ -1563,6 +1568,8 @@ def get_environment_info(env_name: str, ctx: Context | None = None) -> str:
     lines.append(f"Database: {info['db_name']}")
     if info.get("url"):
         lines.append(f"URL: {info['url']}")
+    if info.get("hostname"):
+        lines.append(f"Hostname: {info['hostname']}")
     if info.get("repo_url") and not info.get("local_path"):
         lines.append(f"Repo: {info['repo_url']}")
     if info.get("local_path"):

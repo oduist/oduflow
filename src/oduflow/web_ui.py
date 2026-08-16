@@ -1022,6 +1022,7 @@ def _build_routes(
             git_user = labels.get("oduflow.git_user", "")
             env_vars = json.loads(labels.get("oduflow.env_vars", "{}")) or None
             local_path = labels.get("oduflow.local_path", "")
+            hostname = labels.get(env_ops.ENV_HOSTNAME_LABEL, "")
 
             # Check disk space BEFORE deleting the old environment: refusing
             # here loses nothing, while failing after delete_environment would
@@ -1054,6 +1055,7 @@ def _build_routes(
                 git_user=git_user,
                 env_vars=env_vars,
                 local_path=local_path,
+                hostname=hostname,
             )
             return JSONResponse({"ok": True, "result": result})
         except FlowError as e:
@@ -1144,6 +1146,7 @@ def _build_routes(
         extra_addons_raw = body.get("extra_addons")
         auto_install_raw = (body.get("auto_install_modules") or "").strip()
         env_vars_raw = (body.get("env_vars") or "").strip()
+        hostname = (body.get("hostname") or "").strip()
         env_vars = None
         if env_vars_raw:
             import re
@@ -1257,6 +1260,7 @@ def _build_routes(
                 auto_install_modules=auto_install_list or None,
                 env_vars=env_vars,
                 local_path=local_path_from_meta,
+                hostname=hostname,
             )
             return JSONResponse({"ok": True, "result": result})
         except FlowError as e:

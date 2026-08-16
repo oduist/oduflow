@@ -50,6 +50,13 @@ class TeamSettings:
     port_range_end: int = 50100
     data_dir: str = ""
     port_registry_path: str = ""
+    hostname_registry_path: str = ""
+    # Traefik-only reusable hostname pool. 0 keeps legacy branch-derived
+    # hostnames; for dev.example.com a positive value allocates
+    # dev1.example.com..devN.example.com and caps active environments.
+    environment_slots: int = 20
+    # Hard cap on managed auxiliary service containers. 0 disables the cap.
+    service_slots: int = 10
     # Quotas; 0 disables. db_quota_gb caps the combined size of the team's
     # PostgreSQL databases (environments + templates) and is checked before
     # operations that create a new database. disk_quota_gb caps the team's
@@ -367,6 +374,25 @@ class Settings:
                 raise ValueError(
                     f"Team '{team.team_id}': quotas must be >= 0 (0 disables)"
                 )
+            if team.environment_slots < 0:
+                raise ValueError(
+                    f"Team '{team.team_id}': environment_slots must be >= 0 "
+                    "(0 disables)"
+                )
+            if team.service_slots < 0:
+                raise ValueError(
+                    f"Team '{team.team_id}': service_slots must be >= 0 (0 disables)"
+                )
+            if self.routing_mode == "traefik" and team.environment_slots > 0:
+                from oduflow.naming import split_team_hostname
+
+                try:
+                    split_team_hostname(team.hostname)
+                except ValueError as exc:
+                    raise ValueError(
+                        f"Team '{team.team_id}': environment_slots requires a "
+                        "hostname such as 'dev.example.com'"
+                    ) from exc
 
         # Validate static extra routes ([route.*]). They only make sense in
         # traefik mode (port mode has no shared reverse proxy) and must forward
@@ -540,6 +566,9 @@ class Settings:
                 port_range_end=port_end,
                 data_dir=team_data_dir,
                 port_registry_path=os.path.join(team_data_dir, "ports.json"),
+                hostname_registry_path=os.path.join(team_data_dir, "hostnames.json"),
+                environment_slots=int(team_cfg.get("environment_slots", 20)),
+                service_slots=int(team_cfg.get("service_slots", 10)),
                 db_quota_gb=int(team_cfg.get("db_quota_gb", 50)),
                 disk_quota_gb=int(team_cfg.get("disk_quota_gb", 0)),
                 agent_enabled=bool(team_cfg.get("agent_enabled", False)),
