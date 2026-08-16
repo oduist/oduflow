@@ -41,6 +41,11 @@ Services are:
 - Labeled for management (`oduflow.managed=true`, `oduflow.service=<name>`)
 - Always created from a freshly pulled image — `create_service` and `restore_service` explicitly pull before running, so mutable tags like `:latest` get the current published version instead of a stale local cache
 
+Each team has `service_slots = 10` by default. The cap includes running and
+stopped managed services; updating or restarting an existing service does not
+consume another slot. Delete an unused service to free capacity, or set
+`service_slots = 0` to disable the cap.
+
 ### Connecting from Odoo
 
 Inside the team's Docker network the service is reachable by its **container

@@ -4,6 +4,18 @@
 
 ### Features
 
+- **Reusable environment hostname slots** — Traefik teams can set
+  `environment_slots = N` to decouple public routing from branch names and
+  number the team hostname prefix: `dev.example.com` becomes the fixed pool
+  `dev1.example.com` through `devN.example.com`. Assignments are concurrency-safe,
+  persist across stops and container updates, and return to the pool on deletion,
+  bounding normal Let's Encrypt certificate issuance to the configured pool.
+  `create_environment(hostname="qa")` requests `qa.example.com` while still
+  consuming one team slot. The default is 20 environment slots. Teams also
+  receive a separate `service_slots = 10` cap for managed auxiliary
+  services; deleting an unused service immediately frees its slot, and either
+  limit can be disabled with `0`.
+
 - **OpenCode hosted agent** — OpenCode joins Claude Code and Codex as a full Agent CLI and Agent Chat runtime. The new immutable coder image includes the MIT-licensed `opencode` CLI and native ACP server; OpenCode gets generic provider authentication, an optional `provider/model` override, approval-free execution inside the existing container boundary, per-environment Agent Browser, scoped Oduflow MCP, modern ACP model selection, and isolated conversation history.
 
 - **Declarative Oduflow Stacks** — a versioned `oduflow.yaml` can now describe

@@ -273,3 +273,14 @@ class TestBuildEnvTraefikLabels:
             labels[f"traefik.http.routers.{self.ROUTER}.tls.certresolver"]
             == "letsencrypt"
         )
+
+    def test_reusable_short_hostname_replaces_branch_slug(self):
+        settings = _env_settings("traefik", True)
+        labels = build_env_traefik_labels(
+            settings, settings.teams["1"], self.ENV, "dev3"
+        )
+
+        assert (
+            labels[f"traefik.http.routers.{self.ROUTER}.rule"]
+            == "Host(`dev3.example.com`)"
+        )

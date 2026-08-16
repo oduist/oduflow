@@ -6,6 +6,7 @@ import docker
 from oduflow.docker_ops import service_ops, system_ops
 from oduflow.errors import (
     ConflictError,
+    FlowError,
     NotFoundError,
     PrerequisiteNotMetError,
 )
@@ -71,6 +72,52 @@ def mock_docker_client():
 
 
 class TestCreateService:
+    def test_service_slot_limit_rejects_new_service(self, mock_docker_client):
+        team = TeamSettings(team_id="1", service_slots=2)
+        mock_docker_client.containers.get.side_effect = docker.errors.NotFound("nf")
+        mock_docker_client.containers.list.return_value = [MagicMock(), MagicMock()]
+
+        with pytest.raises(FlowError) as exc_info:
+            service_ops.create_service(
+                TEST_SETTINGS,
+                team,
+                "third",
+                "redis:7",
+                6379,
+            )
+
+        assert str(exc_info.value) == (
+            "No free service slots (configured: 2). "
+            "Delete an unused service to free a slot."
+        )
+        mock_docker_client.containers.list.assert_called_once_with(
+            all=True,
+            filters={
+                "label": [
+                    "oduflow.managed=true",
+                    "oduflow.team=1",
+                    "oduflow.service",
+                ]
+            },
+        )
+        mock_docker_client.images.pull.assert_not_called()
+        mock_docker_client.containers.run.assert_not_called()
+
+    def test_zero_service_slots_disables_limit(self, mock_docker_client):
+        team = TeamSettings(team_id="1", service_slots=0)
+        mock_docker_client.containers.get.side_effect = docker.errors.NotFound("nf")
+        mock_docker_client.containers.run.return_value = MagicMock()
+
+        service_ops.create_service(
+            TEST_SETTINGS,
+            team,
+            "redis",
+            "redis:7",
+            6379,
+        )
+
+        mock_docker_client.containers.list.assert_not_called()
+
     def test_missing_image_returns_safe_not_found(self, mock_docker_client):
         mock_docker_client.containers.get.side_effect = docker.errors.NotFound("nf")
         mock_docker_client.images.pull.side_effect = docker.errors.NotFound(

@@ -317,6 +317,8 @@ def build_plan(
             immutable_drift.append("repoUrl")
         if actual_env.get("git_branch") != desired_env.branch:
             immutable_drift.append("branch")
+        if desired_env.hostname and actual_env.get("hostname") != desired_env.hostname:
+            immutable_drift.append("hostname")
         if _normalized_template(
             actual_env.get("template_name")
         ) != _normalized_template(desired_env.template):
@@ -611,6 +613,7 @@ def apply_stack(
                 sanitize=desired_env.sanitize,
                 env_vars=env_vars or None,
                 stack_labels=env_labels,
+                hostname=desired_env.hostname or "",
             )
         elif ("update", "environment") in operations:
             env_ops.update_environment(

@@ -69,3 +69,27 @@ def test_api_create_invalid_json_no_lock_error(tmp_path):
     )
     assert resp.status_code == 400
     assert resp.json()["ok"] is False
+
+
+def test_api_create_passes_short_hostname(tmp_path):
+    settings = _open_settings(tmp_path)
+    app = Starlette()
+    mount_web_ui(app, lambda: settings, LockManager())
+    client = TestClient(app)
+
+    with patch(
+        "oduflow.web_ui.env_ops.create_environment",
+        return_value={"url": "https://dev2.example.com"},
+    ) as create:
+        resp = client.post(
+            "/api/environments/create",
+            json={
+                "env_name": "main",
+                "hostname": "dev2",
+                "repo_url": "r",
+                "odoo_image": "i",
+            },
+        )
+
+    assert resp.json()["ok"] is True
+    assert create.call_args.kwargs["hostname"] == "dev2"

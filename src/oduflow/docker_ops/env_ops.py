@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import pathlib
+import re
 import shutil
 import subprocess
 import sys
@@ -44,6 +45,7 @@ from oduflow.errors import (
     ProtectedError,
 )
 from oduflow.git_ops import RepoAuthError, git_env_for_team
+from oduflow.hostname_registry import allocate_hostname, release_hostname
 from oduflow.naming import (
     get_agent_checkout_dir,
     get_agent_container_name,
@@ -52,6 +54,7 @@ from oduflow.naming import (
     get_agent_workspace_volume_name,
     get_db_name,
     get_env_hostname,
+    get_env_short_hostname,
     get_filestore_paths,
     get_repo_path,
     get_resource_name,
@@ -61,6 +64,8 @@ from oduflow.naming import (
     redact_url_credentials,
     sanitize_repo_url,
     slugify_branch,
+    split_team_hostname,
+    validate_env_hostname,
 )
 from oduflow.port_registry import allocate_port, release_port
 from oduflow.settings import Settings, TeamSettings
@@ -69,6 +74,15 @@ logger = logging.getLogger("oduflow")
 
 AGENT_USER = "agent"
 AGENT_HOME = "/home/agent"
+ENV_HOSTNAME_LABEL = "oduflow.hostname"
+
+
+def _hostname_registry_path(team: TeamSettings) -> str:
+    if team.hostname_registry_path:
+        return team.hostname_registry_path
+    if team.data_dir:
+        return os.path.join(team.data_dir, "hostnames.json")
+    raise ValueError("Team data_dir is required for environment hostname allocation.")
 
 
 def _trace(msg: str, *args: object) -> None:
@@ -200,6 +214,51 @@ def _get_used_ports(
                     except (KeyError, ValueError, TypeError):
                         pass
     return used
+
+
+def _environment_hostname_usage(
+    client: DockerClient,
+    settings: Settings,
+    team: TeamSettings,
+    *,
+    exclude_env: str = "",
+) -> tuple[set[str], set[str]]:
+    """Return active environment names and their short routing hostnames."""
+    active_envs: set[str] = set()
+    used_hostnames: set[str] = set()
+    _hostname_prefix, parent_domain = split_team_hostname(team.hostname)
+    suffix = f".{parent_domain}"
+    for configured_team in settings.teams.values():
+        if configured_team.hostname.endswith(suffix):
+            used_hostnames.add(configured_team.hostname[: -len(suffix)])
+    for route in settings.extra_routes:
+        if route.host.endswith(suffix):
+            used_hostnames.add(route.host[: -len(suffix)])
+    filters = {
+        "label": [
+            f"{settings.managed_label}=true",
+            f"{settings.team_label}={team.team_id}",
+        ]
+    }
+    for container in client.containers.list(all=True, filters=filters):
+        env_name = container.labels.get(settings.branch_label, "")
+        if env_name == exclude_env:
+            continue
+        for key, value in container.labels.items():
+            if not key.startswith("traefik.http.routers.") or not key.endswith(".rule"):
+                continue
+            for fqdn in re.findall(r"Host\(`([^`]+)`\)", value):
+                if fqdn.endswith(suffix):
+                    used_hostnames.add(fqdn[: -len(suffix)])
+        if not env_name:
+            continue
+        active_envs.add(env_name)
+        used_hostnames.add(
+            get_env_short_hostname(
+                env_name, container.labels.get(ENV_HOSTNAME_LABEL, "")
+            )
+        )
+    return active_envs, used_hostnames
 
 
 def _ensure_system_ready(
@@ -976,7 +1035,10 @@ def _clone_repo(
 
 
 def build_env_traefik_labels(
-    settings: Settings, team: TeamSettings, env_name: str
+    settings: Settings,
+    team: TeamSettings,
+    env_name: str,
+    route_hostname: str = "",
 ) -> dict[str, str]:
     """Traefik docker-provider routing labels for an environment's Odoo container.
 
@@ -991,7 +1053,7 @@ def build_env_traefik_labels(
         return {}
     slug = slugify_branch(env_name)
     router = f"oduflow-{team.team_id}-{slug}"
-    host = get_env_hostname(env_name, team.hostname)
+    host = get_env_hostname(env_name, team.hostname, route_hostname)
     labels: dict[str, str] = {
         "traefik.enable": "true",
         f"traefik.http.routers.{router}.rule": f"Host(`{host}`)",
@@ -1024,6 +1086,95 @@ def create_environment(
     env_vars: dict[str, str] | None = None,
     local_path: str = "",
     stack_labels: dict[str, str] | None = None,
+    hostname: str = "",
+) -> dict[str, Any]:
+    """Allocate routing state, then provision the environment itself."""
+    resolved_env_name = env_name or branch
+    requested_hostname = validate_env_hostname(hostname) if hostname else ""
+    if requested_hostname and settings.routing_mode != "traefik":
+        raise ValueError("hostname is supported only when routing.mode = 'traefik'.")
+
+    assigned_hostname = ""
+    if settings.routing_mode == "traefik" and (
+        requested_hostname or team.environment_slots > 0
+    ):
+        hostname_prefix, _parent_domain = split_team_hostname(team.hostname)
+        try:
+            client = get_client()
+        except Exception as exc:
+            raise PrerequisiteNotMetError(
+                f"Failed to connect to Docker daemon: {exc}. Ensure Docker is running."
+            ) from exc
+        container_name = get_resource_name(
+            resolved_env_name, "odoo", settings.prefix, team.team_id
+        )
+        try:
+            client.containers.get(container_name)
+        except docker.errors.NotFound:
+            active_envs, used_hostnames = _environment_hostname_usage(
+                client, settings, team, exclude_env=resolved_env_name
+            )
+            assigned_hostname = allocate_hostname(
+                _hostname_registry_path(team),
+                resolved_env_name,
+                team.environment_slots,
+                requested_hostname=requested_hostname,
+                hostname_prefix=hostname_prefix,
+                active_envs=active_envs,
+                used_hostnames=used_hostnames,
+            )
+
+    try:
+        return _create_environment_impl(
+            settings,
+            team,
+            branch,
+            repo_url,
+            odoo_image,
+            env_name=env_name,
+            template_name=template_name,
+            extra_addons=extra_addons,
+            git_user=git_user,
+            sanitize=sanitize,
+            auto_install_modules=auto_install_modules,
+            env_vars=env_vars,
+            local_path=local_path,
+            stack_labels=stack_labels,
+            hostname=assigned_hostname,
+        )
+    except Exception:
+        if assigned_hostname:
+            try:
+                get_client().containers.get(
+                    get_resource_name(
+                        resolved_env_name, "odoo", settings.prefix, team.team_id
+                    )
+                )
+            except docker.errors.NotFound:
+                release_hostname(_hostname_registry_path(team), resolved_env_name)
+            except Exception:
+                # Keep the reservation when Docker state cannot be checked; a
+                # later retry of the same environment will reuse it safely.
+                pass
+        raise
+
+
+def _create_environment_impl(
+    settings: Settings,
+    team: TeamSettings,
+    branch: str,
+    repo_url: str,
+    odoo_image: str,
+    env_name: str = "",
+    template_name: str | None = None,
+    extra_addons: dict[str, str] | None = None,
+    git_user: str = "",
+    sanitize: bool = True,
+    auto_install_modules: list[str] | None = None,
+    env_vars: dict[str, str] | None = None,
+    local_path: str = "",
+    stack_labels: dict[str, str] | None = None,
+    hostname: str = "",
 ) -> dict[str, Any]:
     env_name = env_name or branch
     from oduflow.naming import PROD_ENV_PREFIX
@@ -1060,7 +1211,7 @@ def create_environment(
         if existing.status == "running":
             existing.reload()
             if settings.routing_mode == "traefik":
-                url = f"https://{get_env_hostname(env_name, team.hostname)}"
+                url = f"https://{get_env_hostname(env_name, team.hostname, existing.labels.get(ENV_HOSTNAME_LABEL, ''))}"
             else:
                 ports = existing.ports.get("8069/tcp")
                 existing_port = ports[0]["HostPort"] if ports else "?"
@@ -1164,8 +1315,10 @@ def create_environment(
         labels["oduflow.env_vars"] = json.dumps(env_vars)
     if stack_labels:
         labels.update(stack_labels)
+    if hostname:
+        labels[ENV_HOSTNAME_LABEL] = hostname
 
-    labels.update(build_env_traefik_labels(settings, team, env_name))
+    labels.update(build_env_traefik_labels(settings, team, env_name, hostname))
 
     logger.info(
         "Creating environment",
@@ -1176,7 +1329,7 @@ def create_environment(
             "image": odoo_image,
             "prefix": settings.prefix,
             "routing_mode": settings.routing_mode,
-            "hostname": team.hostname,
+            "hostname": hostname or get_env_short_hostname(env_name),
             "workspaces_dir": team.workspaces_dir,
         },
     )
@@ -1466,7 +1619,7 @@ def create_environment(
         container.restart()
 
     if settings.routing_mode == "traefik":
-        url = f"https://{get_env_hostname(env_name, team.hostname)}"
+        url = f"https://{get_env_hostname(env_name, team.hostname, hostname)}"
     else:
         url = f"http://{team.hostname}:{host_port}"
     logger.info(
@@ -1489,6 +1642,7 @@ def create_environment(
 
     result: dict[str, Any] = {
         "url": url,
+        "hostname": hostname or get_env_short_hostname(env_name),
         "odoo_container": odoo_container_name,
         "database": env_db,
         "workspace": workspace_path,
@@ -2168,6 +2322,8 @@ def delete_environment(
 
     if settings.routing_mode == "port":
         release_port(team.port_registry_path, env_name)
+    if team.hostname_registry_path or team.data_dir:
+        release_hostname(_hostname_registry_path(team), env_name)
 
     if container_exists:
         try:
@@ -2271,6 +2427,9 @@ def list_environments(settings: Settings, team: TeamSettings) -> list[dict[str, 
                 "stack_resource": container.labels.get("oduflow.stack-resource", ""),
                 "stack_spec_hash": container.labels.get("oduflow.stack-spec-hash", ""),
                 "stack_sanitize": container.labels.get("oduflow.stack-sanitize", ""),
+                "hostname": get_env_short_hostname(
+                    env_name, container.labels.get(ENV_HOSTNAME_LABEL, "")
+                ),
             }
 
         try:
@@ -2287,7 +2446,7 @@ def list_environments(settings: Settings, team: TeamSettings) -> list[dict[str, 
         if "-odoo" in container.name:
             if settings.routing_mode == "traefik":
                 envs[env_name]["url"] = (
-                    f"https://{get_env_hostname(env_name, team.hostname)}/web?debug=1"
+                    f"https://{get_env_hostname(env_name, team.hostname, container.labels.get(ENV_HOSTNAME_LABEL, ''))}/web?debug=1"
                 )
             else:
                 ports = container.attrs.get("NetworkSettings", {}).get("Ports", {})
@@ -2485,7 +2644,19 @@ def get_env_base_url(
     actually send.
     """
     if settings.routing_mode == "traefik":
-        host = get_env_hostname(env_name, team.hostname)
+        if container is None:
+            client = get_client()
+            try:
+                container = client.containers.get(
+                    get_resource_name(env_name, "odoo", settings.prefix, team.team_id)
+                )
+            except docker.errors.NotFound:
+                raise NotFoundError(
+                    f"Environment '{env_name}' does not exist. Use create_environment first."
+                )
+        host = get_env_hostname(
+            env_name, team.hostname, container.labels.get(ENV_HOSTNAME_LABEL, "")
+        )
         return f"https://{host}", host
 
     # Port routing: read the container's published 8069 port. Cookies are not
@@ -2562,10 +2733,13 @@ def get_environment_info(
         result["stack_resource"] = labels.get("oduflow.stack-resource", "")
         result["stack_spec_hash"] = labels.get("oduflow.stack-spec-hash", "")
         result["stack_sanitize"] = labels.get("oduflow.stack-sanitize", "")
+        result["hostname"] = get_env_short_hostname(
+            env_name, labels.get(ENV_HOSTNAME_LABEL, "")
+        )
 
         if settings.routing_mode == "traefik":
             result["url"] = (
-                f"https://{get_env_hostname(env_name, team.hostname)}/web?debug=1"
+                f"https://{get_env_hostname(env_name, team.hostname, labels.get(ENV_HOSTNAME_LABEL, ''))}/web?debug=1"
             )
         else:
             ports = odoo_container.attrs.get("NetworkSettings", {}).get("Ports", {})
@@ -3279,6 +3453,24 @@ def update_environment(
                     "locally; leaving the existing environment untouched."
                 ) from exc
 
+    if (
+        settings.routing_mode == "traefik"
+        and team.environment_slots > 0
+        and not labels.get(ENV_HOSTNAME_LABEL)
+    ):
+        hostname_prefix, _parent_domain = split_team_hostname(team.hostname)
+        active_envs, used_hostnames = _environment_hostname_usage(
+            client, settings, team, exclude_env=env_name
+        )
+        labels[ENV_HOSTNAME_LABEL] = allocate_hostname(
+            _hostname_registry_path(team),
+            env_name,
+            team.environment_slots,
+            hostname_prefix=hostname_prefix,
+            active_envs=active_envs,
+            used_hostnames=used_hostnames,
+        )
+
     logger.info(
         "Updating environment – stopping old container",
         extra={"env_name": env_name, "container": odoo_container_name},
@@ -3357,7 +3549,8 @@ def update_environment(
     # update_environment. Strip every stale ``traefik.*`` key first so a
     # traefik→port switch drops them and a renamed router does not linger.
     labels = {k: v for k, v in labels.items() if not k.startswith("traefik.")}
-    labels.update(build_env_traefik_labels(settings, team, env_name))
+    route_hostname = labels.get(ENV_HOSTNAME_LABEL, "")
+    labels.update(build_env_traefik_labels(settings, team, env_name, route_hostname))
     if settings.routing_mode == "traefik":
         # No published port in traefik mode; drop any stale reservation left from
         # a previous port-mode life so the slot is reusable.
@@ -3450,7 +3643,7 @@ def update_environment(
     # 6. Build URL and return result
     # ------------------------------------------------------------------
     if settings.routing_mode == "traefik":
-        url = f"https://{get_env_hostname(env_name, team.hostname)}"
+        url = f"https://{get_env_hostname(env_name, team.hostname, route_hostname)}"
     else:
         url = f"http://{team.hostname}:{host_port}"
 
@@ -3463,6 +3656,7 @@ def update_environment(
 
     return {
         "url": url,
+        "hostname": get_env_short_hostname(env_name, route_hostname),
         "odoo_container": odoo_container_name,
         "database": env_db,
         "workspace": workspace,

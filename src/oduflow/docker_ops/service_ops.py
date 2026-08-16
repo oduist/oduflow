@@ -10,7 +10,12 @@ from typing import Any
 import docker
 from oduflow.docker_ops import service_presets, volume_ops
 from oduflow.docker_ops.client import get_client
-from oduflow.errors import ConflictError, NotFoundError, PrerequisiteNotMetError
+from oduflow.errors import (
+    ConflictError,
+    FlowError,
+    NotFoundError,
+    PrerequisiteNotMetError,
+)
 from oduflow.naming import get_service_container_name
 from oduflow.settings import Settings, TeamSettings
 
@@ -268,20 +273,38 @@ def create_service(
     _validate_service_exposure(settings, port, routes)
     client = get_client()
 
+    # Check for existing container
+    is_new_service = False
+    try:
+        existing = client.containers.get(container_name)
+        if existing.status == "running":
+            raise ConflictError(f"Service '{name}' already exists and is running.")
+    except docker.errors.NotFound:
+        is_new_service = True
+
+    if is_new_service and team.service_slots > 0:
+        services = client.containers.list(
+            all=True,
+            filters={
+                "label": [
+                    f"{settings.managed_label}=true",
+                    f"{settings.team_label}={team.team_id}",
+                    "oduflow.service",
+                ]
+            },
+        )
+        if len(services) >= team.service_slots:
+            raise FlowError(
+                f"No free service slots (configured: {team.service_slots}). "
+                "Delete an unused service to free a slot."
+            )
+
     # Services join the team's isolated network (not needed for host mode).
     team_network = ""
     if not host_mode:
         from oduflow.docker_ops.system_ops import ensure_team_network
 
         team_network = ensure_team_network(client, settings, team)
-
-    # Check for existing container
-    try:
-        existing = client.containers.get(container_name)
-        if existing.status == "running":
-            raise ConflictError(f"Service '{name}' already exists and is running.")
-    except docker.errors.NotFound:
-        pass
 
     labels = {
         "oduflow.managed": "true",

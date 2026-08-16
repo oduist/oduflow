@@ -232,10 +232,49 @@ def get_repo_path(env_name: str, workspaces_dir: str) -> str:
     return os.path.join(get_workspace_path(env_name, workspaces_dir), "repo")
 
 
-def get_env_hostname(env_name: str, hostname: str) -> str:
-    slug = slugify_branch(env_name).replace("_", "-")
+def get_env_short_hostname(env_name: str, route_hostname: str = "") -> str:
+    slug = slugify_branch(route_hostname or env_name).replace("_", "-")
     slug = re.sub(r"-+", "-", slug).strip("-")
-    return f"{slug}.{hostname}"
+    return slug
+
+
+def split_team_hostname(hostname: str) -> tuple[str, str]:
+    """Split ``dev.example.com`` into the reusable prefix and parent domain."""
+    value = hostname.strip().lower().rstrip(".")
+    prefix, separator, parent_domain = value.partition(".")
+    if not separator or not prefix or not parent_domain:
+        raise ValueError(
+            f"Team hostname '{hostname}' must contain a host prefix and parent "
+            "domain, for example 'dev.example.com'."
+        )
+    try:
+        validate_env_hostname(prefix)
+        validate_domain(parent_domain)
+    except ValueError as exc:
+        raise ValueError(
+            f"Team hostname '{hostname}' must contain a host prefix and parent "
+            "domain, for example 'dev.example.com'."
+        ) from exc
+    return prefix, parent_domain
+
+
+def get_env_hostname(env_name: str, hostname: str, route_hostname: str = "") -> str:
+    short_hostname = get_env_short_hostname(env_name, route_hostname)
+    if not route_hostname:
+        return f"{short_hostname}.{hostname}"
+    _prefix, parent_domain = split_team_hostname(hostname)
+    return f"{short_hostname}.{parent_domain}"
+
+
+def validate_env_hostname(hostname: str) -> str:
+    """Validate a short environment hostname such as ``dev1`` or ``qa``."""
+    value = hostname.strip().lower()
+    if not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", value):
+        raise ValueError(
+            f"Invalid environment hostname '{hostname}': expected one DNS label "
+            "such as 'dev1' (letters, digits and internal hyphens only)."
+        )
+    return value
 
 
 def get_team_network_name(team_id: str, prefix: str = "oduflow-") -> str:
