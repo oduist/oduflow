@@ -100,6 +100,26 @@ scenarios:
     expect_contains:
       - "started"
 
+  # Reuse the same environment for another branch, then put it back, so the
+  # shared fixture environment is left on the branch it was created from.
+  switch_branch_away:
+    tool: switch_branch
+    needs_env: true
+    args:
+      env_name: "19.0"
+      branch: "18.0"
+    expect_contains:
+      - "Switched '19.0' from 'main' to '18.0'"
+
+  switch_branch_back:
+    tool: switch_branch
+    needs_env: true
+    args:
+      env_name: "19.0"
+      branch: "main"
+    expect_contains:
+      - "Switched '19.0' from '18.0' to 'main'"
+
   # ── Odoo operations ──────────────────────────────────────────────
   logs_main:
     tool: get_environment_logs

@@ -1,0 +1,100 @@
+# 0049 — Environment reuse by branch switch
+
+**Status:** Adopted
+**Type:** Lifecycle / Capacity
+**First introduced:** `litnimax/bangkok` branch (2026-08-17)
+**Key code today:** `docker_ops/env_ops.py` (`switch_environment_branch`),
+`git_ops.py` (`fetch_branch`, `checkout_branch`, `tree_modules`), `server.py`
+(`switch_branch`), `web_ui.py`, `templates/dashboard.html`
+
+## Context
+
+[[0001-mcp-orchestrated-ephemeral-per-branch-environments]] made an environment
+per branch, created and destroyed with the branch. In practice the unit of work
+is not a branch but a *developer's slot*: the same person, agent or client works
+one task at a time, and each task happens to have a new branch name.
+
+The per-branch lifecycle charges the full provisioning cost at every task
+boundary — a fresh clone and a template database copy — and it charges it again
+in ceremony. The old environment has to be deleted by hand or waited out through
+the idle reaper, and every downstream address changes with the name: the URL, the
+scoped `/mcp/<env>` endpoint and its token, the agent's checkout directory. A
+merged branch's environment is, by then, an almost perfect starting point for the
+next branch: the same repository, the same image, and a database whose schema
+already contains the merged work.
+
+[[0048-reusable-environment-hostname-slots]] had already separated one identity
+from the environment name — the public hostname became a pooled, reusable team
+resource. The remaining coupling was the code: the branch was recorded once, at
+creation, and never moved.
+
+## Decision
+
+Make the branch a mutable property of an existing environment. One operation,
+`switch_branch`, points an environment at another git branch and brings its
+running Odoo up to date with the difference. Everything that constitutes the
+environment's identity is preserved: name, database, filestore, hostname and URL,
+ports, PostgreSQL credentials, and the scoped MCP endpoint and token.
+
+Deliberately **not** part of this decision: renaming an environment to match the
+new branch. The name is the key from which the database name, workspace path,
+container name, port and hostname registry keys, credential file and agent
+checkout directory are all derived, and no transaction spans a rename of an
+`ALTER DATABASE`, a fuse-overlayfs remount, a `docker rename` and three
+registries — a half-renamed environment is a worse failure than a name that no
+longer echoes the branch. Instead the branch is displayed as a first-class,
+always-visible property of the card, and the environment name becomes what it
+already effectively was: a stable slot label.
+
+## How it works (macro)
+
+- The branch already lived in a Docker label (`oduflow.git_branch`), read by
+  every pull. Switching therefore means flipping that label and moving the
+  managed clone, in that order — reversed, a lost label flip would leave a
+  switched tree that the next pull silently resets back to the old branch. Labels are
+  frozen at container creation, so the flip recreates the container, reusing the
+  same path that already switches immutable extra-addons mounts mid-pull.
+- The target branch is fetched *before* anything is mutated. A branch that only
+  exists on the developer's machine is the common case, and it fails there with
+  "push it first" and no side effects.
+- Applying the difference reuses the ordinary sync path. The checkout is moved
+  first and the resulting `(old_head, changed_files)` is handed to
+  `pull_environment`, so classification, the guardrail, extra-addons resolution
+  and install/upgrade/restart have exactly one implementation. The file list is a
+  *tree* diff between the two tips, which is what keeps squash-merged histories
+  behaving.
+- Reuse introduces one failure mode a fresh environment cannot have: the
+  database outlives the code. A preflight compares the modules the current tree
+  provides with the target tree's and, for those that disappear, asks the
+  database which are installed. That is a warning by default — a module can also
+  come from extra-addons or the image — and a refusal under `strict`.
+- The coding agent's own checkout for the environment follows the switch through
+  the existing create hook, which already refuses to clobber uncommitted work.
+- Live-mounted environments ([[0021-code-delivery-modes]]) are rejected: their
+  git state belongs to the developer's checkout, not to Oduflow.
+
+## Consequences
+
+- The task boundary no longer costs a provision-and-destroy cycle, and the
+  addresses an MCP client or a browser is already using survive it.
+- Environment count stops tracking branch count, which makes the pooled hostname
+  slots of [[0048-reusable-environment-hostname-slots]] and the idle reaper far
+  less load-bearing: fewer environments are created, so fewer need reaping.
+- Environment name and branch are now routinely different. Name-derived
+  resources keep the original name forever, so operators read the branch, not the
+  name, to know what an environment serves — the dashboard shows the branch on
+  every card and the info tools report it.
+- A reused database accumulates schema from every branch it has served. For the
+  intended flow (branch merged, next branch cut from the updated default) that is
+  simply the merged work; for abandoned branches, residue remains, and the
+  preflight only reports the part that is detectable.
+- Declarative Stacks ([[0046-declarative-oduflow-stacks]]) still treat a changed
+  branch as immutable drift and recreate the environment. Reconciling it in place
+  through this operation is a natural follow-up, not part of this decision.
+
+## History
+
+- `litnimax/bangkok` (2026-08-17) — `switch_branch` MCP tool, REST endpoint and
+  dashboard control; `fetch_branch` / `checkout_branch` / `tree_modules` git
+  plumbing; dropped-module preflight; `presynced` sync path in
+  `pull_environment`.

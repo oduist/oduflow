@@ -38,17 +38,28 @@ Call `create_environment` with the branch, correct Odoo image, and either
 
 ```text
 1. list_environments
-2. if creation is needed: repo_url must git push -u origin HEAD first;
-   local_path needs no push; then call create_environment
+2. if an existing environment's branch is finished (merged), reuse it:
+   git push -u origin HEAD, then switch_branch to your branch;
+   otherwise create_environment (repo_url must be pushed first;
+   local_path needs no push)
 3. get_odoo_development_guide before module code changes
 4. edit code locally
 5. repo_url: commit + push; local_path: no delivery step
 6. pull_and_apply with the action required by the edit
 7. read that response; if it failed, fix and repeat from step 4
 8. run_odoo_tests for the changed modules
-9. delete_environment when the task is done or cancelled and nobody still
-   needs the URL or its test data
+9. leave the environment for the next branch, or delete_environment when
+   nobody still needs the URL or its test data
 ```
+
+Prefer step 2's reuse over a new environment. `switch_branch` keeps the
+database, filestore, URL and scoped MCP endpoint and only changes the code, so
+it is much faster than provisioning — and the address you are already using
+stays valid. It applies the branch difference exactly like `pull_and_apply`. The
+target branch must exist on origin; live-mounted environments are rejected
+(switch the branch in the mounted checkout and call `pull_and_apply`). If the
+target branch does not carry a module installed in that database, the response
+warns; create a separate environment when that matters.
 
 Do not delete and recreate an environment to fix an application error or run
 a migration. It recreates the same starting state and discards useful test
