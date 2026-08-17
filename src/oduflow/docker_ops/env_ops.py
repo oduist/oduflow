@@ -47,6 +47,7 @@ from oduflow.errors import (
 )
 from oduflow.git_ops import RepoAuthError, git_env_for_team
 from oduflow.hostname_registry import allocate_hostname, release_hostname
+from oduflow.locking import env_wake_key, keyed_mutex
 from oduflow.naming import (
     get_agent_checkout_dir,
     get_agent_container_name,
@@ -2515,21 +2516,26 @@ def ensure_running(settings: Settings, env_name: str, team: TeamSettings) -> boo
     Returns True when a start was needed (the caller may want to tell the
     agent the environment was woken up), False when it was already running.
     """
-    client = get_client()
-    odoo_container_name = get_resource_name(
-        env_name, "odoo", settings.prefix, team.team_id
-    )
-    try:
-        container = client.containers.get(odoo_container_name)
-    except docker.errors.NotFound:
-        raise NotFoundError(
-            f"Environment '{env_name}' does not exist. Use create_environment first."
+    # Callers reach this without the environment lock (the lock-free odoo_* and
+    # http tools), so two of them can find the same stopped container at once.
+    # The wake key makes read-status-then-start atomic per environment: the
+    # second caller waits, then sees "running" and reports no wake-up.
+    with keyed_mutex(env_wake_key(team.team_id, env_name)):
+        client = get_client()
+        odoo_container_name = get_resource_name(
+            env_name, "odoo", settings.prefix, team.team_id
         )
-    _assert_team_owns(container, settings, team, env_name)
-    if container.status == "running":
-        return False
-    start_environment(settings, env_name, team)
-    return True
+        try:
+            container = client.containers.get(odoo_container_name)
+        except docker.errors.NotFound:
+            raise NotFoundError(
+                f"Environment '{env_name}' does not exist. Use create_environment first."
+            )
+        _assert_team_owns(container, settings, team, env_name)
+        if container.status == "running":
+            return False
+        start_environment(settings, env_name, team)
+        return True
 
 
 def _assert_team_owns(

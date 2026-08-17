@@ -181,15 +181,17 @@ All containers are labeled with `oduflow.managed=true` and `oduflow.team={team_i
 
 ## Concurrency & Locking
 
-Oduflow uses a granular `LockManager` (`locking.py`) with per-branch and per-team locks:
+Oduflow uses a granular `LockManager` (`locking.py`) that locks the smallest
+resource an operation actually touches:
 
 | Lock Level | Scope | Example Operations |
 |---|---|---|
 | **Per-branch** | One operation per branch at a time | `create_environment`, `delete_environment`, `install_odoo_modules`, `pull_and_apply`, `export_module_translations` |
-| **Per-team** | One team-level operation at a time | `add_extra_repo`, `setup_repo_auth`, `create_service` |
-| **System/cluster** | Cross-environment infrastructure operation | startup initialization, `destroy`, production cluster PITR |
+| **Per-resource** | One operation per service / volume / production / credential store | `create_service`, `delete_volume`, `setup_repo_auth`, `snapshot_production` |
+| **Per-team** | One team-wide operation at a time | template publishing (`save_as_template`, `refresh_template`, `delete_template`) — they remount other environments' overlay filestores |
+| **System/cluster** | Cross-environment infrastructure operation | startup initialization, `destroy`, `restore_cluster_pitr` (excludes every production lock) |
 
-Operations on **different branches** run in parallel. If a lock cannot be acquired, the tool immediately returns `BusyError` (no queuing).
+Operations on **different resources** run in parallel. If a lock cannot be acquired, the tool immediately returns `BusyError` (no queuing). Some tools take no `LockManager` lock at all: pure reads, the `odoo_*` tools (PostgreSQL arbitrates concurrent ORM calls), and the extra-repo tools (`extra_addons.py` serialises per repo itself).
 
 ## Error Handling
 

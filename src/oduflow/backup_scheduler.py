@@ -34,7 +34,7 @@ from typing import Any, Callable
 
 from oduflow import production_registry
 from oduflow.errors import BusyError
-from oduflow.locking import LockManager
+from oduflow.locking import LockManager, prod_backups_lock_key
 from oduflow.settings import Settings, TeamSettings
 
 logger = logging.getLogger("oduflow")
@@ -172,10 +172,18 @@ def _run_snapshot_job(
     from oduflow.server import prod_lock_key
 
     key = prod_lock_key(team.team_id, name)
+    backups_key = prod_backups_lock_key(team.team_id)
     try:
         locks.acquire_env(key, operation="scheduled backup")
     except BusyError:
         return  # deploy/restore in flight; still due next tick
+    try:
+        # Same order as the MCP tool: the production first, then the team's
+        # backup store, so a prune cannot run mid-snapshot.
+        locks.acquire_env(backups_key, operation="scheduled backup")
+    except BusyError:
+        locks.release_env(key)
+        return  # prune/restore is using the store; still due next tick
     started = time.time()
     backup_state: dict[str, Any] = {
         "last_attempt_at": now.isoformat(),
@@ -231,6 +239,7 @@ def _run_snapshot_job(
             },
         )
     finally:
+        locks.release_env(backups_key)
         locks.release_env(key)
 
 
@@ -296,8 +305,9 @@ def _run_prune_job(
     _save_cluster_state(settings, state)
     ok = True
     for team in settings.teams.values():
+        backups_key = prod_backups_lock_key(team.team_id)
         try:
-            locks.acquire_team(team.team_id, operation="scheduled backup prune")
+            locks.acquire_env(backups_key, operation="scheduled backup prune")
         except BusyError:
             ok = False
             continue
@@ -325,7 +335,7 @@ def _run_prune_job(
                 },
             )
         finally:
-            locks.release_team(team.team_id)
+            locks.release_env(backups_key)
     if ok:
         prune_state["last_success_at"] = now.isoformat()
         prune_state["slot_attempts"] = 0

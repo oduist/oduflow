@@ -12,7 +12,15 @@ import threading
 import pytest
 
 from oduflow.errors import BusyError
-from oduflow.locking import LockManager, _format_age
+from oduflow.locking import (
+    LockManager,
+    _format_age,
+    keyed_mutex,
+    prod_backups_lock_key,
+    service_lock_key,
+    volume_lock_key,
+)
+from oduflow.server import prod_lock_key
 
 
 class TestFormatAge:
@@ -234,3 +242,181 @@ class TestSystemLock:
         LockManager().acquire_system()
 
         LockManager().acquire_system()  # must not raise
+
+
+class TestResourceKeys:
+    """Narrow keys must be independent of the team and of each other."""
+
+    def test_two_services_do_not_contend(self):
+        locks = LockManager()
+        locks.acquire_env(service_lock_key("1", "redis"))
+
+        locks.acquire_env(service_lock_key("1", "meili"))  # must not raise
+
+    def test_the_same_service_contends(self):
+        locks = LockManager()
+        locks.acquire_env(service_lock_key("1", "redis"), operation="delete_service")
+
+        with pytest.raises(BusyError) as exc:
+            locks.acquire_env(
+                service_lock_key("1", "redis"), operation="restart_service"
+            )
+        assert "delete_service" in str(exc.value)
+
+    def test_the_same_service_of_another_team_does_not_contend(self):
+        locks = LockManager()
+        locks.acquire_env(service_lock_key("1", "redis"))
+
+        locks.acquire_env(service_lock_key("2", "redis"))  # must not raise
+
+    def test_a_service_lock_does_not_block_the_team(self):
+        # The whole point: a service operation is not a team-wide operation.
+        locks = LockManager()
+        locks.acquire_env(service_lock_key("1", "redis"))
+
+        locks.acquire_team("1")  # must not raise
+
+    def test_a_team_operation_does_not_block_a_service(self):
+        locks = LockManager()
+        locks.acquire_team("1", operation="save_as_template")
+
+        locks.acquire_env(service_lock_key("1", "redis"))  # must not raise
+
+    def test_a_service_lock_does_not_block_an_environment(self):
+        locks = LockManager()
+        locks.acquire_env(service_lock_key("1", "redis"))
+
+        locks.acquire_env("main", team_id="1")  # must not raise
+
+    def test_a_volume_lock_is_separate_from_a_same_named_service(self):
+        locks = LockManager()
+        locks.acquire_env(service_lock_key("1", "data"))
+
+        locks.acquire_env(volume_lock_key("1", "data"))  # must not raise
+
+    def test_prune_and_snapshot_share_the_backup_store(self):
+        # The old team lock never covered this: snapshots hold a prod: key,
+        # which lives in a different keyspace than the team lock.
+        locks = LockManager()
+        locks.acquire_env(prod_backups_lock_key("1"), operation="snapshot_production")
+
+        with pytest.raises(BusyError) as exc:
+            locks.acquire_env(prod_backups_lock_key("1"), operation="prune_backups")
+        assert "snapshot_production" in str(exc.value)
+
+    def test_another_team_prunes_in_parallel(self):
+        locks = LockManager()
+        locks.acquire_env(prod_backups_lock_key("1"))
+
+        locks.acquire_env(prod_backups_lock_key("2"))  # must not raise
+
+
+class TestSystemLockExcludesProductions:
+    """restore_cluster_pitr rewrites every team's production cluster."""
+
+    def test_a_production_lock_blocks_the_system_lock(self):
+        locks = LockManager()
+        locks.acquire_env(prod_lock_key("1", "erp"), operation="update_production")
+
+        with pytest.raises(BusyError) as exc:
+            locks.acquire_system(operation="restore_cluster_pitr")
+        message = str(exc.value)
+        assert "prod:1:erp" in message
+        assert "update_production" in message
+
+    def test_the_system_lock_blocks_a_production_lock(self):
+        locks = LockManager()
+        locks.acquire_system(operation="restore_cluster_pitr")
+
+        with pytest.raises(BusyError) as exc:
+            locks.acquire_env(
+                prod_lock_key("1", "erp"), operation="snapshot_production"
+            )
+        message = str(exc.value)
+        assert "system-level" in message
+        assert "restore_cluster_pitr" in message
+
+    def test_the_system_lock_blocks_the_blocking_acquire_too(self):
+        # Webhook deploys queue on a blocking acquire; waiting out a cluster
+        # restore is pointless, so the caller skips the run instead.
+        locks = LockManager()
+        locks.acquire_system(operation="restore_cluster_pitr")
+
+        assert locks.acquire_env_blocking(prod_lock_key("1", "erp"), 0.05) is False
+        # The underlying lock was handed back, not leaked.
+        locks.release_system()
+        assert locks.acquire_env_blocking(prod_lock_key("1", "erp"), 0.05) is True
+
+    def test_a_blocking_acquire_blocks_the_system_lock(self):
+        locks = LockManager()
+        assert locks.acquire_env_blocking(
+            prod_lock_key("1", "erp"), 0.05, operation="webhook deploy"
+        )
+
+        with pytest.raises(BusyError) as exc:
+            locks.acquire_system()
+        assert "webhook deploy" in str(exc.value)
+
+    def test_releasing_the_production_frees_the_system_lock(self):
+        locks = LockManager()
+        locks.acquire_env("prod:__cluster__", operation="scheduled base backup")
+        locks.release_env("prod:__cluster__")
+
+        locks.acquire_system()  # must not raise
+
+    def test_environments_are_unaffected_by_the_system_lock(self):
+        # A cluster restore touches productions only; development work goes on.
+        locks = LockManager()
+        locks.acquire_system(operation="restore_cluster_pitr")
+
+        locks.acquire_env("main", team_id="1")  # must not raise
+        locks.acquire_env(service_lock_key("1", "redis"))  # must not raise
+
+
+class TestKeyedMutex:
+    def test_it_serialises_the_same_key(self):
+        order: list[str] = []
+        entered = threading.Event()
+        release = threading.Event()
+
+        def first() -> None:
+            with keyed_mutex("test:serialise"):
+                order.append("first-in")
+                entered.set()
+                release.wait(2)
+                order.append("first-out")
+
+        def second() -> None:
+            entered.wait(2)
+            with keyed_mutex("test:serialise"):
+                order.append("second-in")
+
+        t1 = threading.Thread(target=first)
+        t2 = threading.Thread(target=second)
+        t1.start()
+        t2.start()
+        # The second thread is blocked until the first leaves its section.
+        entered.wait(2)
+        release.set()
+        t1.join(2)
+        t2.join(2)
+
+        assert order == ["first-in", "first-out", "second-in"]
+
+    def test_different_keys_do_not_serialise(self):
+        with keyed_mutex("test:key-a"):
+            done = threading.Event()
+
+            def other() -> None:
+                with keyed_mutex("test:key-b"):
+                    done.set()
+
+            threading.Thread(target=other).start()
+            assert done.wait(2)
+
+    def test_it_is_reentrant(self):
+        # update_service holds the service-registry key across create_service,
+        # which takes the same key for its own admission check.
+        with keyed_mutex("test:reentrant"):
+            with keyed_mutex("test:reentrant"):
+                pass

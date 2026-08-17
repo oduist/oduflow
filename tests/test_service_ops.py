@@ -790,7 +790,9 @@ class TestUpdateService:
             ) as mock_resolve,
         ):
             service_ops.update_service(TEST_SETTINGS, TEST_TEAM, "redis")
-            assert mock_resolve.call_count == 2
+            # update pre-validates, then create both pre-validates (before the
+            # image pull) and re-resolves under the service-registry lock.
+            assert mock_resolve.call_count == 3
             mock_resolve.assert_any_call(TEST_TEAM, volumes)
 
     def test_update_port_mode_legacy_no_preset(self, mock_docker_client):

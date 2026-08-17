@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 
@@ -334,6 +335,52 @@ def test_ensure_running_starts_stopped_env(monkeypatch, tmp_path):
     state["status"] = "running"
     assert env_ops.ensure_running(settings, "env-x", settings.teams["1"]) is False
     assert started == ["env-x"]
+
+
+def test_ensure_running_wakes_a_stopped_env_once(monkeypatch, tmp_path):
+    """The odoo_* tools wake environments without holding the env lock, so two
+    calls can meet here — the wake must still start the container only once."""
+    from oduflow.docker_ops import env_ops
+
+    state = {"status": "exited"}
+
+    class FakeContainer:
+        labels = {"oduflow.team": "1"}
+
+        @property
+        def status(self):
+            return state["status"]
+
+    class FakeContainers:
+        def get(self, name):
+            return FakeContainer()
+
+    class FakeClient:
+        containers = FakeContainers()
+
+    started: list[str] = []
+
+    def fake_start(s, n, t=None):
+        time.sleep(0.05)  # widen the check-then-start window
+        started.append(n)
+        state["status"] = "running"
+
+    monkeypatch.setattr(env_ops, "get_client", lambda: FakeClient())
+    monkeypatch.setattr(env_ops, "start_environment", fake_start)
+
+    settings = _settings(tmp_path)
+    team = settings.teams["1"]
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = [
+            f.result()
+            for f in [
+                pool.submit(env_ops.ensure_running, settings, "env-race", team)
+                for _ in range(2)
+            ]
+        ]
+
+    assert started == ["env-race"]
+    assert sorted(results) == [False, True]
 
 
 # --- _wake_for_work (tool-level wake-up) -----------------------------------

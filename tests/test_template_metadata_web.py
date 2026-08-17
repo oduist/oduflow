@@ -127,12 +127,14 @@ def test_template_metadata_update_busy_keeps_foreign_lock(tmp_path):
         locks.release_team("1")
 
 
-def test_template_list_busy_keeps_foreign_lock(tmp_path):
+def test_template_list_reads_during_a_team_operation(tmp_path):
+    # Listing is a pure read: it must not bounce off a running publish, and must
+    # not touch the team lock either (same contract as the list_templates tool).
     client, locks = _client(tmp_path)
     locks.acquire_team("1")
     try:
         response = client.get("/api/templates")
-        assert response.status_code == 409
+        assert response.status_code == 200
         with pytest.raises(BusyError):
             locks.acquire_team("1")
     finally:

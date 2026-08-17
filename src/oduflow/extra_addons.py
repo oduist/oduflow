@@ -355,6 +355,12 @@ def _delete_extra_repo_unlocked(
             f"{', '.join(dependent)}"
         )
 
+    # Containers are the dependency record, so there is a window this guard
+    # cannot see: create_environment materialises shared checkouts *before* its
+    # container exists. A delete landing exactly there is accepted — the
+    # in-flight create fails with a clear "not found" instead of every unrelated
+    # repo operation being serialised behind a team lock for minutes.
+
     # Cached SHA checkouts intentionally outlive environments. They disappear
     # only with the owning extra repo, after the dependency guard above proves
     # that no running/stopped managed container still mounts them.

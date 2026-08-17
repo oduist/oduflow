@@ -270,7 +270,8 @@ def backup(
     """Create a new revision of *source_dir* under *snapshot_id*.
 
     Caller contract: backups and prunes against one storage are serialized
-    (Oduflow runs them under the team lock / a single scheduler thread).
+    (Oduflow runs them under the team's `prod-backups:` lock / a single
+    scheduler thread).
     """
     if not os.path.isdir(source_dir):
         raise FileNotFoundError(f"source_dir does not exist: {source_dir}")
