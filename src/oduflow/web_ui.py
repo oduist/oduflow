@@ -68,6 +68,7 @@ from oduflow.licensing import get_license_info, install_license_from_text
 from oduflow.locking import (
     LockManager,
     credentials_lock_key,
+    prod_backups_lock_key,
     service_lock_key,
     service_preset_lock_key,
     volume_lock_key,
@@ -4328,8 +4329,15 @@ def _build_routes(
     def _production_action(
         request: Request,
         action: Callable[[Settings, TeamSettings, str], dict[str, Any]],
+        *,
+        with_backup_store: bool = False,
     ) -> JSONResponse:
-        """Shared lock/error wrapper for simple per-production POST actions."""
+        """Shared lock/error wrapper for simple per-production POST actions.
+
+        with_backup_store additionally takes the team's backup-store lock in
+        the same order as the MCP tools (production first, then the store), so
+        a prune cannot run mid-snapshot/restore.
+        """
         settings = get_settings()
         team = _get_ui_team(request)
         name = request.path_params["name"]
@@ -4337,6 +4345,12 @@ def _build_routes(
             locks.acquire_env(_prod_lock_key(team, name))
         except FlowError as e:
             return _error_response(e)
+        if with_backup_store:
+            try:
+                locks.acquire_env(prod_backups_lock_key(team.team_id))
+            except FlowError as e:
+                locks.release_env(_prod_lock_key(team, name))
+                return _error_response(e)
         try:
             result = action(settings, team, name)
             return JSONResponse({"ok": True, **result})
@@ -4350,6 +4364,8 @@ def _build_routes(
                 {"ok": False, "error": "Internal server error."}, status_code=500
             )
         finally:
+            if with_backup_store:
+                locks.release_env(prod_backups_lock_key(team.team_id))
             locks.release_env(_prod_lock_key(team, name))
 
     def api_production_start(request: Request) -> JSONResponse:
@@ -4544,7 +4560,7 @@ def _build_routes(
         ) -> dict[str, Any]:
             return backup_ops.snapshot_production(settings, team, name, trigger="ui")
 
-        return _production_action(request, _snapshot)
+        return _production_action(request, _snapshot, with_backup_store=True)
 
     async def api_production_restore(request: Request) -> JSONResponse:
         from oduflow import backup_ops
@@ -4573,6 +4589,13 @@ def _build_routes(
             locks.acquire_env(_prod_lock_key(team, name))
         except FlowError as e:
             return _error_response(e)
+        # Same order as the MCP tool: the production first, then the team's
+        # backup store, so a prune cannot delete artifacts mid-restore.
+        try:
+            locks.acquire_env(prod_backups_lock_key(team.team_id))
+        except FlowError as e:
+            locks.release_env(_prod_lock_key(team, name))
+            return _error_response(e)
         try:
             result = await _offload(
                 backup_ops.restore_production, settings, team, name, snapshot_id
@@ -4586,6 +4609,7 @@ def _build_routes(
                 {"ok": False, "error": "Internal server error."}, status_code=500
             )
         finally:
+            locks.release_env(prod_backups_lock_key(team.team_id))
             locks.release_env(_prod_lock_key(team, name))
 
     async def api_production_backup_schedule(request: Request) -> JSONResponse:

@@ -100,8 +100,11 @@ scenarios:
     expect_contains:
       - "started"
 
-  # Reuse the same environment for another branch, then put it back, so the
-  # shared fixture environment is left on the branch it was created from.
+  # Each scenario gets a freshly created environment on 'main'
+  # (live_environment is function-scoped), so a switch cannot be staged by a
+  # previous scenario. Cover the two entry states from one starting point: a
+  # real switch to another branch, and the idempotent call for the branch the
+  # environment is already on (documented to pull instead of failing).
   switch_branch_away:
     tool: switch_branch
     needs_env: true
@@ -111,14 +114,14 @@ scenarios:
     expect_contains:
       - "Switched '19.0' from 'main' to '18.0'"
 
-  switch_branch_back:
+  switch_branch_same:
     tool: switch_branch
     needs_env: true
     args:
       env_name: "19.0"
       branch: "main"
     expect_contains:
-      - "Switched '19.0' from '18.0' to 'main'"
+      - "already on branch 'main'; pulled it instead"
 
   # ── Odoo operations ──────────────────────────────────────────────
   logs_main:
