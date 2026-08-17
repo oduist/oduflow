@@ -259,6 +259,132 @@ def test_missing_git_fails_safe_and_exposes_new_bundle(tmp_path: Path):
     assert managed.error_path.read_bytes() == b"alpha=1\nbeta=2\n"
 
 
+def test_force_overwrites_a_conflict_and_backs_up_the_live_file(tmp_path: Path):
+    managed = _managed(
+        tmp_path,
+        source=b"value=upstream\n",
+        local=b"value=local\n",
+        baseline=b"value=base\n",
+    )
+
+    plan = bundled_upgrade.plan_reconcile(managed, force=True)
+    bundled_upgrade.apply_reconcile(plan)
+
+    assert plan.kind == "overwrite"
+    assert plan.needs_attention is False
+    assert managed.destination.read_bytes() == b"value=upstream\n"
+    assert managed.baseline_path.read_bytes() == b"value=upstream\n"
+    assert managed.backup_path.read_bytes() == b"value=local\n"
+    assert not managed.merge_path.exists()
+    assert not managed.pending_path.exists()
+    assert bundled_upgrade.plan_reconcile(managed).kind == "up-to-date"
+
+
+def test_force_overwrites_a_legacy_file(tmp_path: Path):
+    managed = _managed(
+        tmp_path,
+        source=b"bundled v2\n",
+        local=b"custom legacy\n",
+        baseline=None,
+    )
+
+    plan = bundled_upgrade.plan_reconcile(managed, force=True)
+    bundled_upgrade.apply_reconcile(plan)
+
+    assert plan.kind == "overwrite"
+    assert managed.destination.read_bytes() == b"bundled v2\n"
+    assert managed.baseline_path.read_bytes() == b"bundled v2\n"
+    assert managed.backup_path.read_bytes() == b"custom legacy\n"
+    assert not managed.new_path.exists()
+    assert not managed.pending_path.exists()
+    assert bundled_upgrade.plan_reconcile(managed).kind == "up-to-date"
+
+
+def test_force_clears_sidecars_left_by_an_earlier_run(tmp_path: Path):
+    managed = _managed(
+        tmp_path,
+        source=b"bundled v2\n",
+        local=b"custom legacy\n",
+        baseline=None,
+    )
+    bundled_upgrade.apply_reconcile(bundled_upgrade.plan_reconcile(managed))
+    assert managed.new_path.exists()
+
+    forced = bundled_upgrade.plan_reconcile(managed, force=True)
+    bundled_upgrade.apply_reconcile(forced)
+
+    assert forced.kind == "overwrite"
+    assert managed.destination.read_bytes() == b"bundled v2\n"
+    assert managed.baseline_path.read_bytes() == b"bundled v2\n"
+    assert not managed.new_path.exists()
+    assert not managed.pending_path.exists()
+    assert bundled_upgrade.plan_reconcile(managed).kind == "up-to-date"
+
+
+def test_force_overwrites_when_merging_is_unavailable(tmp_path: Path):
+    managed = _managed(
+        tmp_path,
+        source=b"alpha=1\nbeta=2\n",
+        local=b"alpha=2\nbeta=1\n",
+        baseline=b"alpha=1\nbeta=1\n",
+    )
+
+    with patch(
+        "oduflow.bundled_upgrade.subprocess.run",
+        side_effect=FileNotFoundError("git not found"),
+    ):
+        plan = bundled_upgrade.plan_reconcile(managed, force=True)
+    bundled_upgrade.apply_reconcile(plan)
+
+    assert plan.kind == "overwrite"
+    assert managed.destination.read_bytes() == b"alpha=1\nbeta=2\n"
+    assert managed.backup_path.read_bytes() == b"alpha=2\nbeta=1\n"
+    assert not managed.error_path.exists()
+
+
+def test_force_still_merges_disjoint_changes(tmp_path: Path):
+    managed = _managed(
+        tmp_path,
+        source=b"alpha=1\nunchanged one\nunchanged two\nbeta=2\n",
+        local=b"alpha=2\nunchanged one\nunchanged two\nbeta=1\n",
+        baseline=b"alpha=1\nunchanged one\nunchanged two\nbeta=1\n",
+    )
+
+    plan = bundled_upgrade.plan_reconcile(managed, force=True)
+    bundled_upgrade.apply_reconcile(plan)
+
+    assert plan.kind == "merge"
+    assert managed.destination.read_bytes() == (
+        b"alpha=2\nunchanged one\nunchanged two\nbeta=2\n"
+    )
+
+
+def test_force_leaves_local_only_changes_and_keep_files_alone(tmp_path: Path):
+    local_only = _managed(
+        tmp_path / "local-only",
+        source=b"value=old\n",
+        local=b"value=new\n",
+        baseline=b"value=old\n",
+    )
+    kept_content = b"# KEEP\nvalue=local\n"
+    kept = _managed(
+        tmp_path / "kept",
+        source=b"value=upstream\n",
+        local=kept_content,
+        baseline=b"value=base\n",
+    )
+
+    local_plan = bundled_upgrade.plan_reconcile(local_only, force=True)
+    bundled_upgrade.apply_reconcile(local_plan)
+    kept_plan = bundled_upgrade.plan_reconcile(kept, force=True)
+    bundled_upgrade.apply_reconcile(kept_plan)
+
+    assert local_plan.kind == "local-only"
+    assert local_only.destination.read_bytes() == b"value=new\n"
+    assert kept_plan.kind == "keep"
+    assert kept.destination.read_bytes() == kept_content
+
+
 def test_apply_refuses_a_file_changed_after_planning(tmp_path: Path):
     managed = _managed(
         tmp_path,

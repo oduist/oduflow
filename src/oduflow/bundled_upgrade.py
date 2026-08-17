@@ -23,6 +23,7 @@ ActionKind = Literal[
     "local-only",
     "resolved",
     "merge",
+    "overwrite",
     "keep",
     "legacy",
     "legacy-pending",
@@ -90,6 +91,7 @@ class ReconcilePlan:
             "create",
             "update",
             "merge",
+            "overwrite",
             "legacy",
             "legacy-pending",
             "conflict",
@@ -128,8 +130,15 @@ def seed_managed_file(managed: ManagedFile) -> bool:
     return False
 
 
-def plan_reconcile(managed: ManagedFile) -> ReconcilePlan:
-    """Classify one file without changing the filesystem."""
+def plan_reconcile(managed: ManagedFile, *, force: bool = False) -> ReconcilePlan:
+    """Classify one file without changing the filesystem.
+
+    With ``force`` the cases that would otherwise stop for a human — legacy
+    files, merge conflicts, and merge failures — resolve in favour of the new
+    bundle instead: the live file is backed up and overwritten.  Clean merges
+    still merge, local-only changes are still left alone, and a first-line
+    ``# KEEP`` remains an unconditional opt-out.
+    """
     source_content = managed.source.read_bytes()
     try:
         local_content = managed.destination.read_bytes()
@@ -169,6 +178,8 @@ def plan_reconcile(managed: ManagedFile) -> ReconcilePlan:
     # Sidecars are explicit gates. Keep refreshing them from the last accepted
     # baseline until the operator reconciles the live file and removes them.
     if managed.new_path.exists():
+        if force:
+            return _overwrite_plan(managed, source_content, local_content)
         return ReconcilePlan(
             managed,
             "legacy-pending",
@@ -180,6 +191,8 @@ def plan_reconcile(managed: ManagedFile) -> ReconcilePlan:
 
     if managed.merge_path.exists():
         if baseline_content is None:
+            if force:
+                return _overwrite_plan(managed, source_content, local_content)
             return ReconcilePlan(
                 managed,
                 "error",
@@ -189,6 +202,8 @@ def plan_reconcile(managed: ManagedFile) -> ReconcilePlan:
                 error="conflict sidecar exists but its accepted baseline is missing",
             )
         merged_content, error, conflicted = _merge_file(managed, managed.baseline_path)
+        if (error or conflicted) and force:
+            return _overwrite_plan(managed, source_content, local_content)
         if error:
             return ReconcilePlan(
                 managed,
@@ -224,6 +239,8 @@ def plan_reconcile(managed: ManagedFile) -> ReconcilePlan:
         pending_acknowledged = True
 
     if baseline_content is None:
+        if force:
+            return _overwrite_plan(managed, source_content, local_content)
         return ReconcilePlan(
             managed,
             "legacy",
@@ -265,6 +282,8 @@ def plan_reconcile(managed: ManagedFile) -> ReconcilePlan:
         )
 
     merged_content, error, conflicted = _merge_file(managed, base_path)
+    if (error or conflicted) and force:
+        return _overwrite_plan(managed, source_content, local_content)
     if error:
         return ReconcilePlan(
             managed,
@@ -286,6 +305,19 @@ def plan_reconcile(managed: ManagedFile) -> ReconcilePlan:
         result_content=merged_content,
         base_path=base_path,
         pending_acknowledged=pending_acknowledged,
+    )
+
+
+def _overwrite_plan(
+    managed: ManagedFile, source_content: bytes, local_content: bytes
+) -> ReconcilePlan:
+    """Resolve a would-be sidecar case in favour of the new bundle."""
+    return ReconcilePlan(
+        managed,
+        "overwrite",
+        source_content,
+        local_content=local_content,
+        result_content=source_content,
     )
 
 
@@ -332,7 +364,7 @@ def apply_reconcile(plan: ReconcilePlan) -> None:
         _remove_generated_sidecars(managed)
         return
 
-    if plan.kind in {"update", "merge"}:
+    if plan.kind in {"update", "merge", "overwrite"}:
         if plan.local_content is None or plan.result_content is None:
             raise BundledUpgradeError(f"Incomplete {plan.kind} plan")
         _atomic_write(

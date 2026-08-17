@@ -176,12 +176,8 @@ class TestCLIUpgrade:
 
         assert deployed_guide.read_text(encoding="utf-8") == "bundled v2\n"
 
-    def test_upgrade_legacy_file_requires_review_without_overwriting(
-        self, tmp_path, monkeypatch
-    ):
-        server, settings, deployed_guide = self._settings_with_changed_guide(
-            tmp_path, monkeypatch
-        )
+    @staticmethod
+    def _make_legacy(settings, deployed_guide):
         baseline = (
             Path(settings.teams["1"].data_dir)
             / ".bundled_upgrade"
@@ -191,14 +187,45 @@ class TestCLIUpgrade:
         )
         baseline.unlink()
         deployed_guide.write_text("custom legacy\n", encoding="utf-8")
+        return baseline
 
-        assert server._run_upgrade(settings, force=True) is False
+    def test_upgrade_legacy_file_requires_review_without_force(
+        self, tmp_path, monkeypatch
+    ):
+        server, settings, deployed_guide = self._settings_with_changed_guide(
+            tmp_path, monkeypatch
+        )
+        self._make_legacy(settings, deployed_guide)
+
+        with patch("builtins.input", return_value=""):
+            assert server._run_upgrade(settings) is False
 
         assert deployed_guide.read_text(encoding="utf-8") == "custom legacy\n"
         assert (
             Path(f"{deployed_guide}.oduflow-new").read_text(encoding="utf-8")
             == "bundled v2\n"
         )
+
+    def test_upgrade_force_overwrites_a_legacy_file(self, tmp_path, monkeypatch):
+        server, settings, deployed_guide = self._settings_with_changed_guide(
+            tmp_path, monkeypatch
+        )
+        baseline = self._make_legacy(settings, deployed_guide)
+        backup = (
+            Path(settings.teams["1"].data_dir)
+            / ".bundled_upgrade"
+            / "backups"
+            / "agent_guides"
+            / "guide.md"
+        )
+
+        with patch("builtins.input", side_effect=AssertionError("unexpected prompt")):
+            assert server._run_upgrade(settings, force=True) is True
+
+        assert deployed_guide.read_text(encoding="utf-8") == "bundled v2\n"
+        assert baseline.read_text(encoding="utf-8") == "bundled v2\n"
+        assert backup.read_text(encoding="utf-8") == "custom legacy\n"
+        assert not Path(f"{deployed_guide}.oduflow-new").exists()
 
     def test_upgrade_does_not_manage_postgresql_conf(self, tmp_path, monkeypatch):
         from oduflow import server

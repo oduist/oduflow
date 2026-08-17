@@ -68,7 +68,7 @@ oduflow destroy
 # Three-way merge deployed files with the installed bundled versions
 oduflow upgrade
 
-# Skip the confirmation prompt (conflicts still fail safely)
+# Skip the confirmation prompt and overwrite conflicts with the new bundle
 oduflow upgrade --force
 
 # Preview the unified host resource plan and managed config diffs
@@ -96,9 +96,15 @@ On a clean merge the live file and baseline advance together. On conflict the
 live file and accepted baseline stay untouched; the merge result is written to
 `*.oduflow-merge`. Existing customized installations with no baseline receive
 `*.oduflow-new` for a one-time manual reconciliation. Resolve/install the
-sidecar and remove it; until then the command exits with status 1. `--force`
-only skips the confirmation prompt and never overwrites a conflict. A first-line
-`# KEEP` remains an unconditional opt-out.
+sidecar and remove it; until then the command exits with status 1.
+
+`--force` makes the command fully non-interactive: it skips the confirmation
+prompt and resolves conflicts, legacy files, and merge failures in favour of
+the new bundle. The replaced live file is saved under
+`<team-data>/.bundled_upgrade/backups/`, the baseline advances, and any stale
+sidecar is removed, so a forced run leaves nothing to review and exits 0.
+Clean merges still merge, local-only changes are still left untouched, and a
+first-line `# KEEP` remains an unconditional opt-out.
 
 This command is separate from upgrading the Python package (for example,
 `uv tool upgrade oduflow`). It does not manage `postgresql.conf`; use

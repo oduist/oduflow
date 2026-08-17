@@ -4811,7 +4811,10 @@ def _run_upgrade(settings: Settings, *, force: bool = False) -> bool:
         print("Nothing to upgrade — no bundled files found.")
         return True
 
-    plans = [bundled_upgrade.plan_reconcile(managed) for managed in managed_files]
+    plans = [
+        bundled_upgrade.plan_reconcile(managed, force=force)
+        for managed in managed_files
+    ]
     actionable = [plan for plan in plans if plan.needs_confirmation]
     kept = [plan for plan in plans if plan.kind == "keep"]
 
@@ -4845,8 +4848,12 @@ def _run_upgrade(settings: Settings, *, force: bool = False) -> bool:
         for plan in kept:
             print(f"  {plan.managed.label} {plan.managed.destination} (kept)")
     print()
-    print("  Conflicts and legacy files keep the live file unchanged and create")
-    print("  a sidecar for manual resolution.")
+    if force:
+        print("  --force: conflicts and legacy files are overwritten with the new")
+        print("  bundle. The replaced file is kept under .bundled_upgrade/backups/.")
+    else:
+        print("  Conflicts and legacy files keep the live file unchanged and create")
+        print("  a sidecar for manual resolution.")
     print()
 
     if not force:
@@ -4858,7 +4865,9 @@ def _run_upgrade(settings: Settings, *, force: bool = False) -> bool:
 
     success = _apply_upgrade_plans(plans)
     if success:
-        changed = sum(plan.kind in {"create", "update", "merge"} for plan in plans)
+        changed = sum(
+            plan.kind in {"create", "update", "merge", "overwrite"} for plan in plans
+        )
         print(
             f"\nDone. Reconciled {changed} file(s) across "
             f"{len(settings.teams)} team(s)."
@@ -4876,6 +4885,7 @@ def _upgrade_plan_description(plan: bundled_upgrade.ReconcilePlan) -> str:
         "create": "new",
         "update": "upstream update",
         "merge": "clean merge",
+        "overwrite": "overwritten with the new bundle; local file backed up",
         "legacy": f"legacy; review {plan.managed.new_path}",
         "legacy-pending": f"pending review; update {plan.managed.new_path}",
         "conflict": f"conflict; resolve {plan.managed.merge_path}",
@@ -4901,6 +4911,8 @@ def _apply_upgrade_plans(plans: list[bundled_upgrade.ReconcilePlan]) -> bool:
             print(f"  Updated: {destination}")
         elif plan.kind == "merge":
             print(f"  Merged: {destination}")
+        elif plan.kind == "overwrite":
+            print(f"  Overwritten: {destination} (backup: {plan.managed.backup_path})")
         elif plan.kind in {"legacy", "legacy-pending"}:
             print(
                 f"  REVIEW: {destination} kept; merge {plan.managed.new_path} "
@@ -5837,7 +5849,10 @@ def _run_cli() -> None:
     p_upgrade.add_argument(
         "--force",
         action="store_true",
-        help="reconcile changed bundled files without prompting",
+        help=(
+            "reconcile without prompting and overwrite conflicting or legacy "
+            "files with the new bundle (the replaced file is backed up)"
+        ),
     )
     p_retune = sub.add_parser(
         "retune-postgres",
