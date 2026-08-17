@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v1.69.0
 
 ### Features
 
@@ -14,9 +14,9 @@
   consuming one team slot. The default is 20 environment slots. Teams also
   receive a separate `service_slots = 10` cap for managed auxiliary
   services; deleting an unused service immediately frees its slot, and either
-  limit can be disabled with `0`.
+  limit can be disabled with `0`. See `specs/0048`. (#197)
 
-- **OpenCode hosted agent** — OpenCode joins Claude Code and Codex as a full Agent CLI and Agent Chat runtime. The new immutable coder image includes the MIT-licensed `opencode` CLI and native ACP server; OpenCode gets generic provider authentication, an optional `provider/model` override, approval-free execution inside the existing container boundary, per-environment Agent Browser, scoped Oduflow MCP, modern ACP model selection, and isolated conversation history.
+- **OpenCode hosted agent** — OpenCode joins Claude Code and Codex as a full Agent CLI and Agent Chat runtime. The new immutable coder image includes the MIT-licensed `opencode` CLI and native ACP server; OpenCode gets generic provider authentication, an optional `provider/model` override, approval-free execution inside the existing container boundary, per-environment Agent Browser, scoped Oduflow MCP, modern ACP model selection, and isolated conversation history. (#181)
 
 - **Declarative Oduflow Stacks** — a versioned `oduflow.yaml` can now describe
   one development environment together with its Git source, database template,
@@ -29,7 +29,66 @@
   resolved from the launching process or generated environment outputs without
   entering state files or plans, and V1 deliberately refuses replacement or
   deletion rather than risking persisted data. See `docs/stacks.md` and
-  `specs/0046`.
+  `specs/0046`. (#183)
+
+- **Disk space admission control** — creating an environment now refuses up
+  front instead of failing halfway through a full disk. Oduflow estimates what
+  creation will actually write (the exact `pg_database_size()` of the template
+  database, filestore copy versus overlay headroom from template metadata, and a
+  remote-clone budget), groups the target directories by device — tablespace
+  directory, workspaces directory, and the PGDATA volume that holds WAL and
+  catalogs — and rejects the request with an actionable
+  `PrerequisiteNotMetError` unless a safety margin survives on every device.
+  Database quota checks became predictive as well: `used + estimated_new_db` is
+  evaluated before `CREATE DATABASE`, and the dashboard's recreate flow runs the
+  check before deleting anything. Only creation is gated, so deletion and
+  cleanup always remain available to recover a full disk, and a failed
+  measurement never blocks. Built-in constants, no new configuration. (#196)
+
+- **Unified host resource planning** — dev PostgreSQL, production PostgreSQL and
+  production Odoo workers used to size themselves independently against the
+  whole host, so a combined deployment could overcommit. One deterministic
+  host-wide CPU/RAM plan now drives all three. Plans carry a fingerprint, so
+  Oduflow detects configs that went stale after a CPU/RAM change or a
+  production-mode switch (and recognises legacy managed configs while leaving
+  hand-written ones alone), and `retune-postgres` gained an explicit
+  preview/apply flow that backs up the previous config and stages Odoo worker
+  settings without restarting anything on its own. See `specs/0044`. (#171)
+
+- **Template and code lineage** — templates now record the branch, commit and
+  snapshot time they were made from, and `create_environment` warns when the
+  checked-out code and the template database come from different points in
+  history, with separate install and upgrade remediation. Lineage checks work
+  with depth-one managed clones and linked worktrees. `BusyError` now names the
+  lock holder and how long it has been held, so an agent can tell active work
+  from a stale lock. Odoo and service commands run through a shell by default
+  with an exact-argv opt-out, and Odoo test runs accept targeted tags and an
+  optional upgrade-free rerun. See `specs/0043`. (#170)
+
+- **Incremental template snapshots** — publishing a template used to copy large
+  database dumps and filestores several times. Dumps now stream straight to
+  their destination (custom archives restore in parallel), publish dumps stage
+  through a quota-aware PostgreSQL exchange mount when one is available, and
+  filestore snapshots use rsync hardlinks so only the environment's delta
+  consumes new disk. Staged publication stays atomic, interrupted staging no
+  longer leaves quota-consuming leftovers, and hardlinked storage is counted
+  correctly. (#180)
+
+- **Module installs and upgrades are verified** — Odoo exits `0` even when
+  `-i`/`-u` targets a module that is unknown, uninstallable, or never actually
+  installed, and Oduflow reported that no-op as success. Installs are now
+  verified against `ir_module_module` before reporting success, and
+  `upgrade_odoo_modules` / `pull_and_apply(upgrade=…)` reject unknown or
+  uninstalled modules instead of returning a false positive. (#195, #186)
+
+- **Two feedback channels** — `report_issue` and a dashboard Feedback modal build
+  a prefilled GitHub issue form (bug, feature request, or general feedback) with
+  a short non-identifying environment summary, so reports stay attributed to the
+  user's own GitHub account and Oduflow never holds GitHub credentials. Separately,
+  an operator-enabled, anonymous channel lets coding agents report friction with
+  the MCP surface itself; it scrubs hosts, addresses, paths, tokens and
+  instance-specific names, and restricts the tool-name field to registered
+  Oduflow tools. See `specs/0045`. (#175, #173)
 
 - **Three-way bundled-file upgrades** — `oduflow upgrade` no longer compares
   only file sizes and overwrites every differing deployed copy. Each team's
@@ -40,7 +99,8 @@
   Existing customized installations without a baseline receive a conservative
   one-time `*.oduflow-new` sidecar. `--force` remains automation-friendly but
   skips only confirmation, `# KEEP` remains a complete opt-out, and generated
-  `postgresql.conf` is now exclusively managed by `retune-postgres`.
+  `postgresql.conf` is now exclusively managed by `retune-postgres`. See
+  `specs/0047`. (#194)
 
 - **Structured Odoo ORM tools** — six new MCP tools give agents the semantics of
   standard Odoo XML-RPC `execute_kw` without writing Python: `odoo_search_read`,
@@ -58,10 +118,61 @@
   also accept Python literals, and Odoo-side failures (`AccessError`,
   `ValidationError`, …) come back as text with the server traceback instead of a
   masked tool error. `run_odoo_shell` remains the escape hatch for a fresh
-  registry, `sudo()`, private methods, dry runs and multi-step transactions.
+  registry, `sudo()`, private methods, dry runs and multi-step transactions. See
+  `specs/0041`. (#166)
 
-- **Module translation tooling** — two new MCP tools cover the i18n loop. `export_module_translations` runs Odoo's own exporter with the environment's real addons path (so `_()` and `_lt()` messages are picked up along with database terms), writes the `.pot`/`.po` into the module's `i18n/` directory under Odoo's own filename rule, and returns a per-type summary rather than the file. `translation_status` lines up the module's terms, the translations actually stored in the database, and the committed `.po` files — reporting the two ways Odoo can fail silently: entries without a `#:` reference import as zero translations without a warning, and entries without a `#. module:` comment abort the import. When a sibling `<module>.pot` exists, status models Odoo's automatic metadata merge before judging either defect. Both tools accept Odoo locale modifiers such as `sr@latin`, handle catalogues up to their documented 5 MB limit, reject partial failed exports, and work across Odoo 15 through 19 — including 19's replacement of the `--i18n-*` options with the `odoo i18n` subcommand — with no dependency on the `ir.translation` model removed in 16.
-- **One-time artifact download links** — files an MCP tool generates inside an environment can now leave it without passing through the agent's context window. Over HTTP the tool returns a single-use `/oduflow-artifact` URL (10-minute TTL) using the configured public hostname; under stdio it returns the checkout path or materializes a private process-lifetime temporary file when the source is a read-only/core module.
+- **Module translation tooling** — two new MCP tools cover the i18n loop. `export_module_translations` runs Odoo's own exporter with the environment's real addons path (so `_()` and `_lt()` messages are picked up along with database terms), writes the `.pot`/`.po` into the module's `i18n/` directory under Odoo's own filename rule, and returns a per-type summary rather than the file. `translation_status` lines up the module's terms, the translations actually stored in the database, and the committed `.po` files — reporting the two ways Odoo can fail silently: entries without a `#:` reference import as zero translations without a warning, and entries without a `#. module:` comment abort the import. When a sibling `<module>.pot` exists, status models Odoo's automatic metadata merge before judging either defect. Both tools accept Odoo locale modifiers such as `sr@latin`, handle catalogues up to their documented 5 MB limit, reject partial failed exports, and work across Odoo 15 through 19 — including 19's replacement of the `--i18n-*` options with the `odoo i18n` subcommand — with no dependency on the `ir.translation` model removed in 16. (#169)
+- **One-time artifact download links** — files an MCP tool generates inside an environment can now leave it without passing through the agent's context window. Over HTTP the tool returns a single-use `/oduflow-artifact` URL (10-minute TTL) using the configured public hostname; under stdio it returns the checkout path or materializes a private process-lifetime temporary file when the source is a read-only/core module. (#169)
+
+- **`translation_status` returns a verdict, not three catalogues** — the tool
+  used to print what it measured: template, database and file counts plus a
+  capped list of missing or stale msgids, which on a module whose Russian
+  catalogue covered 3 of 442 terms meant roughly 450 lines of view bodies to
+  restate what the first two numbers already said. The server holds all three
+  sources and the inference is mechanical, so it now makes the call itself:
+  each language is classified as `OK`, `PARTIAL`, `NOT LOADED`, `NOT
+  TRANSLATED`, `IMPORT SILENTLY DROPPED`, `IMPORT ABORTS`, `NO FILE` or `NOT
+  ACTIVATED`, ordered so failures that mask each other are reported in the order
+  they must be fixed, alongside coverage against the module's own term count and
+  the single call that moves that language forward. (#189)
+
+- **Agent guidance sharpened** — `get_agent_instructions` returned a reference
+  manual whose workflow steps were buried under material an agent can discover
+  from the tools themselves; the bundled guide is now trimmed to the workflow
+  essentials and is loaded once per session rather than before every call.
+  Agents in `repo_url` mode are told to publish the branch with
+  `git push -u origin HEAD` before the first `create_environment`, since Oduflow
+  clones from the remote and cannot see a branch that only exists in the agent's
+  local workspace (`local_path` mode stays exempt). Teardown now states plainly
+  that deleting a finished environment is the expected end of a task rather than
+  an exception, so environments stop piling up until the idle reaper collects
+  them. And `psycopg2.pool.PoolError: The Connection Pool Is Full` finally has a
+  documented remedy — raise `db_maxconn` once (8 → 16, ceiling 32) in the
+  container's `odoo.conf` and restart — with the boundaries spelled out: a
+  recurring pool error means leaking cursors, `FATAL: sorry, too many clients
+  already` is the shared PostgreSQL limit where raising it makes things worse,
+  and the container-local edit is lost on recreation, so permanent changes belong
+  in `.oduflow/odoo.conf`. (#191, #192, #172, #178)
+
+### Dashboard
+
+- **Template settings editor** — a Template Settings modal inspects and edits a
+  template's complete `metadata.json` without filesystem access, through
+  structured controls for the common fields while preserving unknown metadata and
+  keeping raw JSON editing available for advanced repairs. Invalid metadata stays
+  visible and repairable rather than hidden, writes are atomic with optimistic
+  revisions, and template listing is serialized against metadata updates so a
+  derived size refresh cannot overwrite an edit. Repository names containing
+  quotes, backslashes, apostrophes or JavaScript prototype keys are handled
+  safely. (#168, #186)
+
+- **The dashboard stays responsive during long operations** — several blocking
+  Docker, Git, backup and filesystem calls ran directly inside async handlers, so
+  one slow request stalled the event loop for every other one. That work moved to
+  the thread pool, empty and non-JSON gateway responses (a proxy's HTML timeout
+  page, for instance) are parsed safely instead of crashing the UI, save-as-template
+  shows elapsed progress, and Odoo.sh import staging — previously protected only
+  by the blocked loop — is now explicitly serialized. (#174)
 
 ### Bug Fixes
 
@@ -71,7 +182,10 @@
   no longer look like undeclared environment variables, text files up to the
   documented 1 MB limit compare cleanly, route paths are canonicalized before
   duplicate checks and hashing, and `stack validate` verifies every referenced
-  local file.
+  local file. Environments created by the first Stack implementation carry a spec
+  hash but no explicit sanitization label; an ambiguous mismatch there is now
+  treated as replacement-only drift, so an unsanitized database can never be
+  reported as converged. (#185, #187)
 
 - **OAuth clients see the tools again** — in OAuth mode (Traefik routing or an
   explicit `oauth_base_url`) every authenticated request was denied: the OAuth
@@ -80,7 +194,7 @@
   calls it to read a token's environment scope, and fails closed — returned an
   empty tool list on `tools/list` and refused every `tools/call`, on both `/mcp`
   and `/mcp/<env>`. The provider now issues FastMCP's `AccessToken` on every
-  path. Deployments using static Bearer tokens were unaffected.
+  path. Deployments using static Bearer tokens were unaffected. (#184)
 
 - **A wedged Docker call can no longer take the server down silently** — startup
   runs migrations, `init_system` and quotas before the HTTP listener binds, and
@@ -97,14 +211,52 @@
   `containerd.service` with `Restart=always` and no start-rate limit, plus an
   `/etc/needrestart/conf.d/oduflow.conf` override that keeps Oduflow out of
   needrestart's automatic restart batches. Existing installs get the unit and
-  override by re-running `oduflow systemd-install`.
+  override by re-running `oduflow systemd-install`. (#177)
 
 - **`http_request_to_odoo` now requests the path you pass it** — the base URL was
   taken from `get_environment_info()["url"]`, which ends in `/web?debug=1`, so
   appending the path buried it in the query string and every request silently hit
   `/web`. Both this tool and the environment readiness probe now build on the
   path-free `get_env_base_url`, making `wait_for_odoo_ready` check the real
-  `/web/health` instead of passing because the login page rendered.
+  `/web/health` instead of passing because the login page rendered. (#166)
+
+- **Deleting an environment no longer breaks the environment list** — the Docker
+  SDK expands a container listing by inspecting each result, so a container
+  removed inside that window raised `NotFound` and took down environment listing
+  and the container-statistics endpoint. Both paths now ignore containers that
+  disappear mid-listing; the Docker SDK requirement moves to 3.3.0 or newer,
+  where `ignore_removed` exists. (#193)
+
+- **Auto-install waits for the Odoo registry** — Odoo's HTTP listener can answer
+  `/web/health` before registry preloading finishes, and starting a second Odoo
+  process at that moment races the serving one, which cloned Odoo 15 databases
+  hit while recreating registry signaling sequences. Readiness is now a
+  cookie-aware `/web/login?db=…` probe against the target database rather than a
+  database-independent health check. (#176)
+
+- **Translation export creates a missing `i18n/` directory** — exporting a
+  module's first catalogue wrote through `write_file_in_environment`, whose
+  `mkdir -p` ran as the unprivileged Odoo user against a root-owned checkout and
+  failed silently; the following archive upload then surfaced as a raw Docker
+  404. Only the missing directory tree is now created as root and handed to the
+  requesting user, and archive/ownership failures come back as ordinary
+  `ExternalCommandError` responses. (#190)
+
+- **A truncated state file no longer crashes a tool** — `activity._load` and
+  `port_registry._load_registry` called `.items()` on whatever `json.load`
+  returned while catching only decode/OS errors, so a file holding valid JSON of
+  the wrong shape (a truncated write leaving `null`) raised `AttributeError`
+  straight through the handler — aborting `stop_environment` over a corrupt
+  best-effort tracking file. Both loaders now check the parsed shape. (#165)
+
+- **Odoo.sh imports are resumable, and scoped access fails closed** — a sweep of
+  the actionable review findings from earlier pull requests: import retries no
+  longer lose staged artifacts, template finalization is retryable with explicit
+  addon wiring under a strict default and an opt-in best-effort policy, an
+  incomplete addon template is no longer reported ready, scoped MCP/token
+  handling fails closed instead of open, duplicate token scans and inactive
+  dependency files triggering restarts are gone, and WebSocket validation,
+  accessibility and CI concurrency are hardened alongside. (#182)
 
 ### Documentation & Testing
 
@@ -114,8 +266,18 @@
   is documented, and invalid named-option examples for `oduflow call` were
   corrected. `llms-full.txt` is now generated from every current manual page,
   with tests preventing undocumented commands, tools, routes, settings, or
-  stale LLM output.
-- **Record the translation tooling decision** — specs/0042 documents why the tools build on Odoo's own exporter instead of a hand-rolled term extractor, why one export primitive answers both "what is translatable" and "what actually loaded" across Odoo majors, and why retrieving a generated file needed a new one-time-token route.
+  stale LLM output. `oduflow upgrade --force` makes bundled-file refreshes
+  unattended while keeping warnings and `# KEEP` behaviour, and Ruff is pinned to
+  a stable lint profile enforced in CI. (#167)
+- **Record the translation tooling decision** — specs/0042 documents why the tools build on Odoo's own exporter instead of a hand-rolled term extractor, why one export primitive answers both "what is translatable" and "what actually loaded" across Odoo majors, and why retrieving a generated file needed a new one-time-token route. (#169)
+- **Mutation testing across the pure-logic core** — a scoped `[tool.mutmut]`
+  configuration now covers 39 modules, with the tests needed to kill the mutants
+  it surfaced: killed mutants go from 1553 to 6409 and uncovered mutants from 585
+  to 10, while the unit suite grows from 1249 to 1723 tests and still runs in
+  about eight seconds. Almost every finding was a missing assertion rather than a
+  bug — the one real defect it caught is the malformed-JSON crash above. A flaky
+  chunkstore incremental-backup test that asserted on non-deterministic CDC chunk
+  counts was rewritten around seed-independent invariants. (#165, #188, #179)
 
 ## v1.68.1
 
