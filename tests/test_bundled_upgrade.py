@@ -321,6 +321,54 @@ def test_force_clears_sidecars_left_by_an_earlier_run(tmp_path: Path):
     assert bundled_upgrade.plan_reconcile(managed).kind == "up-to-date"
 
 
+def test_force_clears_a_conflict_sidecar_left_by_an_earlier_run(tmp_path: Path):
+    managed = _managed(
+        tmp_path,
+        source=b"value=upstream\n",
+        local=b"value=local\n",
+        baseline=b"value=base\n",
+    )
+    bundled_upgrade.apply_reconcile(bundled_upgrade.plan_reconcile(managed))
+    assert managed.merge_path.exists()
+    assert managed.pending_path.exists()
+
+    forced = bundled_upgrade.plan_reconcile(managed, force=True)
+    bundled_upgrade.apply_reconcile(forced)
+
+    assert forced.kind == "overwrite"
+    assert managed.destination.read_bytes() == b"value=upstream\n"
+    assert managed.baseline_path.read_bytes() == b"value=upstream\n"
+    assert managed.backup_path.read_bytes() == b"value=local\n"
+    assert not managed.merge_path.exists()
+    assert not managed.pending_path.exists()
+    assert not managed.new_path.exists()
+    assert not managed.error_path.exists()
+    assert bundled_upgrade.plan_reconcile(managed).kind == "up-to-date"
+
+
+def test_force_overwrites_a_conflict_sidecar_whose_baseline_is_missing(tmp_path: Path):
+    managed = _managed(
+        tmp_path,
+        source=b"value=upstream\n",
+        local=b"value=local\n",
+        baseline=None,
+    )
+    managed.merge_path.write_bytes(b"stale merge artifact\n")
+
+    assert bundled_upgrade.plan_reconcile(managed).kind == "error"
+
+    forced = bundled_upgrade.plan_reconcile(managed, force=True)
+    bundled_upgrade.apply_reconcile(forced)
+
+    assert forced.kind == "overwrite"
+    assert managed.destination.read_bytes() == b"value=upstream\n"
+    assert managed.baseline_path.read_bytes() == b"value=upstream\n"
+    assert managed.backup_path.read_bytes() == b"value=local\n"
+    assert not managed.merge_path.exists()
+    assert not managed.pending_path.exists()
+    assert bundled_upgrade.plan_reconcile(managed).kind == "up-to-date"
+
+
 def test_force_overwrites_when_merging_is_unavailable(tmp_path: Path):
     managed = _managed(
         tmp_path,
