@@ -81,7 +81,7 @@ resource is in progress and to retry, instead of the request hanging.
 ## Evolution
 
 - **2026-08-17 — the team lock stops being the catch-all**
-  ([[0049-granular-resource-locks]]). The three scopes proved right; the *choice*
+  ([[0050-granular-resource-locks]]). The three scopes proved right; the *choice*
   of scope did not. Per-team had become the default for anything that was not one
   environment — services, volumes, extra repos, credentials, presets, backup
   pruning, template listing — which, through the team↔environment mutual

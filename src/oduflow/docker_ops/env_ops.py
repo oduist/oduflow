@@ -40,6 +40,7 @@ from oduflow.env_tokens import MCP_TOKEN_LABEL, generate_token, invalidate_cache
 from oduflow.errors import (
     ConflictError,
     ExternalCommandError,
+    FlowError,
     NotFoundError,
     PrerequisiteNotMetError,
     ProtectedError,
@@ -3068,6 +3069,7 @@ def pull_environment(
     upgrade: list[str] | None = None,
     restart: bool = False,
     strict: bool = False,
+    presynced: tuple[str, list[str]] | None = None,
 ) -> dict[str, Any]:
     """Sync code into an environment and apply the right Odoo action.
 
@@ -3079,6 +3081,12 @@ def pull_environment(
     * **live-mount** (``oduflow.local_path`` label, gated by allow_local_path) — the
       agent's checkout is already bind-mounted, so there is nothing to pull;
       changes are detected from Oduflow's last successful local snapshot.
+
+    ``presynced`` is for callers that already moved the checkout themselves and
+    hold the resulting ``(old_head, changed_files)`` — currently
+    :func:`switch_environment_branch`. Pulling again would find the clone
+    already at origin's tip and report "up to date", losing the very diff that
+    has to be applied, so the sync step is skipped and those values are used.
 
     Action selection:
 
@@ -3132,11 +3140,15 @@ def pull_environment(
         classify_units.append((repo_path, base_ref, all_changed))
         main_changed_files = all_changed
     else:
-        _trace("pull_environment(%s): git pull started", env_name)
-        git_branch = container_obj.labels.get("oduflow.git_branch", env_name)
-        old_head, changed_files = pull_repo(
-            repo_path, git_branch, cred_file=team.git_credentials_file()
-        )
+        if presynced is not None:
+            _trace("pull_environment(%s): using pre-synced checkout", env_name)
+            old_head, changed_files = presynced
+        else:
+            _trace("pull_environment(%s): git pull started", env_name)
+            git_branch = container_obj.labels.get("oduflow.git_branch", env_name)
+            old_head, changed_files = pull_repo(
+                repo_path, git_branch, cred_file=team.git_credentials_file()
+            )
         base_ref = old_head
         classify_units.append((repo_path, old_head, changed_files))
 
@@ -3325,6 +3337,267 @@ def pull_environment(
         result["warnings"] = warnings
     if is_local and int(result.get("exit_code", 0)) == 0:
         _write_local_snapshot(repo_path, env_name, team)
+    return result
+
+
+# Module directories come from a git tree, so they are already tame — but the
+# preflight interpolates them into a SQL IN(...) list, so only accept names that
+# Odoo itself would accept as a module.
+_MODULE_NAME_RE = re.compile(r"^[a-zA-Z0-9_]+$")
+
+
+def _dropped_module_warnings(
+    settings: Settings,
+    team: TeamSettings,
+    env_name: str,
+    repo_path: str,
+    target_ref: str,
+) -> list[str]:
+    """Warn when a target branch drops a module this database has installed.
+
+    The failure mode reuse introduces and a fresh environment cannot have: the
+    database outlives the code. Switching to a branch that never carried module
+    X leaves X installed with nothing to load it from.
+
+    Advisory on purpose. A module can legitimately come from extra-addons or
+    the image, the query needs a reachable database, and neither is worth
+    turning a routine switch into a hard failure — so this reports and only
+    ``strict`` refuses. An unanswerable question yields no warning.
+    """
+    from oduflow.git_ops import tree_modules
+
+    try:
+        dropped = tree_modules(repo_path, "HEAD") - tree_modules(repo_path, target_ref)
+    except FlowError as exc:
+        logger.info("Skipping dropped-module preflight for '%s': %s", env_name, exc)
+        return []
+
+    candidates = tuple(sorted(name for name in dropped if _MODULE_NAME_RE.match(name)))
+    if not candidates:
+        return []
+
+    from oduflow.docker_ops.odoo_ops import _get_module_states
+
+    try:
+        states = _get_module_states(settings, team, env_name, candidates)
+    except Exception as exc:
+        logger.info(
+            "Could not read module states for '%s' during branch switch: %s",
+            env_name,
+            exc,
+        )
+        return []
+
+    installed = [name for name in candidates if states.get(name) == "installed"]
+    if not installed:
+        return []
+    return [
+        "The target branch does not provide these modules, which are installed "
+        f"in the database: {', '.join(installed)}. Odoo will start without their "
+        "code. Uninstall them first, or create a separate environment for this "
+        "branch."
+    ]
+
+
+def switch_environment_branch(
+    settings: Settings,
+    team: TeamSettings,
+    env_name: str,
+    branch: str,
+    *,
+    install: list[str] | None = None,
+    upgrade: list[str] | None = None,
+    restart: bool = False,
+    strict: bool = False,
+    extra_addons: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    """Point an existing environment at another git branch and apply the diff.
+
+    The environment is the reusable unit. Its name, database, filestore,
+    hostname, ports, credentials and scoped MCP token all stay exactly as they
+    are — only the code it serves changes. That is what turns a finished
+    branch's environment into the starting point for the next task instead of
+    something to delete and provision again ([[0048]] pooled the hostname; this
+    pools the whole environment).
+
+    Order matters:
+
+    1. Fetch the target branch. A branch that was never pushed fails here, with
+       nothing mutated.
+    2. Preflight the database against the target tree (see
+       :func:`_dropped_module_warnings`); ``strict`` refuses instead of warning.
+    3. Flip the ``oduflow.git_branch`` label — deliberately *before* the
+       checkout. Labels are frozen at container creation, so this recreates the
+       container; if it fails, the environment is still on the old branch in
+       both label and tree. The reverse order would leave a switched tree that
+       the next pull silently resets back to the old branch.
+    4. Check out the branch and hand the resulting diff to
+       :func:`pull_environment`, so the switch shares one implementation of
+       classification, the guardrail, extra-addons mounts and apply.
+    """
+    from oduflow.git_ops import checkout_branch, fetch_branch, is_git_repository
+    from oduflow.naming import PROD_ENV_PREFIX
+
+    # Productions deploy from productions.json and keep a deploy log for
+    # rollback; moving their branch behind that record would strand both. The
+    # MCP tool is already fenced off by the dev-tool namespace check, so this is
+    # the guard for the REST route and any direct caller.
+    if env_name.startswith(PROD_ENV_PREFIX):
+        raise ConflictError(
+            f"'{env_name}' is a production environment. Change the branch it "
+            "deploys with update_production, which records the deploy and keeps "
+            "rollback available."
+        )
+
+    client = get_client()
+    odoo_container_name = get_resource_name(
+        env_name, "odoo", settings.prefix, team.team_id
+    )
+    try:
+        container_obj = client.containers.get(odoo_container_name)
+    except docker.errors.NotFound:
+        raise NotFoundError(
+            f"Environment '{env_name}' does not exist. Use create_environment first."
+        )
+
+    labels = dict(container_obj.labels or {})
+    if labels.get("oduflow.prod") == "true":
+        raise ConflictError(
+            f"Environment '{env_name}' is a production container. Change the "
+            "branch it deploys with update_production."
+        )
+    local_path = labels.get("oduflow.local_path", "")
+    if local_path:
+        raise PrerequisiteNotMetError(
+            f"Environment '{env_name}' is live-mounted from {local_path}, so its "
+            "git state belongs to that checkout, not to Oduflow. Switch the "
+            "branch there and call pull_and_apply."
+        )
+
+    current_branch = labels.get("oduflow.git_branch", env_name)
+    repo_path = get_repo_path(env_name, team.workspaces_dir)
+    if not is_git_repository(repo_path):
+        raise NotFoundError(
+            f"Repository for environment '{env_name}' not found at {repo_path}"
+        )
+
+    extra_override = (
+        _normalize_extra_addons(extra_addons) if extra_addons is not None else None
+    )
+
+    if branch == current_branch and extra_override is None:
+        # Not an error: the caller wanted this environment on this branch, and it
+        # is. Pull instead, so "switch" is safe to call at the start of any task.
+        result = pull_environment(
+            settings,
+            team,
+            env_name,
+            install=install,
+            upgrade=upgrade,
+            restart=restart,
+            strict=strict,
+        )
+        result["branch"] = branch
+        result["previous_branch"] = current_branch
+        result["branch_switched"] = False
+        result["message"] = (
+            f"Environment '{env_name}' is already on branch '{branch}'; pulled it "
+            f"instead. {result.get('message', '')}".strip()
+        )
+        return result
+
+    target_sha = fetch_branch(repo_path, branch, cred_file=team.git_credentials_file())
+    warnings = _dropped_module_warnings(settings, team, env_name, repo_path, target_sha)
+    if strict and warnings:
+        return {
+            "action": "blocked",
+            "warnings": warnings,
+            "branch": current_branch,
+            "requested_branch": branch,
+            "branch_switched": False,
+            "changed_files": [],
+            "message": (
+                f"Guardrail (strict) blocked the switch to '{branch}': it does not "
+                "carry every module installed in this database. Uninstall them, "
+                "use a separate environment for this branch, or pass "
+                "strict=False to switch anyway."
+            ),
+        }
+
+    label_overrides = {"oduflow.git_branch": branch}
+    if extra_override is not None:
+        label_overrides["oduflow.extra_addons"] = json.dumps(extra_override)
+    logger.info(
+        "Switching environment branch",
+        extra={
+            "env_name": env_name,
+            "from_branch": current_branch,
+            "to_branch": branch,
+        },
+    )
+    # Dependencies are deliberately not reinstalled here: the checkout is still
+    # on the old branch at this point. A changed requirements.txt / apt list is
+    # part of the diff below, which pull_environment installs before restarting.
+    update_environment(
+        settings,
+        team,
+        env_name,
+        label_overrides=label_overrides,
+        pull_image=False,
+        install_dependencies=False,
+    )
+
+    try:
+        old_head, new_head, changed_files = checkout_branch(repo_path, branch)
+    except FlowError as exc:
+        raise ExternalCommandError(
+            "git checkout",
+            1,
+            f"Environment '{env_name}' is now labelled with branch '{branch}', but "
+            f"its checkout is still on '{current_branch}': {exc} Re-run "
+            "switch_branch (or pull_and_apply) once the clone is healthy.",
+        ) from exc
+
+    # The coding agent's own checkout for this environment follows the switch;
+    # uncommitted work there is preserved by clone-env.sh, which warns instead.
+    _agent_add_env(
+        client,
+        settings,
+        team,
+        env_name,
+        labels.get(settings.repo_label, ""),
+        branch,
+        labels.get("oduflow.git_user", ""),
+    )
+
+    result = pull_environment(
+        settings,
+        team,
+        env_name,
+        install=install,
+        upgrade=upgrade,
+        restart=restart,
+        strict=strict,
+        presynced=(old_head, changed_files),
+    )
+
+    switched = f"Switched '{env_name}' from '{current_branch}' to '{branch}'."
+    # "Already up to date" is the pull vocabulary and reads as a contradiction
+    # right after a switch; what it means here is that the two branches leave
+    # the running Odoo with nothing to catch up on.
+    tail = (
+        "No code difference to apply."
+        if result.get("action") == "none"
+        else str(result.get("message", ""))
+    )
+    result["branch"] = branch
+    result["previous_branch"] = current_branch
+    result["branch_switched"] = True
+    result["old_head"] = old_head
+    result["new_head"] = new_head
+    result["message"] = f"{switched} {tail}".strip()
+    if warnings:
+        result["warnings"] = warnings + list(result.get("warnings") or [])
     return result
 
 

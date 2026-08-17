@@ -1,4 +1,4 @@
-# 0049 — Resource-scoped locks: the team lock stops being the catch-all
+# 0050 — Resource-scoped locks: the team lock stops being the catch-all
 
 **Status:** Adopted
 **Type:** Architecture

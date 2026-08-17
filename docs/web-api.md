@@ -47,6 +47,7 @@ than a JSON API. Production routes are registered only when
 | `POST` | `/api/environments/{branch}/stop` | Stop an environment |
 | `POST` | `/api/environments/{branch}/restart` | Restart its Odoo container |
 | `POST` | `/api/environments/{branch}/sync` | Pull and automatically apply code changes |
+| `POST` | `/api/environments/{branch}/switch-branch` | Move the environment onto another git branch, keeping DB, filestore and URL, then apply the difference. Body: `branch` |
 | `POST` | `/api/environments/{branch}/update` | Recreate the container while preserving DB and filestore. Optional body: `env_vars`, `odoo_image` |
 | `POST` | `/api/environments/{branch}/recreate` | Delete and recreate with the recorded parameters |
 | `POST` | `/api/environments/{branch}/delete` | Delete the environment |

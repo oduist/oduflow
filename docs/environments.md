@@ -183,6 +183,56 @@ oduflow call update_environment feature-login "WORKERS=4,LIMIT_TIME_CPU=900" odo
 oduflow call delete_environment feature-login
 ```
 
+### Reusing an Environment for the Next Branch
+
+An environment is not tied for life to the branch it was created from. When a
+branch is finished — PR merged, worktree gone — point the same environment at the
+next branch instead of deleting it and provisioning a new one:
+
+```bash
+# Same environment, next branch. The branch must already exist on origin.
+oduflow call switch_branch '{"env_name": "dev1", "branch": "feature/next-task"}'
+```
+
+Everything except the code stays: the environment name, its database and
+filestore, its hostname and URL, its ports, its database credentials and its
+scoped MCP endpoint and token. This matters twice over — provisioning is skipped
+(no fresh clone, no template database copy), and the MCP client you already
+pointed at `/mcp/dev1` keeps working, because the address never changed.
+
+After the switch, Oduflow diffs the two branch tips and applies the same logic
+as [Smart Pull](#smart-pull--intelligent-change-detection). Pass
+`install` / `upgrade` / `restart` when you know what changed, or leave them empty
+to let Oduflow classify the difference:
+
+```bash
+oduflow call switch_branch '{"env_name": "dev1", "branch": "feature/next-task", "upgrade": "sale_custom"}'
+```
+
+Since the database is kept, it can outlive the code that created it. If the
+target branch never carried a module that is installed in this database, the
+response says so, and `strict: true` refuses the switch instead of warning:
+
+```bash
+oduflow call switch_branch '{"env_name": "dev1", "branch": "hotfix/19.0", "strict": true}'
+```
+
+Two limits are worth knowing:
+
+- **The branch must be pushed.** Oduflow switches its own managed clone, which
+  can only fetch from origin. A branch that exists only on your machine fails
+  with a "push it first" message and changes nothing.
+- **Live-mounted environments are rejected.** With `local_path` the checkout is
+  yours, not Oduflow's; switch the branch there and call `pull_and_apply`.
+
+On the dashboard the branch chip (`⎇ branch`) on each environment card is also
+the control: click it to switch. Extra addon repositories can move along with
+the main repo by passing `extra_addons` (`"enterprise:19.0"`).
+
+Reuse and recreate answer different questions: switch the branch when the
+database is still a reasonable starting point, and **Recreate** (below) when you
+want it replaced from the template.
+
 ### Recreating Environments
 
 The **Recreate** action (available via the Web Dashboard and REST API) deletes an environment and immediately creates a fresh one using the same parameters (repo URL, Odoo image, template, extra addons). This is useful when you want a clean slate without manually re-entering all environment settings.

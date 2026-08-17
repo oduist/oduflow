@@ -248,7 +248,15 @@
   }
   .env-header .left { display: flex; align-items: center; gap: 10px; }
   .branch-name { font-weight: 600; font-size: var(--text-lg); }
-  .git-branch { font-size: var(--text-xs); color: var(--text-dim); font-weight: 400; }
+  .git-branch { font-size: var(--text-xs); color: var(--text-dim); font-weight: 400; font-family: var(--font-mono); }
+  /* An environment is reusable: the branch it serves is a property you can
+     change, so the chip that shows it is also the affordance that changes it. */
+  .git-branch[role="button"] {
+    cursor: pointer;
+    border-bottom: 1px dashed transparent;
+    transition: border-color 0.15s, color 0.15s;
+  }
+  .git-branch[role="button"]:hover { border-bottom-color: var(--accent); color: var(--accent); }
   .badge {
     display: inline-block;
     padding: 2px 8px;
@@ -801,6 +809,8 @@
   .sync-action-refresh { background: color-mix(in oklab, var(--accent) 15%, transparent); color: var(--accent); }
   .sync-action-restart { background: color-mix(in oklab, var(--yellow) 15%, transparent); color: var(--yellow); }
   .sync-action-install, .sync-action-upgrade { background: color-mix(in oklab, var(--green) 15%, transparent); color: var(--green); }
+  .sync-action-blocked { background: color-mix(in oklab, var(--red) 15%, transparent); color: var(--red); }
+  .sync-warnings li { font-size: var(--text-xs); line-height: 1.6; color: var(--yellow); margin-left: 16px; }
   .sync-message { font-size: var(--text-md); margin-bottom: 12px; }
   .sync-section { margin-bottom: 12px; }
   .sync-section-title { font-size: var(--text-xs); font-weight: 600; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px; }
@@ -1282,7 +1292,7 @@
     .toast { transition: opacity 0.1s; transform: none; }
     .toast.show { transform: none; }
     .usage-bar-fill { transition: none; }
-    .btn, .tab-btn, .repo-link, .copy-db, .license-badge { transition: none; }
+    .btn, .tab-btn, .repo-link, .copy-db, .git-branch[role="button"], .license-badge { transition: none; }
   }
 </style>
 </head>
@@ -1977,6 +1987,27 @@
     </div>
   </div>
 </div>
+<div class="modal-overlay" id="switch-branch-modal" onclick="closeSwitchBranch(event)">
+  <div class="modal modal-sm">
+    <div class="modal-header">
+      <h2 id="switch-branch-title">Switch branch</h2>
+      <button class="modal-close" onclick="closeSwitchBranch()">&times;</button>
+    </div>
+    <div class="modal-body">
+      <p class="modal-note">Reuse this environment for another branch instead of creating a new one. The database, filestore, hostname and URL are kept — only the code changes. The branch must already exist on origin; Oduflow then installs, upgrades or restarts as the difference between the two branches requires.</p>
+      <div class="form-group">
+        <label for="switch-branch-input">Target branch</label>
+        <input id="switch-branch-input" class="mono-input" type="text" placeholder="feature/next-task"
+               onkeydown="if (event.key === 'Enter') { event.preventDefault(); confirmSwitchBranch(); }">
+        <p class="modal-note">Currently on <strong id="switch-branch-current"></strong>.</p>
+      </div>
+      <div class="form-actions">
+        <button class="btn" onclick="closeSwitchBranch()">Cancel</button>
+        <button class="btn-create" onclick="confirmSwitchBranch()">Switch branch</button>
+      </div>
+    </div>
+  </div>
+</div>
 <div class="modal-overlay" id="mcp-access-modal" onclick="closeMcpAccess(event)">
   <div class="modal modal-sm">
     <div class="modal-header">
@@ -2372,13 +2403,19 @@ function closeSyncResult(event) {
   hideModal('sync-result-modal');
 }
 
-function showSyncResult(branch, result) {
-  var actionLabels = {none: 'No changes', refresh: 'Refresh', restart: 'Restart', install: 'Install', upgrade: 'Upgrade'};
+function showSyncResult(branch, result, title) {
+  var actionLabels = {none: 'No changes', refresh: 'Refresh', restart: 'Restart', install: 'Install', upgrade: 'Upgrade', blocked: 'Blocked'};
   var action = result.action || 'none';
   var label = actionLabels[action] || action;
 
   var html = '<span class="sync-result-action sync-action-' + action + '">' + label + '</span>';
   html += '<div class="sync-message">' + esc(result.message || '') + '</div>';
+
+  if (result.warnings && result.warnings.length) {
+    html += '<div class="sync-section"><div class="sync-section-title">Warnings</div><ul class="sync-warnings">';
+    result.warnings.forEach(function(w) { html += '<li>' + esc(w) + '</li>'; });
+    html += '</ul></div>';
+  }
 
   if (result.modules_installed && result.modules_installed.length) {
     html += '<div class="sync-section"><div class="sync-section-title">Installed modules</div><div class="sync-modules">';
@@ -2403,7 +2440,7 @@ function showSyncResult(branch, result) {
     html += '<div class="sync-section"><div class="sync-section-title">Odoo output</div><div class="sync-output">' + esc(result.output) + '</div></div>';
   }
 
-  document.getElementById('sync-result-title').textContent = 'Sync — ' + branch;
+  document.getElementById('sync-result-title').textContent = (title || 'Sync') + ' — ' + branch;
   document.getElementById('sync-result-body').innerHTML = html;
   showModal('sync-result-modal');
 }
@@ -2602,7 +2639,15 @@ function renderEnvironments(envs, force) {
           '<span class="branch-name copy-db" role="button" tabindex="0" ' +
             'title="Copy environment name" aria-label="Copy environment name" ' +
             'onclick="copyToClipboard(\'' + escAttr(env.branch) + '\')">' + esc(env.branch) + '</span>' +
-          (env.git_branch && env.git_branch !== env.branch ? '<span class="git-branch">⎇ ' + esc(env.git_branch) + '</span>' : '') +
+          // The branch is a mutable property of a reusable environment, so it is
+          // always on the card (not only when it differs from the name) and is
+          // itself the control that switches it. Live-mount has no managed clone.
+          (env.local_path
+            ? ''
+            : '<span class="git-branch" role="button" tabindex="0" title="Switch this environment to another branch" ' +
+                'onclick="openSwitchBranch(\'' + escAttr(env.branch) + '\')" ' +
+                'onkeydown="if (event.key === \'Enter\' || event.key === \' \') { event.preventDefault(); openSwitchBranch(\'' + escAttr(env.branch) + '\'); }"' +
+                '>⎇ ' + esc(env.git_branch || env.branch) + '</span>') +
           repoLinksHtml +
           '<span class="badge ' + badgeClass(env.status) + '"' +
             (env.status === 'partial' ? ' title="' + env.containers.filter(function(c) { return c.status === 'running'; }).length + ' of ' + env.containers.length + ' containers running"' : '') +
@@ -2640,6 +2685,10 @@ function renderEnvironments(envs, force) {
                 (env.note ? 'Edit note' : 'Add note') + '</button>' +
               '<button role="menuitem" title="' + (env.protected ? 'Allow Stop, Update, Recreate and Delete again' : 'Disable Stop, Update, Recreate and Delete') + '" onclick="doProtect(\'' + escAttr(env.branch) + '\',' + (env.protected ? 'true' : 'false') + ')" ' + dis + '>' +
                 (env.protected ? 'Unprotect' : 'Protect') + '</button>' +
+              (env.local_path
+                ? ''
+                : '<button role="menuitem" onclick="openSwitchBranch(\'' + escAttr(env.branch) + '\')" ' + dis +
+                    'title="Reuse this environment for another branch, keeping its database and URL">Switch branch</button>') +
               '<button role="menuitem" onclick="doUpdate(\'' + escAttr(env.branch) + '\')" ' + dis +
                 (env.protected ? 'disabled title="Environment is protected"' : 'title="Recreate the container, keep the database and filestore"') + '>Update</button>' +
               '<button role="menuitem" onclick="doRecreate(\'' + escAttr(env.branch) + '\')" ' + dis +
@@ -3120,6 +3169,53 @@ async function loadStats() {
   } catch (e) {
     // stats are optional, don't show errors
   }
+}
+
+var _switchBranchEnv = '';
+
+function openSwitchBranch(branch) {
+  var env = cachedEnvs.find(function(e) { return e.branch === branch; });
+  if (env && env.local_path) {
+    showToast('Live-mounted: switch the branch in your own checkout, then Sync', true);
+    return;
+  }
+  _switchBranchEnv = branch;
+  document.getElementById('switch-branch-title').textContent = 'Switch branch — ' + branch;
+  document.getElementById('switch-branch-current').textContent = (env && (env.git_branch || env.branch)) || branch;
+  var input = document.getElementById('switch-branch-input');
+  input.value = '';
+  showModal('switch-branch-modal');
+  input.focus();
+}
+
+function closeSwitchBranch(event) {
+  if (event && event.target !== event.currentTarget) return;
+  hideModal('switch-branch-modal');
+}
+
+async function confirmSwitchBranch() {
+  var target = document.getElementById('switch-branch-input').value.trim();
+  if (!target) { showToast('Enter the target branch', true); return; }
+  var branch = _switchBranchEnv;
+  hideModal('switch-branch-modal');
+  setBusy(branch, 'Switching branch');
+  try {
+    const r = await fetch(API + '/' + encodeURIComponent(branch) + '/switch-branch', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({branch: target})
+    });
+    const data = await readResult(r);
+    if (data.ok) {
+      showSyncResult(branch, data.result, 'Switch branch');
+    } else {
+      showToast(data.error || 'Switch failed', true);
+    }
+  } catch (e) {
+    showToast('Connection error: ' + e.message, true);
+  }
+  clearBusy(branch);
+  await loadEnvironments(true);
 }
 
 async function doUpdate(branch) {

@@ -926,6 +926,43 @@ def _build_routes(
         finally:
             locks.release_env(branch)
 
+    async def api_switch_branch(request: Request) -> JSONResponse:
+        branch = request.path_params["branch"]
+        team = _get_ui_team(request)
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        target = ((body or {}).get("branch") or "").strip()
+        if not target:
+            return JSONResponse(
+                {"ok": False, "error": "A target branch is required."}, status_code=400
+            )
+        try:
+            locks.acquire_env(branch, team.team_id)
+        except BusyError as e:
+            return _error_response(e)
+        try:
+            settings = get_settings()
+            activity.touch(team, branch)
+            result = await _offload(
+                env_ops.switch_environment_branch,
+                settings,
+                team,
+                branch,
+                target,
+            )
+            return JSONResponse({"ok": True, "result": result})
+        except FlowError as e:
+            return _error_response(e)
+        except Exception:
+            logger.exception("Unexpected error in api_switch_branch")
+            return JSONResponse(
+                {"ok": False, "error": "Internal server error."}, status_code=500
+            )
+        finally:
+            locks.release_env(branch)
+
     def api_delete(request: Request) -> JSONResponse:
         branch = request.path_params["branch"]
         team = _get_ui_team(request)
@@ -4771,6 +4808,11 @@ def _build_routes(
         Route("/api/environments/{branch:path}/stop", api_stop, methods=["POST"]),
         Route("/api/environments/{branch:path}/restart", api_restart, methods=["POST"]),
         Route("/api/environments/{branch:path}/sync", api_sync, methods=["POST"]),
+        Route(
+            "/api/environments/{branch:path}/switch-branch",
+            api_switch_branch,
+            methods=["POST"],
+        ),
         Route("/api/environments/{branch:path}/protect", api_protect, methods=["POST"]),
         Route(
             "/api/environments/{branch:path}/unprotect", api_unprotect, methods=["POST"]
