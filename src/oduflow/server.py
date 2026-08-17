@@ -49,7 +49,15 @@ from oduflow.docker_ops import (
     volume_ops,
 )
 from oduflow.errors import FlowError, NotFoundError, PrerequisiteNotMetError
-from oduflow.locking import LockManager
+from oduflow.locking import (
+    PROD_KEY_PREFIX,
+    LockManager,
+    credentials_lock_key,
+    prod_backups_lock_key,
+    service_lock_key,
+    service_preset_lock_key,
+    volume_lock_key,
+)
 from oduflow.output_cache import CachedOutput, OutputCache
 from oduflow.po_tools import PoEntry
 from oduflow.settings import Settings, TeamSettings, find_toml
@@ -313,6 +321,21 @@ def _wake_for_work(
     return ""
 
 
+def _wake_for_rpc(settings: Settings, team: TeamSettings, env_name: str) -> str:
+    """Wake helper for the lock-free ``odoo_*`` tools.
+
+    They take no environment lock (XML-RPC against a live Odoo is
+    transactional), so they record activity themselves — otherwise an
+    environment driven purely through these tools would look idle to the reaper
+    and be auto-stopped mid-session.
+    """
+    try:
+        activity.touch(team, env_name)
+    except Exception:
+        pass  # activity tracking is best-effort
+    return _wake_for_work(settings, team, env_name)
+
+
 def with_team_lock(fn: Callable[P, R]) -> Callable[P, R]:
     """Acquire a per-team lock before executing the tool function."""
 
@@ -329,10 +352,48 @@ def with_team_lock(fn: Callable[P, R]) -> Callable[P, R]:
     return wrapper
 
 
+def with_key_lock(
+    key_fn: Callable[[str, str], str], require_name: bool = True
+) -> Callable[[Callable[P, R]], Callable[P, R]]:
+    """Serialise a tool on a narrow resource key instead of the whole team.
+
+    ``key_fn(team_id, name)`` builds the key from the caller's team and the
+    tool's first argument (``name``); pass ``require_name=False`` for tools
+    whose key is team-scoped only — their first positional argument is not a
+    resource name and is ignored.
+
+    These keys are deliberately acquired *without* a ``team_id``, so they stay
+    outside the team↔environment mutual exclusion: deleting a service must not
+    wait for a ten-minute ``create_environment``, and vice versa.
+    """
+
+    def decorator(fn: Callable[P, R]) -> Callable[P, R]:
+        @functools.wraps(fn)
+        def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
+            name = ""
+            if require_name:
+                raw_name = kwargs.get("name") or (args[0] if args else None)
+                if not raw_name:
+                    raise ToolError("name is required")
+                name = cast(str, raw_name)
+            ctx = cast("Context | None", kwargs.get("ctx"))
+            team = _resolve_team(ctx)
+            key = key_fn(team.team_id, name)
+            _locks.acquire_env(key, operation=fn.__name__)
+            try:
+                return fn(*args, **kwargs)
+            finally:
+                _locks.release_env(key)
+
+        return wrapper
+
+    return decorator
+
+
 def prod_lock_key(team_id: str, name: str) -> str:
     """Lock key for a production — team-scoped so two teams' same-named
     productions never contend (unlike raw env keys)."""
-    return f"prod:{team_id}:{name}"
+    return f"{PROD_KEY_PREFIX}{team_id}:{name}"
 
 
 _PRODUCTION_DISABLED_MESSAGE = (
@@ -381,7 +442,7 @@ def with_prod_lock(fn: Callable[P, R]) -> Callable[P, R]:
 
 @mcp.tool()
 @handle_errors
-@with_team_lock
+@with_key_lock(credentials_lock_key, require_name=False)
 def setup_repo_auth(repo_url: str, ctx: Context | None = None) -> str:
     """
     Cache git credentials for a private repository.
@@ -406,12 +467,15 @@ def setup_repo_auth(repo_url: str, ctx: Context | None = None) -> str:
 
 # =============================================================================
 # MCP Tools — Extra addons repos
+#
+# No tool lock here: extra_addons.py already serialises every mutator on a
+# per-repo RLock, and delete refuses while any managed container references the
+# repo. A team lock only added false contention with unrelated work.
 # =============================================================================
 
 
 @mcp.tool()
 @handle_errors
-@with_team_lock
 def add_extra_repo(name: str, repo_url: str, ctx: Context | None = None) -> str:
     """
     Clone an extra addons repository for use with environments.
@@ -453,7 +517,6 @@ def list_extra_repos(ctx: Context | None = None) -> str:
 
 @mcp.tool()
 @handle_errors
-@with_team_lock
 def delete_extra_repo(name: str, ctx: Context | None = None) -> str:
     """
     Delete a cloned extra addons repository.
@@ -471,7 +534,6 @@ def delete_extra_repo(name: str, ctx: Context | None = None) -> str:
 
 @mcp.tool()
 @handle_errors
-@with_team_lock
 def update_extra_repo(name: str, ctx: Context | None = None) -> str:
     """
     Pull latest changes from the remote for an extra addons repository.
@@ -820,7 +882,6 @@ def save_as_template(
 
 @mcp.tool()
 @handle_errors
-@with_team_lock
 def list_templates(ctx: Context | None = None) -> str:
     """List available template profiles (database + filestore snapshots)."""
     settings = _get_settings()
@@ -2682,6 +2743,12 @@ def run_db_query(
 #   - Odoo-side failures (AccessError, ValidationError, ...) are returned as
 #     text with the server traceback — they are answers, not tool failures.
 #   - Every call is its own committed transaction.
+#
+# These tools take NO environment lock: PostgreSQL, not Oduflow, arbitrates
+# concurrent ORM writes, and the neighbouring http_request_to_odoo /
+# search_in_odoo already reach the same live server lock-free. Holding the
+# environment lock here only made an agent's reads bounce off its own long
+# install/test run.
 
 
 def _rpc_user(as_user: str) -> str:
@@ -2745,7 +2812,6 @@ def _rpc_response(
 
 @mcp.tool()
 @handle_errors
-@with_env_lock
 def odoo_search_read(
     env_name: str,
     model: str,
@@ -2802,7 +2868,7 @@ def odoo_search_read(
     user = _rpc_user(as_user)
     parsed_domain = odoo_rpc.parse_domain(domain)
     parsed_context = odoo_rpc.parse_context(context)
-    woke = _wake_for_work(settings, team, env_name)
+    woke = _wake_for_rpc(settings, team, env_name)
 
     if count_only:
         args: list[Any] = [parsed_domain]
@@ -2848,7 +2914,6 @@ def odoo_search_read(
 
 @mcp.tool()
 @handle_errors
-@with_env_lock
 def odoo_create(
     env_name: str,
     model: str,
@@ -2881,7 +2946,7 @@ def odoo_create(
     user = _rpc_user(as_user)
     parsed_values = odoo_rpc.parse_values(values, allow_list=True)
     parsed_context = odoo_rpc.parse_context(context)
-    woke = _wake_for_work(settings, team, env_name)
+    woke = _wake_for_rpc(settings, team, env_name)
 
     kwargs: dict[str, Any] = {}
     if parsed_context is not None:
@@ -2903,7 +2968,6 @@ def odoo_create(
 
 @mcp.tool()
 @handle_errors
-@with_env_lock
 def odoo_write(
     env_name: str,
     model: str,
@@ -2935,7 +2999,7 @@ def odoo_write(
     parsed_ids = odoo_rpc.parse_ids(ids)
     parsed_values = odoo_rpc.parse_values(values)
     parsed_context = odoo_rpc.parse_context(context)
-    woke = _wake_for_work(settings, team, env_name)
+    woke = _wake_for_rpc(settings, team, env_name)
 
     kwargs: dict[str, Any] = {}
     if parsed_context is not None:
@@ -2963,7 +3027,6 @@ def odoo_write(
 
 @mcp.tool()
 @handle_errors
-@with_env_lock
 def odoo_unlink(
     env_name: str,
     model: str,
@@ -2993,7 +3056,7 @@ def odoo_unlink(
     user = _rpc_user(as_user)
     parsed_ids = odoo_rpc.parse_ids(ids)
     parsed_context = odoo_rpc.parse_context(context)
-    woke = _wake_for_work(settings, team, env_name)
+    woke = _wake_for_rpc(settings, team, env_name)
 
     kwargs: dict[str, Any] = {}
     if parsed_context is not None:
@@ -3014,7 +3077,6 @@ def odoo_unlink(
 
 @mcp.tool()
 @handle_errors
-@with_env_lock
 def odoo_call(
     env_name: str,
     model: str,
@@ -3075,7 +3137,7 @@ def odoo_call(
     parsed_context = odoo_rpc.parse_context(context)
     if parsed_context is not None:
         parsed_kwargs["context"] = parsed_context
-    woke = _wake_for_work(settings, team, env_name)
+    woke = _wake_for_rpc(settings, team, env_name)
 
     result = odoo_rpc.call_kw(
         settings,
@@ -3103,7 +3165,6 @@ def odoo_call(
 
 @mcp.tool()
 @handle_errors
-@with_env_lock
 def odoo_schema(
     env_name: str,
     model: str = "",
@@ -3141,7 +3202,7 @@ def odoo_schema(
     settings = _get_settings()
     team = _resolve_team(ctx)
     user = _rpc_user(as_user)
-    woke = _wake_for_work(settings, team, env_name)
+    woke = _wake_for_rpc(settings, team, env_name)
 
     if not model:
         domain: list[Any] = []
@@ -3232,7 +3293,7 @@ def _service_internal_host_line(container_name: str, host_mode: bool) -> str:
 
 @mcp.tool()
 @handle_errors
-@with_team_lock
+@with_key_lock(service_lock_key)
 def create_service(
     name: str,
     image: str,
@@ -3308,7 +3369,7 @@ def create_service(
 
 @mcp.tool()
 @handle_errors
-@with_team_lock
+@with_key_lock(service_lock_key)
 def update_service(
     name: str,
     env_vars: str = "",
@@ -3395,7 +3456,7 @@ def update_service(
 
 @mcp.tool()
 @handle_errors
-@with_team_lock
+@with_key_lock(service_lock_key)
 def delete_service(name: str, ctx: Context | None = None) -> str:
     """
     Stop and remove a managed auxiliary service container.
@@ -3409,6 +3470,7 @@ def delete_service(name: str, ctx: Context | None = None) -> str:
 
 @mcp.tool()
 @handle_errors
+@with_key_lock(service_lock_key)
 def restart_service(name: str, ctx: Context | None = None) -> str:
     """
     Restart a managed auxiliary service container.
@@ -3546,7 +3608,7 @@ def list_service_presets(ctx: Context | None = None) -> str:
 
 @mcp.tool()
 @handle_errors
-@with_team_lock
+@with_key_lock(service_lock_key)
 def restore_service(name: str, ctx: Context | None = None) -> str:
     """
     Restore a service from a saved preset. Recreates the service container with the same configuration.
@@ -3601,7 +3663,7 @@ def restore_service(name: str, ctx: Context | None = None) -> str:
 
 @mcp.tool()
 @handle_errors
-@with_team_lock
+@with_key_lock(service_preset_lock_key)
 def delete_service_preset(name: str, ctx: Context | None = None) -> str:
     """
     Remove a saved service preset.
@@ -3658,6 +3720,7 @@ def get_service_logs(name: str, n_lines: int = 100, ctx: Context | None = None) 
 
 @mcp.tool()
 @handle_errors
+@with_key_lock(service_lock_key)
 def run_service_command(
     name: str,
     command: str,
@@ -3699,7 +3762,7 @@ def run_service_command(
 
 @mcp.tool()
 @handle_errors
-@with_team_lock
+@with_key_lock(volume_lock_key)
 def create_volume(
     name: str,
     description: str = "",
@@ -3772,7 +3835,7 @@ def inspect_volume(name: str, ctx: Context | None = None) -> str:
 
 @mcp.tool()
 @handle_errors
-@with_team_lock
+@with_key_lock(volume_lock_key)
 def delete_volume(name: str, ctx: Context | None = None) -> str:
     """
     Delete a managed Docker volume. Fails if the volume is in use by any service.
@@ -3824,7 +3887,7 @@ def read_file_in_volume(
 
 @mcp.tool()
 @handle_errors
-@with_team_lock
+@with_key_lock(volume_lock_key)
 def write_file_in_volume(
     name: str,
     path: str,
@@ -3888,7 +3951,7 @@ def search_in_volume(
 
 @mcp.tool()
 @handle_errors
-@with_team_lock
+@with_key_lock(volume_lock_key)
 def delete_file_in_volume(
     name: str,
     path: str,
@@ -4239,6 +4302,9 @@ def production_deploys(name: str, limit: int = 20, ctx: Context | None = None) -
 @handle_errors
 @production_enabled
 @with_prod_lock
+# Lock order everywhere: the production first, then the team's backup store.
+# Prune takes the store key alone, so it can never run mid-snapshot.
+@with_key_lock(prod_backups_lock_key, require_name=False)
 def snapshot_production(name: str, note: str = "", ctx: Context | None = None) -> str:
     """
     Take a snapshot of a production to S3: database dump + deduplicated
@@ -4302,6 +4368,8 @@ def list_production_snapshots(
 @handle_errors
 @production_enabled
 @with_prod_lock
+# Same lock order as snapshot_production: production first, then backup store.
+@with_key_lock(prod_backups_lock_key, require_name=False)
 def restore_production(
     name: str, snapshot_id: str, confirm: str = "", ctx: Context | None = None
 ) -> str:
@@ -4381,6 +4449,7 @@ def set_production_backup_schedule(
 @mcp.tool()
 @handle_errors
 @production_enabled
+@with_key_lock(prod_backups_lock_key, require_name=False)
 def prune_production_backups(ctx: Context | None = None) -> str:
     """
     Apply the retention policy ([backup] keep) to the team's snapshots and
@@ -4392,11 +4461,7 @@ def prune_production_backups(ctx: Context | None = None) -> str:
 
     settings = _get_settings()
     team = _resolve_team(ctx)
-    _locks.acquire_team(team.team_id, operation="prune_backups")
-    try:
-        result = backup_ops.prune_backups(settings, team)
-    finally:
-        _locks.release_team(team.team_id)
+    result = backup_ops.prune_backups(settings, team)
     import json as _json
 
     return _json.dumps(result, indent=2)
@@ -4433,7 +4498,11 @@ def restore_cluster_pitr(
 
     settings = _get_settings()
     _resolve_team(ctx)  # authenticate the caller; PITR spans all teams
-    _locks.acquire_env("prod:__cluster__", operation="restore_cluster_pitr")
+    # The one true system-level operation: it rewrites the cluster every team's
+    # productions live in, so it excludes the whole `prod:` keyspace at once
+    # (per-production locks would each have to be enumerated and could still be
+    # taken behind our back).
+    _locks.acquire_system(operation="restore_cluster_pitr")
     try:
         from oduflow.docker_ops.client import get_client
 
@@ -4458,7 +4527,7 @@ def restore_cluster_pitr(
             except Exception as exc:
                 logger.warning("Could not restart production %s: %s", entry, exc)
     finally:
-        _locks.release_env("prod:__cluster__")
+        _locks.release_system()
     return (
         f"Cluster restored to {result['target_time']}. Previous data "
         f"directory kept inside the volume as {result['displaced_data_dir']} "

@@ -13,6 +13,7 @@ from typing import Any
 import docker
 from oduflow.docker_ops.client import get_client
 from oduflow.errors import ConflictError, NotFoundError
+from oduflow.locking import keyed_mutex, service_registry_key
 from oduflow.settings import Settings, TeamSettings
 
 logger = logging.getLogger("oduflow")
@@ -155,16 +156,20 @@ def delete_volume(settings: Settings, team: TeamSettings, name: str) -> dict[str
     except docker.errors.NotFound:
         raise NotFoundError(f"Volume '{name}' not found.")
 
-    usage = _find_all_volume_usage(settings, team)
-    used_by = usage.get(docker_name, [])
-    if used_by:
-        svc_list = ", ".join(used_by)
-        raise ConflictError(
-            f"Volume '{name}' is in use by: {svc_list}. "
-            "Remove the volume from those services first."
-        )
+    # Same registry key service creation/update takes around attaching volumes,
+    # so "no service uses this" cannot go stale between the check and the
+    # removal — including while an update_service has its container removed.
+    with keyed_mutex(service_registry_key(team.team_id)):
+        usage = _find_all_volume_usage(settings, team)
+        used_by = usage.get(docker_name, [])
+        if used_by:
+            svc_list = ", ".join(used_by)
+            raise ConflictError(
+                f"Volume '{name}' is in use by: {svc_list}. "
+                "Remove the volume from those services first."
+            )
 
-    vol.remove()
+        vol.remove()
     logger.info("Deleted volume %s", docker_name)
     return {"name": name, "docker_name": docker_name}
 

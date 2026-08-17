@@ -16,6 +16,7 @@ from oduflow.errors import (
     NotFoundError,
     PrerequisiteNotMetError,
 )
+from oduflow.locking import keyed_mutex, service_registry_key
 from oduflow.naming import get_service_container_name
 from oduflow.settings import Settings, TeamSettings
 
@@ -253,6 +254,29 @@ def _needs_traefik_acme_mount(settings: Settings, container: Any) -> bool:
     return True
 
 
+def _assert_free_service_slot(
+    settings: Settings, team: TeamSettings, client: Any
+) -> None:
+    """Reject a new service when the team has no free slot (0 = unlimited)."""
+    if team.service_slots <= 0:
+        return
+    services = client.containers.list(
+        all=True,
+        filters={
+            "label": [
+                f"{settings.managed_label}=true",
+                f"{settings.team_label}={team.team_id}",
+                "oduflow.service",
+            ]
+        },
+    )
+    if len(services) >= team.service_slots:
+        raise FlowError(
+            f"No free service slots (configured: {team.service_slots}). "
+            "Delete an unused service to free a slot."
+        )
+
+
 def create_service(
     settings: Settings,
     team: TeamSettings,
@@ -282,22 +306,10 @@ def create_service(
     except docker.errors.NotFound:
         is_new_service = True
 
-    if is_new_service and team.service_slots > 0:
-        services = client.containers.list(
-            all=True,
-            filters={
-                "label": [
-                    f"{settings.managed_label}=true",
-                    f"{settings.team_label}={team.team_id}",
-                    "oduflow.service",
-                ]
-            },
-        )
-        if len(services) >= team.service_slots:
-            raise FlowError(
-                f"No free service slots (configured: {team.service_slots}). "
-                "Delete an unused service to free a slot."
-            )
+    if is_new_service:
+        # Fail before pulling a possibly huge image. Repeated under the registry
+        # lock further down, where it is the authoritative admission check.
+        _assert_free_service_slot(settings, team, client)
 
     # Services join the team's isolated network (not needed for host mode).
     team_network = ""
@@ -401,9 +413,9 @@ def create_service(
     if env_vars:
         run_kwargs["environment"] = env_vars
 
-    vol_binds = _resolve_service_volume_binds(settings, team, volumes, client=client)
-    if vol_binds:
-        run_kwargs["volumes"] = vol_binds
+    # Reject a missing or reserved volume before the image pull; the binds that
+    # are actually used are resolved again under the registry lock below.
+    _resolve_service_volume_binds(settings, team, volumes, client=client)
 
     if privileged:
         run_kwargs["privileged"] = True
@@ -413,7 +425,22 @@ def create_service(
     logger.info("Pulling image %s for service %s", image, name)
     _pull_service_image(client, image)
 
-    client.containers.run(**run_kwargs)
+    # Registry section: slot admission and the volume binds are both read here
+    # and consumed by the `run` below with nothing in between. Concurrent
+    # creates therefore cannot overshoot the slot count, and delete_volume —
+    # which takes the same key around its in-use check — cannot remove a volume
+    # this container is about to mount (Docker would silently re-create it as an
+    # empty, unmanaged volume). Held only around these calls; the image pull
+    # above and the preset write below stay outside.
+    with keyed_mutex(service_registry_key(team.team_id)):
+        if is_new_service:
+            _assert_free_service_slot(settings, team, client)
+        vol_binds = _resolve_service_volume_binds(
+            settings, team, volumes, client=client
+        )
+        if vol_binds:
+            run_kwargs["volumes"] = vol_binds
+        client.containers.run(**run_kwargs)
     logger.info("Created service container %s from image %s", container_name, image)
 
     # Auto-save preset for future restore
@@ -952,27 +979,35 @@ def update_service(
         config_changed,
     )
 
-    # Stop and remove the old container
-    container.stop()
-    container.remove(v=True)
-    logger.info("Removed old container %s for update", container_name)
+    # The service is invisible to the registry between remove and re-create, so
+    # both happen under the registry key: a delete_volume that looked in that
+    # window would find the volume unused and remove it out from under the
+    # recreated container. The mutex is re-entrant — create_service takes the
+    # same key for its own admission check. Its (already-pulled, cache-warm)
+    # image pull is inside this window; splitting the window to exclude it would
+    # reopen the very race it exists to close.
+    with keyed_mutex(service_registry_key(team.team_id)):
+        # Stop and remove the old container
+        container.stop()
+        container.remove(v=True)
+        logger.info("Removed old container %s for update", container_name)
 
-    # Re-create with the (possibly overridden) settings
-    result = create_service(
-        settings,
-        team,
-        name=name,
-        image=target_image,
-        port=port,
-        hostname=hostname,
-        env_vars=env_vars or None,
-        host_mode=is_host_mode,
-        volumes=old_volumes or None,
-        cap_add=cap_add,
-        privileged=privileged,
-        routes=routes,
-        stack_labels=effective_stack_labels,
-    )
+        # Re-create with the (possibly overridden) settings
+        result = create_service(
+            settings,
+            team,
+            name=name,
+            image=target_image,
+            port=port,
+            hostname=hostname,
+            env_vars=env_vars or None,
+            host_mode=is_host_mode,
+            volumes=old_volumes or None,
+            cap_add=cap_add,
+            privileged=privileged,
+            routes=routes,
+            stack_labels=effective_stack_labels,
+        )
 
     result["image_updated"] = image_updated
     result["config_updated"] = config_changed

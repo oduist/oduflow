@@ -1,16 +1,103 @@
 """Granular lock manager for concurrent MCP tool execution.
 
-Provides per-environment, per-team, and system-level locks so that operations on
-different environments / teams can run in parallel while operations on the same
-resource are serialised.
+Provides per-resource, per-team, and system-level locks so that operations on
+different environments / services / volumes / teams can run in parallel while
+operations on the same resource are serialised.
+
+``acquire_env`` is a generic keyed lock: the key is an environment name for
+environment tools, and a namespaced resource key (``svc:``, ``vol:``, ``prod:``,
+…) for everything else. Only keys acquired *with* a ``team_id`` take part in the
+team↔environment mutual exclusion, so narrow resource keys never block — and are
+never blocked by — a team-wide operation.
 """
 
 from __future__ import annotations
 
 import threading
 import time
+from contextlib import contextmanager
+from typing import Iterator
 
 from oduflow.errors import BusyError
+
+# Keys in the production keyspace. The system lock (cluster-wide PITR) and every
+# `prod:` key are mutually exclusive; see acquire_system.
+PROD_KEY_PREFIX = "prod:"
+
+
+def _is_prod_key(key: str) -> bool:
+    return key.startswith(PROD_KEY_PREFIX)
+
+
+# -- resource lock keys -------------------------------------------------------
+#
+# One place builds every key string, because MCP tools (server.py) and the REST
+# dashboard (web_ui.py) must lock the *same* resource under the *same* key or
+# they simply do not see each other. Team-scoped builders take an unused `name`
+# so every builder shares one signature and can be handed to `with_key_lock`.
+
+
+def service_lock_key(team_id: str, name: str) -> str:
+    """One auxiliary service — create/update/delete/restart/exec/restore."""
+    return f"svc:{team_id}:{name}"
+
+
+def service_registry_key(team_id: str, name: str = "") -> str:
+    """The team's *set* of services: slot admission and volume-usage checks."""
+    return f"svc-registry:{team_id}"
+
+
+def volume_lock_key(team_id: str, name: str) -> str:
+    """One managed Docker volume, including writes to files inside it."""
+    return f"vol:{team_id}:{name}"
+
+
+def service_preset_lock_key(team_id: str, name: str = "") -> str:
+    """The team's saved service presets."""
+    return f"preset:{team_id}"
+
+
+def credentials_lock_key(team_id: str, name: str = "") -> str:
+    """The team's git credential store."""
+    return f"creds:{team_id}"
+
+
+def prod_backups_lock_key(team_id: str, name: str = "") -> str:
+    """The team's snapshot/chunk store — prune vs. snapshot vs. restore."""
+    return f"prod-backups:{team_id}"
+
+
+def env_wake_key(team_id: str, env_name: str) -> str:
+    """Auto-start of one environment (see :func:`keyed_mutex`)."""
+    return f"wake:{team_id}:{env_name}"
+
+
+_keyed_mutexes: dict[str, threading.RLock] = {}
+_keyed_mutexes_guard = threading.Lock()
+
+
+@contextmanager
+def keyed_mutex(key: str) -> Iterator[None]:
+    """Blocking, re-entrant, process-wide mutex for a short critical section.
+
+    Unlike :class:`LockManager` keys — non-blocking, contention surfaced to the
+    agent as ``BusyError`` — these guard read-then-write sections deep inside
+    ``docker_ops`` that last milliseconds, where the caller has nothing better
+    to do than wait, and which must hold across a call the tool layer cannot
+    see (``update_service`` removing and re-creating a container).
+
+    Lock ordering: always taken *after* the caller's ``LockManager`` key, never
+    before, so the two orders cannot deadlock. Nothing under this mutex takes a
+    ``LockManager`` lock. Re-entrant because ``update_service`` holds one across
+    its delegation to ``create_service``.
+    """
+    with _keyed_mutexes_guard:
+        lock = _keyed_mutexes.get(key)
+        if lock is None:
+            lock = threading.RLock()
+            _keyed_mutexes[key] = lock
+    with lock:
+        yield
 
 
 def _format_age(seconds: float) -> str:
@@ -54,8 +141,10 @@ class LockManager:
         # read a bare "in progress" as a stale lock and reach for restarts).
         self._env_holders: dict[str, _Holder] = {}
         self._team_holders: dict[str, _Holder] = {}
+        # Keys currently held in the production keyspace, for the system lock's
+        # mutual exclusion (and its holder hints).
+        self._active_prod_keys: set[str] = set()
         self._system_holder: _Holder | None = None
-        self._system_lock = threading.Lock()
         self._map_lock = threading.Lock()  # protects dict access
 
     # -- environment locks --
@@ -74,6 +163,10 @@ class LockManager:
         holder = self._team_holders.get(team_id)
         return holder.describe() if holder else ""
 
+    def _system_holder_hint(self) -> str:
+        holder = self._system_holder
+        return holder.describe() if holder else ""
+
     def acquire_env(
         self, env_name: str, team_id: str | None = None, operation: str = ""
     ) -> None:
@@ -83,6 +176,11 @@ class LockManager:
                     f"Another team-level operation (team '{team_id}')"
                     f"{self._team_holder_hint(team_id)} is in progress. "
                     "Try again later."
+                )
+            if _is_prod_key(env_name) and self._system_holder is not None:
+                raise BusyError(
+                    f"A system-level operation{self._system_holder_hint()} is in "
+                    "progress. Try again later."
                 )
             if env_name not in self._env_locks:
                 self._env_locks[env_name] = threading.Lock()
@@ -95,6 +193,8 @@ class LockManager:
                     "rather than restarting the environment."
                 )
             self._env_holders[env_name] = _Holder(operation)
+            if _is_prod_key(env_name):
+                self._active_prod_keys.add(env_name)
             if team_id is not None:
                 self._env_lock_teams[env_name] = team_id
                 self._active_env_counts_by_team[team_id] = (
@@ -109,10 +209,19 @@ class LockManager:
         Returns False when the timeout expires (caller skips the run)."""
         lock = self._get_env_lock(env_name)
         acquired = lock.acquire(blocking=True, timeout=timeout)
-        if acquired:
-            with self._map_lock:
-                self._env_holders[env_name] = _Holder(operation)
-        return acquired
+        if not acquired:
+            return False
+        with self._map_lock:
+            if _is_prod_key(env_name) and self._system_holder is not None:
+                # A cluster-wide operation owns the production keyspace. Waiting
+                # it out is pointless here, so the caller skips this run exactly
+                # as it would on a timeout.
+                lock.release()
+                return False
+            self._env_holders[env_name] = _Holder(operation)
+            if _is_prod_key(env_name):
+                self._active_prod_keys.add(env_name)
+        return True
 
     def describe_env_holder(self, env_name: str) -> str:
         """Holder hint for callers that report contention without raising."""
@@ -129,6 +238,7 @@ class LockManager:
             except RuntimeError:
                 return
             self._env_holders.pop(env_name, None)
+            self._active_prod_keys.discard(env_name)
             team_id = self._env_lock_teams.pop(env_name, None)
             if team_id is not None:
                 count = self._active_env_counts_by_team.get(team_id, 0) - 1
@@ -187,17 +297,29 @@ class LockManager:
     # -- system lock --
 
     def acquire_system(self, operation: str = "") -> None:
-        if not self._system_lock.acquire(blocking=False):
-            holder = self._system_holder
-            hint = holder.describe() if holder else ""
-            raise BusyError(
-                f"A system-level operation{hint} is in progress. Try again later."
-            )
-        self._system_holder = _Holder(operation)
+        """Take the single system-wide lock (cluster PITR).
+
+        Mutually exclusive with the whole production keyspace in both
+        directions: no `prod:` key may be held when this is taken, and none may
+        be taken while it is held. Environment and team locks are unaffected —
+        a cluster restore does not touch development environments.
+        """
+        with self._map_lock:
+            if self._system_holder is not None:
+                raise BusyError(
+                    f"A system-level operation{self._system_holder_hint()} is in "
+                    "progress. Try again later."
+                )
+            if self._active_prod_keys:
+                busy = ", ".join(
+                    f"'{key}'{self._env_holder_hint(key)}"
+                    for key in sorted(self._active_prod_keys)
+                )
+                raise BusyError(
+                    f"A production operation is in progress: {busy}. Try again later."
+                )
+            self._system_holder = _Holder(operation)
 
     def release_system(self) -> None:
-        self._system_holder = None
-        try:
-            self._system_lock.release()
-        except RuntimeError:
-            pass
+        with self._map_lock:
+            self._system_holder = None

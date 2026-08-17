@@ -78,6 +78,20 @@ resource is in progress and to retry, instead of the request hanging.
   cross-process safety on shared files (e.g. the port registry) is handled
   separately with an flock (see [[0004-stable-addressing-port-registry-and-traefik]]).
 
+## Evolution
+
+- **2026-08-17 — the team lock stops being the catch-all**
+  ([[0049-granular-resource-locks]]). The three scopes proved right; the *choice*
+  of scope did not. Per-team had become the default for anything that was not one
+  environment — services, volumes, extra repos, credentials, presets, backup
+  pruning, template listing — which, through the team↔environment mutual
+  exclusion, let a long `create_environment` reject unrelated service and volume
+  work. Those operations moved to narrow resource keys on the same generic keyed
+  lock, the team lock was reserved for template mutations (the one operation that
+  really does touch other environments), and the system lock — dead since this
+  record was written — was revived for cluster PITR, mutually exclusive with the
+  whole production keyspace.
+
 ## History
 
 - `3a26c70` (2026-02-06) — global mutex introduced: `_busy = threading.Lock()` +

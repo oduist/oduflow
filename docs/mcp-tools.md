@@ -25,12 +25,12 @@ All tools are accessible via MCP clients (Cursor, Cline, Amp, etc.) and the CLI 
 | `get_environment_logs` | | Retrieve recent container logs |
 | `run_odoo_command` | ✓ | Execute an arbitrary shell command inside the Odoo container (runs through `sh -c`, so pipes, redirections and `&&` work; `shell=False` for exact argv) |
 | `run_odoo_shell` | ✓ | Execute Python code in the Odoo shell context with full ORM access; `auto_commit=True` commits successful writes, while `False` leaves the shell transaction uncommitted |
-| `odoo_search_read` | ✓ | Search and read records (XML-RPC `search_read`/`search_count`) as any user, with ACLs and record rules applied |
-| `odoo_create` | ✓ | Create one or many records (XML-RPC `create`). Committed immediately |
-| `odoo_write` | ✓ | Update records (XML-RPC `write`). Committed immediately |
-| `odoo_unlink` | ✓ | ⚠️ Delete records (XML-RPC `unlink`). Committed immediately, not recoverable |
-| `odoo_call` | ✓ | Call public model methods not covered by the dedicated CRUD tools (`read_group`, `name_search`, `action_*`, …) |
-| `odoo_schema` | ✓ | Page through models, or describe one model's fields (XML-RPC `fields_get`) |
+| `odoo_search_read` | | Search and read records (XML-RPC `search_read`/`search_count`) as any user, with ACLs and record rules applied |
+| `odoo_create` | | Create one or many records (XML-RPC `create`). Committed immediately |
+| `odoo_write` | | Update records (XML-RPC `write`). Committed immediately |
+| `odoo_unlink` | | ⚠️ Delete records (XML-RPC `unlink`). Committed immediately, not recoverable |
+| `odoo_call` | | Call public model methods not covered by the dedicated CRUD tools (`read_group`, `name_search`, `action_*`, …) |
+| `odoo_schema` | | Page through models, or describe one model's fields (XML-RPC `fields_get`) |
 | `read_file_in_odoo` | | Read a text file or list a directory inside the Odoo container. Supports line ranges (e.g. `"1:50"`) |
 | `write_file_in_odoo` | ✓ | Write a text file inside the container (CSV imports, scripts, configs) |
 | `search_in_odoo` | | Search for a pattern (fixed-string grep) in files inside the Odoo container |
@@ -51,12 +51,12 @@ All tools are accessible via MCP clients (Cursor, Cline, Amp, etc.) and the CLI 
 | **Auxiliary Services** | | |
 | `create_service` | ✓ | Create a managed service with exactly one exposure model: catch-all `port`, or restricted Traefik `routes` (`path`, backend `port`, optional `strip_prefix`). The two parameters are mutually exclusive; `port` remains required outside Traefik |
 | `delete_service` | ✓ | Stop and remove a service container |
-| `restart_service` | | Restart a service container |
+| `restart_service` | ✓ | Restart a service container |
 | `update_service` | ✓ | Preflight configuration, pull the latest image and/or change settings. `routes` replaces the complete allowlist; use `routes=[]` with `port` only when switching back to catch-all mode |
 | `list_services` | | List all managed service containers |
 | `get_service_info` | | Full live state of a single service (image+digest, port/routes, hostname, host_mode, volumes, env, capabilities, restart count, preset). Call before recreating it |
 | `get_service_logs` | | Retrieve service container logs |
-| `run_service_command` | | Execute a shell command inside a service container (through `sh -c`; `shell=False` for exact argv) |
+| `run_service_command` | ✓ | Execute a shell command inside a service container (through `sh -c`; `shell=False` for exact argv) |
 | **Volumes** | | |
 | `create_volume` | ✓ | Create a named Docker volume for use with services |
 | `list_volumes` | | List all managed Docker volumes and their usage by services |
@@ -73,10 +73,10 @@ All tools are accessible via MCP clients (Cursor, Cline, Amp, etc.) and the CLI 
 | **Repository Auth** | | |
 | `setup_repo_auth` | ✓ | Cache git credentials for a private repository |
 | **Extra Addons** | | |
-| `add_extra_repo` | ✓ | Clone an extra addons repository (e.g. Odoo Enterprise) for use with environments |
+| `add_extra_repo` | | Clone an extra addons repository (e.g. Odoo Enterprise) for use with environments |
 | `list_extra_repos` | | List all cloned extra addons repositories |
-| `update_extra_repo` | ✓ | Fetch latest changes from the remote for an extra addons repository |
-| `delete_extra_repo` | ✓ | Delete a cloned extra addons repository |
+| `update_extra_repo` | | Fetch latest changes from the remote for an extra addons repository |
+| `delete_extra_repo` | | Delete a cloned extra addons repository |
 | **Production Hosting** | | Requires `[production].enabled = true` |
 | `create_production` | ✓ | Provision a long-lived production with its own domain and the dedicated production PostgreSQL cluster; optionally seed it from a template |
 | `list_productions` | | List productions with status, domain, deployed commit, and auto-update state |
@@ -104,7 +104,7 @@ All tools are accessible via MCP clients (Cursor, Cline, Amp, etc.) and the CLI 
 | `report_issue` | | Build a prefilled link for the user to file a bug, feature request, or feedback about Oduflow on GitHub |
 
 !!! info "Locking"
-    Tools marked with ✓ acquire a per-branch or per-team lock. Operations on different branches run in parallel. If another operation on the **same branch** (or team, for team-level tools) is already in progress, the call is rejected with `BusyError`. The rejection names the operation holding the lock and how long it has held it (e.g. *"Another operation on environment 'main' (pull_and_apply, running for 4m12s) is in progress"*), so a long install is distinguishable from a hung one. A lock is released when its operation finishes — including when the client that started it timed out and stopped waiting, which is why restarting the environment is the wrong response.
+    Tools marked with ✓ acquire a lock on exactly what they touch: the branch, one service, one volume, the team's credential store — or the whole team, for the few operations that really are team-wide (template publishing). Operations on different resources run in parallel. If another operation on the **same** resource is already in progress, the call is rejected with `BusyError`. The rejection names the operation holding the lock and how long it has held it (e.g. *"Another operation on environment 'main' (pull_and_apply, running for 4m12s) is in progress"*), so a long install is distinguishable from a hung one. A lock is released when its operation finishes — including when the client that started it timed out and stopped waiting, which is why restarting the environment is the wrong response.
 
 The exact current signature and defaults for every tool are also available from
 `oduflow list` (`oduflow list --verbose` adds descriptions). The production

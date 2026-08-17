@@ -65,7 +65,13 @@ from oduflow.docker_ops.stats import (
 )
 from oduflow.errors import BusyError, ConflictError, FlowError, NotFoundError
 from oduflow.licensing import get_license_info, install_license_from_text
-from oduflow.locking import LockManager
+from oduflow.locking import (
+    LockManager,
+    credentials_lock_key,
+    service_lock_key,
+    service_preset_lock_key,
+    volume_lock_key,
+)
 from oduflow.naming import validate_template_name
 from oduflow.settings import Settings, TeamSettings
 
@@ -1387,11 +1393,9 @@ def _build_routes(
             )
 
     def api_templates(request: Request) -> JSONResponse:
+        # Read-only: no lock, so listing templates never bounces off (or delays)
+        # a publish. Mirrors the list_templates MCP tool.
         team = _get_ui_team(request)
-        try:
-            locks.acquire_team(team.team_id)
-        except BusyError as e:
-            return _error_response(e)
         try:
             templates = system_ops.list_templates(get_settings(), team)
             return JSONResponse({"ok": True, "templates": templates})
@@ -1402,8 +1406,6 @@ def _build_routes(
             return JSONResponse(
                 {"ok": False, "error": "Internal server error."}, status_code=500
             )
-        finally:
-            locks.release_team(team.team_id)
 
     def api_template_delete(request: Request) -> JSONResponse:
         name = request.path_params["name"]
@@ -2177,10 +2179,9 @@ def _build_routes(
 
     async def api_service_create(request: Request) -> JSONResponse:
         team = _get_ui_team(request)
-        try:
-            locks.acquire_team(team.team_id)
-        except BusyError as e:
-            return _error_response(e)
+        # The body carries the service name, and the lock key is per service —
+        # so it is read before the lock is taken (the MCP tool gets the name as
+        # an argument and locks in its decorator).
         try:
             body = await request.json()
             name = (body.get("name") or "").strip()
@@ -2214,6 +2215,21 @@ def _build_routes(
             privileged = bool(body.get("privileged", False))
             net_admin = bool(body.get("net_admin", False))
             cap_add = ["NET_ADMIN"] if net_admin else None
+        except ValueError as e:
+            return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
+        except FlowError as e:
+            return _error_response(e)
+        except Exception:
+            logger.exception("Unexpected error in api_service_create")
+            return JSONResponse(
+                {"ok": False, "error": "Internal server error."}, status_code=500
+            )
+        key = service_lock_key(team.team_id, name)
+        try:
+            locks.acquire_env(key, operation="create_service")
+        except BusyError as e:
+            return _error_response(e)
+        try:
             result = await _offload(
                 service_ops.create_service,
                 get_settings(),
@@ -2240,13 +2256,14 @@ def _build_routes(
                 {"ok": False, "error": "Internal server error."}, status_code=500
             )
         finally:
-            locks.release_team(team.team_id)
+            locks.release_env(key)
 
     async def api_service_update(request: Request) -> JSONResponse:
         name = request.path_params["name"]
         team = _get_ui_team(request)
+        key = service_lock_key(team.team_id, name)
         try:
-            locks.acquire_team(team.team_id)
+            locks.acquire_env(key, operation="update_service")
         except BusyError as e:
             return _error_response(e)
         try:
@@ -2319,14 +2336,18 @@ def _build_routes(
                 {"ok": False, "error": "Internal server error."}, status_code=500
             )
         finally:
-            locks.release_team(team.team_id)
+            locks.release_env(key)
 
     def api_service_restart(request: Request) -> JSONResponse:
         name = request.path_params["name"]
+        team = _get_ui_team(request)
+        key = service_lock_key(team.team_id, name)
         try:
-            result = service_ops.restart_service(
-                get_settings(), _get_ui_team(request), name
-            )
+            locks.acquire_env(key, operation="restart_service")
+        except BusyError as e:
+            return _error_response(e)
+        try:
+            result = service_ops.restart_service(get_settings(), team, name)
             return JSONResponse({"ok": True, "result": result})
         except FlowError as e:
             return _error_response(e)
@@ -2335,18 +2356,19 @@ def _build_routes(
             return JSONResponse(
                 {"ok": False, "error": "Internal server error."}, status_code=500
             )
+        finally:
+            locks.release_env(key)
 
     def api_service_delete(request: Request) -> JSONResponse:
         name = request.path_params["name"]
         team = _get_ui_team(request)
+        key = service_lock_key(team.team_id, name)
         try:
-            locks.acquire_team(team.team_id)
+            locks.acquire_env(key, operation="delete_service")
         except BusyError as e:
             return _error_response(e)
         try:
-            result = service_ops.delete_service(
-                get_settings(), _get_ui_team(request), name
-            )
+            result = service_ops.delete_service(get_settings(), team, name)
             return JSONResponse({"ok": True, "result": result})
         except FlowError as e:
             return _error_response(e)
@@ -2356,7 +2378,7 @@ def _build_routes(
                 {"ok": False, "error": "Internal server error."}, status_code=500
             )
         finally:
-            locks.release_team(team.team_id)
+            locks.release_env(key)
 
     def api_service_logs(request: Request) -> JSONResponse:
         name = request.path_params["name"]
@@ -2391,10 +2413,7 @@ def _build_routes(
 
     async def api_service_restore(request: Request) -> JSONResponse:
         team = _get_ui_team(request)
-        try:
-            locks.acquire_team(team.team_id)
-        except BusyError as e:
-            return _error_response(e)
+        # Body first, then the per-service lock — see api_service_create.
         try:
             body = await request.json()
             name = (body.get("name") or "").strip()
@@ -2428,6 +2447,21 @@ def _build_routes(
             privileged = bool(body.get("privileged", False))
             net_admin = bool(body.get("net_admin", False))
             cap_add = ["NET_ADMIN"] if net_admin else None
+        except ValueError as e:
+            return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
+        except FlowError as e:
+            return _error_response(e)
+        except Exception:
+            logger.exception("Unexpected error in api_service_restore")
+            return JSONResponse(
+                {"ok": False, "error": "Internal server error."}, status_code=500
+            )
+        key = service_lock_key(team.team_id, name)
+        try:
+            locks.acquire_env(key, operation="restore_service")
+        except BusyError as e:
+            return _error_response(e)
+        try:
             result = await _offload(
                 service_ops.create_service,
                 get_settings(),
@@ -2454,12 +2488,18 @@ def _build_routes(
                 {"ok": False, "error": "Internal server error."}, status_code=500
             )
         finally:
-            locks.release_team(team.team_id)
+            locks.release_env(key)
 
     def api_service_preset_delete(request: Request) -> JSONResponse:
         name = request.path_params["name"]
+        team = _get_ui_team(request)
+        key = service_preset_lock_key(team.team_id)
         try:
-            service_presets.delete_preset(_get_ui_team(request), name)
+            locks.acquire_env(key, operation="delete_service_preset")
+        except BusyError as e:
+            return _error_response(e)
+        try:
+            service_presets.delete_preset(team, name)
             return JSONResponse({"ok": True, "result": {"deleted": name}})
         except FlowError as e:
             return _error_response(e)
@@ -2468,6 +2508,8 @@ def _build_routes(
             return JSONResponse(
                 {"ok": False, "error": "Internal server error."}, status_code=500
             )
+        finally:
+            locks.release_env(key)
 
     def api_volumes(request: Request) -> JSONResponse:
         try:
@@ -2483,10 +2525,7 @@ def _build_routes(
 
     async def api_volume_create(request: Request) -> JSONResponse:
         team = _get_ui_team(request)
-        try:
-            locks.acquire_team(team.team_id)
-        except BusyError as e:
-            return _error_response(e)
+        # Body first, then the per-volume lock — see api_service_create.
         try:
             body = await request.json()
             name = (body.get("name") or "").strip()
@@ -2496,6 +2535,16 @@ def _build_routes(
                     {"ok": False, "error": "Volume name is required."},
                     status_code=400,
                 )
+        except Exception:
+            return JSONResponse(
+                {"ok": False, "error": "Invalid JSON body."}, status_code=400
+            )
+        key = volume_lock_key(team.team_id, name)
+        try:
+            locks.acquire_env(key, operation="create_volume")
+        except BusyError as e:
+            return _error_response(e)
+        try:
             result = await _offload(
                 volume_ops.create_volume,
                 get_settings(),
@@ -2512,13 +2561,14 @@ def _build_routes(
                 {"ok": False, "error": "Internal server error."}, status_code=500
             )
         finally:
-            locks.release_team(team.team_id)
+            locks.release_env(key)
 
     def api_volume_delete(request: Request) -> JSONResponse:
         name = request.path_params["name"]
         team = _get_ui_team(request)
+        key = volume_lock_key(team.team_id, name)
         try:
-            locks.acquire_team(team.team_id)
+            locks.acquire_env(key, operation="delete_volume")
         except BusyError as e:
             return _error_response(e)
         try:
@@ -2532,7 +2582,7 @@ def _build_routes(
                 {"ok": False, "error": "Internal server error."}, status_code=500
             )
         finally:
-            locks.release_team(team.team_id)
+            locks.release_env(key)
 
     def api_agent_guides_list(request: Request) -> JSONResponse:
         try:
@@ -2889,11 +2939,9 @@ def _build_routes(
             )
 
     async def api_extra_repo_add(request: Request) -> JSONResponse:
+        # No lock: extra_addons serialises every mutator per repo (see the MCP
+        # extra-repo tools).
         team = _get_ui_team(request)
-        try:
-            locks.acquire_team(team.team_id)
-        except BusyError as e:
-            return _error_response(e)
         try:
             body = await request.json()
             name = (body.get("name") or "").strip()
@@ -2917,16 +2965,10 @@ def _build_routes(
             return JSONResponse(
                 {"ok": False, "error": "Internal server error."}, status_code=500
             )
-        finally:
-            locks.release_team(team.team_id)
 
     async def api_extra_repo_pull(request: Request) -> JSONResponse:
         name = request.path_params["name"]
         team = _get_ui_team(request)
-        try:
-            locks.acquire_team(team.team_id)
-        except BusyError as e:
-            return _error_response(e)
         try:
             from oduflow.extra_addons import fetch_extra_repo
 
@@ -2939,8 +2981,6 @@ def _build_routes(
             return JSONResponse(
                 {"ok": False, "error": "Internal server error."}, status_code=500
             )
-        finally:
-            locks.release_team(team.team_id)
 
     def api_extra_repo_protect(request: Request) -> JSONResponse:
         name = request.path_params["name"]
@@ -2978,10 +3018,6 @@ def _build_routes(
         name = request.path_params["name"]
         team = _get_ui_team(request)
         try:
-            locks.acquire_team(team.team_id)
-        except BusyError as e:
-            return _error_response(e)
-        try:
             from oduflow.extra_addons import delete_extra_repo
 
             delete_extra_repo(get_settings(), team, name)
@@ -2993,8 +3029,6 @@ def _build_routes(
             return JSONResponse(
                 {"ok": False, "error": "Internal server error."}, status_code=500
             )
-        finally:
-            locks.release_team(team.team_id)
 
     def api_credentials(request: Request) -> JSONResponse:
         from oduflow.git_ops import list_credentials
@@ -3010,6 +3044,7 @@ def _build_routes(
             )
 
     async def api_credential_add(request: Request) -> JSONResponse:
+        team = _get_ui_team(request)
         try:
             body = await request.json()
             repo_url = (body.get("repo_url") or "").strip()
@@ -3018,9 +3053,20 @@ def _build_routes(
                     {"ok": False, "error": "repo_url is required."},
                     status_code=400,
                 )
-            from oduflow import git_ops
+        except Exception:
+            return JSONResponse(
+                {"ok": False, "error": "Invalid JSON body."}, status_code=400
+            )
+        from oduflow import git_ops
 
-            team = _get_ui_team(request)
+        # Same key as the setup_repo_auth MCP tool: one writer at a time on the
+        # team's credential store.
+        key = credentials_lock_key(team.team_id)
+        try:
+            locks.acquire_env(key, operation="setup_repo_auth")
+        except BusyError as e:
+            return _error_response(e)
+        try:
             result = await _offload(
                 git_ops.setup_repo_auth, repo_url, cred_file=team.git_credentials_file()
             )
@@ -3032,8 +3078,12 @@ def _build_routes(
             return JSONResponse(
                 {"ok": False, "error": "Internal server error."}, status_code=500
             )
+        finally:
+            locks.release_env(key)
 
     async def api_credential_delete(request: Request) -> JSONResponse:
+        team = _get_ui_team(request)
+        key = credentials_lock_key(team.team_id)
         try:
             body = await request.json()
             host = (body.get("host") or "").strip()
@@ -3045,10 +3095,17 @@ def _build_routes(
                 )
             from oduflow.git_ops import delete_credential
 
-            team = _get_ui_team(request)
-            removed = delete_credential(
-                host, username, cred_file=team.git_credentials_file()
-            )
+            # Rewrites the same store setup_repo_auth appends to.
+            try:
+                locks.acquire_env(key, operation="delete_credential")
+            except BusyError as e:
+                return _error_response(e)
+            try:
+                removed = delete_credential(
+                    host, username, cred_file=team.git_credentials_file()
+                )
+            finally:
+                locks.release_env(key)
             if not removed:
                 return JSONResponse(
                     {

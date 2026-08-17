@@ -1150,19 +1150,190 @@ class TestEnvLock:
             _locks.release_env("main")
 
 
-class TestTemplateListLock:
-    @patch("oduflow.docker_ops.system_ops.list_templates")
-    def test_busy_raises_tool_error_without_listing(self, mock_list):
+class TestResourceLocks:
+    """Service/volume tools lock the resource, not the whole team."""
+
+    @staticmethod
+    def _locks():
+        import oduflow.server
+
+        return oduflow.server._locks
+
+    @patch("oduflow.docker_ops.service_ops.restart_service")
+    def test_restart_service_waits_for_a_delete_of_the_same_service(self, mock_restart):
+        # restart_service used to take no lock at all and could run against a
+        # container delete_service was in the middle of removing.
+        from oduflow.locking import service_lock_key
+
+        locks = self._locks()
+        key = service_lock_key("1", "redis")
+        locks.acquire_env(key, operation="delete_service")
+        try:
+            with pytest.raises(ToolError, match="delete_service"):
+                _get_tool_fn("restart_service")(name="redis")
+        finally:
+            locks.release_env(key)
+        mock_restart.assert_not_called()
+
+    @patch("oduflow.docker_ops.service_ops.run_command_in_service")
+    def test_run_service_command_waits_for_the_same_service(self, mock_run):
+        from oduflow.locking import service_lock_key
+
+        locks = self._locks()
+        key = service_lock_key("1", "redis")
+        locks.acquire_env(key, operation="update_service")
+        try:
+            with pytest.raises(ToolError, match="update_service"):
+                _get_tool_fn("run_service_command")(name="redis", command="ping")
+        finally:
+            locks.release_env(key)
+        mock_run.assert_not_called()
+
+    @patch("oduflow.docker_ops.service_ops.restart_service")
+    def test_another_service_is_unaffected(self, mock_restart):
+        from oduflow.locking import service_lock_key
+
+        mock_restart.return_value = {"name": "meili", "container_name": "c"}
+        locks = self._locks()
+        key = service_lock_key("1", "redis")
+        locks.acquire_env(key, operation="delete_service")
+        try:
+            _get_tool_fn("restart_service")(name="meili")
+        finally:
+            locks.release_env(key)
+        mock_restart.assert_called_once()
+
+    @patch("oduflow.docker_ops.volume_ops.create_volume")
+    def test_volumes_run_during_a_team_operation(self, mock_create):
+        # A template publish holds the team lock for minutes; unrelated volume
+        # work must not queue behind it.
+        mock_create.return_value = {
+            "name": "data",
+            "docker_name": "oduflow-vol-1-data",
+            "description": "",
+        }
+        locks = self._locks()
+        locks.acquire_team("1", operation="save_as_template")
+        try:
+            _get_tool_fn("create_volume")(name="data")
+        finally:
+            locks.release_team("1")
+        mock_create.assert_called_once()
+
+    @patch("oduflow.docker_ops.service_ops.delete_service")
+    def test_a_service_operation_does_not_block_the_team(self, mock_delete):
+        from oduflow.locking import service_lock_key
+
+        locks = self._locks()
+        key = service_lock_key("1", "redis")
+        locks.acquire_env(key, operation="delete_service")
+        try:
+            locks.acquire_team("1")  # must not raise
+            locks.release_team("1")
+        finally:
+            locks.release_env(key)
+
+
+class TestProductionBackupLocks:
+    """Prune must exclude snapshot and restore, which the team lock never did:
+    productions lock in their own `prod:` keyspace."""
+
+    @staticmethod
+    def _prod_settings():
+        return replace(TEST_SETTINGS, prod_enabled=True)
+
+    def test_prune_waits_for_a_running_snapshot(self):
+        import oduflow.server
+        from oduflow.locking import prod_backups_lock_key
+
+        locks = oduflow.server._locks
+        key = prod_backups_lock_key("1")
+        locks.acquire_env(key, operation="snapshot_production")
+        with patch.object(oduflow.server, "_settings", self._prod_settings()):
+            try:
+                with pytest.raises(ToolError, match="snapshot_production"):
+                    _get_tool_fn("prune_production_backups")()
+            finally:
+                locks.release_env(key)
+
+    def test_snapshot_waits_for_a_running_prune(self):
+        import oduflow.server
+        from oduflow.locking import prod_backups_lock_key
+
+        locks = oduflow.server._locks
+        key = prod_backups_lock_key("1")
+        locks.acquire_env(key, operation="prune_production_backups")
+        with patch.object(oduflow.server, "_settings", self._prod_settings()):
+            try:
+                with pytest.raises(ToolError, match="prune_production_backups"):
+                    _get_tool_fn("snapshot_production")(name="erp")
+            finally:
+                locks.release_env(key)
+        # The production's own lock was handed back, not leaked.
+        locks.acquire_env(oduflow.server.prod_lock_key("1", "erp"))
+        locks.release_env(oduflow.server.prod_lock_key("1", "erp"))
+
+    def test_cluster_pitr_excludes_a_running_production_operation(self):
         import oduflow.server
 
         locks = oduflow.server._locks
+        key = oduflow.server.prod_lock_key("1", "erp")
+        locks.acquire_env(key, operation="update_production")
+        with patch.object(oduflow.server, "_settings", self._prod_settings()):
+            try:
+                with pytest.raises(ToolError, match="update_production"):
+                    _get_tool_fn("restore_cluster_pitr")(confirm="RESTORE-CLUSTER")
+            finally:
+                locks.release_env(key)
+
+
+class TestOdooRpcToolsAreLockFree:
+    """XML-RPC against a live Odoo is arbitrated by PostgreSQL, not by us."""
+
+    @pytest.mark.parametrize(
+        "tool,kwargs",
+        [
+            ("odoo_search_read", {"model": "res.partner"}),
+            ("odoo_create", {"model": "res.partner", "values": '{"name": "x"}'}),
+            ("odoo_write", {"model": "res.partner", "ids": "1", "values": "{}"}),
+            ("odoo_unlink", {"model": "res.partner", "ids": "1"}),
+            ("odoo_call", {"model": "res.partner", "method": "name_search"}),
+            ("odoo_schema", {}),
+        ],
+    )
+    @patch("oduflow.docker_ops.env_ops.ensure_running", return_value=False)
+    @patch("oduflow.docker_ops.odoo_rpc.call_kw")
+    def test_they_run_while_the_environment_lock_is_held(
+        self, mock_call, mock_ensure, tool, kwargs
+    ):
+        import oduflow.server
+        from oduflow.docker_ops.odoo_rpc import RpcResult
+
+        mock_call.return_value = RpcResult(ok=True, value=[], login="admin", uid=2)
+        locks = oduflow.server._locks
+        locks.acquire_env("main", "1", operation="run_odoo_tests")
+        try:
+            _get_tool_fn(tool)(env_name="main", **kwargs)
+        finally:
+            locks.release_env("main")
+        mock_call.assert_called_once()
+
+
+class TestTemplateListLock:
+    @patch("oduflow.docker_ops.system_ops.list_templates")
+    def test_listing_needs_no_lock(self, mock_list):
+        # A pure read must not bounce off a template publish that legitimately
+        # holds the team lock for minutes.
+        import oduflow.server
+
+        mock_list.return_value = []
+        locks = oduflow.server._locks
         locks.acquire_team("1")
         try:
-            with pytest.raises(ToolError, match="Another team-level operation"):
-                _call_tool("list_templates")
+            assert "No template profiles found." in _call_tool("list_templates")
         finally:
             locks.release_team("1")
-        mock_list.assert_not_called()
+        mock_list.assert_called_once()
 
 
 class TestListServicePresetsTool:
