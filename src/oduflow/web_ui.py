@@ -939,10 +939,21 @@ def _build_routes(
             return JSONResponse(
                 {"ok": False, "error": "A target branch is required."}, status_code=400
             )
+        new_name = ((body or {}).get("new_name") or "").strip()
+        if new_name == branch:
+            new_name = ""
         try:
             locks.acquire_env(branch, team.team_id)
         except BusyError as e:
             return _error_response(e)
+        # The rename target is locked too, so a concurrent create cannot claim
+        # the name while the environment is moving onto it.
+        if new_name:
+            try:
+                locks.acquire_env(new_name, team.team_id)
+            except BusyError as e:
+                locks.release_env(branch)
+                return _error_response(e)
         try:
             settings = get_settings()
             activity.touch(team, branch)
@@ -952,16 +963,21 @@ def _build_routes(
                 team,
                 branch,
                 target,
+                new_name=new_name or None,
             )
             return JSONResponse({"ok": True, "result": result})
         except FlowError as e:
             return _error_response(e)
+        except ValueError as e:
+            return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
         except Exception:
             logger.exception("Unexpected error in api_switch_branch")
             return JSONResponse(
                 {"ok": False, "error": "Internal server error."}, status_code=500
             )
         finally:
+            if new_name:
+                locks.release_env(new_name)
             locks.release_env(branch)
 
     def api_delete(request: Request) -> JSONResponse:

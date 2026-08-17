@@ -193,6 +193,20 @@ def remove(team: TeamSettings, env_name: str) -> None:
     _mutate(team, fn)
 
 
+def rename(team: TeamSettings, old_name: str, new_name: str) -> None:
+    """Carry the record of a renamed environment over to its new name, so the
+    idle reaper does not read it as brand new."""
+
+    def fn(records: dict[str, dict[str, Any]]) -> bool:
+        rec = records.pop(old_name, None)
+        if rec is None:
+            return False
+        records[new_name] = rec
+        return True
+
+    _mutate(team, fn)
+
+
 def prune(team: TeamSettings, existing: set[str]) -> None:
     """Drop records of environments that no longer exist."""
 

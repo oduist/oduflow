@@ -200,6 +200,31 @@ scoped MCP endpoint and token. This matters twice over — provisioning is skipp
 (no fresh clone, no template database copy), and the MCP client you already
 pointed at `/mcp/dev1` keeps working, because the address never changed.
 
+#### Renaming While Switching
+
+The environment name is a slot label, not a description of what the slot
+currently serves — but a name left over from a finished branch can get
+confusing. Pass `new_name` to relabel the slot in the same operation:
+
+```bash
+oduflow call switch_branch '{"env_name": "dev1", "branch": "feature/next-task", "new_name": "next-task"}'
+```
+
+The database, filestore, ports, credentials and the environment's URL all move
+with it, so the browser tab you have open keeps working. Two things to know:
+
+- **The scoped MCP endpoint moves too**, from `/mcp/dev1` to `/mcp/next-task`
+  (the token itself is unchanged). Re-point any MCP client configured against
+  the old path.
+- **Environments without a pooled hostname slot** — created before
+  `environment_slots` was configured, so their hostname is derived from their
+  name — get a new URL, since the hostname follows the name.
+
+The name must be free: a rename onto a name that already has an environment,
+workspace directory or database is refused before anything is touched.
+Environments managed by a [Stack](stacks.md) are refused as well — there the
+name comes from the stack definition.
+
 After the switch, Oduflow diffs the two branch tips and applies the same logic
 as [Smart Pull](#smart-pull--intelligent-change-detection). Pass
 `install` / `upgrade` / `restart` when you know what changed, or leave them empty

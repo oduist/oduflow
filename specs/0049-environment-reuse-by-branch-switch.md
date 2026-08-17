@@ -44,7 +44,7 @@ checkout directory are all derived, and no transaction spans a rename of an
 registries — a half-renamed environment is a worse failure than a name that no
 longer echoes the branch. Instead the branch is displayed as a first-class,
 always-visible property of the card, and the environment name becomes what it
-already effectively was: a stable slot label.
+already effectively was: a stable slot label. (Revisited — see *Evolution*.)
 
 ## How it works (macro)
 
@@ -92,9 +92,59 @@ already effectively was: a stable slot label.
   branch as immutable drift and recreate the environment. Reconciling it in place
   through this operation is a natural follow-up, not part of this decision.
 
+## Evolution
+
+**Renaming, after all (optional `new_name` on `switch_branch`).** The original
+refusal was about the *failure mode*, not about the value: a name left over from
+a merged branch is a real annoyance, and "the name is just a slot label" only
+holds while somebody is willing to read it that way. What made it safe to add was
+noticing that the switch already re-creates the container — labels are frozen at
+creation — so the rename needs no recreate of its own. It rides on that same one,
+in the window where the container is down.
+
+The "no transaction" objection is answered by ordering rather than by a
+transaction that cannot exist. Every check (name validity, the production
+namespace, a container / workspace directory / database already holding the
+target name, stack membership) runs before the first mutation. Then each step is
+individually atomic and ordered so that an interruption leaves an environment's
+*data* whole under exactly one of the two names: move the workspace directory
+(atomic within a filesystem), rename the database (the one step that can still
+fail on its own — a failure moves the directory back), then move the registry
+keys. The container is the accepted casualty: it is removed before the
+relocation, so a failure from that point on (the database rename, the final
+container creation) leaves the environment without a working container, and
+nothing here can bring the old one back. A relocation failure states that
+outcome explicitly instead of pretending to roll back (a failed final container
+creation surfaces the raw Docker error, as it always has); recovery is
+re-provisioning the slot — a dev environment, so an acceptable cost for a
+failure this rare.
+
+Two properties are deliberately preserved rather than re-derived: the port and
+hostname registry keys are *moved*, not released and re-allocated, because they
+are the environment's address; and the coding agent's checkout is moved rather
+than removed and re-cloned, because it can hold uncommitted work. What does not
+survive is the scoped MCP path: `/mcp/<name>` follows the name, so an MCP client
+configured against the old one must be re-pointed. That is the cost the rename
+carries, and it is why the tool's response states the new name explicitly.
+
+Stack-managed environments are refused: there the name comes from the stack
+definition, and renaming behind it would read as drift on the next reconcile.
+A strict guardrail refusal blocks the rename as well, so "blocked" keeps meaning
+that nothing changed.
+
+One deliberate rough edge remains: the agent checkout is moved *after* the
+container recreate, so a recreate that fails leaves the environment under the new
+name with its agent checkout still under the old slug. That is a best-effort
+side path — the next console or chat re-clones it — and buying atomicity there
+would mean moving it before a step that can still fail.
+
 ## History
 
 - `litnimax/bangkok` (2026-08-17) — `switch_branch` MCP tool, REST endpoint and
   dashboard control; `fetch_branch` / `checkout_branch` / `tree_modules` git
   plumbing; dropped-module preflight; `presynced` sync path in
   `pull_environment`.
+- `litnimax/montgomery-v1` (2026-08-17) — optional `new_name`: `rename_to` in
+  `update_environment` with `check_rename_target` /
+  `_relocate_environment_state`, `rename_env` in the port and hostname
+  registries, `activity.rename`, `agent_sessions.rename`, `_agent_rename_env`.

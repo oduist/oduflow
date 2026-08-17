@@ -150,6 +150,28 @@ def release_port(registry_path: str, env_name: str) -> None:
             logger.info("Released port %d for environment '%s'", port, env_name)
 
 
+def rename_env(registry_path: str, old_name: str, new_name: str) -> None:
+    """Move a reservation to a renamed environment, keeping the same port.
+
+    A release + allocate pair would be observably different: the environment
+    could come back on another port, and a concurrent allocation could take the
+    old one in between. The port is part of the environment's address, so a
+    rename must preserve it.
+    """
+    with _registry_lock(registry_path):
+        registry = _load_registry(registry_path)
+        if old_name not in registry:
+            return
+        registry[new_name] = registry.pop(old_name)
+        _save_registry(registry_path, registry)
+        logger.info(
+            "Moved port %d from environment '%s' to '%s'",
+            registry[new_name],
+            old_name,
+            new_name,
+        )
+
+
 def get_port(registry_path: str, env_name: str) -> int | None:
     """Get the assigned port for an environment, or None if not assigned."""
     registry = _load_registry(registry_path)

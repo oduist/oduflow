@@ -11,7 +11,12 @@ import pytest
 import docker
 from oduflow import po_tools
 from oduflow.docker_ops import env_ops, odoo_ops, system_ops
-from oduflow.errors import ConflictError, NotFoundError, PrerequisiteNotMetError
+from oduflow.errors import (
+    ConflictError,
+    FlowError,
+    NotFoundError,
+    PrerequisiteNotMetError,
+)
 from oduflow.settings import DEFAULT_AGENT_IMAGE, Settings, TeamSettings
 
 TEST_TEAM = TeamSettings(
@@ -1319,6 +1324,116 @@ class TestUpdateEnvironment:
         assert result["image"] == "odoo:17.0"
         assert result["image_updated"] is True
         assert result["env_vars"] == {"FOO": "new"}
+
+    @patch(
+        "oduflow.docker_ops.env_ops._install_pip_requirements", return_value=(False, "")
+    )
+    @patch("oduflow.docker_ops.env_ops._install_apt_packages", return_value="")
+    @patch("oduflow.docker_ops.env_ops._resolve_instance_conf")
+    @patch("oduflow.docker_ops.env_ops.os.path.isfile", return_value=False)
+    @patch("oduflow.docker_ops.env_ops.os.path.isdir", return_value=False)
+    @patch("oduflow.docker_ops.env_ops._create_pg_role")
+    @patch(
+        "oduflow.docker_ops.env_ops.load_credentials",
+        return_value={"pg_user": "u_1_main", "pg_password": "pw"},
+    )
+    @patch("oduflow.docker_ops.env_ops.check_rename_target")
+    @patch("oduflow.docker_ops.env_ops._relocate_environment_state")
+    def test_rename_recreates_the_container_under_the_new_name(
+        self,
+        mock_relocate,
+        mock_check,
+        mock_creds,
+        mock_role,
+        mock_isdir,
+        mock_isfile,
+        mock_resolve_conf,
+        mock_apt,
+        mock_pip,
+        mock_docker_client,
+    ):
+        mock_resolve_conf.return_value.exists.return_value = False
+        container = self._make_container()
+        container.attrs["HostConfig"]["Binds"] = [
+            "/tmp/flow-test/workspaces/main/repo:/mnt/extra-addons:rw",
+            "/tmp/flow-test/workspaces/main/filestore:"
+            "/var/lib/odoo/.local/share/Odoo/filestore/oduflow_1_main:rw",
+        ]
+        mock_docker_client.containers.get.return_value = container
+        mock_docker_client.containers.run.return_value = MagicMock()
+
+        result = env_ops.update_environment(
+            TEST_SETTINGS, TEST_TEAM, "main", pull_image=False, rename_to="next"
+        )
+
+        # The name-keyed state moves while the container is down — after it was
+        # removed, before the new one is created.
+        assert mock_relocate.call_args[0][3:] == ("main", "next")
+        run_kwargs = mock_docker_client.containers.run.call_args.kwargs
+        assert run_kwargs["name"] == "oduflow-1-next-odoo"
+        assert run_kwargs["labels"][TEST_SETTINGS.branch_label] == "next"
+        assert run_kwargs["command"] == "odoo -d oduflow_1_next --dev=xml"
+        assert set(run_kwargs["volumes"]) == {
+            "/tmp/flow-test/workspaces/next/repo",
+            "/tmp/flow-test/workspaces/next/filestore",
+        }
+        assert run_kwargs["volumes"]["/tmp/flow-test/workspaces/next/filestore"][
+            "bind"
+        ] == ("/var/lib/odoo/.local/share/Odoo/filestore/oduflow_1_next")
+        assert result["env_name"] == "next"
+        assert result["database"] == "oduflow_1_next"
+
+    @patch("oduflow.docker_ops.env_ops.check_rename_target")
+    @patch(
+        "oduflow.docker_ops.env_ops._relocate_environment_state",
+        side_effect=RuntimeError("database is being accessed by other users"),
+    )
+    def test_a_failed_relocation_reports_the_containerless_state(
+        self, mock_relocate, mock_check, mock_docker_client
+    ):
+        # The old container is removed before the relocation and cannot be
+        # brought back; the error must say what the operation left behind
+        # instead of surfacing a bare ALTER DATABASE failure.
+        container = self._make_container()
+        mock_docker_client.containers.get.return_value = container
+
+        with pytest.raises(FlowError) as excinfo:
+            env_ops.update_environment(
+                TEST_SETTINGS, TEST_TEAM, "main", pull_image=False, rename_to="next"
+            )
+
+        message = str(excinfo.value)
+        assert "Renaming 'main' to 'next' failed" in message
+        assert "database is being accessed by other users" in message
+        assert "currently has no container" in message
+        mock_docker_client.containers.run.assert_not_called()
+
+    def test_rename_to_the_current_name_is_ignored(self, mock_docker_client):
+        container = self._make_container()
+        mock_docker_client.containers.get.return_value = container
+
+        with (
+            patch("oduflow.docker_ops.env_ops.check_rename_target") as check,
+            patch.object(env_ops, "_relocate_environment_state") as relocate,
+            patch(
+                "oduflow.docker_ops.env_ops.load_credentials",
+                return_value={"pg_user": "u_1_main", "pg_password": "pw"},
+            ),
+            patch("oduflow.docker_ops.env_ops._create_pg_role"),
+            patch("oduflow.docker_ops.env_ops._install_apt_packages", return_value=""),
+            patch(
+                "oduflow.docker_ops.env_ops._install_pip_requirements",
+                return_value=(False, ""),
+            ),
+            patch("oduflow.docker_ops.env_ops._resolve_instance_conf") as conf,
+        ):
+            conf.return_value.exists.return_value = False
+            env_ops.update_environment(
+                TEST_SETTINGS, TEST_TEAM, "main", pull_image=False, rename_to="main"
+            )
+
+        check.assert_not_called()
+        relocate.assert_not_called()
 
     def test_update_aborts_when_image_unavailable(self, mock_docker_client):
         # Image can't be pulled and isn't local: abort WITHOUT removing the old
