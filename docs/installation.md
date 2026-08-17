@@ -121,9 +121,12 @@ similarly leaves the live file untouched and writes `*.oduflow-merge`; resolve
 that file, install the resolved content as the live file, and remove the
 sidecar. Until the sidecar is resolved, `oduflow upgrade` exits non-zero.
 
-For unattended upgrades, pass `--force`. It skips only the stdin confirmation:
-legacy files and conflicts are still preserved and still produce a non-zero
-exit code.
+For unattended upgrades, pass `--force`. It skips the stdin confirmation and
+resolves legacy files, conflicts, and merge failures in favour of the new
+bundle: the live file is copied to `.bundled_upgrade/backups/`, then
+overwritten, the baseline advances, and any stale sidecar is removed. A forced
+run therefore leaves no sidecar to review and exits 0. Clean merges are still
+merged and local-only changes are still preserved.
 
 Automatic merging is the default. To opt a file out of all bundled changes,
 add `# KEEP` as the **very first line**:
@@ -136,7 +139,7 @@ add `# KEEP` as the **very first line**:
 ```
 
 Files marked with `# KEEP` are skipped and listed as `(kept)` in the upgrade
-output.
+output, including under `--force`.
 
 ## Configuration Reference
 

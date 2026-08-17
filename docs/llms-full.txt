@@ -101,9 +101,12 @@ upgrade` three-way merges each team's bundled `odoo.conf`, agent guides, and
 sanitize script against a stored pristine baseline. Conflicts preserve the live
 file and create `*.oduflow-merge`; pre-baseline installations create
 `*.oduflow-new` for one-time manual reconciliation. Both cases exit non-zero
-until the sidecar is resolved and removed. `--force` skips only the stdin
-confirmation. A first-line `# KEEP` opts a file out entirely. PostgreSQL config
-changes use `oduflow retune-postgres`, not `oduflow upgrade`.
+until the sidecar is resolved and removed. `--force` skips the stdin
+confirmation and resolves those cases in favour of the new bundle: the live
+file is backed up under `.bundled_upgrade/backups/` and overwritten, so the
+command needs no manual follow-up. A first-line `# KEEP` opts a file out
+entirely, even under `--force`. PostgreSQL config changes use
+`oduflow retune-postgres`, not `oduflow upgrade`.
 
 ### Set up a template
 
@@ -675,9 +678,12 @@ similarly leaves the live file untouched and writes `*.oduflow-merge`; resolve
 that file, install the resolved content as the live file, and remove the
 sidecar. Until the sidecar is resolved, `oduflow upgrade` exits non-zero.
 
-For unattended upgrades, pass `--force`. It skips only the stdin confirmation:
-legacy files and conflicts are still preserved and still produce a non-zero
-exit code.
+For unattended upgrades, pass `--force`. It skips the stdin confirmation and
+resolves legacy files, conflicts, and merge failures in favour of the new
+bundle: the live file is copied to `.bundled_upgrade/backups/`, then
+overwritten, the baseline advances, and any stale sidecar is removed. A forced
+run therefore leaves no sidecar to review and exits 0. Clean merges are still
+merged and local-only changes are still preserved.
 
 Automatic merging is the default. To opt a file out of all bundled changes,
 add `# KEEP` as the **very first line**:
@@ -690,7 +696,7 @@ add `# KEEP` as the **very first line**:
 ```
 
 Files marked with `# KEEP` are skipped and listed as `(kept)` in the upgrade
-output.
+output, including under `--force`.
 
 ## Configuration Reference
 
@@ -3334,7 +3340,7 @@ oduflow destroy
 # Three-way merge deployed files with the installed bundled versions
 oduflow upgrade
 
-# Skip the confirmation prompt (conflicts still fail safely)
+# Skip the confirmation prompt and overwrite conflicts with the new bundle
 oduflow upgrade --force
 
 # Preview the unified host resource plan and managed config diffs
@@ -3362,9 +3368,15 @@ On a clean merge the live file and baseline advance together. On conflict the
 live file and accepted baseline stay untouched; the merge result is written to
 `*.oduflow-merge`. Existing customized installations with no baseline receive
 `*.oduflow-new` for a one-time manual reconciliation. Resolve/install the
-sidecar and remove it; until then the command exits with status 1. `--force`
-only skips the confirmation prompt and never overwrites a conflict. A first-line
-`# KEEP` remains an unconditional opt-out.
+sidecar and remove it; until then the command exits with status 1.
+
+`--force` makes the command fully non-interactive: it skips the confirmation
+prompt and resolves conflicts, legacy files, and merge failures in favour of
+the new bundle. The replaced live file is saved under
+`<team-data>/.bundled_upgrade/backups/`, the baseline advances, and any stale
+sidecar is removed, so a forced run leaves nothing to review and exits 0.
+Clean merges still merge, local-only changes are still left untouched, and a
+first-line `# KEEP` remains an unconditional opt-out.
 
 This command is separate from upgrading the Python package (for example,
 `uv tool upgrade oduflow`). It does not manage `postgresql.conf`; use

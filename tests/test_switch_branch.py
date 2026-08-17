@@ -579,9 +579,7 @@ class TestSwitchWithRename:
         assert "renamed_from" not in result
         assert "was not applied" in result["message"]
 
-    def test_a_dropped_module_refusal_blocks_the_rename_too(
-        self, tmp_path, switch_env
-    ):
+    def test_a_dropped_module_refusal_blocks_the_rename_too(self, tmp_path, switch_env):
         switch_env["preflight"].return_value = ["Module 'sale_x' would be dropped."]
 
         result = _switch(tmp_path, new_name="dev2", strict=True)

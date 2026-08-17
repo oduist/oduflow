@@ -101,9 +101,12 @@ upgrade` three-way merges each team's bundled `odoo.conf`, agent guides, and
 sanitize script against a stored pristine baseline. Conflicts preserve the live
 file and create `*.oduflow-merge`; pre-baseline installations create
 `*.oduflow-new` for one-time manual reconciliation. Both cases exit non-zero
-until the sidecar is resolved and removed. `--force` skips only the stdin
-confirmation. A first-line `# KEEP` opts a file out entirely. PostgreSQL config
-changes use `oduflow retune-postgres`, not `oduflow upgrade`.
+until the sidecar is resolved and removed. `--force` skips the stdin
+confirmation and resolves those cases in favour of the new bundle: the live
+file is backed up under `.bundled_upgrade/backups/` and overwritten, so the
+command needs no manual follow-up. A first-line `# KEEP` opts a file out
+entirely, even under `--force`. PostgreSQL config changes use
+`oduflow retune-postgres`, not `oduflow upgrade`.
 
 ### Set up a template
 
