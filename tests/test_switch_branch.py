@@ -176,7 +176,9 @@ def switch_env(tmp_path):
             return_value={"action": "restart", "message": "Restarted."},
         ) as pull,
         patch.object(env_ops, "_agent_add_env") as agent,
+        patch.object(env_ops, "_agent_rename_env") as agent_rename,
         patch.object(env_ops, "_dropped_module_warnings", return_value=[]) as preflight,
+        patch.object(env_ops, "_db_exists", return_value=False) as db_exists,
     ):
         yield {
             "client": client,
@@ -185,7 +187,9 @@ def switch_env(tmp_path):
             "update": update,
             "pull": pull,
             "agent": agent,
+            "agent_rename": agent_rename,
             "preflight": preflight,
+            "db_exists": db_exists,
         }
 
 
@@ -478,3 +482,354 @@ class TestDroppedModulePreflight:
             )
 
         assert states.call_args[0][3] == ("sale_x",)
+
+
+# --- renaming an environment while switching -----------------------------
+
+
+def _rename_team(tmp_path) -> TeamSettings:
+    """A team whose registries live on disk, so key moves can be asserted."""
+    return TeamSettings(
+        team_id="1",
+        data_dir=str(tmp_path),
+        port_registry_path=str(tmp_path / "ports.json"),
+        hostname_registry_path=str(tmp_path / "hostnames.json"),
+    )
+
+
+class TestSwitchWithRename:
+    def test_the_rename_rides_on_the_same_container_recreate(
+        self, tmp_path, switch_env
+    ):
+        _switch(tmp_path, new_name="dev2")
+
+        # A separate recreate for the rename would stop Odoo twice for one
+        # operation.
+        switch_env["update"].assert_called_once()
+        kwargs = switch_env["update"].call_args.kwargs
+        assert kwargs["rename_to"] == "dev2"
+        assert kwargs["label_overrides"] == {"oduflow.git_branch": "feature/new"}
+
+    def test_the_checkout_and_the_apply_run_under_the_new_name(
+        self, tmp_path, switch_env
+    ):
+        _switch(tmp_path, new_name="dev2")
+
+        # The workspace directory moved with the rename, so the old path no
+        # longer exists by the time the branch is checked out.
+        assert switch_env["checkout"].call_args[0][0].endswith("/dev2/repo")
+        assert switch_env["pull"].call_args[0][2] == "dev2"
+
+    def test_the_agent_checkout_is_moved_not_re_cloned(self, tmp_path, switch_env):
+        _switch(tmp_path, new_name="dev2")
+
+        # Removing it would delete the coding agent's uncommitted work.
+        assert switch_env["agent_rename"].call_args[0][3:] == ("dev1", "dev2")
+        assert switch_env["agent"].call_args[0][3] == "dev2"
+
+    def test_the_result_and_message_report_both_names(self, tmp_path, switch_env):
+        result = _switch(tmp_path, new_name="dev2")
+
+        assert result["env_name"] == "dev2"
+        assert result["renamed_from"] == "dev1"
+        assert result["message"].startswith(
+            "Switched 'dev1' from 'feature/old' to 'feature/new' and renamed it "
+            "to 'dev2'."
+        )
+
+    def test_renaming_to_the_current_name_is_a_plain_switch(self, tmp_path, switch_env):
+        result = _switch(tmp_path, new_name="dev1")
+
+        assert switch_env["update"].call_args.kwargs["rename_to"] is None
+        assert "renamed_from" not in result
+        switch_env["agent_rename"].assert_not_called()
+
+    def test_a_rename_alone_is_applied_when_the_branch_is_unchanged(
+        self, tmp_path, switch_env
+    ):
+        switch_env["client"].containers.get.return_value = _container(
+            _labels(**{"oduflow.git_branch": "feature/new"})
+        )
+
+        result = _switch(tmp_path, new_name="dev2")
+
+        assert switch_env["update"].call_args.kwargs["rename_to"] == "dev2"
+        assert result["branch_switched"] is False
+        assert result["env_name"] == "dev2"
+        assert result["renamed_from"] == "dev1"
+        # The pull that stands in for the switch runs first, under the old name,
+        # so a strict refusal can still leave the name untouched.
+        assert switch_env["pull"].call_args[0][2] == "dev1"
+        assert switch_env["agent"].call_args[0][3] == "dev2"
+
+    def test_a_guardrail_refusal_blocks_the_rename_too(self, tmp_path, switch_env):
+        switch_env["client"].containers.get.return_value = _container(
+            _labels(**{"oduflow.git_branch": "feature/new"})
+        )
+        switch_env["pull"].return_value = {
+            "action": "blocked",
+            "message": "Guardrail (strict) refused.",
+        }
+
+        result = _switch(tmp_path, new_name="dev2", strict=True)
+
+        # "Blocked" has to mean nothing changed — the name included.
+        switch_env["update"].assert_not_called()
+        assert result["env_name"] == "dev1"
+        assert "renamed_from" not in result
+        assert "was not applied" in result["message"]
+
+    def test_a_dropped_module_refusal_blocks_the_rename_too(
+        self, tmp_path, switch_env
+    ):
+        switch_env["preflight"].return_value = ["Module 'sale_x' would be dropped."]
+
+        result = _switch(tmp_path, new_name="dev2", strict=True)
+
+        # The full-switch guardrail must behave like the same-branch one:
+        # "blocked" means nothing changed, the name included — and says so.
+        switch_env["update"].assert_not_called()
+        assert result["action"] == "blocked"
+        assert result["env_name"] == "dev1"
+        assert "renamed_from" not in result
+        assert "The rename to 'dev2' was not applied." in result["message"]
+
+    def test_an_invalid_name_is_refused_before_anything_is_mutated(
+        self, tmp_path, switch_env
+    ):
+        with pytest.raises(ValueError):
+            _switch(tmp_path, new_name="../escape")
+
+        switch_env["update"].assert_not_called()
+        switch_env["fetch"].assert_not_called()
+
+    def test_a_stack_managed_environment_is_refused(self, tmp_path, switch_env):
+        switch_env["client"].containers.get.return_value = _container(
+            _labels(**{"oduflow.stack": "demo"})
+        )
+
+        with pytest.raises(ConflictError) as excinfo:
+            _switch(tmp_path, new_name="dev2")
+
+        assert "demo" in str(excinfo.value)
+        switch_env["update"].assert_not_called()
+
+    def test_a_name_taken_by_another_environment_is_refused(self, tmp_path, switch_env):
+        taken = _container(_labels())
+        own = switch_env["client"].containers.get.return_value
+
+        def by_name(name: str):
+            return taken if name.endswith("-dev2-odoo") else own
+
+        switch_env["client"].containers.get.side_effect = by_name
+
+        with pytest.raises(ConflictError) as excinfo:
+            _switch(tmp_path, new_name="dev2")
+
+        assert "already exists" in str(excinfo.value)
+        switch_env["update"].assert_not_called()
+
+
+class TestCheckRenameTarget:
+    def _check(self, tmp_path, new_name, *, client=None, db_exists=False):
+        client = client or MagicMock()
+        with patch.object(env_ops, "_db_exists", return_value=db_exists):
+            env_ops.check_rename_target(
+                client,
+                _settings(tmp_path),
+                _team(tmp_path),
+                "dev1",
+                new_name,
+                container_id="own",
+            )
+
+    def test_a_free_name_passes(self, tmp_path):
+        import docker
+
+        client = MagicMock()
+        client.containers.get.side_effect = docker.errors.NotFound("nope")
+
+        self._check(tmp_path, "dev2", client=client)
+
+    def test_the_production_namespace_is_reserved(self, tmp_path):
+        import docker
+
+        client = MagicMock()
+        client.containers.get.side_effect = docker.errors.NotFound("nope")
+
+        with pytest.raises(ConflictError):
+            self._check(tmp_path, "prod-erp", client=client)
+
+    def test_an_existing_workspace_directory_is_a_conflict(self, tmp_path):
+        import docker
+
+        client = MagicMock()
+        client.containers.get.side_effect = docker.errors.NotFound("nope")
+        (tmp_path / "workspaces" / "dev2").mkdir(parents=True)
+
+        with pytest.raises(ConflictError) as excinfo:
+            self._check(tmp_path, "dev2", client=client)
+
+        assert "workspace directory" in str(excinfo.value)
+
+    def test_an_existing_database_is_a_conflict(self, tmp_path):
+        import docker
+
+        client = MagicMock()
+        client.containers.get.side_effect = docker.errors.NotFound("nope")
+
+        with pytest.raises(ConflictError) as excinfo:
+            self._check(tmp_path, "dev2", client=client, db_exists=True)
+
+        assert "oduflow_1_dev2" in str(excinfo.value)
+
+    def test_a_rename_that_keeps_the_slug_does_not_collide_with_itself(self, tmp_path):
+        # feature/x and feature-x derive the same container, path and database;
+        # the environment's own resources must not read as someone else's.
+        client = MagicMock()
+        client.containers.get.return_value = MagicMock(id="own")
+        (tmp_path / "workspaces" / "feature-x").mkdir(parents=True)
+
+        with patch.object(env_ops, "_db_exists", return_value=True):
+            env_ops.check_rename_target(
+                client,
+                _settings(tmp_path),
+                _team(tmp_path),
+                "feature/x",
+                "feature-x",
+                container_id="own",
+            )
+
+
+class TestRelocateEnvironmentState:
+    def _relocate(self, tmp_path, *, sql=None, db_exists=True):
+        client = MagicMock()
+        with (
+            patch.object(env_ops, "_unmount_filestore"),
+            patch.object(env_ops, "_db_exists", return_value=db_exists),
+            patch.object(env_ops, "_exec_sql", side_effect=sql) as exec_sql,
+        ):
+            env_ops._relocate_environment_state(
+                client, _settings(tmp_path), _rename_team(tmp_path), "dev1", "dev2"
+            )
+        return exec_sql
+
+    def test_the_workspace_directory_moves_with_its_contents(self, tmp_path):
+        old = tmp_path / "workspaces" / "dev1"
+        old.mkdir(parents=True)
+        (old / "env_credentials.json").write_text('{"pg_user": "u_1_dev1"}')
+        (old / ".protected").touch()
+
+        self._relocate(tmp_path)
+
+        new = tmp_path / "workspaces" / "dev2"
+        assert not old.exists()
+        # Credentials, protection and the note are keyed by the directory, so
+        # they follow the environment without any per-file handling.
+        assert (new / "env_credentials.json").read_text() == '{"pg_user": "u_1_dev1"}'
+        assert (new / ".protected").exists()
+
+    def test_open_connections_are_terminated_before_the_database_is_renamed(
+        self, tmp_path
+    ):
+        (tmp_path / "workspaces" / "dev1").mkdir(parents=True)
+
+        exec_sql = self._relocate(tmp_path)
+
+        statements = [call[0][2] for call in exec_sql.call_args_list]
+        assert "pg_terminate_backend" in statements[0]
+        assert "oduflow_1_dev1" in statements[0]
+        assert statements[1] == (
+            'ALTER DATABASE "oduflow_1_dev1" RENAME TO "oduflow_1_dev2";'
+        )
+
+    def test_a_failed_database_rename_puts_the_directory_back(self, tmp_path):
+        old = tmp_path / "workspaces" / "dev1"
+        old.mkdir(parents=True)
+
+        def fail(*_a, **_k):
+            raise RuntimeError("database is being accessed by other users")
+
+        with pytest.raises(RuntimeError):
+            self._relocate(tmp_path, sql=fail)
+
+        # Half-renamed is the failure this operation must not produce: the
+        # environment stays whole under its old name.
+        assert old.exists()
+        assert not (tmp_path / "workspaces" / "dev2").exists()
+
+    def test_port_hostname_activity_and_chat_sessions_follow_the_name(self, tmp_path):
+        from oduflow import activity, agent_sessions, hostname_registry, port_registry
+
+        team = _rename_team(tmp_path)
+        (tmp_path / "workspaces" / "dev1").mkdir(parents=True)
+        port_registry.allocate_port(team.port_registry_path, "dev1", 50000, 50010)
+        hostname_registry.allocate_hostname(
+            team.hostname_registry_path, "dev1", 5, hostname_prefix="dev"
+        )
+        activity.touch(team, "dev1")
+        agent_sessions.set_session(team, "dev1", "claude", "session-1")
+
+        self._relocate(tmp_path)
+
+        # The port and the hostname ARE the environment's address; a release +
+        # re-allocate could hand back different ones.
+        assert port_registry.get_port(team.port_registry_path, "dev1") is None
+        assert port_registry.get_port(team.port_registry_path, "dev2") == 50000
+        assert hostname_registry.get_hostname(team.hostname_registry_path, "dev2") == (
+            "dev1"
+        )
+        assert "dev1" not in activity.get_all(team)
+        assert "dev2" in activity.get_all(team)
+        assert agent_sessions.get_session(team, "dev1", "claude") is None
+        assert agent_sessions.get_session(team, "dev2", "claude") == "session-1"
+
+    def test_a_rename_that_keeps_the_slug_leaves_the_database_alone(self, tmp_path):
+        client = MagicMock()
+        (tmp_path / "workspaces" / "feature-x").mkdir(parents=True)
+
+        with (
+            patch.object(env_ops, "_unmount_filestore"),
+            patch.object(env_ops, "_db_exists", return_value=True),
+            patch.object(env_ops, "_exec_sql") as exec_sql,
+        ):
+            env_ops._relocate_environment_state(
+                client,
+                _settings(tmp_path),
+                _rename_team(tmp_path),
+                "feature/x",
+                "feature-x",
+            )
+
+        # Same slug, same database name — ALTER DATABASE would fail on it.
+        exec_sql.assert_not_called()
+
+
+class TestRebaseVolumes:
+    def test_workspace_binds_and_the_filestore_path_follow_the_rename(self):
+        volumes = {
+            "/data/workspaces/dev1/repo": {"bind": "/mnt/extra-addons", "mode": "rw"},
+            "/data/workspaces/dev1/filestore": {
+                "bind": "/var/lib/odoo/.local/share/Odoo/filestore/oduflow_1_dev1",
+                "mode": "rw",
+            },
+            "/data/shared_extra_checkouts/enterprise/abc": {
+                "bind": "/mnt/extra-addons-enterprise",
+                "mode": "ro",
+            },
+        }
+
+        rebased = env_ops._rebase_volumes(
+            volumes,
+            "/data/workspaces/dev1",
+            "/data/workspaces/dev2",
+            "oduflow_1_dev1",
+            "oduflow_1_dev2",
+        )
+
+        assert rebased["/data/workspaces/dev2/repo"]["bind"] == "/mnt/extra-addons"
+        assert rebased["/data/workspaces/dev2/filestore"]["bind"] == (
+            "/var/lib/odoo/.local/share/Odoo/filestore/oduflow_1_dev2"
+        )
+        # Shared checkouts live outside the workspace and are not name-keyed.
+        assert "/data/shared_extra_checkouts/enterprise/abc" in rebased

@@ -1824,22 +1824,28 @@ def switch_branch(
     restart: bool = False,
     strict: bool = False,
     extra_addons: str = "",
+    new_name: str = "",
     ctx: Context | None = None,
 ) -> str:
     """
     Move an existing environment onto another git branch — reuse it instead of
     creating a new one.
 
-    Everything except the code stays: the environment name, database, filestore,
-    URL / hostname, ports, database credentials and the scoped MCP endpoint. Use
-    this at the start of a task when a previous branch is finished (merged) —
-    it replaces "delete the old environment, create a fresh one", which re-clones
-    the repository and re-copies the template database.
+    Everything except the code stays: the database, filestore, URL / hostname,
+    ports, database credentials and the scoped MCP token. Use this at the start
+    of a task when a previous branch is finished (merged) — it replaces "delete
+    the old environment, create a fresh one", which re-clones the repository and
+    re-copies the template database.
 
     The branch must already exist on origin, so push it first. Oduflow then
     diffs the old and new tips and applies exactly the logic of pull_and_apply:
     pass install / upgrade / restart explicitly when you know what changed, or
     leave them empty to let Oduflow classify the difference itself.
+
+    Pass new_name to rename the environment in the same operation — useful when
+    its name still echoes the finished branch. The URL is kept, but the scoped
+    MCP endpoint moves from /mcp/<old name> to /mcp/<new name>, so an MCP client
+    configured against the old path has to be re-pointed.
 
     Because the database is kept, it can outlive the code: if the target branch
     never carried a module that is installed here, the response says so (with
@@ -1858,21 +1864,34 @@ def switch_branch(
         restart: Restart the Odoo container (for Python-only differences).
         strict: Refuse instead of warning when the target branch drops an installed module, or when the requested action looks incomplete for the diff.
         extra_addons: Optional comma-separated extra addon repos with branches (e.g. "enterprise:19.0,custom-themes:main") to switch along with the main repo. Leave empty to keep the current ones.
+        new_name: Optional new name for the environment. Leave empty to keep the current name.
     """
     settings = _get_settings()
     team = _resolve_team(ctx)
     woke_note = _wake_for_work(settings, team, env_name, "to switch the branch")
-    result = env_ops.switch_environment_branch(
-        settings,
-        team,
-        env_name,
-        branch,
-        install=[m.strip() for m in install.split(",") if m.strip()] or None,
-        upgrade=[m.strip() for m in upgrade.split(",") if m.strip()] or None,
-        restart=restart,
-        strict=strict,
-        extra_addons=_parse_extra_addons(extra_addons) if extra_addons else None,
-    )
+    rename_to = (new_name or "").strip()
+    if rename_to and rename_to != env_name:
+        # The tool decorator locks env_name only; hold the target name too, so a
+        # concurrent create_environment cannot claim it mid-rename.
+        _locks.acquire_env(rename_to, team.team_id, operation="switch_branch")
+    else:
+        rename_to = ""
+    try:
+        result = env_ops.switch_environment_branch(
+            settings,
+            team,
+            env_name,
+            branch,
+            install=[m.strip() for m in install.split(",") if m.strip()] or None,
+            upgrade=[m.strip() for m in upgrade.split(",") if m.strip()] or None,
+            restart=restart,
+            strict=strict,
+            extra_addons=_parse_extra_addons(extra_addons) if extra_addons else None,
+            new_name=rename_to or None,
+        )
+    finally:
+        if rename_to:
+            _locks.release_env(rename_to)
     action = result["action"]
     warnings = result.get("warnings") or []
 
@@ -1883,7 +1902,13 @@ def switch_branch(
         lines.append(result["message"])
         return "\n".join(lines)
 
+    final_env_name = str(result.get("env_name") or env_name)
     header_lines = [woke_note + result["message"]]
+    if result.get("renamed_from"):
+        header_lines.append(
+            f"Use env_name='{final_env_name}' from now on; its scoped MCP endpoint "
+            f"is /mcp/{final_env_name}."
+        )
     if result.get("modules_installed"):
         header_lines.append(f"Installed: {', '.join(result['modules_installed'])}")
     if result.get("modules_upgraded"):
@@ -1902,7 +1927,7 @@ def switch_branch(
     output = result.get("output", "")
     if output:
         return _maybe_cache(
-            output, header, "switch_branch", f"env={env_name}, branch={branch}"
+            output, header, "switch_branch", f"env={final_env_name}, branch={branch}"
         )
     return header
 

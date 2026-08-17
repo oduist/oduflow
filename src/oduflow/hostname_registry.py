@@ -150,5 +150,26 @@ def release_hostname(registry_path: str, env_name: str) -> None:
             logger.info("Released hostname %s for environment '%s'", hostname, env_name)
 
 
+def rename_env(registry_path: str, old_name: str, new_name: str) -> None:
+    """Move a hostname reservation to a renamed environment.
+
+    Keeping the same hostname is the point: the environment's URL — the address
+    a browser and an MCP client already hold — must survive a rename, so this
+    moves the key instead of releasing and re-allocating a slot.
+    """
+    with _registry_lock(registry_path):
+        registry = _load_registry(registry_path)
+        if old_name not in registry:
+            return
+        registry[new_name] = registry.pop(old_name)
+        _save_registry(registry_path, registry)
+        logger.info(
+            "Moved hostname %s from environment '%s' to '%s'",
+            registry[new_name],
+            old_name,
+            new_name,
+        )
+
+
 def get_hostname(registry_path: str, env_name: str) -> str | None:
     return _load_registry(registry_path).get(env_name)

@@ -217,6 +217,22 @@ def clear_current(team: TeamSettings, branch: str, agent_type: str) -> None:
         _save(team, data)
 
 
+def rename(team: TeamSettings, old_name: str, new_name: str) -> None:
+    """Move an environment's stored sessions to its new name.
+
+    A renamed environment is the same environment, so the chat conversation
+    follows it instead of starting over. Anything already stored under the new
+    name (a previous environment of that name) is replaced.
+    """
+    with _LOCK:
+        data = _load(team)
+        state = data.pop(old_name, None)
+        if state is None:
+            return
+        data[new_name] = state
+        _save(team, data)
+
+
 def clear_session(
     team: TeamSettings, branch: str, agent_type: str | None = None
 ) -> None:

@@ -61,6 +61,12 @@ target branch must exist on origin; live-mounted environments are rejected
 target branch does not carry a module installed in that database, the response
 warns; create a separate environment when that matters.
 
+The environment name is a slot label, not a description of the branch, so a
+mismatch is normal — no need to rename on every switch. When the user asks for
+a different name, pass `new_name` to `switch_branch`: the URL and database
+follow the rename, but the scoped MCP endpoint becomes `/mcp/<new name>`, so use
+the new name in every later call.
+
 Do not delete and recreate an environment to fix an application error or run
 a migration. It recreates the same starting state and discards useful test
 data. Environments auto-stop when idle and container-level tools wake them

@@ -46,7 +46,11 @@ from oduflow.errors import (
     ProtectedError,
 )
 from oduflow.git_ops import RepoAuthError, git_env_for_team
-from oduflow.hostname_registry import allocate_hostname, release_hostname
+from oduflow.hostname_registry import (
+    allocate_hostname,
+    release_hostname,
+)
+from oduflow.hostname_registry import rename_env as rename_hostname_env
 from oduflow.locking import env_wake_key, keyed_mutex
 from oduflow.naming import (
     get_agent_checkout_dir,
@@ -70,6 +74,7 @@ from oduflow.naming import (
     validate_env_hostname,
 )
 from oduflow.port_registry import allocate_port, release_port
+from oduflow.port_registry import rename_env as rename_port_env
 from oduflow.settings import Settings, TeamSettings
 
 logger = logging.getLogger("oduflow")
@@ -2124,6 +2129,54 @@ def ensure_agent_env_checkout(
     _agent_add_env(client, settings, team, env_name, repo_url, branch, git_user)
 
 
+def _agent_rename_env(
+    client: DockerClient,
+    settings: Settings,
+    team: TeamSettings,
+    old_name: str,
+    new_name: str,
+) -> None:
+    """Move an environment's agent checkout and attachments to its new name.
+
+    Deliberately a move, not remove + re-clone: the checkout can hold the coding
+    agent's uncommitted work, which ``_agent_remove_env`` would delete. The
+    caller follows with :func:`_agent_add_env`, which rewrites that checkout's
+    ``.mcp.json`` with the renamed environment's scoped MCP URL. Best-effort,
+    like every other agent-container side effect.
+    """
+    if not team.agent_enabled:
+        return
+    # Same guard as _agent_remove_env: an empty slug would make the paths below
+    # the shared /workspace volume itself.
+    if not slugify_branch(old_name) or not slugify_branch(new_name):
+        return
+    try:
+        container = client.containers.get(
+            get_agent_container_name(team.team_id, settings.prefix)
+        )
+    except docker.errors.NotFound:
+        return
+    except Exception:
+        logger.warning("Agent checkout move failed for '%s'", old_name, exc_info=True)
+        return
+    for old_dir, new_dir in (
+        (get_agent_checkout_dir(old_name), get_agent_checkout_dir(new_name)),
+        (get_agent_upload_dir(old_name), get_agent_upload_dir(new_name)),
+    ):
+        if old_dir == new_dir:
+            continue
+        with contextlib.suppress(Exception):
+            container.exec_run(
+                [
+                    "sh",
+                    "-c",
+                    f'[ -d "{old_dir}" ] || exit 0; rm -rf -- "{new_dir}"; '
+                    f'mv -- "{old_dir}" "{new_dir}"',
+                ],
+                user=AGENT_USER,
+            )
+
+
 def _agent_remove_env(
     client: DockerClient, settings: Settings, team: TeamSettings, env_name: str
 ) -> None:
@@ -3410,15 +3463,16 @@ def switch_environment_branch(
     restart: bool = False,
     strict: bool = False,
     extra_addons: dict[str, str] | None = None,
+    new_name: str | None = None,
 ) -> dict[str, Any]:
     """Point an existing environment at another git branch and apply the diff.
 
-    The environment is the reusable unit. Its name, database, filestore,
-    hostname, ports, credentials and scoped MCP token all stay exactly as they
-    are — only the code it serves changes. That is what turns a finished
-    branch's environment into the starting point for the next task instead of
-    something to delete and provision again ([[0048]] pooled the hostname; this
-    pools the whole environment).
+    The environment is the reusable unit. Its database, filestore, hostname,
+    ports, credentials and scoped MCP token all stay exactly as they are — only
+    the code it serves changes. That is what turns a finished branch's
+    environment into the starting point for the next task instead of something
+    to delete and provision again ([[0048]] pooled the hostname; this pools the
+    whole environment).
 
     Order matters:
 
@@ -3434,6 +3488,12 @@ def switch_environment_branch(
     4. Check out the branch and hand the resulting diff to
        :func:`pull_environment`, so the switch shares one implementation of
        classification, the guardrail, extra-addons mounts and apply.
+
+    ``new_name`` optionally renames the environment along the way, so a slot
+    whose name still echoes a finished branch can be relabelled instead of
+    re-provisioned. It rides on the same container recreate as the label flip
+    (step 3), which keeps the whole switch at one recreate; everything after
+    that point works under the new name.
     """
     from oduflow.git_ops import checkout_branch, fetch_branch, is_git_repository
     from oduflow.naming import PROD_ENV_PREFIX
@@ -3474,6 +3534,27 @@ def switch_environment_branch(
             "branch there and call pull_and_apply."
         )
 
+    rename_to = (new_name or "").strip()
+    if rename_to == env_name:
+        rename_to = ""
+    if rename_to:
+        if labels.get("oduflow.stack"):
+            raise ConflictError(
+                f"Environment '{env_name}' belongs to stack "
+                f"'{labels['oduflow.stack']}', which reconciles environments by "
+                "name. Rename it in the stack definition instead."
+            )
+        # Everything below this point mutates; a bad or taken target name must
+        # fail here.
+        check_rename_target(
+            settings=settings,
+            team=team,
+            client=client,
+            env_name=env_name,
+            new_name=rename_to,
+            container_id=container_obj.id,
+        )
+
     current_branch = labels.get("oduflow.git_branch", env_name)
     repo_path = get_repo_path(env_name, team.workspaces_dir)
     if not is_git_repository(repo_path):
@@ -3488,6 +3569,7 @@ def switch_environment_branch(
     if branch == current_branch and extra_override is None:
         # Not an error: the caller wanted this environment on this branch, and it
         # is. Pull instead, so "switch" is safe to call at the start of any task.
+        previous_env_name = env_name
         result = pull_environment(
             settings,
             team,
@@ -3497,31 +3579,72 @@ def switch_environment_branch(
             restart=restart,
             strict=strict,
         )
+        # The pull runs first so that a strict refusal keeps its meaning:
+        # "blocked" has to mean nothing changed, the name included.
+        if rename_to and result.get("action") != "blocked":
+            update_environment(
+                settings,
+                team,
+                env_name,
+                rename_to=rename_to,
+                pull_image=False,
+                install_dependencies=False,
+            )
+            _agent_rename_env(client, settings, team, env_name, rename_to)
+            env_name = rename_to
+            _agent_add_env(
+                client,
+                settings,
+                team,
+                env_name,
+                labels.get(settings.repo_label, ""),
+                branch,
+                labels.get("oduflow.git_user", ""),
+            )
+            result["renamed_from"] = previous_env_name
         result["branch"] = branch
         result["previous_branch"] = current_branch
         result["branch_switched"] = False
+        result["env_name"] = env_name
+        blocked = result.get("action") == "blocked"
+        renamed = (
+            f"Renamed '{previous_env_name}' to '{env_name}'. "
+            if rename_to and not blocked
+            else ""
+        )
+        not_renamed = (
+            f" The rename to '{rename_to}' was not applied."
+            if rename_to and blocked
+            else ""
+        )
         result["message"] = (
-            f"Environment '{env_name}' is already on branch '{branch}'; pulled it "
-            f"instead. {result.get('message', '')}".strip()
+            f"{renamed}Environment '{env_name}' is already on branch '{branch}'; "
+            f"pulled it instead. {result.get('message', '')}".strip()
+            + not_renamed
         )
         return result
 
     target_sha = fetch_branch(repo_path, branch, cred_file=team.git_credentials_file())
     warnings = _dropped_module_warnings(settings, team, env_name, repo_path, target_sha)
     if strict and warnings:
+        blocked_message = (
+            f"Guardrail (strict) blocked the switch to '{branch}': it does not "
+            "carry every module installed in this database. Uninstall them, "
+            "use a separate environment for this branch, or pass "
+            "strict=False to switch anyway."
+        )
+        if rename_to:
+            # "Blocked" has to mean nothing changed — the name included.
+            blocked_message += f" The rename to '{rename_to}' was not applied."
         return {
             "action": "blocked",
             "warnings": warnings,
             "branch": current_branch,
             "requested_branch": branch,
             "branch_switched": False,
+            "env_name": env_name,
             "changed_files": [],
-            "message": (
-                f"Guardrail (strict) blocked the switch to '{branch}': it does not "
-                "carry every module installed in this database. Uninstall them, "
-                "use a separate environment for this branch, or pass "
-                "strict=False to switch anyway."
-            ),
+            "message": blocked_message,
         }
 
     label_overrides = {"oduflow.git_branch": branch}
@@ -3538,6 +3661,8 @@ def switch_environment_branch(
     # Dependencies are deliberately not reinstalled here: the checkout is still
     # on the old branch at this point. A changed requirements.txt / apt list is
     # part of the diff below, which pull_environment installs before restarting.
+    # A requested rename rides on this same recreate.
+    previous_env_name = env_name
     update_environment(
         settings,
         team,
@@ -3545,7 +3670,12 @@ def switch_environment_branch(
         label_overrides=label_overrides,
         pull_image=False,
         install_dependencies=False,
+        rename_to=rename_to or None,
     )
+    if rename_to:
+        _agent_rename_env(client, settings, team, env_name, rename_to)
+        env_name = rename_to
+        repo_path = get_repo_path(env_name, team.workspaces_dir)
 
     try:
         old_head, new_head, changed_files = checkout_branch(repo_path, branch)
@@ -3581,7 +3711,13 @@ def switch_environment_branch(
         presynced=(old_head, changed_files),
     )
 
-    switched = f"Switched '{env_name}' from '{current_branch}' to '{branch}'."
+    if rename_to:
+        switched = (
+            f"Switched '{previous_env_name}' from '{current_branch}' to '{branch}' "
+            f"and renamed it to '{env_name}'."
+        )
+    else:
+        switched = f"Switched '{env_name}' from '{current_branch}' to '{branch}'."
     # "Already up to date" is the pull vocabulary and reads as a contradiction
     # right after a switch; what it means here is that the two branches leave
     # the running Odoo with nothing to catch up on.
@@ -3593,12 +3729,207 @@ def switch_environment_branch(
     result["branch"] = branch
     result["previous_branch"] = current_branch
     result["branch_switched"] = True
+    result["env_name"] = env_name
+    if rename_to:
+        result["renamed_from"] = previous_env_name
     result["old_head"] = old_head
     result["new_head"] = new_head
     result["message"] = f"{switched} {tail}".strip()
     if warnings:
         result["warnings"] = warnings + list(result.get("warnings") or [])
     return result
+
+
+def check_rename_target(
+    client: DockerClient,
+    settings: Settings,
+    team: TeamSettings,
+    env_name: str,
+    new_name: str,
+    *,
+    container_id: str = "",
+) -> None:
+    """Reject a rename target before anything is mutated.
+
+    A name keys three independent resources — a container, a workspace directory
+    and a database — and slugification is lossy (``feature/x`` and ``feature-x``
+    collide on all three). Every check therefore compares against the resource
+    the *target* name derives, and skips the case where that resource is the
+    environment's own (a rename whose slug does not change).
+    """
+    from oduflow.naming import PROD_ENV_PREFIX, validate_env_name
+
+    validate_env_name(new_name)
+    if new_name.startswith(PROD_ENV_PREFIX):
+        raise ConflictError(
+            f"'{new_name}' is reserved for production environments; choose "
+            "another name."
+        )
+
+    target_container = get_resource_name(
+        new_name, "odoo", settings.prefix, team.team_id
+    )
+    try:
+        existing = client.containers.get(target_container)
+    except docker.errors.NotFound:
+        pass
+    else:
+        if not container_id or existing.id != container_id:
+            raise ConflictError(
+                f"An environment named '{new_name}' already exists. Delete it "
+                "first or pick another name."
+            )
+
+    old_workspace = get_workspace_path(env_name, team.workspaces_dir)
+    new_workspace = get_workspace_path(new_name, team.workspaces_dir)
+    if os.path.normpath(old_workspace) != os.path.normpath(
+        new_workspace
+    ) and os.path.exists(new_workspace):
+        raise ConflictError(
+            f"A workspace directory for '{new_name}' already exists at "
+            f"{new_workspace}. Remove it first or pick another name."
+        )
+
+    old_db = get_db_name(env_name, team.team_id)
+    new_db = get_db_name(new_name, team.team_id)
+    if new_db != old_db and _db_exists(client, settings, new_db):
+        raise ConflictError(
+            f"Database '{new_db}' (derived from '{new_name}') already exists. "
+            "Pick another name."
+        )
+
+
+def _repair_extra_worktrees(workspace_path: str) -> None:
+    """Re-point legacy per-workspace extra-addon worktrees after a move.
+
+    A worktree and its bare repository record each other's absolute path, so
+    moving the workspace directory breaks the pair. ``git worktree repair`` run
+    inside the moved worktree rewrites both sides. Environments on the shared
+    SHA-keyed checkouts keep their addons outside the workspace and are not
+    affected. Best-effort: a broken legacy worktree is re-created by the next
+    pull.
+    """
+    extra_dir = os.path.join(workspace_path, "extra")
+    if not os.path.isdir(extra_dir):
+        return
+    for repo_name in sorted(os.listdir(extra_dir)):
+        worktree_path = os.path.join(extra_dir, repo_name)
+        if not os.path.exists(os.path.join(worktree_path, ".git")):
+            continue
+        try:
+            subprocess.run(
+                ["git", "-C", worktree_path, "worktree", "repair"],
+                check=True,
+                capture_output=True,
+                timeout=60,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            logger.warning("Could not repair extra worktree %s: %s", worktree_path, exc)
+
+
+def _rebase_volumes(
+    volumes: dict[str, dict[str, str]],
+    old_workspace: str,
+    new_workspace: str,
+    old_db: str,
+    new_db: str,
+) -> dict[str, dict[str, str]]:
+    """Re-point an existing container's binds at the renamed environment.
+
+    Two things move with the name: the host side of every bind under the
+    workspace directory, and the filestore's container-side path, which Odoo
+    derives from the database name.
+    """
+    rebased: dict[str, dict[str, str]] = {}
+    for source, spec in volumes.items():
+        if source == old_workspace or source.startswith(old_workspace + os.sep):
+            source = new_workspace + source[len(old_workspace) :]
+        bind = spec.get("bind", "")
+        if old_db != new_db and bind.endswith(f"/filestore/{old_db}"):
+            spec = {**spec, "bind": bind[: -len(old_db)] + new_db}
+        rebased[source] = spec
+    return rebased
+
+
+def _relocate_environment_state(
+    client: DockerClient,
+    settings: Settings,
+    team: TeamSettings,
+    old_name: str,
+    new_name: str,
+) -> None:
+    """Move everything an environment's *name* keys, with its container down.
+
+    Called from :func:`update_environment` in the window between removing the
+    old container and creating the new one — the only moment at which the
+    workspace directory can be moved and the database renamed. No transaction
+    spans a directory rename, an ``ALTER DATABASE`` and three registries, so the
+    order is chosen to keep the environment's *data* whole under exactly one of
+    the two names. The container itself is already gone either way — a failure
+    here leaves the environment containerless, which :func:`update_environment`
+    reports explicitly instead of pretending to roll back:
+
+    1. Unmount the filestore overlay and move the workspace directory. The move
+       is atomic within one filesystem.
+    2. Rename the database. This is the one step that can fail on its own (a
+       connection that survived container removal), so a failure moves the
+       directory back and re-raises, leaving the environment whole under its old
+       name.
+    3. Move the registry keys — port, hostname, activity, agent sessions — which
+       carry the environment's port, URL, idle clock and chat history over.
+    """
+    old_workspace = get_workspace_path(old_name, team.workspaces_dir)
+    new_workspace = get_workspace_path(new_name, team.workspaces_dir)
+    old_db = get_db_name(old_name, team.team_id)
+    new_db = get_db_name(new_name, team.team_id)
+
+    moved = False
+    if os.path.normpath(old_workspace) != os.path.normpath(
+        new_workspace
+    ) and os.path.isdir(old_workspace):
+        _unmount_filestore(old_name, team)
+        _wait_unmounted(get_filestore_paths(old_name, team.workspaces_dir)["merged"])
+        os.makedirs(os.path.dirname(new_workspace) or ".", exist_ok=True)
+        os.rename(old_workspace, new_workspace)
+        moved = True
+        _repair_extra_worktrees(new_workspace)
+
+    if new_db != old_db and _db_exists(client, settings, old_db):
+        try:
+            # The container is gone, but a psql session or a pooled connection
+            # can still hold the database and make RENAME fail.
+            _exec_sql(
+                client,
+                settings,
+                "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
+                f"WHERE datname = '{old_db}' AND pid <> pg_backend_pid();",
+            )
+            _exec_sql(
+                client, settings, f'ALTER DATABASE "{old_db}" RENAME TO "{new_db}";'
+            )
+        except Exception:
+            if moved:
+                with contextlib.suppress(OSError):
+                    os.rename(new_workspace, old_workspace)
+            raise
+
+    rename_port_env(team.port_registry_path, old_name, new_name)
+    if team.hostname_registry_path or team.data_dir:
+        rename_hostname_env(_hostname_registry_path(team), old_name, new_name)
+    activity.rename(team, old_name, new_name)
+
+    from oduflow import agent_sessions
+
+    with contextlib.suppress(Exception):
+        agent_sessions.rename(team, old_name, new_name)
+
+    # The scoped MCP endpoint is /mcp/<env>, and its token->environment mapping
+    # is cached; the renamed environment answers on a different path.
+    invalidate_cache()
+    logger.info(
+        "Environment state relocated",
+        extra={"env_name": new_name, "previous_env_name": old_name},
+    )
 
 
 def update_environment(
@@ -3613,6 +3944,7 @@ def update_environment(
     pull_image: bool = True,
     install_dependencies: bool = True,
     label_overrides: dict[str, str] | None = None,
+    rename_to: str | None = None,
 ) -> dict[str, Any]:
     """Re-create an environment's container, preserving DB, repo and filestore.
 
@@ -3625,6 +3957,14 @@ def update_environment(
     redundant dependency reinstall. The PostgreSQL connection variables
     (HOST/USER/PASSWORD) are always re-derived from the environment credentials,
     and image-baked env comes from the image itself.
+
+    ``rename_to`` additionally moves the environment onto another name. The
+    container has to be re-created for that anyway — it carries the name in its
+    own name, its labels and its bind mounts — so the rename rides on the same
+    recreate instead of adding a second one: the name-keyed state is relocated
+    (see :func:`_relocate_environment_state`) while the container is down, and
+    everything the rest of this function derives from ``env_name`` is then
+    derived from the new one.
     """
     client = get_client()
     odoo_container_name = get_resource_name(
@@ -3639,6 +3979,15 @@ def update_environment(
     except docker.errors.NotFound:
         raise NotFoundError(
             f"Environment '{env_name}' does not exist. Use create_environment first."
+        )
+
+    if rename_to == env_name:
+        rename_to = None
+    if rename_to:
+        # Before the first mutation: a taken name must not cost the environment
+        # its container.
+        check_rename_target(
+            client, settings, team, env_name, rename_to, container_id=container.id
         )
 
     # Labels
@@ -3769,6 +4118,42 @@ def update_environment(
             container.remove(v=True, force=True)
         except Exception:
             pass
+
+    # ------------------------------------------------------------------
+    # 2b. Rename: relocate the name-keyed state, then work under the new name
+    # ------------------------------------------------------------------
+    if rename_to:
+        old_workspace = get_workspace_path(env_name, team.workspaces_dir)
+        old_db_name = get_db_name(env_name, team.team_id)
+        try:
+            _relocate_environment_state(client, settings, team, env_name, rename_to)
+        except Exception as exc:
+            # The old container is already removed and cannot be brought back
+            # from here; a bare ALTER DATABASE / rename error would hide that.
+            # State exactly what the failed operation left behind.
+            raise FlowError(
+                f"Renaming '{env_name}' to '{rename_to}' failed after the old "
+                f"container was already removed: {exc} The database and "
+                f"workspace are intact under '{env_name}', but the environment "
+                "currently has no container."
+            ) from exc
+        env_name = rename_to
+        odoo_container_name = get_resource_name(
+            env_name, "odoo", settings.prefix, team.team_id
+        )
+        # The environment's identity in every listing (see list_environments).
+        labels[settings.branch_label] = env_name
+        new_db_name = get_db_name(env_name, team.team_id)
+        volumes = _rebase_volumes(
+            volumes,
+            old_workspace,
+            get_workspace_path(env_name, team.workspaces_dir),
+            old_db_name,
+            new_db_name,
+        )
+        if command and old_db_name != new_db_name:
+            # The command is "odoo -d <db> ...", captured from the old container.
+            command = command.replace(old_db_name, new_db_name)
 
     # ------------------------------------------------------------------
     # 3. Re-mount filestore overlay if needed (only for overlay-mode envs)
@@ -3935,6 +4320,7 @@ def update_environment(
 
     return {
         "url": url,
+        "env_name": env_name,
         "hostname": get_env_short_hostname(env_name, route_hostname),
         "odoo_container": odoo_container_name,
         "database": env_db,
