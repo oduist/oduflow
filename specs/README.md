@@ -67,6 +67,7 @@ precursors).
 | [0046](0046-declarative-oduflow-stacks.md) | 2026-08-11 | Declarative Oduflow Stacks: versioned YAML, plan/apply reconciliation, ownership and startup bootstrap |
 | [0047](0047-three-way-bundled-upgrades.md) | 2026-08-14 | Three-way upgrades for deployed bundled files with persistent baselines and safe conflict sidecars |
 | [0048](0048-reusable-environment-hostname-slots.md) | 2026-08-16 | Reusable environment hostname slots decouple public routing from branch identity |
+| [0049](0049-environment-reuse-by-branch-switch.md) | 2026-08-17 | Environment reuse: the branch becomes a mutable property switched in place |
 
 ## Design docs
 

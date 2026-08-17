@@ -5,7 +5,7 @@ import subprocess
 from typing import Any
 from urllib.parse import ParseResult, urlparse
 
-from oduflow.errors import ExternalCommandError, FlowError
+from oduflow.errors import ExternalCommandError, FlowError, NotFoundError
 from oduflow.naming import redact_url_credentials, sanitize_repo_url
 
 logger = logging.getLogger("oduflow")
@@ -393,6 +393,114 @@ def pull_repo(
         env=env,
     )
     return old_head, [f for f in result.stdout.strip().splitlines() if f]
+
+
+def fetch_branch(repo_path: str, branch: str, cred_file: str = "") -> str:
+    """Fetch one branch from origin and return the commit it points at.
+
+    The validate-before-mutate half of a branch switch: the working tree is not
+    touched, so the common "the branch only exists on my machine" case fails
+    here — with an actionable message — instead of half-way through a switch.
+    """
+    env = git_env_for_team(cred_file) if cred_file else _GIT_BASE_ENV
+
+    try:
+        subprocess.run(
+            [
+                "git",
+                "-C",
+                repo_path,
+                "fetch",
+                "--recurse-submodules=no",
+                "origin",
+                f"+refs/heads/{branch}:refs/remotes/origin/{branch}",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=60,
+            env=env,
+        )
+    except subprocess.CalledProcessError as e:
+        error_msg = redact_url_credentials(e.stderr or str(e))
+        # Git reports an absent branch as a plain fetch failure. Translate it:
+        # "push the branch first" is a different action from "fix your remote".
+        if "couldn't find remote ref" in error_msg or "not our ref" in error_msg:
+            raise NotFoundError(
+                f"Branch '{branch}' does not exist on origin. Push it first "
+                f"(git push -u origin {branch}), then retry."
+            )
+        raise ExternalCommandError("git fetch", e.returncode, error_msg)
+    except subprocess.TimeoutExpired:
+        raise ExternalCommandError("git fetch", -1, "Fetch timed out (60s).")
+
+    return rev_parse(repo_path, f"refs/remotes/origin/{branch}")
+
+
+def checkout_branch(repo_path: str, branch: str) -> tuple[str, str, list[str]]:
+    """Move the checkout onto *branch* at origin's already-fetched tip.
+
+    Returns ``(old_head, new_head, changed_files)``. The file list is the *tree*
+    diff between the two commits (``git diff A..B``), not a commit range: two
+    branches need no shared history for the classifier to see what the running
+    Odoo must catch up on, which is what keeps squash-merged branches sane.
+
+    Local modifications are discarded, matching :func:`pull_repo` — the managed
+    clone is Oduflow's, and the agent's own work lives in its own checkout.
+    Requires the remote ref to be present; call :func:`fetch_branch` first.
+    """
+    old_head = rev_parse(repo_path, "HEAD")
+
+    try:
+        subprocess.run(
+            [
+                "git",
+                "-C",
+                repo_path,
+                "checkout",
+                "--force",
+                "-B",
+                branch,
+                f"refs/remotes/origin/{branch}",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+            env=_GIT_BASE_ENV,
+        )
+    except subprocess.CalledProcessError as e:
+        raise ExternalCommandError(
+            "git checkout", e.returncode, redact_url_credentials(e.stderr or str(e))
+        )
+
+    new_head = rev_parse(repo_path, "HEAD")
+    if old_head == new_head:
+        return old_head, new_head, []
+    return old_head, new_head, diff_names(repo_path, old_head, new_head)
+
+
+def tree_modules(repo_path: str, ref: str = "HEAD") -> set[str]:
+    """Odoo module names a tree provides — directories with a ``__manifest__.py``.
+
+    Read through git rather than the filesystem so the *target* of a branch
+    switch can be inspected before the checkout moves onto it.
+    """
+    try:
+        out = subprocess.run(
+            ["git", "-C", repo_path, "ls-tree", "-r", "--name-only", ref],
+            check=True,
+            capture_output=True,
+            text=True,
+            env=_GIT_BASE_ENV,
+        ).stdout
+    except subprocess.CalledProcessError as e:
+        raise ExternalCommandError("git ls-tree", e.returncode, e.stderr or "")
+
+    modules = set()
+    for path in out.splitlines():
+        if path.endswith("/__manifest__.py"):
+            modules.add(path.rsplit("/", 2)[-2])
+    return modules
 
 
 def rev_parse(repo_path: str, ref: str = "HEAD") -> str:
