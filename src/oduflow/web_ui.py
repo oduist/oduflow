@@ -1461,6 +1461,96 @@ def _build_routes(
                 {"ok": False, "error": "Internal server error."}, status_code=500
             )
 
+    async def api_import_template_from_odoo(request: Request) -> JSONResponse:
+        team = _get_ui_team(request)
+        try:
+            body = await request.json()
+        except ValueError:
+            return JSONResponse(
+                {"ok": False, "error": "Invalid JSON body"}, status_code=400
+            )
+        if not isinstance(body, dict):
+            return JSONResponse(
+                {"ok": False, "error": "JSON body must be an object"},
+                status_code=400,
+            )
+
+        odoo_url = str(body.get("odoo_url") or "").strip()
+        master_pwd = str(body.get("master_pwd") or "")
+        db_name = str(body.get("db_name") or "").strip()
+        template_name = str(body.get("template_name") or "").strip()
+        without_filestore = body.get("without_filestore", False)
+        if not odoo_url:
+            return JSONResponse(
+                {"ok": False, "error": "odoo_url is required"}, status_code=400
+            )
+        if not master_pwd:
+            return JSONResponse(
+                {"ok": False, "error": "master_pwd is required"}, status_code=400
+            )
+        if not template_name:
+            return JSONResponse(
+                {"ok": False, "error": "template_name is required"}, status_code=400
+            )
+        if not isinstance(without_filestore, bool):
+            return JSONResponse(
+                {"ok": False, "error": "without_filestore must be a boolean"},
+                status_code=400,
+            )
+        try:
+            validate_template_name(template_name)
+        except ValueError as e:
+            return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
+
+        try:
+            locks.acquire_team(team.team_id)
+        except BusyError as e:
+            return _error_response(e)
+        try:
+            result = await _offload(
+                system_ops.import_from_odoo,
+                get_settings(),
+                team,
+                odoo_url=odoo_url,
+                master_pwd=master_pwd,
+                db_name=db_name,
+                template_name=template_name,
+                without_filestore=without_filestore,
+            )
+            return JSONResponse(
+                {
+                    "ok": True,
+                    "result": {
+                        "template_name": result.get("template_name"),
+                        "source_url": result.get("source_url"),
+                        "source_db": result.get("source_db"),
+                        "odoo_version": result.get("odoo_version"),
+                        "odoo_image": result.get("odoo_image"),
+                        "template_db": result.get("template_db"),
+                        "includes_filestore": result.get("includes_filestore"),
+                        "zip_size_mb": result.get("zip_size_mb"),
+                        "restore_seconds": result.get("restore_seconds"),
+                        "affected_envs": result.get("affected_envs", []),
+                        "remount_failures": result.get("remount_failures", []),
+                    },
+                }
+            )
+        except FlowError as e:
+            logger.warning(
+                "import_from_odoo failed for template %s: %s", template_name, e
+            )
+            return _error_response(e)
+        except Exception:
+            logger.exception(
+                "Unexpected error in api_import_template_from_odoo for template %s",
+                template_name,
+            )
+            return JSONResponse(
+                {"ok": False, "error": "Internal server error."}, status_code=500
+            )
+        finally:
+            locks.release_team(team.team_id)
+
     def api_template_delete(request: Request) -> JSONResponse:
         name = request.path_params["name"]
         team = _get_ui_team(request)
@@ -4784,6 +4874,11 @@ def _build_routes(
         Route("/api/templates", api_templates, methods=["GET"]),
         Route("/import-odoo.sh", import_odoo_script, methods=["GET"]),
         Route("/api/templates/import-token", api_import_token, methods=["POST"]),
+        Route(
+            "/api/templates/import-from-odoo",
+            api_import_template_from_odoo,
+            methods=["POST"],
+        ),
         Route("/api/templates/import/status", api_import_status, methods=["GET"]),
         Route("/api/templates/import/manifest", api_import_manifest, methods=["POST"]),
         Route("/api/templates/import/dump", api_import_dump, methods=["POST"]),

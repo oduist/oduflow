@@ -1358,6 +1358,7 @@
 
 <div id="tab-templates" class="tab-content">
   <div class="tab-toolbar">
+    <button class="btn" onclick="openImportFromOdooModal()">Import from Odoo</button>
     <button class="btn-create" onclick="openImportOdooModal()">Import from Odoo.sh</button>
   </div>
   <div id="tpl-list"></div>
@@ -1770,6 +1771,49 @@
       <div class="form-actions">
         <button class="btn" onclick="closeCreateVolumeModal()">Cancel</button>
         <button class="btn-create" id="vol-submit" onclick="submitCreateVolume()">Create</button>
+      </div>
+    </div>
+  </div>
+</div>
+<div class="modal-overlay" id="import-from-odoo-modal" onclick="closeImportFromOdooModal(event)">
+  <div class="modal">
+    <div class="modal-header">
+      <h2>Import from Odoo</h2>
+      <button class="modal-close" aria-label="Close import from Odoo" onclick="closeImportFromOdooModal()">&times;</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-error" id="pull-import-error"></div>
+      <div class="form-group">
+        <label for="pull-import-url">Odoo URL</label>
+        <input class="mono-input" type="url" id="pull-import-url" placeholder="https://odoo.example.com" autocomplete="url">
+        <div class="hint">HTTP URLs are allowed, but the Odoo master password will be transmitted without encryption. Prefer HTTPS whenever possible.</div>
+      </div>
+      <div class="form-group">
+        <label for="pull-import-master-pwd">Master password</label>
+        <input type="password" id="pull-import-master-pwd" autocomplete="off">
+        <div class="hint">The database manager password used by Odoo's backup endpoint. It is sent only with this import request.</div>
+      </div>
+      <div class="form-group">
+        <label for="pull-import-db-name">Database name <span class="label-hint">— optional</span></label>
+        <input class="mono-input" type="text" id="pull-import-db-name" placeholder="Auto-detect when only one database exists" autocomplete="off">
+      </div>
+      <div class="form-group">
+        <label for="pull-import-tpl-name">Template name</label>
+        <input class="mono-input" type="text" id="pull-import-tpl-name" placeholder="e.g. production-copy" autocomplete="off">
+      </div>
+      <div class="form-group">
+        <div class="check-row">
+          <input type="checkbox" id="pull-import-without-filestore">
+          <label for="pull-import-without-filestore">Database only <span class="label-hint">— skip the filestore and request a PostgreSQL custom dump</span></label>
+        </div>
+      </div>
+      <div class="hint" id="pull-import-progress" role="status" aria-live="polite" style="display:none">
+        <span class="spinner" aria-hidden="true"></span>
+        Downloading and restoring the template… <span id="pull-import-elapsed" aria-hidden="true"></span>
+      </div>
+      <div class="form-actions">
+        <button class="btn" onclick="closeImportFromOdooModal()">Cancel</button>
+        <button class="btn-create" id="pull-import-submit" onclick="submitImportFromOdoo()">Import</button>
       </div>
     </div>
   </div>
@@ -3509,6 +3553,108 @@ async function doDeleteTemplate(name) {
     }
   } catch (e) {
     showToast('Connection error: ' + e.message, true);
+  }
+}
+
+function openImportFromOdooModal() {
+  document.getElementById('pull-import-url').value = '';
+  document.getElementById('pull-import-master-pwd').value = '';
+  document.getElementById('pull-import-db-name').value = '';
+  document.getElementById('pull-import-tpl-name').value = '';
+  document.getElementById('pull-import-without-filestore').checked = false;
+  var errEl = document.getElementById('pull-import-error');
+  errEl.style.display = 'none';
+  errEl.textContent = '';
+  document.getElementById('pull-import-progress').style.display = 'none';
+  document.getElementById('pull-import-elapsed').textContent = '';
+  var btn = document.getElementById('pull-import-submit');
+  btn.disabled = false;
+  btn.textContent = 'Import';
+  showModal('import-from-odoo-modal');
+  document.getElementById('pull-import-url').focus();
+}
+
+function closeImportFromOdooModal(event) {
+  if (event && event.target !== event.currentTarget) return;
+  document.getElementById('pull-import-master-pwd').value = '';
+  hideModal('import-from-odoo-modal');
+}
+
+async function submitImportFromOdoo() {
+  var odooUrl = document.getElementById('pull-import-url').value.trim();
+  var masterPwd = document.getElementById('pull-import-master-pwd').value;
+  var dbName = document.getElementById('pull-import-db-name').value.trim();
+  var templateName = document.getElementById('pull-import-tpl-name').value.trim();
+  var errEl = document.getElementById('pull-import-error');
+  if (!odooUrl) {
+    errEl.textContent = 'Odoo URL is required.';
+    errEl.style.display = 'block';
+    return;
+  }
+  if (!masterPwd) {
+    errEl.textContent = 'Master password is required.';
+    errEl.style.display = 'block';
+    return;
+  }
+  if (!templateName) {
+    errEl.textContent = 'Template name is required.';
+    errEl.style.display = 'block';
+    return;
+  }
+
+  errEl.style.display = 'none';
+  var btn = document.getElementById('pull-import-submit');
+  var progress = document.getElementById('pull-import-progress');
+  var elapsed = document.getElementById('pull-import-elapsed');
+  var started = Date.now();
+  btn.disabled = true;
+  btn.textContent = 'Importing…';
+  progress.style.display = 'block';
+  var updateProgress = function() {
+    elapsed.textContent = _fmtElapsed(Date.now() - started);
+  };
+  updateProgress();
+  var progressTimer = setInterval(updateProgress, 1000);
+  try {
+    var r = await fetch(API_TEMPLATES + '/import-from-odoo', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        odoo_url: odooUrl,
+        master_pwd: masterPwd,
+        db_name: dbName,
+        template_name: templateName,
+        without_filestore: document.getElementById('pull-import-without-filestore').checked
+      })
+    });
+    var data = await readResult(r);
+    if (r.ok && data.ok) {
+      var result = data.result || {};
+      closeImportFromOdooModal();
+      showToast('Imported template "' + templateName + '" from ' + (result.source_url || odooUrl));
+      await loadTemplates();
+      var failures = result.remount_failures || [];
+      if (failures.length) {
+        showToast('Template imported, but ' + failures.length + ' environment filestore remount' +
+          (failures.length === 1 ? ' failed.' : 's failed.'), true);
+      }
+    } else if (isAmbiguousGatewayStatus(r.status)) {
+      closeImportFromOdooModal();
+      showToast('The proxy stopped waiting, but importing template "' + templateName +
+        '" may still be running. Refresh in a moment.');
+      await loadTemplates();
+    } else {
+      errEl.textContent = data.error || 'Import failed';
+      errEl.style.display = 'block';
+    }
+  } catch (e) {
+    errEl.textContent = 'Connection error: ' + e.message;
+    errEl.style.display = 'block';
+  } finally {
+    clearInterval(progressTimer);
+    progress.style.display = 'none';
+    btn.disabled = false;
+    btn.textContent = 'Import';
   }
 }
 
@@ -5986,6 +6132,8 @@ var MODAL_CLOSERS = {
   'license-modal': closeLicenseModal,
   'add-extra-repo-modal': closeAddExtraRepoModal,
   'add-credential-modal': closeAddCredentialModal,
+  'import-from-odoo-modal': closeImportFromOdooModal,
+  'import-odoo-modal': closeImportOdooModal,
   'template-settings-modal': closeTemplateSettingsModal,
   'confirm-modal': cancelConfirm,
   'note-modal': closeNoteModal

@@ -74,7 +74,7 @@ contain `/` are accepted and URL-decoded as one environment name.
 | `WebSocket` | `/api/environments/{branch}/agent` | Hosted Agent CLI PTY |
 | `WebSocket` | `/api/environments/{branch}/agent-acp` | Hosted Agent Chat ACP relay |
 
-## Templates and Odoo.sh import
+## Templates and Odoo imports
 
 | Method | Endpoint | Description |
 |---|---|---|
@@ -83,6 +83,7 @@ contain `/` are accepted and URL-decoded as one environment name.
 | `PUT` | `/api/templates/{name:path}/metadata` | Validate and atomically replace `metadata.json`; body: `content`, `revision` |
 | `POST` | `/api/templates/{name}/delete` | Delete a template |
 | `POST` | `/api/templates/{name}/rename` | Rename it; body: `new_name` |
+| `POST` | `/api/templates/import-from-odoo` | UI-authenticated: pull a backup from a running Odoo. Body: `odoo_url`, `master_pwd`, `template_name`, optional `db_name`, optional boolean `without_filestore` |
 | `POST` | `/api/templates/import-token` | UI-authenticated: mint a 15-minute Odoo.sh import token |
 | `GET` | `/api/templates/import/status` | Import-token authenticated: report resumable upload progress |
 | `POST` | `/api/templates/import/manifest` | Upload template metadata |
@@ -93,9 +94,14 @@ contain `/` are accepted and URL-decoded as one environment name.
 | `POST` | `/api/templates/import/finalize` | Validate staged data and atomically publish/restore the template |
 | `GET` | `/import-odoo.sh` | Download the token-authenticated Odoo.sh import client |
 
-Ingest endpoints accept the import token only in `Authorization: Bearer ...`,
-not in the URL. See [Template Management](templates.md) for the supported import
-workflow.
+The pull-import endpoint accepts HTTP and HTTPS source URLs. HTTP sends the Odoo
+master password without transport encryption, so HTTPS remains recommended.
+Loopback, link-local, metadata, and private-network targets remain blocked by
+the outbound URL safety check.
+
+Odoo.sh ingest endpoints accept the import token only in
+`Authorization: Bearer ...`, not in the URL. See
+[Template Management](templates.md) for the supported import workflow.
 
 ## Services, presets, and volumes
 
