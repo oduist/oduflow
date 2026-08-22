@@ -3366,9 +3366,9 @@ def import_from_odoo(
 
     # SSRF guard: importing a DB from a URL is a clearly-external operation, so
     # block loopback, the cloud metadata endpoint, and internal RFC1918 hosts.
-    # Require HTTPS: the request carries the Odoo master password (see below),
-    # which must never cross the wire in cleartext.
-    assert_allowed_url(base, require_https=True, allow_private=False)
+    # HTTP is allowed for operator-managed Odoo instances, although it sends the
+    # master password without transport encryption.
+    assert_allowed_url(base, require_https=False, allow_private=False)
 
     if os.path.exists(template_dir):
         raise ConflictError(f"Template directory already exists: {template_dir}")

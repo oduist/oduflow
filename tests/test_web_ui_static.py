@@ -194,6 +194,21 @@ def test_odoo_sh_import_exposes_best_effort_addon_policy(tmp_path):
     )
 
 
+def test_templates_tab_exposes_pull_import_from_odoo(tmp_path):
+    dashboard = _client(tmp_path).get("/").text
+
+    assert 'onclick="openImportFromOdooModal()">Import from Odoo</button>' in dashboard
+    assert 'id="import-from-odoo-modal"' in dashboard
+    assert 'id="pull-import-url"' in dashboard
+    assert 'id="pull-import-master-pwd"' in dashboard
+    assert 'id="pull-import-db-name"' in dashboard
+    assert 'id="pull-import-tpl-name"' in dashboard
+    assert 'id="pull-import-without-filestore"' in dashboard
+    assert "API_TEMPLATES + '/import-from-odoo'" in dashboard
+    assert "HTTP URLs are allowed" in dashboard
+    assert re.search(r"'import-from-odoo-modal':\s*closeImportFromOdooModal", dashboard)
+
+
 @pytest.mark.skipif(shutil.which("node") is None, reason="Node.js is not installed")
 def test_template_settings_form_round_trips_attribute_and_prototype_key_values():
     dashboard = _DASHBOARD.read_text(encoding="utf-8")

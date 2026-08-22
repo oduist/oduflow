@@ -68,8 +68,11 @@ def _remount():
     yield remount
 
 
-def _patch_import_dependencies(monkeypatch, backup_requests):
-    monkeypatch.setattr("oduflow.url_safety.assert_allowed_url", lambda *a, **k: None)
+def _patch_import_dependencies(monkeypatch, backup_requests, *, patch_url_safety=True):
+    if patch_url_safety:
+        monkeypatch.setattr(
+            "oduflow.url_safety.assert_allowed_url", lambda *a, **k: None
+        )
     monkeypatch.setattr(system_ops, "get_client", lambda: MagicMock())
     monkeypatch.setattr(system_ops, "_db_exists", lambda *a, **k: False)
     monkeypatch.setattr(system_ops, "check_db_quota", lambda *a, **k: None)
@@ -133,6 +136,24 @@ def test_import_from_odoo_default_zip_omits_filestore_field(monkeypatch, tmp_pat
     assert os.path.isfile(
         os.path.join(team.get_template_filestore_path("imported"), "ab", "abcdef")
     )
+
+
+def test_import_from_odoo_allows_http_source(monkeypatch, tmp_path):
+    team, settings = _team_and_settings(tmp_path)
+    backup_requests = []
+    _patch_import_dependencies(monkeypatch, backup_requests, patch_url_safety=False)
+
+    result = system_ops.import_from_odoo(
+        settings,
+        team,
+        odoo_url="http://8.8.8.8",
+        master_pwd="master",
+        db_name="prod",
+        template_name="http-import",
+    )
+
+    assert result["source_url"] == "http://8.8.8.8"
+    assert result["template_name"] == "http-import"
 
 
 def test_import_from_odoo_without_filestore_uses_custom_dump_and_skips_files(
