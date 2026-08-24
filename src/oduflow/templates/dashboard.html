@@ -1470,8 +1470,8 @@
       </div>
       <div class="form-group">
         <label for="cr-env-vars">Environment variables</label>
-        <input type="text" id="cr-env-vars" placeholder="e.g. WORKERS=2,LIMIT_TIME_CPU=600">
-        <div class="hint">Comma-separated KEY=VALUE pairs injected into the Odoo container</div>
+        <textarea id="cr-env-vars" rows="3" spellcheck="false" placeholder="WORKERS=2&#10;LIMIT_TIME_CPU=600"></textarea>
+        <div class="hint">One KEY=VALUE per line, injected into the Odoo container. A value may contain commas.</div>
       </div>
 
       <div class="form-actions">
@@ -3284,8 +3284,27 @@ async function confirmSwitchBranch() {
 
 var _updateEnv = '';
 var _updateEnvInitial = '';
+// Bumped on every open and every close, so a prefill response can be matched
+// against the dialog that started it — the Docker-backed lookup is slow enough
+// to outlive a cancel-and-reopen, and answering into the wrong environment
+// would submit its variables to another one.
+var _updateEnvSeq = 0;
+
+// Only a line boundary separates assignments: a value may contain commas (and
+// even "X=" pairs), and a stack-managed environment routinely has them.
+function parseEnvLines(text) {
+  var out = {};
+  text.split(/\r?\n/).forEach(function(line) {
+    var entry = line.trim();
+    var i = entry.indexOf('=');
+    if (i <= 0) return;
+    out[entry.slice(0, i).trim()] = entry.slice(i + 1);
+  });
+  return out;
+}
 
 async function doUpdate(branch) {
+  var seq = ++_updateEnvSeq;
   _updateEnv = branch;
   _updateEnvInitial = '';
   document.getElementById('update-env-title').textContent = 'Update environment — ' + branch;
@@ -3297,14 +3316,21 @@ async function doUpdate(branch) {
   try {
     const r = await fetch(API + '/' + encodeURIComponent(branch) + '/env-vars');
     const data = await readResult(r);
-    // A slower lookup for a previously opened environment must not overwrite
-    // the dialog once it has been reopened for another one.
-    if (_updateEnv !== branch) return;
+    // Reopened (for this or another environment) or closed while the lookup
+    // was in flight — this answer is no longer the one the dialog is waiting for.
+    if (seq !== _updateEnvSeq) return;
     if (data.ok) {
       var vars = data.env_vars || {};
       _updateEnvInitial = Object.keys(vars).map(function(k) { return k + '=' + vars[k]; }).join('\n');
       ta.value = _updateEnvInitial;
-      ta.disabled = false;
+      // A line-per-assignment field cannot represent a value that itself spans
+      // lines (a stack file can set one), so show it read-only rather than let
+      // an edit write back a mangled version.
+      if (Object.keys(vars).some(function(k) { return /[\r\n]/.test(vars[k]); })) {
+        showToast('A variable holds a multi-line value — edit it in the stack file', true);
+      } else {
+        ta.disabled = false;
+      }
     } else {
       // Keep the field disabled: an empty editable field would look like
       // "no variables" and the first edit would replace the real ones.
@@ -3317,14 +3343,17 @@ async function doUpdate(branch) {
 
 function closeUpdateEnv(event) {
   if (event && event.target !== event.currentTarget) return;
+  _updateEnvSeq++;
   hideModal('update-env-modal');
 }
 
 async function confirmUpdateEnv() {
   var branch = _updateEnv;
-  var raw = document.getElementById('update-env-vars').value.trim();
+  var raw = document.getElementById('update-env-vars').value;
   var payload = {};
-  if (raw !== _updateEnvInitial.trim()) payload.env_vars = raw;
+  // Send a mapping, not the raw blob: the server must not re-split values.
+  if (raw.trim() !== _updateEnvInitial.trim()) payload.env_vars = parseEnvLines(raw);
+  _updateEnvSeq++;
   hideModal('update-env-modal');
   setBusy(branch, 'Updating');
   try {
@@ -4557,7 +4586,7 @@ async function submitCreate() {
   var template = document.getElementById('cr-template').value;
   var gitUser = document.getElementById('cr-git-user').value;
   var autoInstall = document.getElementById('cr-auto-install').value.trim();
-  var envVars = document.getElementById('cr-env-vars').value.trim();
+  var envVars = parseEnvLines(document.getElementById('cr-env-vars').value);
   var errEl = document.getElementById('create-error');
 
   if (!branch) {

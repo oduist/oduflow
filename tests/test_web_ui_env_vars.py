@@ -1,8 +1,9 @@
 """Env-var handling in the dashboard REST API.
 
 api_update treats an ``env_vars`` key present in the body as a full
-replacement (an empty string clears every user-supplied variable), while an
-absent key keeps the current ones. api_env_vars returns the persisted
+replacement (an empty string or an empty mapping clears every user-supplied
+variable), while an absent key keeps the current ones. A mapping is taken
+verbatim; the legacy string form is parsed for existing REST clients. api_env_vars returns the persisted
 ``oduflow.env_vars`` label for a single environment so the update dialog can
 prefill the current values.
 """
@@ -43,6 +44,59 @@ def test_api_update_parses_env_vars(tmp_path):
     }
 
 
+def test_api_update_accepts_mapping_verbatim(tmp_path):
+    """The dashboard sends a mapping so values are never re-split server side."""
+    client = _client(tmp_path)
+    with patch("oduflow.web_ui.env_ops.update_environment", return_value={}) as update:
+        resp = client.post(
+            "/api/environments/main/update",
+            json={"env_vars": {"OPTIONS": "a,b", "WEIRD": "x,B=c", " WORKERS ": "2"}},
+        )
+    assert resp.json()["ok"] is True
+    assert update.call_args.kwargs["env_override"] == {
+        "OPTIONS": "a,b",
+        "WEIRD": "x,B=c",
+        "WORKERS": "2",
+    }
+
+
+def test_api_update_empty_mapping_clears(tmp_path):
+    client = _client(tmp_path)
+    with patch("oduflow.web_ui.env_ops.update_environment", return_value={}) as update:
+        resp = client.post("/api/environments/main/update", json={"env_vars": {}})
+    assert resp.json()["ok"] is True
+    assert update.call_args.kwargs["env_override"] == {}
+
+
+def test_api_update_keeps_commas_inside_values(tmp_path):
+    """A stack file can set a value holding commas; editing must not truncate it."""
+    client = _client(tmp_path)
+    with patch("oduflow.web_ui.env_ops.update_environment", return_value={}) as update:
+        resp = client.post(
+            "/api/environments/main/update",
+            json={"env_vars": "CONNECT_MCP_TOOL_GROUPS=write,collaboration\nWORKERS=2"},
+        )
+    assert resp.json()["ok"] is True
+    assert update.call_args.kwargs["env_override"] == {
+        "CONNECT_MCP_TOOL_GROUPS": "write,collaboration",
+        "WORKERS": "2",
+    }
+
+
+def test_api_update_comma_separated_pairs_still_split(tmp_path):
+    client = _client(tmp_path)
+    with patch("oduflow.web_ui.env_ops.update_environment", return_value={}) as update:
+        resp = client.post(
+            "/api/environments/main/update",
+            json={"env_vars": "WORKERS=2,LIMIT_TIME_CPU=600"},
+        )
+    assert resp.json()["ok"] is True
+    assert update.call_args.kwargs["env_override"] == {
+        "WORKERS": "2",
+        "LIMIT_TIME_CPU": "600",
+    }
+
+
 def test_api_update_empty_env_vars_clears(tmp_path):
     client = _client(tmp_path)
     with patch("oduflow.web_ui.env_ops.update_environment", return_value={}) as update:
@@ -57,6 +111,23 @@ def test_api_update_absent_env_vars_keeps_current(tmp_path):
         resp = client.post("/api/environments/main/update", json={})
     assert resp.json()["ok"] is True
     assert update.call_args.kwargs["env_override"] is None
+
+
+def test_api_create_accepts_mapping(tmp_path):
+    """The create dialog posts a mapping too, so both dialogs share a contract."""
+    client = _client(tmp_path)
+    with patch("oduflow.web_ui.env_ops.create_environment", return_value={}) as create:
+        resp = client.post(
+            "/api/environments/create",
+            json={
+                "env_name": "main",
+                "repo_url": "https://example.invalid/repo.git",
+                "odoo_image": "odoo:19.0",
+                "env_vars": {"OPTIONS": "a,b"},
+            },
+        )
+    assert resp.json()["ok"] is True, resp.json()
+    assert create.call_args.kwargs["env_vars"] == {"OPTIONS": "a,b"}
 
 
 def test_api_env_vars_returns_label(tmp_path):

@@ -73,7 +73,7 @@ from oduflow.locking import (
     service_preset_lock_key,
     volume_lock_key,
 )
-from oduflow.naming import validate_template_name
+from oduflow.naming import parse_env_vars, validate_template_name
 from oduflow.settings import Settings, TeamSettings
 
 logger = logging.getLogger("oduflow")
@@ -379,6 +379,19 @@ def _normalize_extra_addons(raw_addons: object) -> dict[str, str]:
         )
         return {}
     return {}
+
+
+def _env_vars_from_body(raw: object) -> dict[str, str]:
+    """Read an "env_vars" request field in either supported shape.
+
+    A mapping is taken verbatim: the dashboard sends one so that a value
+    holding commas ("OPTIONS=a,b", routine for stack-managed environments)
+    cannot be re-split on its way back in. The KEY=VALUE string form is kept
+    for existing REST clients and parsed with parse_env_vars.
+    """
+    if isinstance(raw, dict):
+        return {str(k).strip(): str(v) for k, v in raw.items() if str(k).strip()}
+    return parse_env_vars(str(raw or "").strip())
 
 
 def _parse_extra_addons(raw: str) -> dict[str, str]:
@@ -1009,18 +1022,11 @@ def _build_routes(
         except Exception:
             body = {}
         odoo_image = (body.get("odoo_image") or "").strip() if body else ""
-        # "env_vars" present in the body is a full replacement (an empty string
+        # "env_vars" present in the body is a full replacement (an empty value
         # clears every user-supplied var); an absent key keeps the current ones.
         env_override = None
         if body and "env_vars" in body:
-            import re
-
-            env_vars_raw = (body.get("env_vars") or "").strip()
-            env_override = dict(
-                item.split("=", 1)
-                for item in re.split(r"[\n,]+", env_vars_raw)
-                if "=" in item
-            )
+            env_override = _env_vars_from_body(body.get("env_vars"))
         try:
             locks.acquire_env(branch, team.team_id)
         except BusyError as e:
@@ -1236,17 +1242,8 @@ def _build_routes(
         template_name_raw = (body.get("template_name") or "").strip()
         extra_addons_raw = body.get("extra_addons")
         auto_install_raw = (body.get("auto_install_modules") or "").strip()
-        env_vars_raw = (body.get("env_vars") or "").strip()
         hostname = (body.get("hostname") or "").strip()
-        env_vars = None
-        if env_vars_raw:
-            import re
-
-            env_vars = dict(
-                item.split("=", 1)
-                for item in re.split(r"[\n,]+", env_vars_raw)
-                if "=" in item
-            )
+        env_vars = _env_vars_from_body(body.get("env_vars")) or None
         if not env_name:
             return JSONResponse(
                 {"ok": False, "error": "env_name is required."},
@@ -2364,7 +2361,6 @@ def _build_routes(
             port = body.get("port")
             routes = body.get("routes")
             hostname = (body.get("hostname") or "").strip() or None
-            env_vars_raw = (body.get("env_vars") or "").strip()
             host_mode = bool(body.get("host_mode", False))
             if not name or not image or (not port and not routes):
                 return JSONResponse(
@@ -2374,15 +2370,7 @@ def _build_routes(
                     },
                     status_code=400,
                 )
-            env_vars = None
-            if env_vars_raw:
-                import re
-
-                env_vars = dict(
-                    item.split("=", 1)
-                    for item in re.split(r"[\n,]+", env_vars_raw)
-                    if "=" in item
-                )
+            env_vars = _env_vars_from_body(body.get("env_vars")) or None
             volumes_raw = (body.get("volumes") or "").strip()
             parsed_volumes = (
                 volume_ops.parse_volume_mounts(volumes_raw) if volumes_raw else None
@@ -2448,16 +2436,9 @@ def _build_routes(
             except Exception:
                 body = {}
 
-            env_override = None
-            env_vars_raw = (body.get("env_vars") or "").strip() if body else ""
-            if env_vars_raw:
-                import re
-
-                env_override = dict(
-                    item.split("=", 1)
-                    for item in re.split(r"[\n,]+", env_vars_raw)
-                    if "=" in item
-                )
+            env_override = (
+                _env_vars_from_body(body.get("env_vars")) or None if body else None
+            )
 
             volumes_raw = (body.get("volumes") or "").strip() if body else ""
             volume_override = (
@@ -2596,7 +2577,6 @@ def _build_routes(
             port = body.get("port")
             routes = body.get("routes")
             hostname = (body.get("hostname") or "").strip() or None
-            env_vars_raw = (body.get("env_vars") or "").strip()
             host_mode = bool(body.get("host_mode", False))
             if not name or not image or (not port and not routes):
                 return JSONResponse(
@@ -2606,15 +2586,7 @@ def _build_routes(
                     },
                     status_code=400,
                 )
-            env_vars = None
-            if env_vars_raw:
-                import re
-
-                env_vars = dict(
-                    item.split("=", 1)
-                    for item in re.split(r"[\n,]+", env_vars_raw)
-                    if "=" in item
-                )
+            env_vars = _env_vars_from_body(body.get("env_vars")) or None
             volumes_raw = (body.get("volumes") or "").strip()
             parsed_volumes = (
                 volume_ops.parse_volume_mounts(volumes_raw) if volumes_raw else None

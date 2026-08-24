@@ -308,6 +308,19 @@ def get_filestore_paths(env_name: str, workspaces_dir: str) -> dict[str, str]:
     }
 
 
+def parse_env_vars(raw: str) -> dict[str, str]:
+    """Parse KEY=VALUE assignments without treating commas inside values as separators.
+
+    Entries are separated by newlines, or by a comma that is immediately
+    followed by another "KEY=". So "WORKERS=2,LIMIT_TIME_CPU=600" is two
+    variables while "TOOL_GROUPS=write,documents" stays a single one — values
+    holding commas (set through a stack file, for example) survive a
+    read-edit-write round trip through the dashboard and the MCP tools.
+    """
+    items = re.split(r"\r?\n|,(?=\s*[A-Za-z_][A-Za-z0-9_]*=)", raw)
+    return dict(item.strip().split("=", 1) for item in items if "=" in item)
+
+
 def sanitize_repo_url(url: str) -> str:
     if not url:
         return url
