@@ -73,7 +73,7 @@ from oduflow.locking import (
     service_preset_lock_key,
     volume_lock_key,
 )
-from oduflow.naming import validate_template_name
+from oduflow.naming import parse_env_vars, validate_template_name
 from oduflow.settings import Settings, TeamSettings
 
 logger = logging.getLogger("oduflow")
@@ -379,6 +379,19 @@ def _normalize_extra_addons(raw_addons: object) -> dict[str, str]:
         )
         return {}
     return {}
+
+
+def _env_vars_from_body(raw: object) -> dict[str, str]:
+    """Read an "env_vars" request field in either supported shape.
+
+    A mapping is taken verbatim: the dashboard sends one so that a value
+    holding commas ("OPTIONS=a,b", routine for stack-managed environments)
+    cannot be re-split on its way back in. The KEY=VALUE string form is kept
+    for existing REST clients and parsed with parse_env_vars.
+    """
+    if isinstance(raw, dict):
+        return {str(k).strip(): str(v) for k, v in raw.items() if str(k).strip()}
+    return parse_env_vars(str(raw or "").strip())
 
 
 def _parse_extra_addons(raw: str) -> dict[str, str]:
@@ -1008,17 +1021,12 @@ def _build_routes(
             body = await request.json()
         except Exception:
             body = {}
-        env_vars_raw = (body.get("env_vars") or "").strip() if body else ""
         odoo_image = (body.get("odoo_image") or "").strip() if body else ""
+        # "env_vars" present in the body is a full replacement (an empty value
+        # clears every user-supplied var); an absent key keeps the current ones.
         env_override = None
-        if env_vars_raw:
-            import re
-
-            env_override = dict(
-                item.split("=", 1)
-                for item in re.split(r"[\n,]+", env_vars_raw)
-                if "=" in item
-            )
+        if body and "env_vars" in body:
+            env_override = _env_vars_from_body(body.get("env_vars"))
         try:
             locks.acquire_env(branch, team.team_id)
         except BusyError as e:
@@ -1044,6 +1052,35 @@ def _build_routes(
             )
         finally:
             locks.release_env(branch)
+
+    def api_env_vars(request: Request) -> JSONResponse:
+        branch = request.path_params["branch"]
+        team = _get_ui_team(request)
+        try:
+            import docker as _docker
+            from oduflow.docker_ops.client import get_client as _get_client
+            from oduflow.naming import get_resource_name
+
+            settings = get_settings()
+            client = _get_client()
+            odoo_container_name = get_resource_name(
+                branch, "odoo", settings.prefix, team.team_id
+            )
+            try:
+                container = client.containers.get(odoo_container_name)
+            except _docker.errors.NotFound:
+                return _error_response(
+                    NotFoundError(f"Environment '{branch}' not found.")
+                )
+            env_vars = json.loads(container.labels.get("oduflow.env_vars", "{}"))
+            return JSONResponse({"ok": True, "env_vars": env_vars})
+        except FlowError as e:
+            return _error_response(e)
+        except Exception:
+            logger.exception("Unexpected error in api_env_vars")
+            return JSONResponse(
+                {"ok": False, "error": "Internal server error."}, status_code=500
+            )
 
     def api_recreate(request: Request) -> JSONResponse:
         branch = request.path_params["branch"]
@@ -1205,17 +1242,8 @@ def _build_routes(
         template_name_raw = (body.get("template_name") or "").strip()
         extra_addons_raw = body.get("extra_addons")
         auto_install_raw = (body.get("auto_install_modules") or "").strip()
-        env_vars_raw = (body.get("env_vars") or "").strip()
         hostname = (body.get("hostname") or "").strip()
-        env_vars = None
-        if env_vars_raw:
-            import re
-
-            env_vars = dict(
-                item.split("=", 1)
-                for item in re.split(r"[\n,]+", env_vars_raw)
-                if "=" in item
-            )
+        env_vars = _env_vars_from_body(body.get("env_vars")) or None
         if not env_name:
             return JSONResponse(
                 {"ok": False, "error": "env_name is required."},
@@ -2333,7 +2361,6 @@ def _build_routes(
             port = body.get("port")
             routes = body.get("routes")
             hostname = (body.get("hostname") or "").strip() or None
-            env_vars_raw = (body.get("env_vars") or "").strip()
             host_mode = bool(body.get("host_mode", False))
             if not name or not image or (not port and not routes):
                 return JSONResponse(
@@ -2343,15 +2370,7 @@ def _build_routes(
                     },
                     status_code=400,
                 )
-            env_vars = None
-            if env_vars_raw:
-                import re
-
-                env_vars = dict(
-                    item.split("=", 1)
-                    for item in re.split(r"[\n,]+", env_vars_raw)
-                    if "=" in item
-                )
+            env_vars = _env_vars_from_body(body.get("env_vars")) or None
             volumes_raw = (body.get("volumes") or "").strip()
             parsed_volumes = (
                 volume_ops.parse_volume_mounts(volumes_raw) if volumes_raw else None
@@ -2417,16 +2436,9 @@ def _build_routes(
             except Exception:
                 body = {}
 
-            env_override = None
-            env_vars_raw = (body.get("env_vars") or "").strip() if body else ""
-            if env_vars_raw:
-                import re
-
-                env_override = dict(
-                    item.split("=", 1)
-                    for item in re.split(r"[\n,]+", env_vars_raw)
-                    if "=" in item
-                )
+            env_override = (
+                _env_vars_from_body(body.get("env_vars")) or None if body else None
+            )
 
             volumes_raw = (body.get("volumes") or "").strip() if body else ""
             volume_override = (
@@ -2565,7 +2577,6 @@ def _build_routes(
             port = body.get("port")
             routes = body.get("routes")
             hostname = (body.get("hostname") or "").strip() or None
-            env_vars_raw = (body.get("env_vars") or "").strip()
             host_mode = bool(body.get("host_mode", False))
             if not name or not image or (not port and not routes):
                 return JSONResponse(
@@ -2575,15 +2586,7 @@ def _build_routes(
                     },
                     status_code=400,
                 )
-            env_vars = None
-            if env_vars_raw:
-                import re
-
-                env_vars = dict(
-                    item.split("=", 1)
-                    for item in re.split(r"[\n,]+", env_vars_raw)
-                    if "=" in item
-                )
+            env_vars = _env_vars_from_body(body.get("env_vars")) or None
             volumes_raw = (body.get("volumes") or "").strip()
             parsed_volumes = (
                 volume_ops.parse_volume_mounts(volumes_raw) if volumes_raw else None
@@ -4978,6 +4981,9 @@ def _build_routes(
         Route("/oduflow-connect", api_connect_land, methods=["GET"]),
         Route("/oduflow-artifact", api_artifact_download, methods=["GET"]),
         Route("/api/environments/{branch:path}/update", api_update, methods=["POST"]),
+        Route(
+            "/api/environments/{branch:path}/env-vars", api_env_vars, methods=["GET"]
+        ),
         Route(
             "/api/environments/{branch:path}/recreate", api_recreate, methods=["POST"]
         ),
