@@ -1435,6 +1435,11 @@
         <input type="text" id="cr-branch" placeholder="e.g. feature/my-branch">
       </div>
       <div class="form-group">
+        <label for="cr-env-name">Environment name</label>
+        <input type="text" id="cr-env-name" placeholder="Same as branch">
+        <div class="hint">Optional; defaults to the branch name. Set it to run several environments from one branch</div>
+      </div>
+      <div class="form-group">
         <label for="cr-hostname">Hostname</label>
         <input type="text" id="cr-hostname" placeholder="Auto (dev1, dev2, ...)">
         <div class="hint">Optional prefix override; for dev.example.com, "qa" becomes qa.example.com</div>
@@ -4337,6 +4342,7 @@ function populateTemplateSelect() {
 function openCreateFromTemplate(templateName) {
   var tpl = cachedTemplates.find(function(t) { return t.template_name === templateName; });
   document.getElementById('cr-branch').value = '';
+  document.getElementById('cr-env-name').value = '';
   document.getElementById('cr-hostname').value = '';
   document.getElementById('cr-repo').value = tpl && tpl.repo_url ? tpl.repo_url : '';
   document.getElementById('cr-image').value = tpl && tpl.odoo_image ? tpl.odoo_image : '';
@@ -4382,6 +4388,7 @@ function openCreateFromTemplate(templateName) {
 
 function openCreateModal() {
   document.getElementById('cr-branch').value = '';
+  document.getElementById('cr-env-name').value = '';
   document.getElementById('cr-hostname').value = '';
   document.getElementById('cr-repo').value = '';
   document.getElementById('cr-image').value = '';
@@ -4489,6 +4496,7 @@ async function submitFeedback() {
 
 async function submitCreate() {
   var branch = document.getElementById('cr-branch').value.trim();
+  var envName = document.getElementById('cr-env-name').value.trim();
   var hostname = document.getElementById('cr-hostname').value.trim();
   var repo = document.getElementById('cr-repo').value.trim();
   var image = document.getElementById('cr-image').value.trim();
@@ -4527,7 +4535,8 @@ async function submitCreate() {
       return;
     }
     var payload = {
-      env_name: branch,
+      branch: branch,
+      env_name: envName,
       hostname: hostname,
       repo_url: repo,
       odoo_image: image,
@@ -4545,7 +4554,7 @@ async function submitCreate() {
     var data = await readResult(r);
     if (r.ok && data.ok) {
       closeCreateModal();
-      showToast('Environment "' + branch + '" created');
+      showToast('Environment "' + (envName || branch) + '" created');
       await loadEnvironments(true);
     } else {
       errEl.textContent = data.error || ('Creation failed (HTTP ' + r.status + ')');
