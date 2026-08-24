@@ -1008,12 +1008,14 @@ def _build_routes(
             body = await request.json()
         except Exception:
             body = {}
-        env_vars_raw = (body.get("env_vars") or "").strip() if body else ""
         odoo_image = (body.get("odoo_image") or "").strip() if body else ""
+        # "env_vars" present in the body is a full replacement (an empty string
+        # clears every user-supplied var); an absent key keeps the current ones.
         env_override = None
-        if env_vars_raw:
+        if body and "env_vars" in body:
             import re
 
+            env_vars_raw = (body.get("env_vars") or "").strip()
             env_override = dict(
                 item.split("=", 1)
                 for item in re.split(r"[\n,]+", env_vars_raw)
@@ -1044,6 +1046,35 @@ def _build_routes(
             )
         finally:
             locks.release_env(branch)
+
+    def api_env_vars(request: Request) -> JSONResponse:
+        branch = request.path_params["branch"]
+        team = _get_ui_team(request)
+        try:
+            import docker as _docker
+            from oduflow.docker_ops.client import get_client as _get_client
+            from oduflow.naming import get_resource_name
+
+            settings = get_settings()
+            client = _get_client()
+            odoo_container_name = get_resource_name(
+                branch, "odoo", settings.prefix, team.team_id
+            )
+            try:
+                container = client.containers.get(odoo_container_name)
+            except _docker.errors.NotFound:
+                return _error_response(
+                    NotFoundError(f"Environment '{branch}' not found.")
+                )
+            env_vars = json.loads(container.labels.get("oduflow.env_vars", "{}"))
+            return JSONResponse({"ok": True, "env_vars": env_vars})
+        except FlowError as e:
+            return _error_response(e)
+        except Exception:
+            logger.exception("Unexpected error in api_env_vars")
+            return JSONResponse(
+                {"ok": False, "error": "Internal server error."}, status_code=500
+            )
 
     def api_recreate(request: Request) -> JSONResponse:
         branch = request.path_params["branch"]
@@ -4978,6 +5009,9 @@ def _build_routes(
         Route("/oduflow-connect", api_connect_land, methods=["GET"]),
         Route("/oduflow-artifact", api_artifact_download, methods=["GET"]),
         Route("/api/environments/{branch:path}/update", api_update, methods=["POST"]),
+        Route(
+            "/api/environments/{branch:path}/env-vars", api_env_vars, methods=["GET"]
+        ),
         Route(
             "/api/environments/{branch:path}/recreate", api_recreate, methods=["POST"]
         ),

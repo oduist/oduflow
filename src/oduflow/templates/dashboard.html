@@ -2052,6 +2052,26 @@
     </div>
   </div>
 </div>
+<div class="modal-overlay" id="update-env-modal" onclick="closeUpdateEnv(event)">
+  <div class="modal modal-sm">
+    <div class="modal-header">
+      <h2 id="update-env-title">Update environment</h2>
+      <button class="modal-close" onclick="closeUpdateEnv()">&times;</button>
+    </div>
+    <div class="modal-body">
+      <p class="modal-note">Recreate the container for <strong id="update-env-name"></strong>. The database and filestore are kept.</p>
+      <div class="form-group">
+        <label for="update-env-vars">Environment variables</label>
+        <textarea id="update-env-vars" rows="5" spellcheck="false" placeholder="WORKERS=2&#10;LIMIT_TIME_CPU=600"></textarea>
+        <p class="modal-note">One KEY=VALUE per line, injected into the Odoo container on top of the database connection variables. Clear the field to remove all custom variables; leave it untouched to keep them.</p>
+      </div>
+      <div class="form-actions">
+        <button class="btn" onclick="closeUpdateEnv()">Cancel</button>
+        <button class="btn-create" onclick="confirmUpdateEnv()">Update environment</button>
+      </div>
+    </div>
+  </div>
+</div>
 <div class="modal-overlay" id="mcp-access-modal" onclick="closeMcpAccess(event)">
   <div class="modal modal-sm">
     <div class="modal-header">
@@ -3262,15 +3282,51 @@ async function confirmSwitchBranch() {
   await loadEnvironments(true);
 }
 
+var _updateEnv = '';
+var _updateEnvInitial = '';
+
 async function doUpdate(branch) {
-  if (!(await confirmDialog({
-    title: 'Update environment',
-    message: 'Recreate the container for "' + branch + '"? The database and filestore are kept.',
-    confirmLabel: 'Update environment'
-  }))) return;
+  _updateEnv = branch;
+  _updateEnvInitial = '';
+  document.getElementById('update-env-title').textContent = 'Update environment — ' + branch;
+  document.getElementById('update-env-name').textContent = branch;
+  var ta = document.getElementById('update-env-vars');
+  ta.value = '';
+  ta.disabled = true;
+  showModal('update-env-modal');
+  try {
+    const r = await fetch(API + '/' + encodeURIComponent(branch) + '/env-vars');
+    const data = await readResult(r);
+    if (data.ok) {
+      var vars = data.env_vars || {};
+      _updateEnvInitial = Object.keys(vars).map(function(k) { return k + '=' + vars[k]; }).join('\n');
+      ta.value = _updateEnvInitial;
+    }
+  } catch (e) {
+    // Leave the field empty: an untouched field is not sent, so the
+    // current variables are kept even when they could not be loaded.
+  }
+  ta.disabled = false;
+}
+
+function closeUpdateEnv(event) {
+  if (event && event.target !== event.currentTarget) return;
+  hideModal('update-env-modal');
+}
+
+async function confirmUpdateEnv() {
+  var branch = _updateEnv;
+  var raw = document.getElementById('update-env-vars').value.trim();
+  var payload = {};
+  if (raw !== _updateEnvInitial.trim()) payload.env_vars = raw;
+  hideModal('update-env-modal');
   setBusy(branch, 'Updating');
   try {
-    const r = await fetch(API + '/' + encodeURIComponent(branch) + '/update', { method: 'POST' });
+    const r = await fetch(API + '/' + encodeURIComponent(branch) + '/update', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(payload)
+    });
     const data = await readResult(r);
     if (data.ok) {
       showToast(branch + ': updated');
