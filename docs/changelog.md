@@ -1,5 +1,66 @@
 # Changelog
 
+## v1.70.0
+
+### Features
+
+- **Environment reuse by branch switch** — `switch_branch` moves an existing
+  environment onto another branch instead of forcing a delete-and-create cycle.
+  Everything except the code stays in place: the name, database, filestore,
+  hostname and URL, ports, PostgreSQL credentials and the scoped MCP endpoint
+  and token, so a finished branch can hand its slot to the next one without
+  reissuing certificates or reconfiguring an agent. The switch fetches and
+  checks out the target branch, then reuses the regular pull pipeline to
+  classify the diff and install, upgrade or restart as needed. A preflight
+  warns when the target branch does not carry a module that is installed in the
+  database (`strict=True` refuses instead), and productions and live-mounted
+  environments are rejected. Available as an MCP tool, a REST endpoint, and the
+  branch chip on each dashboard card. See `specs/0049`. (#198)
+
+- **Rename an environment in place** — `switch_branch` accepts an optional
+  `new_name`, so a reused slot whose name still echoes a finished branch can be
+  relabelled during the same container recreate. Everything the name keys moves
+  with it: the workspace directory, the database, port and hostname registry
+  entries, the activity record, agent chat sessions and the coding agent's
+  checkout (moved rather than re-cloned, so uncommitted work survives). The URL,
+  credentials and scoped token stay; only the `/mcp/<name>` endpoint path
+  follows the new name, and the tool response says so. A taken or invalid target
+  is refused before anything mutates. (#200)
+
+- **Granular resource locks** — the coarse per-team lock is replaced by narrow
+  keyed locks, so operations that do not share data now run in parallel: a
+  minutes-long `create_environment` no longer blocks `delete_service`,
+  `create_volume`, `add_extra_repo` or `list_templates` for the whole team.
+  Services and volumes get their own keys behind a narrow registry mutex that
+  also closes an existing delete/update race and a TOCTOU in the volume in-use
+  check; `restart_service` and `run_service_command` gain the lock they never
+  had; credential setup, production backups and cluster PITR get dedicated
+  keyspaces; and the XML-RPC `odoo_*` tools drop their environment lock, since
+  Odoo is transactional. Template mutations keep the team lock, because they
+  remount live overlay filestores. The dashboard's REST routes mirror the same
+  keys, so no new REST/MCP races appear. See `specs/0050`. (#199)
+
+- **`oduflow upgrade --force` now overwrites unresolved bundled files** —
+  `--force` used to only skip the confirmation prompt: conflicts, legacy files
+  with no stored baseline and failed merges still kept the live file, wrote a
+  sidecar and exited non-zero, so an "unattended" upgrade still needed a human.
+  A forced run now resolves those cases in favour of the new bundle — the live
+  file is backed up under `<team-data>/.bundled_upgrade/backups/`, the
+  destination is overwritten, the baseline advances, stale sidecars and the
+  pending marker are removed, and the run exits 0 with nothing left to review.
+  Clean three-way merges still merge, local-only changes are still left alone,
+  and a first-line `# KEEP` remains an unconditional opt-out. Behaviour without
+  `--force` is unchanged. (#201)
+
+### Dashboard
+
+- **Import a template from a running Odoo instance** — the dashboard gained a
+  UI-authenticated flow (with a matching REST endpoint) for importing a template
+  straight from a live Odoo server, including optional database autodetection
+  and database-only backups. HTTP sources are allowed but warn that the master
+  password travels without transport encryption; the outbound host safety checks
+  still apply. (#202)
+
 ## v1.69.0
 
 ### Features
