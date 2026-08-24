@@ -3004,7 +3004,8 @@ than a JSON API. Production routes are registered only when
 | `POST` | `/api/environments/{branch}/restart` | Restart its Odoo container |
 | `POST` | `/api/environments/{branch}/sync` | Pull and automatically apply code changes |
 | `POST` | `/api/environments/{branch}/switch-branch` | Move the environment onto another git branch, keeping DB, filestore and URL, then apply the difference. Body: `branch`, optional `new_name` to rename the environment at the same time. The response's `env_name` is the name to address it by afterwards |
-| `POST` | `/api/environments/{branch}/update` | Recreate the container while preserving DB and filestore. Optional body: `env_vars`, `odoo_image` |
+| `POST` | `/api/environments/{branch}/update` | Recreate the container while preserving DB and filestore. Optional body: `env_vars` (full replacement of the user-supplied container variables — either an object mapping names to values, or a `KEY=VALUE` string separated by newlines or commas; an empty object/string clears them, an absent key keeps them). The dashboard sends an object, so a value may contain commas, `odoo_image` |
+| `GET` | `/api/environments/{branch}/env-vars` | Return the user-supplied container environment variables |
 | `POST` | `/api/environments/{branch}/recreate` | Delete and recreate with the recorded parameters |
 | `POST` | `/api/environments/{branch}/delete` | Delete the environment |
 | `GET` | `/api/environments/{branch}/logs?n=200&container=` | Read environment logs; optionally select a container |

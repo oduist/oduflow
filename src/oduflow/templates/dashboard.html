@@ -1475,8 +1475,8 @@
       </div>
       <div class="form-group">
         <label for="cr-env-vars">Environment variables</label>
-        <input type="text" id="cr-env-vars" placeholder="e.g. WORKERS=2,LIMIT_TIME_CPU=600">
-        <div class="hint">Comma-separated KEY=VALUE pairs injected into the Odoo container</div>
+        <textarea id="cr-env-vars" rows="3" spellcheck="false" placeholder="WORKERS=2&#10;LIMIT_TIME_CPU=600"></textarea>
+        <div class="hint">One KEY=VALUE per line, injected into the Odoo container. A value may contain commas.</div>
       </div>
 
       <div class="form-actions">
@@ -2053,6 +2053,26 @@
       <div class="form-actions">
         <button class="btn" onclick="closeSwitchBranch()">Cancel</button>
         <button class="btn-create" onclick="confirmSwitchBranch()">Switch branch</button>
+      </div>
+    </div>
+  </div>
+</div>
+<div class="modal-overlay" id="update-env-modal" onclick="closeUpdateEnv(event)">
+  <div class="modal modal-sm">
+    <div class="modal-header">
+      <h2 id="update-env-title">Update environment</h2>
+      <button class="modal-close" onclick="closeUpdateEnv()">&times;</button>
+    </div>
+    <div class="modal-body">
+      <p class="modal-note">Recreate the container for <strong id="update-env-name"></strong>. The database and filestore are kept.</p>
+      <div class="form-group">
+        <label for="update-env-vars">Environment variables</label>
+        <textarea id="update-env-vars" rows="5" spellcheck="false" placeholder="WORKERS=2&#10;LIMIT_TIME_CPU=600"></textarea>
+        <p class="modal-note">One KEY=VALUE per line, injected into the Odoo container on top of the database connection variables. Clear the field to remove all custom variables; leave it untouched to keep them.</p>
+      </div>
+      <div class="form-actions">
+        <button class="btn" onclick="closeUpdateEnv()">Cancel</button>
+        <button class="btn-create" onclick="confirmUpdateEnv()">Update environment</button>
       </div>
     </div>
   </div>
@@ -3267,15 +3287,86 @@ async function confirmSwitchBranch() {
   await loadEnvironments(true);
 }
 
+var _updateEnv = '';
+var _updateEnvInitial = '';
+// Bumped on every open and every close, so a prefill response can be matched
+// against the dialog that started it — the Docker-backed lookup is slow enough
+// to outlive a cancel-and-reopen, and answering into the wrong environment
+// would submit its variables to another one.
+var _updateEnvSeq = 0;
+
+// Only a line boundary separates assignments: a value may contain commas (and
+// even "X=" pairs), and a stack-managed environment routinely has them.
+function parseEnvLines(text) {
+  var out = {};
+  text.split(/\r?\n/).forEach(function(line) {
+    var entry = line.trim();
+    var i = entry.indexOf('=');
+    if (i <= 0) return;
+    out[entry.slice(0, i).trim()] = entry.slice(i + 1);
+  });
+  return out;
+}
+
 async function doUpdate(branch) {
-  if (!(await confirmDialog({
-    title: 'Update environment',
-    message: 'Recreate the container for "' + branch + '"? The database and filestore are kept.',
-    confirmLabel: 'Update environment'
-  }))) return;
+  var seq = ++_updateEnvSeq;
+  _updateEnv = branch;
+  _updateEnvInitial = '';
+  document.getElementById('update-env-title').textContent = 'Update environment — ' + branch;
+  document.getElementById('update-env-name').textContent = branch;
+  var ta = document.getElementById('update-env-vars');
+  ta.value = '';
+  ta.disabled = true;
+  showModal('update-env-modal');
+  try {
+    const r = await fetch(API + '/' + encodeURIComponent(branch) + '/env-vars');
+    const data = await readResult(r);
+    // Reopened (for this or another environment) or closed while the lookup
+    // was in flight — this answer is no longer the one the dialog is waiting for.
+    if (seq !== _updateEnvSeq) return;
+    if (data.ok) {
+      var vars = data.env_vars || {};
+      _updateEnvInitial = Object.keys(vars).map(function(k) { return k + '=' + vars[k]; }).join('\n');
+      ta.value = _updateEnvInitial;
+      // A line-per-assignment field cannot represent a value that itself spans
+      // lines (a stack file can set one), so show it read-only rather than let
+      // an edit write back a mangled version.
+      if (Object.keys(vars).some(function(k) { return /[\r\n]/.test(vars[k]); })) {
+        showToast('A variable holds a multi-line value — edit it in the stack file', true);
+      } else {
+        ta.disabled = false;
+      }
+    } else {
+      // Keep the field disabled: an empty editable field would look like
+      // "no variables" and the first edit would replace the real ones.
+      showToast(data.error || 'Could not load the current environment variables', true);
+    }
+  } catch (e) {
+    showToast('Could not load the current environment variables', true);
+  }
+}
+
+function closeUpdateEnv(event) {
+  if (event && event.target !== event.currentTarget) return;
+  _updateEnvSeq++;
+  hideModal('update-env-modal');
+}
+
+async function confirmUpdateEnv() {
+  var branch = _updateEnv;
+  var raw = document.getElementById('update-env-vars').value;
+  var payload = {};
+  // Send a mapping, not the raw blob: the server must not re-split values.
+  if (raw.trim() !== _updateEnvInitial.trim()) payload.env_vars = parseEnvLines(raw);
+  _updateEnvSeq++;
+  hideModal('update-env-modal');
   setBusy(branch, 'Updating');
   try {
-    const r = await fetch(API + '/' + encodeURIComponent(branch) + '/update', { method: 'POST' });
+    const r = await fetch(API + '/' + encodeURIComponent(branch) + '/update', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(payload)
+    });
     const data = await readResult(r);
     if (data.ok) {
       showToast(branch + ': updated');
@@ -4503,7 +4594,7 @@ async function submitCreate() {
   var template = document.getElementById('cr-template').value;
   var gitUser = document.getElementById('cr-git-user').value;
   var autoInstall = document.getElementById('cr-auto-install').value.trim();
-  var envVars = document.getElementById('cr-env-vars').value.trim();
+  var envVars = parseEnvLines(document.getElementById('cr-env-vars').value);
   var errEl = document.getElementById('create-error');
 
   if (!branch) {

@@ -58,6 +58,7 @@ from oduflow.locking import (
     service_preset_lock_key,
     volume_lock_key,
 )
+from oduflow.naming import parse_env_vars
 from oduflow.output_cache import CachedOutput, OutputCache
 from oduflow.po_tools import PoEntry
 from oduflow.settings import Settings, TeamSettings, find_toml
@@ -582,15 +583,6 @@ def _parse_extra_addons(raw: str) -> dict[str, str]:
     return result
 
 
-def _parse_env_vars(raw: str) -> dict[str, str]:
-    """Parse env assignments without treating commas inside values as separators."""
-    items = re.split(
-        r"\r?\n|,(?=\s*[A-Za-z_][A-Za-z0-9_]*=)",
-        raw,
-    )
-    return dict(item.strip().split("=", 1) for item in items if "=" in item)
-
-
 # =============================================================================
 # MCP Tools — Environments
 # =============================================================================
@@ -625,7 +617,7 @@ def create_environment(
         extra_addons: Comma-separated list of extra addon repo names with branches (e.g. "enterprise:19.0,custom-themes:main"). Each entry must include a branch after a colon.
         sanitize: Sanitize the database after provisioning (default: True). Runs Odoo's native neutralization (deactivates outgoing mail servers and crons, disables payment providers, scrubs third-party API credentials, sets database.is_neutralized) and then any custom scripts from the .oduflow/odoo_sanitize/ folder in the repository. Only applies to environments created from a template.
         auto_install_modules: Comma-separated list of Odoo modules to install automatically after the environment is provisioned (e.g. "sale,purchase,stock"). When a template is specified and this is empty, the value is loaded from template metadata.
-        env_vars: Comma-separated KEY=VALUE pairs injected as environment variables into the Odoo container (e.g. "WORKERS=2,LIMIT_TIME_CPU=600"). These are added on top of the database connection variables (HOST/USER/PASSWORD).
+        env_vars: Comma- or newline-separated KEY=VALUE pairs injected as environment variables into the Odoo container (e.g. "WORKERS=2,LIMIT_TIME_CPU=600"). Commas inside values are preserved unless what follows the comma looks like another KEY=; put one pair per line when in doubt. These are added on top of the database connection variables (HOST/USER/PASSWORD).
         local_path: LOCAL FAST-PATH. Absolute path to a checkout on THIS host. When set, Oduflow skips git clone and bind-mounts the directory live into the container — your file edits are visible instantly, no git push/pull needed. After editing, call pull_and_apply with explicit install/upgrade/restart to apply. repo_url is not required in this mode. Gated by allow_local_path (default: true).
     """
     import json
@@ -728,11 +720,7 @@ def create_environment(
             if auto_install_modules
             else []
         )
-        parsed_env = None
-        if env_vars:
-            parsed_env = dict(
-                item.split("=", 1) for item in env_vars.split(",") if "=" in item
-            )
+        parsed_env = parse_env_vars(env_vars) or None
         result = env_ops.create_environment(
             settings,
             team,
@@ -1563,16 +1551,12 @@ def update_environment(
 
     Args:
         env_name: The name of the environment to update.
-        env_vars: Comma-separated KEY=VALUE pairs that fully replace the current user-supplied env vars (e.g. "WORKERS=4,LIMIT_TIME_CPU=900"). Leave empty to keep the current env vars. The database connection variables (HOST/USER/PASSWORD) are always preserved.
+        env_vars: Comma- or newline-separated KEY=VALUE pairs that fully replace the current user-supplied env vars (e.g. "WORKERS=4,LIMIT_TIME_CPU=900"). Commas inside values are preserved unless what follows the comma looks like another KEY=; put one pair per line when in doubt. Leave empty to keep the current env vars. The database connection variables (HOST/USER/PASSWORD) are always preserved.
         odoo_image: New Docker image with tag to pull and run (e.g. "odoo:19.0"). Leave empty to keep the current image.
     """
     settings = _get_settings()
     team = _resolve_team(ctx)
-    parsed_env = None
-    if env_vars:
-        parsed_env = dict(
-            item.split("=", 1) for item in env_vars.split(",") if "=" in item
-        )
+    parsed_env = parse_env_vars(env_vars) or None
     result = env_ops.update_environment(
         settings,
         team,
@@ -3434,7 +3418,7 @@ def create_service(
         image: Docker image with tag (e.g. "redis:7", "getmeili/meilisearch:v1.6").
         port: Catch-all exposure mode: forward every path to this one container port. Required outside Traefik. Mutually exclusive with routes.
         hostname: Custom hostname for traefik routing (optional, traefik mode only).
-        env_vars: Comma- or newline-separated KEY=VALUE pairs (e.g. "MEILI_MASTER_KEY=abc,MEILI_ENV=production"). Commas inside values are preserved, so "CONNECT_MCP_TOOL_GROUPS=write,collaboration,documents" is one variable.
+        env_vars: Comma- or newline-separated KEY=VALUE pairs (e.g. "MEILI_MASTER_KEY=abc,MEILI_ENV=production"). Commas inside values are preserved unless what follows the comma looks like another KEY=; put one pair per line when in doubt. So "CONNECT_MCP_TOOL_GROUPS=write,collaboration,documents" is one variable.
         host_mode: Run the container in host network mode instead of the shared Docker network. Use when the service needs direct host network access. Traefik routing still works.
         volumes: Comma-separated volume mounts (e.g. "mydata:/data,config:/etc/app:ro"). Each entry is volume_name:/container/path[:ro|rw]. Volumes must be created first via create_volume. In Traefik TLS mode the system ACME volume is mounted automatically at /etc/traefik:ro; do not include it here.
         privileged: Run the container in privileged mode (full host access). Use with care — implies all Linux capabilities. Mutually exclusive with net_admin (privileged already grants NET_ADMIN).
@@ -3445,7 +3429,7 @@ def create_service(
     team = _resolve_team(ctx)
     parsed_env = None
     if env_vars:
-        parsed_env = _parse_env_vars(env_vars)
+        parsed_env = parse_env_vars(env_vars)
     parsed_volumes = volume_ops.parse_volume_mounts(volumes) if volumes else None
     cap_add = ["NET_ADMIN"] if net_admin else None
     result = service_ops.create_service(
@@ -3512,7 +3496,7 @@ def update_service(
 
     Args:
         name: The name of the service to update (e.g. "redis", "meilisearch").
-        env_vars: Comma- or newline-separated KEY=VALUE pairs that fully replace existing env vars (e.g. "MEILI_MASTER_KEY=abc,MEILI_ENV=production"). Commas inside values are preserved. Leave empty to keep current env vars.
+        env_vars: Comma- or newline-separated KEY=VALUE pairs that fully replace existing env vars (e.g. "MEILI_MASTER_KEY=abc,MEILI_ENV=production"). Commas inside values are preserved unless what follows the comma looks like another KEY=; put one pair per line when in doubt. Leave empty to keep current env vars.
         image: New Docker image with tag (e.g. "redis:8"). Leave empty to keep current image.
         port: New container port. Pass 0 to keep current port.
         hostname: New hostname for traefik routing. Leave empty to keep current hostname.
@@ -3528,7 +3512,7 @@ def update_service(
     # Parse optional overrides
     parsed_env = None
     if env_vars:
-        parsed_env = _parse_env_vars(env_vars)
+        parsed_env = parse_env_vars(env_vars)
 
     parsed_volumes = None
     if volumes:
