@@ -3297,16 +3297,22 @@ async function doUpdate(branch) {
   try {
     const r = await fetch(API + '/' + encodeURIComponent(branch) + '/env-vars');
     const data = await readResult(r);
+    // A slower lookup for a previously opened environment must not overwrite
+    // the dialog once it has been reopened for another one.
+    if (_updateEnv !== branch) return;
     if (data.ok) {
       var vars = data.env_vars || {};
       _updateEnvInitial = Object.keys(vars).map(function(k) { return k + '=' + vars[k]; }).join('\n');
       ta.value = _updateEnvInitial;
+      ta.disabled = false;
+    } else {
+      // Keep the field disabled: an empty editable field would look like
+      // "no variables" and the first edit would replace the real ones.
+      showToast(data.error || 'Could not load the current environment variables', true);
     }
   } catch (e) {
-    // Leave the field empty: an untouched field is not sent, so the
-    // current variables are kept even when they could not be loaded.
+    showToast('Could not load the current environment variables', true);
   }
-  ta.disabled = false;
 }
 
 function closeUpdateEnv(event) {
