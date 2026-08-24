@@ -2268,7 +2268,7 @@ def _build_routes(
         try:
             from oduflow.url_safety import assert_allowed_url
 
-            assert_allowed_url(origin_url, require_https=True, allow_private=False)
+            assert_allowed_url(origin_url, require_https=True, allow_private=True)
         except FlowError as e:
             return _error_response(e)
         branch = str((body or {}).get("branch") or "").strip()

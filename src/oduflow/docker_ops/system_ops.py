@@ -3364,11 +3364,12 @@ def import_from_odoo(
     template_dir = team.get_template_dir(template_name)
     tpl_db = get_template_db_name(template_name, team.team_id)
 
-    # SSRF guard: importing a DB from a URL is a clearly-external operation, so
-    # block loopback, the cloud metadata endpoint, and internal RFC1918 hosts.
+    # SSRF guard: block loopback and the cloud metadata endpoint. Internal
+    # RFC1918 hosts stay allowed (allow_private=True) because operator-managed
+    # Odoo instances commonly live on a private LAN.
     # HTTP is allowed for operator-managed Odoo instances, although it sends the
     # master password without transport encryption.
-    assert_allowed_url(base, require_https=False, allow_private=False)
+    assert_allowed_url(base, require_https=False, allow_private=True)
 
     if os.path.exists(template_dir):
         raise ConflictError(f"Template directory already exists: {template_dir}")
