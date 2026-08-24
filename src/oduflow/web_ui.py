@@ -1119,6 +1119,10 @@ def _build_routes(
             git_user = labels.get("oduflow.git_user", "")
             env_vars = json.loads(labels.get("oduflow.env_vars", "{}")) or None
             local_path = labels.get("oduflow.local_path", "")
+            # The environment name and the git branch it tracks can differ
+            # (several environments off one branch), so recreate from the
+            # recorded branch label rather than from the environment name.
+            git_branch = labels.get("oduflow.git_branch", branch)
             hostname = labels.get(env_ops.ENV_HOSTNAME_LABEL, "")
 
             # Check disk space BEFORE deleting the old environment: refusing
@@ -1144,9 +1148,10 @@ def _build_routes(
             result = env_ops.create_environment(
                 settings,
                 team,
-                branch,
+                git_branch,
                 repo_url,
                 odoo_image,
+                env_name=branch,
                 template_name=template_name,
                 extra_addons=extra_addons,
                 git_user=git_user,
@@ -1236,6 +1241,11 @@ def _build_routes(
             )
 
         env_name = (body.get("env_name") or "").strip()
+        # Older dashboards (and cached ones) send only env_name and mean the
+        # branch by it; new ones send both so one branch can back several
+        # environments.
+        branch = (body.get("branch") or "").strip() or env_name
+        env_name = env_name or branch
         repo_url = (body.get("repo_url") or "").strip()
         odoo_image = (body.get("odoo_image") or "").strip()
         git_user = (body.get("git_user") or "").strip()
@@ -1246,7 +1256,7 @@ def _build_routes(
         env_vars = _env_vars_from_body(body.get("env_vars")) or None
         if not env_name:
             return JSONResponse(
-                {"ok": False, "error": "env_name is required."},
+                {"ok": False, "error": "branch is required."},
                 status_code=400,
             )
         from oduflow.naming import validate_env_name
@@ -1339,9 +1349,10 @@ def _build_routes(
                 env_ops.create_environment,
                 settings,
                 team,
-                env_name,
+                branch,
                 repo_url,
                 odoo_image,
+                env_name=env_name,
                 template_name=resolved_template,
                 extra_addons=extra_dict,
                 git_user=git_user,

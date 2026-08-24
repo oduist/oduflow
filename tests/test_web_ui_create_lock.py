@@ -93,3 +93,106 @@ def test_api_create_passes_short_hostname(tmp_path):
 
     assert resp.json()["ok"] is True
     assert create.call_args.kwargs["hostname"] == "dev2"
+
+
+def test_api_create_separate_branch_and_env_name(tmp_path):
+    """The dashboard can name an environment differently from its branch."""
+    settings = _open_settings(tmp_path)
+    app = Starlette()
+    mount_web_ui(app, lambda: settings, LockManager())
+    client = TestClient(app)
+
+    with patch(
+        "oduflow.web_ui.env_ops.create_environment",
+        return_value={"url": "http://localhost:50000"},
+    ) as create:
+        resp = client.post(
+            "/api/environments/create",
+            json={
+                "branch": "staging",
+                "env_name": "oldstaging",
+                "repo_url": "r",
+                "odoo_image": "i",
+            },
+        )
+
+    assert resp.json()["ok"] is True
+    # _offload(fn, settings, team, branch, repo_url, odoo_image, ...)
+    assert create.call_args.args[2] == "staging"
+    assert create.call_args.kwargs["env_name"] == "oldstaging"
+
+
+def test_api_create_env_name_defaults_to_branch(tmp_path):
+    settings = _open_settings(tmp_path)
+    app = Starlette()
+    mount_web_ui(app, lambda: settings, LockManager())
+    client = TestClient(app)
+
+    with patch(
+        "oduflow.web_ui.env_ops.create_environment",
+        return_value={"url": "http://localhost:50000"},
+    ) as create:
+        resp = client.post(
+            "/api/environments/create",
+            json={"branch": "staging", "repo_url": "r", "odoo_image": "i"},
+        )
+
+    assert resp.json()["ok"] is True
+    assert create.call_args.args[2] == "staging"
+    assert create.call_args.kwargs["env_name"] == "staging"
+
+
+def test_api_create_legacy_payload_without_branch(tmp_path):
+    """A cached dashboard sends env_name only and means the branch by it."""
+    settings = _open_settings(tmp_path)
+    app = Starlette()
+    mount_web_ui(app, lambda: settings, LockManager())
+    client = TestClient(app)
+
+    with patch(
+        "oduflow.web_ui.env_ops.create_environment",
+        return_value={"url": "http://localhost:50000"},
+    ) as create:
+        resp = client.post(
+            "/api/environments/create",
+            json={"env_name": "main", "repo_url": "r", "odoo_image": "i"},
+        )
+
+    assert resp.json()["ok"] is True
+    assert create.call_args.args[2] == "main"
+    assert create.call_args.kwargs["env_name"] == "main"
+
+
+def test_api_recreate_uses_recorded_git_branch(tmp_path):
+    """An environment named apart from its branch recreates on THAT branch."""
+    from unittest.mock import MagicMock
+
+    settings = _open_settings(tmp_path)
+    app = Starlette()
+    mount_web_ui(app, lambda: settings, LockManager())
+    client = TestClient(app)
+
+    container = MagicMock()
+    container.labels = {
+        settings.repo_label: "https://github.com/x/y.git",
+        settings.image_label: "odoo:19.0",
+        "oduflow.template": "none",
+        "oduflow.git_branch": "staging",
+    }
+
+    with (
+        patch("oduflow.docker_ops.client.get_client") as mock_client,
+        patch("oduflow.docker_ops.system_ops.check_disk_space"),
+        patch("oduflow.docker_ops.system_ops.estimate_new_db_bytes", return_value=0),
+        patch("oduflow.docker_ops.env_ops.delete_environment"),
+        patch(
+            "oduflow.docker_ops.env_ops.create_environment",
+            return_value={"url": "http://localhost:50000"},
+        ) as create,
+    ):
+        mock_client.return_value.containers.get.return_value = container
+        resp = client.post("/api/environments/oldstaging/recreate")
+
+    assert resp.status_code == 200
+    assert create.call_args.args[2] == "staging"
+    assert create.call_args.kwargs["env_name"] == "oldstaging"
