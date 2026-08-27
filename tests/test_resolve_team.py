@@ -26,6 +26,13 @@ def _settings(n_teams: int = 2, allow_insecure_http: bool = False) -> Settings:
 
 @pytest.fixture
 def inject(monkeypatch):
+    monkeypatch.setattr(server, "get_access_token", lambda: None)
+
+    def _no_http_request():
+        raise RuntimeError("No active HTTP request")
+
+    monkeypatch.setattr(server, "get_http_request", _no_http_request)
+
     def _inject(settings: Settings, transport: str) -> None:
         monkeypatch.setattr(server, "_settings", settings)
         monkeypatch.setattr(settings_module, "TRANSPORT", transport)
@@ -58,7 +65,32 @@ def test_http_insecure_optout_keeps_fallback(inject):
     assert server._resolve_team(None).team_id == "1"
 
 
-def test_http_token_resolution_still_works(inject):
+def test_http_token_resolution_uses_verified_access_token(inject, monkeypatch):
     inject(_settings(n_teams=2), "http")
-    ctx = SimpleNamespace(client_id="2")
-    assert server._resolve_team(ctx).team_id == "2"
+    monkeypatch.setattr(
+        server, "get_access_token", lambda: SimpleNamespace(client_id="2")
+    )
+    assert server._resolve_team(None).team_id == "2"
+
+
+def test_http_request_metadata_cannot_override_verified_team(inject, monkeypatch):
+    inject(_settings(n_teams=2), "http")
+    monkeypatch.setattr(
+        server, "get_access_token", lambda: SimpleNamespace(client_id="1")
+    )
+    caller_metadata = SimpleNamespace(client_id="2")
+    assert server._resolve_team(caller_metadata).team_id == "1"
+
+
+def test_http_request_metadata_is_not_an_auth_identity(inject):
+    inject(_settings(n_teams=2), "http")
+    caller_metadata = SimpleNamespace(client_id="2")
+    with pytest.raises(NotFoundError, match="Cannot resolve a team"):
+        server._resolve_team(caller_metadata)
+
+
+def test_http_hostname_fallback_works_without_context_argument(inject, monkeypatch):
+    inject(_settings(n_teams=2), "http")
+    request = SimpleNamespace(headers={"host": "team2.example.com:8000"})
+    monkeypatch.setattr(server, "get_http_request", lambda: request)
+    assert server._resolve_team(None).team_id == "2"

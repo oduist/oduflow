@@ -74,6 +74,7 @@ src/oduflow/
   web_ui.py            # Starlette dashboard, REST/WS API, session+Basic auth middleware
   extra_addons.py      # Extra addon repo management (clone, worktree, odoo.conf generation)
   env_credentials.py   # Per-environment PostgreSQL credentials
+  pg_hba.py            # Managed PostgreSQL host rules rendered from Docker IPAM
   sanitizer.py         # DB sanitization (SQL/Python scripts)
   sync.py              # Sync template data from S3 or local path (aws s3 sync / rsync)
   licensing.py         # License verification and installation (RSA signatures)
@@ -178,6 +179,10 @@ This means no manual ownership fixups are ever needed on either platform.
 | **Traefik volume** (optional) | `oduflow-traefik-acme` | Let's Encrypt certificate storage |
 
 All containers are labeled with `oduflow.managed=true` and `oduflow.team={team_id}` for discovery and management.
+The PostgreSQL containers are attached to every team network. At startup,
+Oduflow reads those networks' real IPAM subnets and reconciles only its marked
+block in each cluster's active `pg_hba.conf`; standard and operator rules
+outside the block are preserved.
 
 ## Concurrency & Locking
 

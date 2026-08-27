@@ -78,9 +78,12 @@ def mock_docker_client():
 
 
 class TestInitSystem:
+    @patch("oduflow.docker_ops.system_ops._reconcile_pg_hba")
     @patch("oduflow.docker_ops.system_ops._copy_file_to_container")
     @patch("oduflow.docker_ops.system_ops.os.path.isfile", return_value=True)
-    def test_init_system_fresh(self, mock_isfile, mock_copy, mock_docker_client):
+    def test_init_system_fresh(
+        self, mock_isfile, mock_copy, mock_hba, mock_docker_client
+    ):
         mock_docker_client.networks.get.side_effect = docker.errors.NotFound("nf")
         mock_docker_client.volumes.get.side_effect = docker.errors.NotFound("nf")
 
@@ -109,11 +112,17 @@ class TestInitSystem:
         created = [c.args[0] for c in mock_docker_client.networks.create.call_args_list]
         assert created == ["oduflow-net", "oduflow-1-net"]
         mock_docker_client.volumes.create.assert_called_once()
+        mock_hba.assert_called_once_with(
+            mock_docker_client,
+            TEST_SETTINGS,
+            container_name=TEST_SETTINGS.shared_db_container,
+        )
 
+    @patch("oduflow.docker_ops.system_ops._reconcile_pg_hba")
     @patch("oduflow.docker_ops.system_ops._db_exists", return_value=True)
     @patch("oduflow.docker_ops.system_ops._wait_pg_ready")
     def test_init_system_already_initialized(
-        self, mock_pg, mock_db_exists, mock_docker_client
+        self, mock_pg, mock_db_exists, mock_hba, mock_docker_client
     ):
         mock_docker_client.networks.get.return_value = MagicMock()
         mock_docker_client.volumes.get.return_value = MagicMock()
@@ -124,6 +133,11 @@ class TestInitSystem:
         result = system_ops.init_system(TEST_SETTINGS)
 
         assert result["status"] == "initialized"
+        mock_hba.assert_called_once_with(
+            mock_docker_client,
+            TEST_SETTINGS,
+            container_name=TEST_SETTINGS.shared_db_container,
+        )
 
 
 class TestDestroySystem:
