@@ -61,6 +61,21 @@
   password travels without transport encryption; the outbound host safety checks
   still apply. (#202)
 
+### Fixes
+
+- **PostgreSQL access follows the real Docker networks** — on every startup,
+  Oduflow now reads the actual IPAM subnets of its shared and per-team networks
+  and reconciles a marked block in the active `pg_hba.conf` for both development
+  and production clusters. This repairs reused or partially initialized data
+  volumes that lack a Docker host rule, avoids hard-coded `172.x` assumptions,
+  preserves every standard/operator rule outside the managed block, validates
+  the reloaded file and rolls back an invalid candidate. The rules use `md5`
+  while any role still holds a pre-PostgreSQL-14 md5 verifier and
+  `scram-sha-256` once every role has migrated, so reconciling an old data
+  volume never locks its environments out. The update travels through the
+  Docker API, so it also works when Oduflow itself runs in a container with
+  named config volumes.
+
 ## v1.69.0
 
 ### Features

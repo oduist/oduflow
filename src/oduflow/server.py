@@ -24,6 +24,7 @@ except Exception:  # pragma: no cover - authlib internals may change
 
 from fastmcp import Context, FastMCP
 from fastmcp.exceptions import ToolError
+from fastmcp.server.dependencies import get_access_token, get_http_request
 
 from oduflow import (
     activity,
@@ -114,30 +115,29 @@ def _get_settings() -> Settings:
 
 
 def _resolve_team(ctx: Context | None) -> TeamSettings:
-    """Resolve the team from MCP Context.
+    """Resolve the team for the current MCP request.
 
     Priority: token/OAuth client_id → Host header → single-team → team "1".
     """
     settings = _get_settings()
-    # 1. Token-based: client_id set by auth provider maps to team_id
-    team_id = ctx.client_id if ctx and ctx.client_id else None
+    # 1. Context.client_id comes from caller-controlled MCP request metadata,
+    # not the verified credential. Only trust the access token established by auth.
+    access_token = get_access_token()
+    team_id = access_token.client_id if access_token else None
     if team_id and team_id in settings.teams:
         return settings.teams[team_id]
     # 2. Hostname-based: match Host header against team hostnames
-    if ctx:
-        try:
-            from fastmcp.server.dependencies import get_http_request
-
-            request = get_http_request()
-            host = request.headers.get("host", "")
-            team = settings.get_team_by_hostname(host)
-            if team:
-                return team
-        except Exception:
-            # No HTTP request in scope (e.g. stdio transport) — fall through to
-            # the single-team / default-team resolution below. Logged, not
-            # silently swallowed, so misrouting is traceable.
-            logger.debug("Host-header team resolution unavailable", exc_info=True)
+    try:
+        request = get_http_request()
+        host = request.headers.get("host", "")
+        team = settings.get_team_by_hostname(host)
+        if team:
+            return team
+    except Exception:
+        # No HTTP request in scope (e.g. stdio transport) — fall through to
+        # the single-team / default-team resolution below. Logged, not
+        # silently swallowed, so misrouting is traceable.
+        logger.debug("Host-header team resolution unavailable", exc_info=True)
     # 3. Fallback: single team or default team "1". Only for stdio (implicit
     # local single user) and explicitly-unauthenticated HTTP: in a hosted
     # multi-client deployment a request that matches no token and no hostname

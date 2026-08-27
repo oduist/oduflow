@@ -402,6 +402,14 @@ PostgreSQL tuning or Odoo settings globally:
   traefik/                ← Traefik dynamic configuration (auto-generated)
 ```
 
+`pg_hba.conf` remains in the PostgreSQL data volume rather than this config
+directory. On every startup Oduflow reads the active file reported by
+PostgreSQL and reconciles a marked block containing password-authenticated
+rules for the real Docker IPAM subnets of the shared and per-team networks.
+All standard and operator-managed rules outside that block are preserved. This
+also repairs an existing data volume whose original image initialization did
+not add a rule for Docker clients.
+
 The resource plan considers `[production].enabled`. With production disabled,
 the lean dev PostgreSQL profile targets about 10% of host RAM for
 `shared_buffers` (128 MB–1 GB). With production enabled, the planner budgets

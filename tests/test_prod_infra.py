@@ -134,6 +134,7 @@ class TestLazyProvisioning:
             patch("oduflow.walg.ensure_walg"),
             patch.object(system_ops, "_wait_pg_ready"),
             patch.object(system_ops, "ensure_team_network"),
+            patch.object(system_ops, "_reconcile_pg_hba") as reconcile_hba,
             patch("oduflow.walg.apply_archive_command") as apply_cmd,
         ):
             assert system_ops.ensure_prod_infra(client, settings) is True
@@ -141,6 +142,9 @@ class TestLazyProvisioning:
         client.containers.run.assert_called_once()
         # No [backup] configured -> archive command stays disabled.
         assert apply_cmd.call_args[1]["enabled"] is False
+        reconcile_hba.assert_called_once_with(
+            client, settings, container_name=settings.prod_db_container
+        )
 
     def test_force_provisions_without_productions(self, settings):
         client = _client_without_prod()
@@ -148,6 +152,7 @@ class TestLazyProvisioning:
             patch("oduflow.walg.ensure_walg"),
             patch.object(system_ops, "_wait_pg_ready"),
             patch.object(system_ops, "ensure_team_network"),
+            patch.object(system_ops, "_reconcile_pg_hba"),
             patch("oduflow.walg.apply_archive_command"),
         ):
             assert system_ops.ensure_prod_infra(client, settings, force=True) is True
@@ -159,6 +164,7 @@ class TestLazyProvisioning:
             patch("oduflow.walg.ensure_walg", side_effect=RuntimeError("offline")),
             patch.object(system_ops, "_wait_pg_ready"),
             patch.object(system_ops, "ensure_team_network"),
+            patch.object(system_ops, "_reconcile_pg_hba"),
             patch("oduflow.walg.apply_archive_command") as apply_cmd,
         ):
             assert system_ops.ensure_prod_infra(client, settings, force=True) is True
@@ -172,6 +178,7 @@ class TestProdPgContainer:
             patch("oduflow.walg.ensure_walg"),
             patch.object(system_ops, "_wait_pg_ready"),
             patch.object(system_ops, "ensure_team_network"),
+            patch.object(system_ops, "_reconcile_pg_hba"),
             patch("oduflow.walg.apply_archive_command"),
         ):
             system_ops.ensure_prod_infra(client, settings, force=True)
@@ -202,6 +209,7 @@ class TestProdPgContainer:
             patch("oduflow.walg.ensure_walg"),
             patch.object(system_ops, "_wait_pg_ready"),
             patch.object(system_ops, "ensure_team_network"),
+            patch.object(system_ops, "_reconcile_pg_hba"),
             patch("oduflow.walg.apply_archive_command"),
         ):
             system_ops.ensure_prod_infra(client, settings, force=True)
@@ -216,6 +224,7 @@ class TestProdPgContainer:
             patch("oduflow.walg.ensure_walg"),
             patch.object(system_ops, "_wait_pg_ready"),
             patch.object(system_ops, "ensure_team_network"),
+            patch.object(system_ops, "_reconcile_pg_hba"),
             patch("oduflow.walg.apply_archive_command"),
         ):
             system_ops.ensure_prod_infra(client, settings)
