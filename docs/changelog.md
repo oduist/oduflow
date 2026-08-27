@@ -1,5 +1,65 @@
 # Changelog
 
+## v1.71.0
+
+### Features
+
+- **Custom environment names, decoupled from the git branch** — an environment
+  can now carry a name of its own instead of inheriting the branch name, so one
+  branch can back several isolated environments. The dashboard's create form
+  gained an optional "Environment name" field (still defaulting to the branch),
+  and `/api/environments/create` takes `branch` and `env_name` separately.
+  Recreate reads the stored `oduflow.git_branch` label, so an environment named
+  apart from its branch comes back on the right one. Dashboards still sending
+  only `env_name` keep working — it is read as the branch. (#205)
+
+### Dashboard
+
+- **Edit environment variables from the Update dialog** — the Update
+  environment dialog used to be a bare confirmation; it now prefills the
+  environment's user-supplied container variables and lets them be edited (one
+  `KEY=VALUE` per line) before the container is recreated. A new
+  `GET /api/environments/{branch}/env-vars` endpoint serves the prefill, and
+  `POST /api/environments/{branch}/update` distinguishes replacement (an
+  `env_vars` key in the body), clearing (an empty string) and keeping the
+  current set (no key at all), so an untouched field — or a failed prefill —
+  never wipes the existing variables. Body-less update calls stay compatible
+  and the MCP tools are unchanged. (#204)
+
+### Fixes
+
+- **PostgreSQL access follows the real Docker networks** — on every startup,
+  Oduflow now reads the actual IPAM subnets of its shared and per-team networks
+  and reconciles a marked block in the active `pg_hba.conf` for both development
+  and production clusters. This repairs reused or partially initialized data
+  volumes that lack a Docker host rule, avoids hard-coded `172.x` assumptions,
+  preserves every standard/operator rule outside the managed block, validates
+  the reloaded file and rolls back an invalid candidate. The rules use `md5`
+  while any role still holds a pre-PostgreSQL-14 md5 verifier and
+  `scram-sha-256` once every role has migrated, so reconciling an old data
+  volume never locks its environments out. The update travels through the
+  Docker API, so it also works when Oduflow itself runs in a container with
+  named config volumes. (#206)
+
+- **URL imports may target private-network hosts** — `import_template_from_odoo`
+  and the dashboard's remote-addon import rejected every RFC1918 target as an
+  SSRF risk, which blocked the ordinary case of an operator-managed Odoo
+  instance or an internal git server on the LAN — and was stricter than
+  `validate_repo_url`, which the same dashboard endpoint already hands off to.
+  Both call sites now allow private ranges. The parts of the guard that carry
+  the real risk are untouched: loopback, link-local (including the cloud
+  metadata endpoint), unspecified, multicast and reserved addresses are still
+  refused, and the library defaults are unchanged. (#203)
+
+### Security
+
+- **Team resolution only trusts the verified credential** — the MCP team lookup
+  read `client_id` from `Context`, which carries caller-controlled request
+  metadata rather than the credential established by auth, so a client could
+  name a team other than its own. It now reads `client_id` from the verified
+  access token instead. Host-header and single-team resolution are
+  unchanged. (#206)
+
 ## v1.70.0
 
 ### Features
@@ -60,21 +120,6 @@
   and database-only backups. HTTP sources are allowed but warn that the master
   password travels without transport encryption; the outbound host safety checks
   still apply. (#202)
-
-### Fixes
-
-- **PostgreSQL access follows the real Docker networks** — on every startup,
-  Oduflow now reads the actual IPAM subnets of its shared and per-team networks
-  and reconciles a marked block in the active `pg_hba.conf` for both development
-  and production clusters. This repairs reused or partially initialized data
-  volumes that lack a Docker host rule, avoids hard-coded `172.x` assumptions,
-  preserves every standard/operator rule outside the managed block, validates
-  the reloaded file and rolls back an invalid candidate. The rules use `md5`
-  while any role still holds a pre-PostgreSQL-14 md5 verifier and
-  `scram-sha-256` once every role has migrated, so reconciling an old data
-  volume never locks its environments out. The update travels through the
-  Docker API, so it also works when Oduflow itself runs in a container with
-  named config volumes.
 
 ## v1.69.0
 
