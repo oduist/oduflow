@@ -2332,6 +2332,15 @@ class TestRunDbQuery:
         ]
         assert "state = 'installed'" in command[-1]
 
+    @pytest.mark.parametrize("env_name", ["prod-erp", "Prod-erp", "pr.od-erp"])
+    def test_fixed_module_listing_rejects_production_aliases(
+        self, env_name, mock_docker_client
+    ):
+        with pytest.raises(ValueError, match="production environment"):
+            odoo_ops.list_installed_module_records(TEST_SETTINGS, TEST_TEAM, env_name)
+
+        mock_docker_client.containers.get.assert_not_called()
+
 
 class TestInstallModules:
     @patch(

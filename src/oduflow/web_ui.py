@@ -82,6 +82,7 @@ from oduflow.locking import (
 from oduflow.naming import (
     PROD_ENV_PREFIX,
     parse_env_vars,
+    slugify_branch,
     validate_env_name,
     validate_template_name,
 )
@@ -397,7 +398,7 @@ def _error_response(e: FlowError) -> JSONResponse:
 def _validate_dev_env_name(env_name: str) -> str:
     """Validate a dev environment name without entering production namespace."""
     validate_env_name(env_name)
-    if env_name.startswith(PROD_ENV_PREFIX):
+    if slugify_branch(env_name).startswith(PROD_ENV_PREFIX):
         raise ValueError(
             f"'{env_name}' is a production environment. Use the production "
             "deployment workflow instead of dev module operations."
@@ -1058,35 +1059,37 @@ def _build_routes(
             # A failed run is still a completed request: the Odoo log is the
             # answer the developer came for, so it goes to the result modal
             # instead of a one-line toast.
-            if action == "install" and exit_code == 0:
+            if exit_code == 0:
+                completed_verb = "Installed" if action == "install" else "Upgraded"
                 try:
                     await _offload(env_ops.restart_environment, settings, branch, team)
                     container_restarted = True
                     message = (
-                        f"Installed: {', '.join(applied)}. Odoo container restarted."
+                        f"{completed_verb}: {', '.join(applied)}. "
+                        "Odoo container restarted."
                     )
                 except FlowError as e:
                     container_restarted = False
                     restart_error = _public_flow_error(
-                        e, context=f"Restart after module install in {branch}"
+                        e, context=f"Restart after module {action} in {branch}"
                     )
                     restart_warning = (
-                        "Modules were installed, but the Odoo container could not "
+                        f"Modules were {action}d, but the Odoo container could not "
                         f"be restarted. {restart_error}"
                     )
-                    message = f"Installed: {', '.join(applied)}. Restart failed."
+                    message = f"{completed_verb}: {', '.join(applied)}. Restart failed."
                 except Exception:
                     container_restarted = False
                     logger.exception(
-                        "Unexpected restart error after module install in %s", branch
+                        "Unexpected restart error after module %s in %s",
+                        action,
+                        branch,
                     )
                     restart_warning = (
-                        "Modules were installed, but the Odoo container could not "
+                        f"Modules were {action}d, but the Odoo container could not "
                         "be restarted. Check server logs for details."
                     )
-                    message = f"Installed: {', '.join(applied)}. Restart failed."
-            elif exit_code == 0:
-                message = f"Upgraded: {', '.join(applied)}."
+                    message = f"{completed_verb}: {', '.join(applied)}. Restart failed."
             else:
                 verb = "Install" if action == "install" else "Upgrade"
                 message = f"{verb} failed: {', '.join(applied)}."
@@ -1102,10 +1105,9 @@ def _build_routes(
                     "modules_installed" if action == "install" else "modules_upgraded"
                 )
                 payload[success_key] = applied
-                if action == "install":
-                    payload["container_restarted"] = container_restarted
-                    if restart_warning:
-                        payload["warnings"] = [restart_warning]
+                payload["container_restarted"] = container_restarted
+                if restart_warning:
+                    payload["warnings"] = [restart_warning]
             return JSONResponse({"ok": True, "result": payload})
         except FlowError as e:
             return _error_response(e)

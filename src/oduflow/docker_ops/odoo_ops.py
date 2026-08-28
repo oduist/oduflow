@@ -21,6 +21,7 @@ from oduflow.naming import (
     get_db_name,
     get_repo_path,
     get_resource_name,
+    slugify_branch,
     validate_env_name,
 )
 from oduflow.settings import Settings, TeamSettings
@@ -744,7 +745,7 @@ def list_installed_module_records(
     database credential without exposing an arbitrary-query surface.
     """
     validate_env_name(env_name)
-    if env_name.startswith(PROD_ENV_PREFIX):
+    if slugify_branch(env_name).startswith(PROD_ENV_PREFIX):
         raise ValueError(
             f"'{env_name}' is a production environment. Use the production "
             "deployment workflow instead of dev module operations."

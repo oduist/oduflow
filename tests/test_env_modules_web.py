@@ -82,12 +82,21 @@ def test_install_restarts_the_container_on_success(tmp_path):
     assert restart.called
 
 
-def test_install_reports_success_when_the_followup_restart_fails(tmp_path):
+@pytest.mark.parametrize(
+    ("action", "operation", "success_key", "message"),
+    [
+        ("install", "install_odoo_modules", "modules_installed", "Installed"),
+        ("upgrade", "upgrade_odoo_modules", "modules_upgraded", "Upgraded"),
+    ],
+)
+def test_module_apply_reports_success_when_the_followup_restart_fails(
+    tmp_path, action, operation, success_key, message
+):
     client = _client(tmp_path)
     result = {"modules": ["sale"], "exit_code": 0, "output": "Modules loaded."}
 
     with (
-        patch("oduflow.web_ui.odoo_ops.install_odoo_modules", return_value=result),
+        patch(f"oduflow.web_ui.odoo_ops.{operation}", return_value=result),
         patch(
             "oduflow.web_ui.env_ops.restart_environment",
             side_effect=ExternalCommandError("docker restart", 1, "secret output"),
@@ -95,16 +104,16 @@ def test_install_reports_success_when_the_followup_restart_fails(tmp_path):
     ):
         response = client.post(
             "/api/environments/feature-x/modules",
-            json={"action": "install", "modules": "sale"},
+            json={"action": action, "modules": "sale"},
         )
 
     assert response.status_code == 200
     body = response.json()["result"]
-    assert body["modules_installed"] == ["sale"]
+    assert body[success_key] == ["sale"]
     assert body["modules_attempted"] == ["sale"]
     assert body["container_restarted"] is False
     assert body["exit_code"] == 0
-    assert body["message"] == "Installed: sale. Restart failed."
+    assert body["message"] == f"{message}: sale. Restart failed."
     assert "could not be restarted" in body["warnings"][0]
     assert "Check server logs" in body["warnings"][0]
     assert "secret output" not in str(body)
@@ -132,7 +141,7 @@ def test_failed_install_returns_the_odoo_output_without_restarting(tmp_path):
     assert not restart.called
 
 
-def test_upgrade_does_not_restart_the_container(tmp_path):
+def test_upgrade_restarts_the_container_on_success(tmp_path):
     client = _client(tmp_path)
     result = {"modules": ["sale"], "exit_code": 0, "output": ""}
 
@@ -151,8 +160,9 @@ def test_upgrade_does_not_restart_the_container(tmp_path):
     body = response.json()["result"]
     assert body["modules_upgraded"] == ["sale"]
     assert body["modules_attempted"] == ["sale"]
+    assert body["container_restarted"] is True
     assert upgrade.called
-    assert not restart.called
+    assert restart.called
 
 
 def test_upgrade_of_an_uninstalled_module_is_reported(tmp_path):
@@ -243,16 +253,17 @@ def test_module_routes_reject_encoded_traversal_names(tmp_path):
     assert not install.called
 
 
-def test_module_routes_reject_the_production_namespace(tmp_path):
+@pytest.mark.parametrize("env_name", ["prod-erp", "Prod-erp", "pr.od-erp"])
+def test_module_routes_reject_the_normalized_production_namespace(tmp_path, env_name):
     client = _client(tmp_path)
 
     with (
         patch("oduflow.web_ui.odoo_ops.list_installed_module_records") as listing,
         patch("oduflow.web_ui.odoo_ops.install_odoo_modules") as install,
     ):
-        get_response = client.get("/api/environments/prod-erp/modules")
+        get_response = client.get(f"/api/environments/{env_name}/modules")
         post_response = client.post(
-            "/api/environments/prod-erp/modules",
+            f"/api/environments/{env_name}/modules",
             json={"action": "install", "modules": "sale"},
         )
 
