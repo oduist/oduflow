@@ -1,5 +1,31 @@
 # Changelog
 
+## Unreleased
+
+### Features
+
+- **Templates carry environment variables** — a template's `metadata.json` can
+  now hold an `env_vars` object, and every environment created from that
+  template gets those variables injected into its Odoo container. Saving a
+  template from a live environment records that environment's variables
+  automatically, so a tuned configuration (`WORKERS`, `LIMIT_TIME_CPU`, service
+  credentials) survives into every environment built from the snapshot instead
+  of being retyped at each `create_environment` call. Values passed at creation
+  time are merged **per key** over the template's, so one variable can be
+  overridden without restating the rest. Names are validated as shell
+  identifiers when a template is saved; a hand-edited file with an invalid entry
+  is ignored with a warning rather than blocking provisioning.
+
+### Dashboard
+
+- **Environment variables in the template Settings dialog** — a new field edits
+  a template's variables as one `KEY=VALUE` per line, the template card shows
+  how many are set (names and values stay hidden — they routinely carry
+  secrets), and the create-environment form prefills them from the selected
+  template. Multiline values stay inherited server-side instead of being put
+  through the line-based create field. In template Settings, such values are
+  shown read-only and pointed at the raw JSON editor.
+
 ## v1.71.0
 
 ### Features

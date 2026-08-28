@@ -1253,7 +1253,7 @@ def _build_routes(
         extra_addons_raw = body.get("extra_addons")
         auto_install_raw = (body.get("auto_install_modules") or "").strip()
         hostname = (body.get("hostname") or "").strip()
-        env_vars = _env_vars_from_body(body.get("env_vars")) or None
+        env_vars = _env_vars_from_body(body.get("env_vars"))
         if not env_name:
             return JSONResponse(
                 {"ok": False, "error": "branch is required."},
@@ -1289,6 +1289,7 @@ def _build_routes(
             elif isinstance(extra_addons_raw, str) and extra_addons_raw.strip():
                 extra_dict = _parse_extra_addons(extra_addons_raw.strip()) or None
             local_path_from_meta = ""
+            template_env_vars: dict[str, str] = {}
             if resolved_template:
                 metadata_path = team.get_template_metadata_path(resolved_template)
                 if os.path.isfile(metadata_path):
@@ -1306,6 +1307,9 @@ def _build_routes(
                             extra_dict = _normalize_extra_addons(raw) or None
                     if not auto_install_raw:
                         auto_install_raw = metadata.get("auto_install_modules", "")
+                    template_env_vars = system_ops._template_env_vars(
+                        metadata, resolved_template
+                    )
                     if not repo_url and metadata.get("local_path"):
                         if settings.allow_local_path:
                             local_path_from_meta = metadata["local_path"]
@@ -1357,7 +1361,9 @@ def _build_routes(
                 extra_addons=extra_dict,
                 git_user=git_user,
                 auto_install_modules=auto_install_list or None,
-                env_vars=env_vars,
+                # Template env vars are the baseline; the request overrides
+                # only the keys it names (same merge as the MCP tool).
+                env_vars={**template_env_vars, **env_vars} or None,
                 local_path=local_path_from_meta,
                 hostname=hostname,
             )

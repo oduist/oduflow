@@ -193,6 +193,7 @@ Each template profile can contain a `metadata.json` file that stores defaults an
   "odoo_image": "odoo:19.0",
   "repo_url": "https://github.com/company/addons.git",
   "extra_addons": {"enterprise": "19.0"},
+  "env_vars": {"WORKERS": "2", "LIMIT_TIME_CPU": "600"},
   "use_overlay": true,
   "source_url": "https://my-odoo.example.com",
   "source_db": "production",
@@ -202,6 +203,26 @@ Each template profile can contain a `metadata.json` file that stores defaults an
 ```
 
 When `create_environment` is called with a template name, `repo_url`, `odoo_image`, and `extra_addons` are automatically loaded from metadata if not explicitly provided. This means after importing or configuring a template, you can create environments with just `branch` and `template_name` — all other parameters are inherited.
+
+### Environment variables
+
+`env_vars` holds `{"NAME": "value"}` pairs injected into the Odoo container of every environment created from the template — the same mechanism as the `env_vars` argument of `create_environment`, but recorded once on the template instead of being repeated at each call. Saving a template from a live environment (`save_as_template`) carries that environment's variables over automatically.
+
+The two sets are **merged per key**, with the values passed at creation time winning:
+
+```bash
+# Template records WORKERS=2 and LIMIT_TIME_CPU=600
+oduflow call create_environment '{
+  "branch": "19.0",
+  "template_name": "default",
+  "env_vars": "WORKERS=8"
+}'
+# Container gets WORKERS=8 (overridden) and LIMIT_TIME_CPU=600 (inherited)
+```
+
+Edit them in the dashboard under **Templates → Settings → Environment variables** (one `KEY=VALUE` per line), or directly in `metadata.json`. Names must be valid shell identifiers (`[A-Za-z_][A-Za-z0-9_]*`); the dashboard rejects anything else on save, and a hand-edited file with an invalid entry is ignored with a warning rather than blocking environment creation.
+
+Variables set here are applied on top of the database connection variables (`HOST`, `USER`, `PASSWORD`) that Oduflow injects itself, so reusing those names overrides the connection settings.
 
 The `use_overlay` flag determines whether new environments use fuse-overlayfs (for large filestores) or a simple copy (for small ones). It is set automatically based on `overlay_threshold_mb` (in `[storage]`) when the template is created.
 
