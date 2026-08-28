@@ -1939,12 +1939,13 @@ After `git pull --rebase`, Oduflow compares `HEAD` before and after, then classi
 | `i18n/*.po` | Translation terms, loaded into the database on upgrade | **Upgrade** the module |
 | `*.xml` (not in security/) | Views, actions, data | **Refresh** (hot-reloaded via `--dev=xml`) |
 | `*.js` | Frontend assets | **Refresh** (hot-reloaded via `--dev=xml`) |
+| `*.md` (nothing else changed) | Documentation, never loaded by Odoo | **None** — nothing is applied |
 
 ### Action priority
 
-`install` > `upgrade` > `restart` > `refresh`
+`install` > `upgrade` > `restart` > `refresh` > `none`
 
-If any module needs installation, all pending upgrades are also executed. If only Python files changed (without field modifications), a container restart is sufficient. If only XML/JS changed, no server-side action is needed — just refresh the browser.
+If any module needs installation, all pending upgrades are also executed. If only Python files changed (without field modifications), a container restart is sufficient. If only XML/JS changed, no server-side action is needed — just refresh the browser. If the pull brought Markdown files only, nothing is applied at all — in development and in production alike, since the container is not restarted either.
 
 !!! note
     `pull_and_apply` updates only the **main project repository**. Extra addons repositories are pinned to the commit they were deployed with and are not affected. See [Extra Addons — Updating](extra-addons.md#updating-extra-repos) for details.

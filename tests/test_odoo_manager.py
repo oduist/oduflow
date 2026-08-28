@@ -977,6 +977,28 @@ class TestPullEnvironmentLocalAndSharedExtraCheckouts:
         assert mock_apply.call_args.kwargs["do_restart"] is True
         assert env_ops._detect_local_changes(str(repo), "env", team)[1] == []
 
+    def test_git_markdown_only_needs_no_odoo_action(self, mock_docker_client, tmp_path):
+        team = TeamSettings(team_id="1", data_dir=str(tmp_path / "team"))
+        settings = Settings(teams={"1": team})
+        repo = tmp_path / "team" / "workspaces" / "env" / "repo"
+        repo.mkdir(parents=True)
+
+        container = MagicMock()
+        container.labels = {"oduflow.git_branch": "main"}
+        mock_docker_client.containers.get.return_value = container
+
+        with patch(
+            "oduflow.git_ops.pull_repo", return_value=("old-head", ["README.md"])
+        ):
+            result = env_ops.pull_environment(settings, team, "env")
+
+        assert result["action"] == "none"
+        assert result["changed_files"] == ["README.md"]
+        assert result["message"] == (
+            "Only Markdown files changed. No Odoo action required."
+        )
+        container.restart.assert_not_called()
+
     @patch("oduflow.docker_ops.env_ops._apply_actions")
     def test_local_requirements_change_passes_deps_changed(
         self, mock_apply, mock_docker_client, tmp_path
@@ -2695,6 +2717,7 @@ class TestApplyActionsDeps:
             to_upgrade=[],
             do_restart=False,
             changed_files=["sale/views/sale_order.xml"],
+            do_refresh=True,
             deps_changed=False,
             repo_path="/repo",
         )

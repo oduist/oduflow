@@ -3008,6 +3008,7 @@ def _apply_actions(
     to_upgrade: list[str],
     do_restart: bool,
     changed_files: list[str],
+    do_refresh: bool = False,
     config_changed: bool = False,
     deps_changed: bool = False,
     repo_path: str = "",
@@ -3101,7 +3102,7 @@ def _apply_actions(
             "exit_code": dep_exit,
         }
 
-    if changed_files:
+    if do_refresh:
         return {
             "action": "refresh",
             "changed_files": changed_files,
@@ -3110,7 +3111,15 @@ def _apply_actions(
                 "(--dev=xml is active)."
             ),
         }
-    return {"action": "none", "message": "No changes detected."}
+    return {
+        "action": "none",
+        "changed_files": changed_files,
+        "message": (
+            "Only Markdown files changed. No Odoo action required."
+            if changed_files
+            else "No changes detected."
+        ),
+    }
 
 
 def pull_environment(
@@ -3304,6 +3313,7 @@ def pull_environment(
     deps_changed = any(_is_active_dep_file(f, repo_path) for f in main_changed_files)
 
     warnings: list[str] = []
+    do_refresh = False
     if explicit:
         to_install = list(install or [])
         to_upgrade = list(upgrade or [])
@@ -3355,6 +3365,7 @@ def pull_environment(
         to_install = list(recommended.get("modules_to_install", []))
         to_upgrade = list(recommended.get("modules_to_upgrade", []))
         do_restart = recommended.get("action") == "restart"
+        do_refresh = recommended.get("action") == "refresh"
 
     # --- 3. Switch immutable mounts, then execute ---
     # Do this only after strict guardrails have accepted the requested action.
@@ -3381,6 +3392,7 @@ def pull_environment(
         to_install=to_install,
         to_upgrade=to_upgrade,
         do_restart=do_restart,
+        do_refresh=do_refresh,
         changed_files=all_changed,
         config_changed=config_changed,
         deps_changed=deps_changed,
