@@ -13,6 +13,10 @@ from oduflow.errors import ConflictError, FlowError
 
 logger = logging.getLogger("oduflow")
 
+# A team slot can be reserved without assigning a reusable public hostname.
+# This keeps the environment cap concurrency-safe in branch and port modes.
+CAPACITY_RESERVATION = "@reserved"
+
 _locks_guard = threading.Lock()
 _path_locks: dict[str, threading.Lock] = {}
 
@@ -118,7 +122,11 @@ def allocate_hostname(
                 _save_registry(registry_path, registry)
             return requested_hostname
 
-        if current and current not in occupied_hostnames:
+        if (
+            current
+            and current != CAPACITY_RESERVATION
+            and current not in occupied_hostnames
+        ):
             return current
         if slot_count <= 0:
             raise FlowError(
@@ -143,6 +151,32 @@ def allocate_hostname(
     )
 
 
+def reserve_environment_slot(
+    registry_path: str,
+    env_name: str,
+    slot_count: int,
+    *,
+    active_envs: set[str] | None = None,
+) -> None:
+    """Reserve capacity for an environment without changing its public hostname."""
+    if slot_count <= 0:
+        return
+
+    active_envs = active_envs or set()
+    with _registry_lock(registry_path):
+        registry = _load_registry(registry_path)
+        if env_name in registry:
+            return
+        occupied_envs = set(registry) | (active_envs - {env_name})
+        if len(occupied_envs) >= slot_count:
+            raise FlowError(
+                f"No free environment slots (configured: {slot_count}). "
+                "Delete an unused environment to free a slot."
+            )
+        registry[env_name] = CAPACITY_RESERVATION
+        _save_registry(registry_path, registry)
+
+
 def release_hostname(registry_path: str, env_name: str) -> None:
     with _registry_lock(registry_path):
         registry = _load_registry(registry_path)
@@ -150,6 +184,30 @@ def release_hostname(registry_path: str, env_name: str) -> None:
         if hostname is not None:
             _save_registry(registry_path, registry)
             logger.info("Released hostname %s for environment '%s'", hostname, env_name)
+
+
+def clear_hostname_assignment(
+    registry_path: str, env_name: str, *, retain_slot: bool
+) -> None:
+    """Drop a reusable hostname while optionally retaining environment capacity."""
+    with _registry_lock(registry_path):
+        registry = _load_registry(registry_path)
+        hostname = registry.get(env_name)
+        if hostname is None:
+            if not retain_slot:
+                return
+            registry[env_name] = CAPACITY_RESERVATION
+        elif retain_slot:
+            registry[env_name] = CAPACITY_RESERVATION
+        else:
+            registry.pop(env_name, None)
+        _save_registry(registry_path, registry)
+        logger.info(
+            "Cleared hostname %s for environment '%s' (retain_slot=%s)",
+            hostname,
+            env_name,
+            retain_slot,
+        )
 
 
 def rename_env(registry_path: str, old_name: str, new_name: str) -> None:

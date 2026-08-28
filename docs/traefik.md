@@ -24,29 +24,44 @@ For production-like access with HTTPS, Oduflow can deploy a **Traefik** reverse 
    [team.1]
    hostname = "dev.example.com"
    environment_slots = 20
+   environment_hostname_mode = "branch"
    ```
 
 3. **Start (or restart) Oduflow.** On startup, Oduflow will create a Traefik v3 container that:
    - Listens on ports 80 and 443
    - Automatically redirects HTTP to HTTPS
-   - Obtains a separate TLS certificate from Let's Encrypt for each reusable environment hostname via HTTP-01 challenge
+   - Obtains a TLS certificate from Let's Encrypt for each routed hostname via HTTP-01 challenge
    - Routes requests to the correct Odoo container based on the subdomain
    - Also routes the Oduflow server itself via the team `hostname`
 
-## How certificates work
+## Hostname and certificate strategies
 
-With `hostname = "dev.example.com"` and `environment_slots = 20`, Oduflow
-allocates `dev1.example.com` through `dev20.example.com`: it removes the first
-hostname label, adds the slot number to it, and keeps the parent domain.
-Deleting an environment returns its hostname to the pool, so later environments
-reuse the same certificates from Traefik's persistent ACME store instead of
-continuously issuing certificates for branch names.
-`create_environment(hostname="qa")` requests `qa.example.com`. Set
-`environment_slots = 0` to retain the legacy branch-derived hostname behavior.
-The configured hostname must include a distinct prefix (`dev.example.com`, not
-bare `example.com`) so Oduflow has a label to number.
+The default `environment_hostname_mode = "branch"` keeps descriptive and
+backward-compatible routes: `feature-login.dev.example.com`,
+`fix-invoice.dev.example.com`, and so on. `environment_slots = 20` limits how
+many environments may exist but does not change those names. This mode matches
+the `*.dev.example.com` DNS record shown above and works with a Cloudflare or
+other wildcard certificate for `*.dev.example.com`.
 
-Wildcard certificates (`*.dev.example.com`) via DNS-01 validation are also possible but require additional Traefik configuration with a provider-specific plugin.
+For Traefik HTTP-01 installations that need to bound Let's Encrypt issuance,
+opt into a reusable pool:
+
+```toml
+[team.1]
+hostname = "dev.example.com"
+environment_slots = 20
+environment_hostname_mode = "slots"
+```
+
+Oduflow then allocates `dev1.example.com` through `dev20.example.com` and
+returns names to the pool on deletion. These names are one DNS level higher
+than branch-derived routes: configure individual `dev1`…`dev20` records or a
+wildcard record for `*.example.com`. A `*.dev.example.com` record or certificate
+does not cover `dev1.example.com`.
+
+`create_environment(hostname="qa")` requests `qa.example.com` in either mode.
+The configured team hostname must include a distinct prefix
+(`dev.example.com`, not bare `example.com`) for pooled or explicit short names.
 
 ## OAuth on each team's hostname
 

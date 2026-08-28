@@ -51,10 +51,11 @@ class TeamSettings:
     data_dir: str = ""
     port_registry_path: str = ""
     hostname_registry_path: str = ""
-    # Traefik-only reusable hostname pool. 0 keeps legacy branch-derived
-    # hostnames; for dev.example.com a positive value allocates
-    # dev1.example.com..devN.example.com and caps active environments.
+    # Hard cap on managed development environments. 0 disables the cap.
     environment_slots: int = 20
+    # Public hostname strategy: "branch" keeps feature.dev.example.com;
+    # "slots" allocates dev1.example.com..devN.example.com in Traefik mode.
+    environment_hostname_mode: str = "branch"
     # Hard cap on managed auxiliary service containers. 0 disables the cap.
     service_slots: int = 10
     # Quotas; 0 disables. db_quota_gb caps the combined size of the team's
@@ -379,19 +380,34 @@ class Settings:
                     f"Team '{team.team_id}': environment_slots must be >= 0 "
                     "(0 disables)"
                 )
+            if team.environment_hostname_mode not in ("branch", "slots"):
+                raise ValueError(
+                    f"Team '{team.team_id}': environment_hostname_mode must be "
+                    "'branch' or 'slots'"
+                )
             if team.service_slots < 0:
                 raise ValueError(
                     f"Team '{team.team_id}': service_slots must be >= 0 (0 disables)"
                 )
-            if self.routing_mode == "traefik" and team.environment_slots > 0:
+            if team.environment_hostname_mode == "slots":
+                if self.routing_mode != "traefik":
+                    raise ValueError(
+                        f"Team '{team.team_id}': environment_hostname_mode='slots' "
+                        "requires routing_mode=traefik"
+                    )
+                if team.environment_slots <= 0:
+                    raise ValueError(
+                        f"Team '{team.team_id}': environment_hostname_mode='slots' "
+                        "requires environment_slots > 0"
+                    )
                 from oduflow.naming import split_team_hostname
 
                 try:
                     split_team_hostname(team.hostname)
                 except ValueError as exc:
                     raise ValueError(
-                        f"Team '{team.team_id}': environment_slots requires a "
-                        "hostname such as 'dev.example.com'"
+                        f"Team '{team.team_id}': environment_hostname_mode='slots' "
+                        "requires a hostname such as 'dev.example.com'"
                     ) from exc
 
         # Validate static extra routes ([route.*]). They only make sense in
@@ -568,6 +584,12 @@ class Settings:
                 port_registry_path=os.path.join(team_data_dir, "ports.json"),
                 hostname_registry_path=os.path.join(team_data_dir, "hostnames.json"),
                 environment_slots=int(team_cfg.get("environment_slots", 20)),
+                environment_hostname_mode=str(
+                    team_cfg.get("environment_hostname_mode", "branch")
+                )
+                .strip()
+                .lower()
+                or "branch",
                 service_slots=int(team_cfg.get("service_slots", 10)),
                 db_quota_gb=int(team_cfg.get("db_quota_gb", 50)),
                 disk_quota_gb=int(team_cfg.get("disk_quota_gb", 0)),

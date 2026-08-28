@@ -1123,7 +1123,12 @@ def _build_routes(
             # (several environments off one branch), so recreate from the
             # recorded branch label rather than from the environment name.
             git_branch = labels.get("oduflow.git_branch", branch)
-            hostname = labels.get(env_ops.ENV_HOSTNAME_LABEL, "")
+            recreate_labels = dict(labels)
+            env_ops._reconcile_environment_hostname_for_update(
+                client, settings, team, branch, recreate_labels
+            )
+            hostname = recreate_labels.get(env_ops.ENV_HOSTNAME_LABEL, "")
+            hostname_source = recreate_labels.get(env_ops.ENV_HOSTNAME_SOURCE_LABEL, "")
 
             # Check disk space BEFORE deleting the old environment: refusing
             # here loses nothing, while failing after delete_environment would
@@ -1158,6 +1163,7 @@ def _build_routes(
                 env_vars=env_vars,
                 local_path=local_path,
                 hostname=hostname,
+                hostname_source=hostname_source,
             )
             return JSONResponse({"ok": True, "result": result})
         except FlowError as e:

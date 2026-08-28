@@ -42,6 +42,20 @@ TEST_SETTINGS = Settings(
 
 
 @pytest.fixture(autouse=True)
+def _isolated_hostname_registry(tmp_path, monkeypatch):
+    # create_environment reserves an environment slot in the team's
+    # hostnames.json before provisioning. Keep that registry per-test: the
+    # shared /tmp data dir would carry reservations across runs, and several
+    # tests below patch ``env_ops.os.makedirs``, which resolves to the shared
+    # ``os`` module and so also disables the registry's directory creation.
+    monkeypatch.setattr(
+        env_ops,
+        "_hostname_registry_path",
+        lambda team: str(tmp_path / "hostnames.json"),
+    )
+
+
+@pytest.fixture(autouse=True)
 def _no_db_quota(monkeypatch):
     # Quota enforcement is covered by tests/test_db_quota.py; here it would
     # only add a psql exec to every mocked create_environment call chain.
