@@ -14,6 +14,7 @@ import subprocess
 import sys
 import time
 from collections.abc import Iterator
+from dataclasses import dataclass
 from typing import Any
 
 import docker
@@ -1135,22 +1136,42 @@ def _install_pip_requirements(
 
 def _odoo_registry_probe(env_db: str) -> list[str]:
     """Build an in-container probe that forces the target registry to load."""
-    script = (
-        "import http.cookiejar,sys,urllib.parse,urllib.request;"
-        f"db={env_db!r};"
-        "jar=http.cookiejar.CookieJar();"
-        "opener=urllib.request.build_opener("
-        "urllib.request.HTTPCookieProcessor(jar));"
-        "url='http://127.0.0.1:8069/web/login?'+urllib.parse.urlencode({'db':db});"
-        "response=opener.open(url,timeout=5);"
-        "sys.exit(0 if response.status==200 else 1)"
+    script = "\n".join(
+        [
+            "import http.cookiejar",
+            "import sys",
+            "import urllib.parse",
+            "import urllib.request",
+            f"db = {env_db!r}",
+            "jar = http.cookiejar.CookieJar()",
+            "opener = urllib.request.build_opener(",
+            "    urllib.request.HTTPCookieProcessor(jar)",
+            ")",
+            "url = 'http://127.0.0.1:8069/web/login?' + urllib.parse.urlencode({'db': db})",
+            "try:",
+            "    response = opener.open(url, timeout=5)",
+            "    if response.status != 200:",
+            "        raise RuntimeError(f'HTTP {response.status}')",
+            "except Exception as exc:",
+            "    print(f'{type(exc).__name__}: {exc}', file=sys.stderr)",
+            "    sys.exit(1)",
+        ]
     )
     return ["python3", "-c", script]
 
 
+@dataclass(frozen=True)
+class _OdooReadinessResult:
+    ready: bool
+    elapsed_seconds: float
+    attempts: int
+    timeout_seconds: int
+    last_error: str = ""
+
+
 def _wait_for_container_odoo_ready(
     container: Any, env_db: str, timeout: int = 120
-) -> bool:
+) -> _OdooReadinessResult:
     """Wait until the serving Odoo process has finished registry startup.
 
     The probe runs inside the container so readiness does not depend on public
@@ -1163,36 +1184,113 @@ def _wait_for_container_odoo_ready(
     database-independent and can respond before registry preloading completes.
     """
     probe = _odoo_registry_probe(env_db)
-    deadline = time.monotonic() + timeout
+    started = time.monotonic()
+    deadline = started + timeout
+    attempts = 0
+    last_error = "readiness probe has not run"
+    next_progress_log = 30.0
     while True:
+        attempts += 1
         try:
-            if container.exec_run(probe)[0] == 0:
-                return True
-        except docker.errors.APIError:
+            exit_code, output = container.exec_run(probe)
+            output_str = (
+                output.decode("utf-8", errors="replace")
+                if isinstance(output, bytes)
+                else str(output)
+            ).strip()
+            if exit_code == 0:
+                return _OdooReadinessResult(
+                    ready=True,
+                    elapsed_seconds=round(time.monotonic() - started, 1),
+                    attempts=attempts,
+                    timeout_seconds=timeout,
+                )
+            last_error = output_str or f"probe exited with code {exit_code}"
+        except docker.errors.APIError as exc:
             # The container may briefly reject execs while restarting after a
             # dependency install. Treat that exactly like a failed probe.
-            pass
-        if time.monotonic() >= deadline:
-            return False
+            last_error = f"Docker exec failed: {exc}"
+        now = time.monotonic()
+        elapsed = now - started
+        if now >= deadline:
+            return _OdooReadinessResult(
+                ready=False,
+                elapsed_seconds=round(elapsed, 1),
+                attempts=attempts,
+                timeout_seconds=timeout,
+                last_error=last_error[-2000:],
+            )
+        if elapsed >= next_progress_log:
+            logger.info(
+                "Still waiting for serving Odoo registry for '%s' after %.0f seconds: %s",
+                env_db,
+                elapsed,
+                last_error[-500:],
+            )
+            next_progress_log += 30.0
         time.sleep(2)
 
 
+def _recent_container_logs(container: Any, tail: int = 200) -> str:
+    """Return a bounded log tail without masking the readiness failure."""
+    try:
+        output = container.logs(tail=tail, stdout=True, stderr=True)
+    except Exception as exc:
+        return f"Could not read container logs: {exc}"
+    output_str = (
+        output.decode("utf-8", errors="replace")
+        if isinstance(output, bytes)
+        else str(output)
+    ).strip()
+    return output_str[-20_000:] or "(container produced no logs)"
+
+
+def _readiness_error(
+    container: Any,
+    env_db: str,
+    result: _OdooReadinessResult,
+    *,
+    action: str,
+) -> PrerequisiteNotMetError:
+    logs = _recent_container_logs(container)
+    return PrerequisiteNotMetError(
+        f"{action}: serving Odoo did not load registry for database '{env_db}' "
+        f"within {result.timeout_seconds} seconds ({result.attempts} probes). "
+        f"Last readiness error: {result.last_error}\n\n"
+        f"Recent Odoo container logs:\n{logs}"
+    )
+
+
 def _auto_install_modules(
-    container: Any, env_db: str, modules: list[str], env_name: str = ""
+    container: Any,
+    settings: Settings,
+    team: TeamSettings,
+    env_db: str,
+    modules: list[str],
+    env_name: str,
 ) -> str:
     """Install modules after the serving registry is ready and return its log."""
+    from oduflow.docker_ops.odoo_ops import (
+        _require_installed_modules,
+        _validate_module_names,
+    )
+
+    _validate_module_names(modules)
     modules_str = ",".join(modules)
     logger.info(
         "Waiting for serving Odoo before auto-installing modules",
         extra={"env_name": env_name},
     )
-    if not _wait_for_container_odoo_ready(container, env_db):
-        message = (
-            f"[AUTO-INSTALL] odoo -i {modules_str} FAILED: serving Odoo did not "
-            "become ready within 120 seconds; installation was not attempted"
+    readiness = _wait_for_container_odoo_ready(container, env_db)
+    if not readiness.ready:
+        error = _readiness_error(
+            container,
+            env_db,
+            readiness,
+            action=f"Auto-install of modules {modules_str} was not attempted",
         )
-        logger.error(message, extra={"env_name": env_name})
-        return message
+        logger.error(str(error), extra={"env_name": env_name})
+        raise error
 
     install_cmd = (
         f"/entrypoint.sh odoo -d {env_db} -i {modules_str} --stop-after-init --no-http"
@@ -1206,11 +1304,79 @@ def _auto_install_modules(
             output_str,
             extra={"env_name": env_name},
         )
-        return (
-            f"[AUTO-INSTALL] odoo -i {modules_str} FAILED (exit {exit_code}):\n"
-            f"{output_str}"
-        )
+        raise ExternalCommandError(install_cmd, exit_code, output_str[-20_000:])
+    _require_installed_modules(settings, team, env_name, tuple(modules))
     return f"[AUTO-INSTALL] odoo -i {modules_str} completed successfully"
+
+
+def _configure_serving_environment(
+    client: DockerClient,
+    settings: Settings,
+    team: TeamSettings,
+    container: Any,
+    repo_path: str,
+    env_db: str,
+    env_name: str,
+    template_name: str | None,
+    sanitize: bool,
+    auto_install_modules: list[str] | None,
+    odoo_conf_to_copy: str | None,
+) -> list[str]:
+    """Run required post-start setup before the environment is declared ready."""
+    setup_logs: list[str] = []
+    if odoo_conf_to_copy:
+        _copy_file_to_container(container, odoo_conf_to_copy, "/etc/odoo")
+
+    apt_log = _install_apt_packages(container, repo_path)
+    if apt_log:
+        setup_logs.append(apt_log)
+    _, pip_log = _install_pip_requirements(container, repo_path)
+    if pip_log:
+        setup_logs.append(pip_log)
+
+    # Install first so neutralization includes SQL shipped by the new modules.
+    if auto_install_modules:
+        modules_str = ",".join(auto_install_modules)
+        logger.info(
+            "Auto-installing modules: %s",
+            modules_str,
+            extra={"env_name": env_name},
+        )
+        setup_logs.append(
+            _auto_install_modules(
+                container,
+                settings,
+                team,
+                env_db,
+                auto_install_modules,
+                env_name,
+            )
+        )
+
+    if sanitize and template_name is not None:
+        from oduflow.sanitizer import neutralize_environment, sanitize_environment
+
+        setup_logs.extend(neutralize_environment(client, settings, team, env_name))
+        setup_logs.extend(sanitize_environment(client, settings, team, env_name))
+
+    if auto_install_modules:
+        # Reload only after sanitization has disabled the newly-installed
+        # modules' crons and external credentials.
+        container.restart()
+        logger.info(
+            "Waiting for serving Odoo after auto-install setup",
+            extra={"env_name": env_name},
+        )
+        readiness = _wait_for_container_odoo_ready(container, env_db)
+        if not readiness.ready:
+            raise _readiness_error(
+                container,
+                env_db,
+                readiness,
+                action="Environment setup did not complete",
+            )
+
+    return setup_logs
 
 
 def _cleanup_old_environment(
@@ -1258,6 +1424,24 @@ def _cleanup_old_environment(
     if os.path.exists(workspace_path):
         _unmount_filestore(env_name, team)
         shutil.rmtree(workspace_path)
+
+
+def _rollback_partial_environment(
+    client: DockerClient,
+    settings: Settings,
+    team: TeamSettings,
+    env_name: str,
+) -> None:
+    """Best-effort rollback that preserves the original provisioning error."""
+    if settings.routing_mode == "port":
+        try:
+            release_port(team.port_registry_path, env_name)
+        except Exception:
+            logger.exception("Failed to release port while rolling back '%s'", env_name)
+    try:
+        _cleanup_old_environment(client, settings, team, env_name)
+    except Exception:
+        logger.exception("Failed to fully roll back environment '%s'", env_name)
 
 
 def _init_empty_database(
@@ -1536,6 +1720,14 @@ def _create_environment_impl(
             f"Environment names starting with '{PROD_ENV_PREFIX}' are reserved "
             "for production environments. Use create_production instead."
         )
+    if auto_install_modules:
+        # Fail before anything is provisioned: a malformed module name would
+        # otherwise only surface at the auto-install step, after the clone,
+        # template restore, container start and dependency installs — all of
+        # which the setup rollback then discards.
+        from oduflow.docker_ops.odoo_ops import _validate_module_names
+
+        _validate_module_names(auto_install_modules)
     start_time = time.time()
     try:
         client = get_client()
@@ -1909,66 +2101,32 @@ def _create_environment_impl(
             "containers.run failed for '%s'; rolling back partial environment",
             env_name,
         )
-        if settings.routing_mode == "port":
-            release_port(team.port_registry_path, env_name)
-        _cleanup_old_environment(client, settings, team, env_name)
+        _rollback_partial_environment(client, settings, team, env_name)
         raise
 
-    if odoo_conf_to_copy:
-        _copy_file_to_container(container, odoo_conf_to_copy, "/etc/odoo")
-
-    # Install repo apt/pip dependencies onto the serving container (both paths).
-    # base needs no custom deps, so this runs after the DB is ready.
-    apt_log = _install_apt_packages(container, repo_path)
-    if apt_log:
-        setup_logs.append(apt_log)
-    _, pip_log = _install_pip_requirements(container, repo_path)
-    if pip_log:
-        setup_logs.append(pip_log)
-
-    # --- Auto-install modules ---
-    # MUST run before sanitization below: Odoo's native neutralization gathers
-    # SQL only from already-installed modules, so any `data/neutralize.sql`
-    # shipped by an auto-installed module — and the crons, payment providers, or
-    # connector credentials those modules create — would be missed if neutralize
-    # ran first. Install now, neutralize after.
-    if auto_install_modules:
-        modules_str = ",".join(auto_install_modules)
-        logger.info(
-            "Auto-installing modules: %s",
-            modules_str,
-            extra={"env_name": env_name},
-        )
-        setup_logs.append(
-            _auto_install_modules(
-                container, env_db, auto_install_modules, env_name=env_name
+    try:
+        setup_logs.extend(
+            _configure_serving_environment(
+                client,
+                settings,
+                team,
+                container,
+                repo_path,
+                env_db,
+                env_name,
+                template_name,
+                sanitize,
+                auto_install_modules,
+                odoo_conf_to_copy,
             )
         )
-        # NOTE: the serving container is restarted further down, AFTER
-        # sanitization, so the newly-installed modules' crons are already
-        # deactivated in the DB before PID1 reloads them into a live registry.
-
-    # --- Sanitize environment database ---
-    # Runs AFTER auto-install so Odoo's native neutralization sees the final set
-    # of installed modules (see the auto-install note above).
-    if sanitize and template_name is not None:
-        from oduflow.sanitizer import neutralize_environment, sanitize_environment
-
-        # Layer 1: Odoo's native neutralization — the baseline safety net that
-        # blocks anything going out (mail off, crons off, payment providers off,
-        # third-party credentials scrubbed, database.is_neutralized=true). Runs
-        # in the serving container so it sees the full addons_path.
-        setup_logs.extend(neutralize_environment(client, settings, team, env_name))
-        # Layer 2: custom team/repo sanitization scripts (e.g. PII scrubbing)
-        # run on top of the neutralized database. Project scripts live under
-        # .oduflow/odoo_sanitize in the active checkout.
-        sanitize_logs = sanitize_environment(client, settings, team, env_name)
-        setup_logs.extend(sanitize_logs)
-
-    # Reload any auto-installed modules into the serving registry — done after
-    # sanitization so their crons/credentials are neutralized in the DB first.
-    if auto_install_modules:
-        container.restart()
+    except Exception:
+        logger.error(
+            "Environment setup failed for '%s'; rolling back partial environment",
+            env_name,
+        )
+        _rollback_partial_environment(client, settings, team, env_name)
+        raise
 
     if settings.routing_mode == "traefik":
         url = f"https://{get_env_hostname(env_name, team.hostname, hostname)}"
