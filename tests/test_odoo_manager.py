@@ -1816,7 +1816,21 @@ class TestGetEnvironmentInfo:
 
         mock_docker_client.containers.get.side_effect = get_container
 
-        result = env_ops.get_environment_info(TEST_SETTINGS, TEST_TEAM, "main")
+        with (
+            patch.object(
+                env_ops.activity,
+                "get_all",
+                return_value={
+                    "main": {
+                        "last_activity": "2026-08-27T10:00:00+00:00",
+                        "stopped_at": "2026-08-27T11:00:00+00:00",
+                        "stopped_by": "manual",
+                    }
+                },
+            ),
+            patch.object(env_ops, "is_protected", return_value=True),
+        ):
+            result = env_ops.get_environment_info(TEST_SETTINGS, TEST_TEAM, "main")
 
         assert result["all_running"] is True
         assert result["db"]["name"] == "oduflow-db"
@@ -1826,6 +1840,10 @@ class TestGetEnvironmentInfo:
         assert result["local_path"] == ""
         assert result["odoo_image"] == "odoo:17.0"
         assert result["template_name"] == "default"
+        assert result["last_activity"] == "2026-08-27T10:00:00+00:00"
+        assert result["stopped_at"] == "2026-08-27T11:00:00+00:00"
+        assert result["stopped_by"] == "manual"
+        assert result["protected"] is True
 
     @patch(
         "oduflow.docker_ops.env_ops.load_credentials",

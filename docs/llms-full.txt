@@ -186,7 +186,7 @@ For OAuth-based MCP clients like Claude.ai Remote MCP, Oduflow runs its own OAut
 - `reset_admin_password` — reset the admin user password (default: "test")
 - `connect_as_user` — mint a passwordless Odoo login session for a user and return the `session_id` cookie + URL (Playwright-ready; skips the login form, supports any role incl. portal)
 - `read_output` — read from a cached tool output by ID (paginate, grep, errors, tail)
-- `list_environments` / `get_environment_info` — inspect environments
+- `list_environments` / `get_environment_info` — inspect environments, including current branch, last activity, stopped time/source, protection, Stack ownership and operator notes used for safe slot reuse
 - `create_service` / `delete_service` / `restart_service` / `update_service` / `list_services` / `get_service_info` / `get_service_logs` / `run_service_command` — manage auxiliary services
   - In Traefik TLS mode every service implicitly receives the exact `oduflow-traefik-acme:/etc/traefik:ro` mount; do not pass or override that system volume
 - `create_volume` / `list_volumes` / `inspect_volume` / `delete_volume` — manage Docker volumes
@@ -1539,6 +1539,7 @@ Each template profile can contain a `metadata.json` file that stores defaults an
   "odoo_image": "odoo:19.0",
   "repo_url": "https://github.com/company/addons.git",
   "extra_addons": {"enterprise": "19.0"},
+  "env_vars": {"WORKERS": "2", "LIMIT_TIME_CPU": "600"},
   "use_overlay": true,
   "source_url": "https://my-odoo.example.com",
   "source_db": "production",
@@ -1548,6 +1549,26 @@ Each template profile can contain a `metadata.json` file that stores defaults an
 ```
 
 When `create_environment` is called with a template name, `repo_url`, `odoo_image`, and `extra_addons` are automatically loaded from metadata if not explicitly provided. This means after importing or configuring a template, you can create environments with just `branch` and `template_name` — all other parameters are inherited.
+
+### Environment variables
+
+`env_vars` holds `{"NAME": "value"}` pairs injected into the Odoo container of every environment created from the template — the same mechanism as the `env_vars` argument of `create_environment`, but recorded once on the template instead of being repeated at each call. Saving a template from a live environment (`save_as_template`) carries that environment's variables over automatically.
+
+The two sets are **merged per key**, with the values passed at creation time winning:
+
+```bash
+# Template records WORKERS=2 and LIMIT_TIME_CPU=600
+oduflow call create_environment '{
+  "branch": "19.0",
+  "template_name": "default",
+  "env_vars": "WORKERS=8"
+}'
+# Container gets WORKERS=8 (overridden) and LIMIT_TIME_CPU=600 (inherited)
+```
+
+Edit them in the dashboard under **Templates → Settings → Environment variables** (one `KEY=VALUE` per line), or directly in `metadata.json`. Names must be valid shell identifiers (`[A-Za-z_][A-Za-z0-9_]*`); the dashboard rejects anything else on save, and a hand-edited file with an invalid entry is ignored with a warning rather than blocking environment creation.
+
+Variables set here are applied on top of the database connection variables (`HOST`, `USER`, `PASSWORD`) that Oduflow injects itself, so reusing those names overrides the connection settings.
 
 The `use_overlay` flag determines whether new environments use fuse-overlayfs (for large filestores) or a simple copy (for small ones). It is set automatically based on `overlay_threshold_mb` (in `[storage]`) when the template is created.
 
@@ -1772,6 +1793,16 @@ filestore, its hostname and URL, its ports, its database credentials and its
 scoped MCP endpoint and token. This matters twice over — provisioning is skipped
 (no fresh clone, no template database copy), and the MCP client you already
 pointed at `/mcp/dev1` keeps working, because the address never changed.
+
+`list_environments` prints the evidence needed to choose a reusable slot:
+current git branch, creation and last-activity timestamps, stopped time and
+source, protection, Stack ownership and the operator note. Prefer an exact
+branch match. Otherwise do not switch a running, protected, Stack-managed or
+noted-as-reserved environment. If repository policy permits reclaiming idle
+slots, rank the remaining stopped candidates by oldest activity; `unknown` is
+not proof that a legacy slot is abandoned. GitHub returning no PR for a branch
+is also inconclusive — confirm completion from a merged PR/branch or an explicit
+operator instruction, and create a new environment when ownership is unclear.
 
 #### Renaming While Switching
 
@@ -3022,7 +3053,7 @@ than a JSON API. Production routes are registered only when
 | Method | Endpoint | Description |
 |---|---|---|
 | `GET` | `/api/environments` | List environments |
-| `POST` | `/api/environments/create` | Create an environment. Body: `env_name`, optional `hostname`, `repo_url`, `odoo_image`, `template_name`, `extra_addons`, `auto_install_modules`, `env_vars`, `git_user` |
+| `POST` | `/api/environments/create` | Create an environment. Body: `env_name`, optional `hostname`, `repo_url`, `odoo_image`, `template_name`, `extra_addons`, `auto_install_modules`, `env_vars` (merged per key over the template's), `git_user` |
 | `POST` | `/api/environments/{branch}/start` | Start an environment |
 | `POST` | `/api/environments/{branch}/stop` | Stop an environment |
 | `POST` | `/api/environments/{branch}/restart` | Restart its Odoo container |
@@ -3194,10 +3225,10 @@ All tools are accessible via MCP clients (Cursor, Cline, Amp, etc.) and the CLI 
 | Tool | Lock | Description |
 |---|:---:|---|
 | **Environment Management** | | |
-| `create_environment` | ✓ | Provision an Odoo environment for a branch (clone, DB, container, filestore); optional `hostname` selects a short Traefik hostname and `env_vars` injects container environment variables |
+| `create_environment` | ✓ | Provision an Odoo environment for a branch (clone, DB, container, filestore); optional `hostname` selects a short Traefik hostname and `env_vars` injects container environment variables, merged per key over any recorded on the template |
 | `delete_environment` | ✓ | Tear down all resources for a branch |
-| `list_environments` | | List all managed environments with status and URLs |
-| `get_environment_info` | | Full environment details: DB name, URL, repo, image, template, extra addons, workspace, container status, CPU/RAM stats |
+| `list_environments` | | List all managed environments with status, URL, current git branch, creation/last-activity/stopped timestamps, stop source, protection, Stack ownership and operator note |
+| `get_environment_info` | | Full environment details: lifecycle/reuse metadata, DB name, URL, repo, image, template, extra addons, workspace, container status, CPU/RAM stats |
 | `start_environment` | | Start a stopped environment |
 | `stop_environment` | | Stop a running environment |
 | `restart_environment` | | Restart the Odoo container |
@@ -4825,9 +4856,35 @@ du -sh /srv/oduflow/team_1/workspaces/<env-slug>/filestore         # ~= template
 
 ### A broken mount (`Transport endpoint is not connected`)
 
-The `fuse-overlayfs` process for a mount died (e.g. it was killed when the disk
-filled). Detach the stale mount, then bring the environment back up through
-Oduflow (which remounts it):
+The `fuse-overlayfs` process for a mount died. Two ways that happens:
+
+- **Oduflow runs in Docker and was restarted.** The daemon lives in the Oduflow
+  container's PID namespace and dies with it, while the mount itself lives in
+  the host's mount namespace (it has to — Odoo containers bind-mount the merged
+  path, which Docker resolves on the host) and survives. So *every* overlay
+  environment goes stale at once on a restart. Running Oduflow directly on the
+  host, the daemon is detached from the Oduflow process and a restart leaves it
+  alone.
+- **The daemon was killed** — an OOM kill, or the disk filling up.
+
+Oduflow repairs this by itself: on every start it detects stale overlays,
+detaches them, remounts each against its template's lower layer **keeping the
+environment's own `filestore_upper` deltas**, and restarts the affected Odoo
+containers (required — a running container's bind mount still points at the
+dead mount). Recovery fails closed: Oduflow does not detach a mount unless the
+container is confirmed stopped, does not restart the container unless the new
+overlay is confirmed live, and always reuses the existing upper layer even if
+the template's default mode was later changed to copy. The `/healthz` endpoint
+and the dashboard's `OVERLAY` chip report stale or unexpectedly absent overlays;
+full filesystem paths stay in server logs. An environment whose template is
+gone is logged for manual recovery rather than touched.
+
+Note that a stale mount reads as *absent*, not as *mounted*: `stat` on the
+mountpoint fails with `ENOTCONN`, so `ls`, `os.path.ismount()` and
+`os.path.isdir()` all behave as if nothing is there.
+
+To detach one by hand — remount then happens through Oduflow (`restart` the
+server, or `update_environment`):
 
 ```bash
 umount /srv/oduflow/team_1/workspaces/<env-slug>/filestore \

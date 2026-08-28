@@ -200,6 +200,16 @@ scoped MCP endpoint and token. This matters twice over — provisioning is skipp
 (no fresh clone, no template database copy), and the MCP client you already
 pointed at `/mcp/dev1` keeps working, because the address never changed.
 
+`list_environments` prints the evidence needed to choose a reusable slot:
+current git branch, creation and last-activity timestamps, stopped time and
+source, protection, Stack ownership and the operator note. Prefer an exact
+branch match. Otherwise do not switch a running, protected, Stack-managed or
+noted-as-reserved environment. If repository policy permits reclaiming idle
+slots, rank the remaining stopped candidates by oldest activity; `unknown` is
+not proof that a legacy slot is abandoned. GitHub returning no PR for a branch
+is also inconclusive — confirm completion from a merged PR/branch or an explicit
+operator instruction, and create a new environment when ownership is unclear.
+
 #### Renaming While Switching
 
 The environment name is a slot label, not a description of what the slot

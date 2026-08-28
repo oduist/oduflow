@@ -1,5 +1,5 @@
 # Oduflow — Agentic Odoo Development
-Version: 7
+Version: 8
 
 ## Purpose
 
@@ -60,6 +60,16 @@ target branch must exist on origin; live-mounted environments are rejected
 (switch the branch in the mounted checkout and call `pull_and_apply`). If the
 target branch does not carry a module installed in that database, the response
 warns; create a separate environment when that matters.
+
+Treat the reuse metadata in `list_environments` as evidence, not decoration.
+Never switch a running, protected, Stack-managed, or explicitly reserved
+(`Note:`) environment. When the repository's own instructions allow reclaiming
+idle slots, choose among eligible stopped environments by `Last Activity` and
+`Stopped At`, oldest first; `unknown` is not evidence that a slot is abandoned.
+Confirm that its previous work is finished from an affirmative signal such as a
+merged PR, a branch merged into the target branch, or the user's instruction.
+An empty `gh pr list` result proves neither completion nor continued use. If the
+safe choice cannot be established, create a new environment.
 
 The environment name is a slot label, not a description of the branch, so a
 mismatch is normal — no need to rename on every switch. When the user asks for
@@ -192,10 +202,20 @@ errors. Never recreate the environment as a substitute for the upgrade.
 
 ## Translations
 
-After loading translation changes, call `translation_status`. It compares the
-module catalogue, committed `.po`, and database, then returns a verdict and a
-`Next:` action. Follow that action instead of deriving a diagnosis from raw
-counts. Use `export_module_translations` when it asks for a fresh catalogue.
+Before creating a new `i18n/<lang>.po`, call
+`export_module_translations(env_name, module, lang)` and edit the generated
+catalogue. Never invent `#.` or `#:` metadata: Odoo derives the translation
+target from it, and a malformed reference can import as zero translations
+without a warning. Do not run that export over a catalogue you have already
+written: it overwrites `i18n/<lang>.po` with what the database holds, so
+translations that never imported are lost. When repairing an existing
+hand-written catalogue, follow `translation_status`'s `Next:` action; it may
+ask for a sibling `<module>.pot` whose generated metadata Odoo merges into the
+`.po` during import.
+
+After upgrading the module, call `translation_status`. It compares the module
+catalogue, committed `.po`, and database, then returns a verdict and a `Next:`
+action. Follow that action instead of deriving a diagnosis from raw counts.
 
 Write English source strings; localized text belongs in `i18n/*.po`.
 

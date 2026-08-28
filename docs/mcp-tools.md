@@ -7,10 +7,10 @@ All tools are accessible via MCP clients (Cursor, Cline, Amp, etc.) and the CLI 
 | Tool | Lock | Description |
 |---|:---:|---|
 | **Environment Management** | | |
-| `create_environment` | ✓ | Provision an Odoo environment for a branch (clone, DB, container, filestore); optional `hostname` selects a short Traefik hostname and `env_vars` injects container environment variables |
+| `create_environment` | ✓ | Provision an Odoo environment for a branch (clone, DB, container, filestore); optional `hostname` selects a short Traefik hostname and `env_vars` injects container environment variables, merged per key over any recorded on the template |
 | `delete_environment` | ✓ | Tear down all resources for a branch |
-| `list_environments` | | List all managed environments with status and URLs |
-| `get_environment_info` | | Full environment details: DB name, URL, repo, image, template, extra addons, workspace, container status, CPU/RAM stats |
+| `list_environments` | | List all managed environments with status, URL, current git branch, creation/last-activity/stopped timestamps, stop source, protection, Stack ownership and operator note |
+| `get_environment_info` | | Full environment details: lifecycle/reuse metadata, DB name, URL, repo, image, template, extra addons, workspace, container status, CPU/RAM stats |
 | `start_environment` | | Start a stopped environment |
 | `stop_environment` | | Stop a running environment |
 | `restart_environment` | | Restart the Odoo container |

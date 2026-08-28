@@ -186,7 +186,7 @@ For OAuth-based MCP clients like Claude.ai Remote MCP, Oduflow runs its own OAut
 - `reset_admin_password` — reset the admin user password (default: "test")
 - `connect_as_user` — mint a passwordless Odoo login session for a user and return the `session_id` cookie + URL (Playwright-ready; skips the login form, supports any role incl. portal)
 - `read_output` — read from a cached tool output by ID (paginate, grep, errors, tail)
-- `list_environments` / `get_environment_info` — inspect environments
+- `list_environments` / `get_environment_info` — inspect environments, including current branch, last activity, stopped time/source, protection, Stack ownership and operator notes used for safe slot reuse
 - `create_service` / `delete_service` / `restart_service` / `update_service` / `list_services` / `get_service_info` / `get_service_logs` / `run_service_command` — manage auxiliary services
   - In Traefik TLS mode every service implicitly receives the exact `oduflow-traefik-acme:/etc/traefik:ro` mount; do not pass or override that system volume
 - `create_volume` / `list_volumes` / `inspect_volume` / `delete_volume` — manage Docker volumes

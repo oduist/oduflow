@@ -1,6 +1,6 @@
 # Changelog
 
-## v1.71.0
+## Unreleased
 
 ### Features
 
@@ -12,6 +12,58 @@
   include an `output_id` when detailed output is available, so failures can be
   inspected selectively through `read_output`. The existing verbose responses
   remain the default for backward compatibility.
+
+- **Templates carry environment variables** — a template's `metadata.json` can
+  now hold an `env_vars` object, and every environment created from that
+  template gets those variables injected into its Odoo container. Saving a
+  template from a live environment records that environment's variables
+  automatically, so a tuned configuration (`WORKERS`, `LIMIT_TIME_CPU`, service
+  credentials) survives into every environment built from the snapshot instead
+  of being retyped at each `create_environment` call. Values passed at creation
+  time are merged **per key** over the template's, so one variable can be
+  overridden without restating the rest. Names are validated as shell
+  identifiers when a template is saved; a hand-edited file with an invalid entry
+  is ignored with a warning rather than blocking provisioning.
+
+### Dashboard
+
+- **Environment variables in the template Settings dialog** — a new field edits
+  a template's variables as one `KEY=VALUE` per line, the template card shows
+  how many are set (names and values stay hidden — they routinely carry
+  secrets), and the create-environment form prefills them from the selected
+  template. Multiline values stay inherited server-side instead of being put
+  through the line-based create field. In template Settings, such values are
+  shown read-only and pointed at the raw JSON editor.
+
+### Fixes
+
+- **A failed install is no longer masked by a later successful upgrade** — when
+  a single `pull_and_apply` both installed and upgraded modules, the reported
+  exit code was the last command's, so a broken install followed by a clean
+  upgrade came back as a success. The apply now keeps the first non-zero exit
+  code, which is what the compact `summary_only` status line and the live-mount
+  snapshot both key off.
+
+- **Environment listings now carry the evidence needed for safe slot reuse** —
+  the MCP `list_environments` output previously discarded lifecycle metadata
+  that the backend already tracked and the dashboard already showed. It now
+  reports the current git branch, creation and last-activity timestamps,
+  stopped time and source, protection, Stack ownership and operator note;
+  legacy records explicitly say `Last Activity: unknown`. The same lifecycle
+  metadata is available from `get_environment_info`, and the agent guide no
+  longer treats an empty GitHub PR result as proof that a slot is reusable.
+
+- **Translation instructions start with Odoo's exporter** — agents are now told
+  to run `export_module_translations` before creating a `.po`, never invent
+  `#.`/`#:` metadata by hand, and verify the loaded result with
+  `translation_status` after the module upgrade. The guide also warns that
+  re-exporting over a catalogue that has not been imported overwrites it with
+  the database's contents. This makes the existing silent-zero-import detector
+  preventive instead of merely diagnostic.
+
+## v1.71.0
+
+### Features
 
 - **Custom environment names, decoupled from the git branch** — an environment
   can now carry a name of its own instead of inheriting the branch name, so one
@@ -36,13 +88,6 @@
   and the MCP tools are unchanged. (#204)
 
 ### Fixes
-
-- **A failed install is no longer masked by a later successful upgrade** — when
-  a single `pull_and_apply` both installed and upgraded modules, the reported
-  exit code was the last command's, so a broken install followed by a clean
-  upgrade came back as a success. The apply now keeps the first non-zero exit
-  code, which is what the compact `summary_only` status line and the live-mount
-  snapshot both key off.
 
 - **PostgreSQL access follows the real Docker networks** — on every startup,
   Oduflow now reads the actual IPAM subnets of its shared and per-team networks

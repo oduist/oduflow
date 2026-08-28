@@ -59,7 +59,7 @@ from oduflow.locking import (
     service_preset_lock_key,
     volume_lock_key,
 )
-from oduflow.naming import parse_env_vars
+from oduflow.naming import normalize_env_vars, parse_env_vars
 from oduflow.output_cache import CachedOutput, OutputCache
 from oduflow.po_tools import PoEntry
 from oduflow.settings import Settings, TeamSettings, find_toml
@@ -660,7 +660,7 @@ def create_environment(
         extra_addons: Comma-separated list of extra addon repo names with branches (e.g. "enterprise:19.0,custom-themes:main"). Each entry must include a branch after a colon.
         sanitize: Sanitize the database after provisioning (default: True). Runs Odoo's native neutralization (deactivates outgoing mail servers and crons, disables payment providers, scrubs third-party API credentials, sets database.is_neutralized) and then any custom scripts from the .oduflow/odoo_sanitize/ folder in the repository. Only applies to environments created from a template.
         auto_install_modules: Comma-separated list of Odoo modules to install automatically after the environment is provisioned (e.g. "sale,purchase,stock"). When a template is specified and this is empty, the value is loaded from template metadata.
-        env_vars: Comma- or newline-separated KEY=VALUE pairs injected as environment variables into the Odoo container (e.g. "WORKERS=2,LIMIT_TIME_CPU=600"). Commas inside values are preserved unless what follows the comma looks like another KEY=; put one pair per line when in doubt. These are added on top of the database connection variables (HOST/USER/PASSWORD).
+        env_vars: Comma- or newline-separated KEY=VALUE pairs injected as environment variables into the Odoo container (e.g. "WORKERS=2,LIMIT_TIME_CPU=600"). Commas inside values are preserved unless what follows the comma looks like another KEY=; put one pair per line when in doubt. These are added on top of the database connection variables (HOST/USER/PASSWORD). When a template records env_vars, the two sets are merged per key and the values passed here win.
         local_path: LOCAL FAST-PATH. Absolute path to a checkout on THIS host. When set, Oduflow skips git clone and bind-mounts the directory live into the container — your file edits are visible instantly, no git push/pull needed. After editing, call pull_and_apply with explicit install/upgrade/restart to apply. repo_url is not required in this mode. Gated by allow_local_path (default: true).
     """
     import json
@@ -682,6 +682,7 @@ def create_environment(
         effective_repo_url = repo_url
         effective_odoo_image = odoo_image
         effective_git_user = ""
+        template_env_vars: dict[str, str] = {}
         local_path = (local_path or "").strip()
         local_path_from_template = False
         if resolved_template:
@@ -707,6 +708,9 @@ def create_environment(
                             )
                 if not auto_install_modules:
                     auto_install_modules = metadata.get("auto_install_modules", "")
+                template_env_vars = system_ops._template_env_vars(
+                    metadata, resolved_template
+                )
                 # The template's live-mount path applies only when the caller
                 # gave no code source of their own (explicit repo_url wins, so
                 # http clients can still clone from a real remote).
@@ -763,7 +767,10 @@ def create_environment(
             if auto_install_modules
             else []
         )
-        parsed_env = parse_env_vars(env_vars) or None
+        # Per-key merge: the template supplies the baseline and an explicit
+        # argument overrides just the keys it names, so a caller can bump
+        # WORKERS without having to restate the template's whole set.
+        parsed_env = {**template_env_vars, **normalize_env_vars(env_vars)} or None
         result = env_ops.create_environment(
             settings,
             team,
@@ -933,6 +940,10 @@ def list_templates(ctx: Context | None = None) -> str:
             size_info = f", Filestore size={fs_str}, Dump size={dump_str}"
         auto_install = r.get("auto_install_modules", "")
         auto_info = f", Auto-install={auto_install}" if auto_install else ""
+        # Names only — a template's env vars routinely carry API keys, and this
+        # listing is the one template view an agent reads unprompted.
+        env_names = sorted(r.get("env_vars") or {})
+        env_info = f", Env={','.join(env_names)}" if env_names else ""
         # Provenance: which code this database snapshot came from. A branch that
         # does not contain that commit will hit upgrade failures against newer data.
         origin_parts = []
@@ -943,7 +954,7 @@ def list_templates(ctx: Context | None = None) -> str:
         if r.get("snapshot_at"):
             origin_parts.append(f"snapshot {str(r['snapshot_at'])[:10]}")
         origin_info = f", Source={' @ '.join(origin_parts)}" if origin_parts else ""
-        output += f"- {r['template_name']}: DB={db_status}, SQL={r['has_sql']}, Filestore={r['has_filestore']}, Mode={overlay_status}{size_info}{auto_info}{origin_info}\n"
+        output += f"- {r['template_name']}: DB={db_status}, SQL={r['has_sql']}, Filestore={r['has_filestore']}, Mode={overlay_status}{size_info}{auto_info}{env_info}{origin_info}\n"
     return output
 
 
@@ -1438,9 +1449,21 @@ def list_environments(ctx: Context | None = None) -> str:
         if env.get("url"):
             status_line += f" - {env['url']}"
         output += status_line + "\n"
-        git_branch = env.get("git_branch", "")
-        if git_branch and git_branch != env["env_name"]:
-            output += f"  Git Branch: {git_branch}\n"
+        output += f"  Git Branch: {env.get('git_branch') or env['env_name']}\n"
+        if env.get("created_at"):
+            output += f"  Created: {env['created_at']}\n"
+        output += f"  Last Activity: {env.get('last_activity') or 'unknown'}\n"
+        if env["status"] == "stopped" or env.get("stopped_at"):
+            stopped_at = env.get("stopped_at") or "unknown"
+            stopped_by = env.get("stopped_by") or "unknown"
+            output += f"  Stopped At: {stopped_at} ({stopped_by})\n"
+        output += f"  Protected: {'yes' if env.get('protected') else 'no'}\n"
+        if env.get("stack"):
+            output += f"  Stack: {env['stack']}\n"
+        note = str(env.get("note") or "").strip()
+        if note:
+            note = note.replace("\n", "\n        ")
+            output += f"  Note: {note}\n"
         if env.get("db_name"):
             output += f"  Database: {env['db_name']}\n"
         if env.get("odoo_image"):
@@ -1669,9 +1692,24 @@ def get_environment_info(env_name: str, ctx: Context | None = None) -> str:
         else "Some containers not running"
     )
     lines = [f"Environment Info for '{env_name}': {overall}"]
-    git_branch = info.get("git_branch", "")
-    if git_branch and git_branch != env_name:
-        lines.append(f"Git Branch: {git_branch}")
+    lines.append(f"Git Branch: {info.get('git_branch') or env_name}")
+    if info.get("created_at"):
+        lines.append(f"Created: {info['created_at']}")
+    lines.append(f"Last Activity: {info.get('last_activity') or 'unknown'}")
+    odoo_status = info.get("odoo", {})
+    if info.get("stopped_at") or (
+        not odoo_status.get("running") and odoo_status.get("status") != "not found"
+    ):
+        stopped_at = info.get("stopped_at") or "unknown"
+        stopped_by = info.get("stopped_by") or "unknown"
+        lines.append(f"Stopped At: {stopped_at} ({stopped_by})")
+    lines.append(f"Protected: {'yes' if info.get('protected') else 'no'}")
+    if info.get("stack"):
+        lines.append(f"Stack: {info['stack']}")
+    note = str(info.get("note") or "").strip()
+    if note:
+        note = note.replace("\n", "\n      ")
+        lines.append(f"Note: {note}")
     lines.append(f"Database: {info['db_name']}")
     if info.get("url"):
         lines.append(f"URL: {info['url']}")
@@ -4846,6 +4884,22 @@ def _ensure_initialized(settings: Settings) -> None:
             team.workspaces_dir,
             os.path.join(team.data_dir, "templates"),
         )
+
+    # Filestore overlays do not survive an Oduflow restart in Docker: the
+    # fuse-overlayfs daemons die with the container's PID namespace while their
+    # mounts live on in the host's. Repair them before anything serves traffic,
+    # so environments do not come back up on a filestore that raises ENOTCONN.
+    try:
+        repaired = env_ops.reconcile_overlay_mounts(settings)
+    except Exception:  # noqa: BLE001 - a repair pass must never block startup
+        logger.warning("Filestore overlay reconciliation failed", exc_info=True)
+    else:
+        if repaired:
+            logger.warning(
+                "Filestore overlay reconciliation: %d repaired, %d need attention",
+                sum(1 for r in repaired if r["repaired"]),
+                sum(1 for r in repaired if not r["repaired"]),
+            )
 
     global _instance_id  # noqa: PLW0603
     from oduflow.telemetry import record_startup

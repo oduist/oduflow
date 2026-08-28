@@ -36,6 +36,7 @@ from oduflow.naming import (
     get_tablespace_name,
     get_team_network_name,
     get_template_db_name,
+    normalize_env_vars,
     validate_template_name,
 )
 from oduflow.settings import Settings, TeamSettings
@@ -2932,6 +2933,15 @@ def _source_env_metadata(settings: Settings, labels: dict[str, Any]) -> dict[str
     raw_auto = labels.get("oduflow.auto_install_modules", "")
     if raw_auto:
         metadata["auto_install_modules"] = raw_auto
+    raw_env = labels.get("oduflow.env_vars", "")
+    if raw_env:
+        try:
+            env_vars = normalize_env_vars(json.loads(raw_env))
+        except (json.JSONDecodeError, TypeError, ValueError) as exc:
+            logger.warning("Could not record env vars on the template: %s", exc)
+        else:
+            if env_vars:
+                metadata["env_vars"] = env_vars
     return metadata
 
 
@@ -3243,6 +3253,7 @@ def publish_env_as_template(
                 source_image,
                 {},
                 template_name=template_name,
+                force_overlay=True,
             )
             if source_was_running:
                 try:
@@ -4592,6 +4603,10 @@ def update_template_metadata(
         ) from exc
     if not isinstance(metadata, dict):
         raise TypeError("Template metadata must be a JSON object.")
+    if metadata.get("env_vars") is not None:
+        # Rejected here rather than at environment creation: a name Docker
+        # cannot export is worth surfacing while the editor is still open.
+        metadata["env_vars"] = normalize_env_vars(metadata["env_vars"])
 
     normalized = (json.dumps(metadata, indent=2, ensure_ascii=False) + "\n").encode(
         "utf-8"
@@ -4618,6 +4633,27 @@ def update_template_metadata(
         "content": normalized.decode("utf-8"),
         "revision": hashlib.sha256(normalized).hexdigest(),
     }
+
+
+def _template_env_vars(metadata: dict[str, Any], template_name: str) -> dict[str, str]:
+    """Env vars recorded on a template, or {} if the entry is unusable.
+
+    Never raises: a template whose metadata was hand-edited into an invalid
+    env_vars block must still list and still provision — the variables are
+    dropped with a warning instead of taking the environment down with them.
+    """
+    raw = metadata.get("env_vars")
+    if not raw:
+        return {}
+    try:
+        return normalize_env_vars(raw)
+    except (TypeError, ValueError) as exc:
+        logger.warning(
+            "Ignoring invalid env_vars in template %s metadata: %s",
+            template_name,
+            exc,
+        )
+        return {}
 
 
 def list_templates(settings: Settings, team: TeamSettings) -> list[dict[str, Any]]:
@@ -4668,6 +4704,7 @@ def list_templates(settings: Settings, team: TeamSettings) -> list[dict[str, Any
                 "filestore_size_mb": metadata.get("filestore_size_mb"),
                 "dump_size_mb": metadata.get("dump_size_mb"),
                 "auto_install_modules": metadata.get("auto_install_modules", ""),
+                "env_vars": _template_env_vars(metadata, template_name),
                 # Code the snapshot was taken from — the anchor for the lineage
                 # check run at environment creation.
                 "source_branch": metadata.get("source_branch", ""),
