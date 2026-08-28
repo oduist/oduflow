@@ -124,12 +124,15 @@ class TestSettings:
         toml.write_text(
             '[routing]\nmode = "traefik"\ntls = false\n'
             '[team.1]\nhostname = "dev.example.com"\n'
-            "environment_slots = 7\nservice_slots = 3\n"
+            "environment_slots = 7\n"
+            'environment_hostname_mode = "slots"\n'
+            "service_slots = 3\n"
         )
 
         team = Settings.from_toml(str(toml)).get_team("1")
 
         assert team.environment_slots == 7
+        assert team.environment_hostname_mode == "slots"
         assert team.service_slots == 3
         assert team.hostname_registry_path.endswith("team_1/hostnames.json")
 
@@ -140,6 +143,7 @@ class TestSettings:
         team = Settings.from_toml(str(toml)).get_team("1")
 
         assert team.environment_slots == 20
+        assert team.environment_hostname_mode == "branch"
         assert team.service_slots == 10
 
     def test_negative_environment_slots_rejected(self):
@@ -156,8 +160,41 @@ class TestSettings:
         with pytest.raises(ValueError, match="service_slots"):
             settings.validate()
 
-    def test_environment_slots_require_prefixed_domain(self):
-        team = TeamSettings(team_id="1", hostname="localhost", environment_slots=2)
+    def test_invalid_environment_hostname_mode_rejected(self):
+        team = TeamSettings(team_id="1", environment_hostname_mode="magic")
+
+        with pytest.raises(ValueError, match="environment_hostname_mode"):
+            Settings(teams={"1": team}).validate()
+
+    def test_hostname_slots_require_traefik(self):
+        team = TeamSettings(team_id="1", environment_hostname_mode="slots")
+
+        with pytest.raises(ValueError, match="requires routing_mode=traefik"):
+            Settings(teams={"1": team}).validate()
+
+    def test_hostname_slots_require_positive_environment_limit(self):
+        team = TeamSettings(
+            team_id="1",
+            hostname="dev.example.com",
+            environment_slots=0,
+            environment_hostname_mode="slots",
+        )
+        settings = Settings(
+            routing_mode="traefik",
+            routing_tls=False,
+            teams={"1": team},
+        )
+
+        with pytest.raises(ValueError, match="environment_slots > 0"):
+            settings.validate()
+
+    def test_hostname_slots_require_prefixed_domain(self):
+        team = TeamSettings(
+            team_id="1",
+            hostname="localhost",
+            environment_slots=2,
+            environment_hostname_mode="slots",
+        )
         settings = Settings(
             routing_mode="traefik",
             routing_tls=False,

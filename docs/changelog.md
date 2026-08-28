@@ -37,6 +37,16 @@
 
 ### Fixes
 
+- **Environment limits no longer rewrite existing Traefik hostnames** —
+  `environment_slots` is now only a concurrency-safe team capacity limit and
+  applies in both port and Traefik modes. The new explicit
+  `environment_hostname_mode = "slots"` opt-in enables reusable `dev1`, `dev2`,
+  ... routes; the default `branch` mode preserves established addresses such as
+  `feature.dev.example.com`, including across `update_environment`. Explicit
+  custom hostnames remain stable. Environments that were automatically moved
+  to a numbered hostname by v1.69-v1.71 return to their branch-derived route on
+  their next update in branch mode, while their capacity reservation remains.
+
 - **A failed install is no longer masked by a later successful upgrade** — when
   a single `pull_and_apply` both installed and upgraded modules, the reported
   exit code was the last command's, so a broken install followed by a clean

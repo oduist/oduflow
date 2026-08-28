@@ -14,6 +14,7 @@ from starlette.applications import Starlette
 from starlette.testclient import TestClient
 
 from oduflow.errors import BusyError
+from oduflow.hostname_registry import allocate_hostname, reserve_environment_slot
 from oduflow.locking import LockManager
 from oduflow.settings import Settings, TeamSettings
 from oduflow.web_ui import mount_web_ui
@@ -196,3 +197,57 @@ def test_api_recreate_uses_recorded_git_branch(tmp_path):
     assert resp.status_code == 200
     assert create.call_args.args[2] == "staging"
     assert create.call_args.kwargs["env_name"] == "oldstaging"
+
+
+def test_api_recreate_restores_legacy_slot_to_branch_hostname(tmp_path):
+    from unittest.mock import MagicMock
+
+    data_dir = tmp_path / "team_1"
+    team = TeamSettings(
+        team_id="1",
+        hostname="dev.example.com",
+        data_dir=str(data_dir),
+        hostname_registry_path=str(data_dir / "hostnames.json"),
+        environment_slots=2,
+        environment_hostname_mode="branch",
+    )
+    settings = Settings(
+        routing_mode="traefik",
+        routing_tls=False,
+        base_data_dir=str(tmp_path),
+        teams={"1": team},
+    )
+    reserve_environment_slot(team.hostname_registry_path, "feature-a", 2)
+    allocate_hostname(
+        team.hostname_registry_path, "feature-a", 2, hostname_prefix="dev"
+    )
+
+    app = Starlette()
+    mount_web_ui(app, lambda: settings, LockManager())
+    client = TestClient(app)
+    container = MagicMock()
+    container.labels = {
+        settings.repo_label: "https://github.com/x/y.git",
+        settings.image_label: "odoo:19.0",
+        settings.branch_label: "feature-a",
+        "oduflow.template": "none",
+        "oduflow.git_branch": "feature-a",
+        "oduflow.hostname": "dev1",
+    }
+
+    with (
+        patch("oduflow.docker_ops.client.get_client") as mock_client,
+        patch("oduflow.docker_ops.system_ops.check_disk_space"),
+        patch("oduflow.docker_ops.system_ops.estimate_new_db_bytes", return_value=0),
+        patch("oduflow.docker_ops.env_ops.delete_environment"),
+        patch(
+            "oduflow.docker_ops.env_ops.create_environment",
+            return_value={"url": "https://feature-a.dev.example.com"},
+        ) as create,
+    ):
+        mock_client.return_value.containers.get.return_value = container
+        resp = client.post("/api/environments/feature-a/recreate")
+
+    assert resp.status_code == 200
+    assert create.call_args.kwargs["hostname"] == ""
+    assert create.call_args.kwargs["hostname_source"] == ""

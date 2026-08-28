@@ -806,7 +806,8 @@ auto_delete_hours = 0       # auto-delete environments stopped for N hours; 0 di
 
 [team.1]
 hostname = "localhost"               # port mode: http://{hostname}:{port}, traefik mode: https://{slug}.{hostname}
-environment_slots = 20               # traefik: dev.example.com + N => dev1.example.com..devN.example.com; 0 = legacy hostnames
+environment_slots = 20               # maximum concurrent environments; 0 = unlimited
+environment_hostname_mode = "branch" # "branch": feature.dev.example.com; "slots": dev1.example.com..devN.example.com
 service_slots = 10                   # maximum managed auxiliary services; 0 = unlimited
 auth_token = ""                      # auto-filled in fresh configs; HTTP MCP Bearer token
 ui_password = ""                     # auto-filled in fresh configs; Web UI password for admin
@@ -914,7 +915,8 @@ Each `[team.*]` section defines an isolated team with its own workspaces, templa
 | Key | Default | Description |
 |---|---|---|
 | `hostname` | `localhost` | Team hostname. In port mode: `http://{hostname}:{port}`. In traefik mode: `https://{slug}.{hostname}` |
-| `environment_slots` | `20` | Traefik reusable hostname pool and concurrent environment cap. `0` keeps branch-derived hostnames; with `dev.example.com`, `N` allocates `dev1.example.com` through `devN.example.com` |
+| `environment_slots` | `20` | Maximum concurrent development environments for the team in port or Traefik mode. Stopped environments count; deleting one frees its reservation. `0` disables the cap |
+| `environment_hostname_mode` | `branch` | Traefik public hostname strategy. `branch` keeps environment-derived names such as `feature.dev.example.com`; `slots` reuses `dev1.example.com` through `devN.example.com` and requires `environment_slots > 0` |
 | `service_slots` | `10` | Maximum number of managed auxiliary services for the team. Stopped services count; deleting a service frees its slot. `0` disables the cap |
 | `auth_token` | *(generated in fresh config)* | Bearer token for MCP HTTP auth and OAuth client secret. Empty disables MCP auth only when explicitly allowed with `[server].allow_insecure_http = true`; otherwise HTTP startup refuses it |
 | `ui_password` | *(generated in fresh config)* | Password for Web UI login (user: `admin`). Separate from MCP auth token. Empty disables UI auth only when explicitly allowed with `[server].allow_insecure_http = true`; otherwise HTTP startup refuses it |
@@ -925,9 +927,11 @@ Each `[team.*]` section defines an isolated team with its own workspaces, templa
 | `disk_quota_gb` | `0` | Kernel-enforced cap for team files and databases when the data filesystem supports XFS project quotas. `0` disables it |
 | `[team.X.agent_env]` | *(empty)* | Sub-table of environment variables injected into the team's agent container — provider credentials (`CLAUDE_CODE_OAUTH_TOKEN`, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `OPENCODE_API_KEY`, or any provider-specific OpenCode variable) and custom vars |
 
-`environment_slots > 0` requires a hostname with a distinct host prefix and
-parent domain, such as `dev.example.com`. A bare registrable domain such as
-`example.com` has no prefix to number and is rejected.
+`environment_hostname_mode = "slots"` requires Traefik and a hostname with a
+distinct host prefix and parent domain, such as `dev.example.com`. A bare
+registrable domain such as `example.com` has no prefix to number and is
+rejected. The default `branch` mode works with the existing
+`*.dev.example.com` DNS and wildcard-certificate layout.
 
 Team data is stored at `{data_dir}/team_{ID}/`:
 
@@ -937,7 +941,7 @@ team_{ID}/
 ├── templates/            # Reusable database snapshots
 ├── shared_repos/         # Extra addon repositories (bare clones)
 ├── ports.json            # Port registry
-├── hostnames.json        # Reusable Traefik hostname reservations
+├── hostnames.json        # Environment capacity reservations and optional reusable hostnames
 ├── .git-credentials      # Git credentials for this team
 └── agent_guides/         # AI agent guides (markdown)
 ```
@@ -1608,7 +1612,7 @@ oduflow call create_environment feature-login "" none https://github.com/owner/r
 # Create with JSON arguments (more explicit)
 oduflow call create_environment '{"branch":"feature-login","template_name":"myproject","repo_url":"https://github.com/owner/repo.git","odoo_image":"odoo:19.0"}'
 
-# Override the numbered Traefik prefix (dev.example.com -> qa.example.com)
+# Override the Traefik hostname prefix (dev.example.com -> qa.example.com)
 oduflow call create_environment '{"branch":"feature-login","hostname":"qa","template_name":"myproject"}'
 
 # Inject container environment variables (comma-separated KEY=VALUE)
@@ -1627,13 +1631,18 @@ alone, because its database and URL are in use; move it deliberately with
 `env_name`, or delete it. The dashboard and the REST API keep the strict
 behaviour and report the conflict instead.
 
-In Traefik mode, a team with `environment_slots = N` numbers the first label of
-its hostname. For `dev.example.com`, the reusable pool is `dev1.example.com`
-through `devN.example.com`. The assignment survives stops and container updates
-and is released only when the environment is deleted. Pass `hostname` to replace
-the numbered prefix: `hostname="qa"` produces `qa.example.com`. The default is
-20 concurrent environment slots; set `environment_slots = 0` to retain legacy
-branch-derived hostnames.
+`environment_slots = N` caps concurrent environments without changing their
+public names. The default Traefik strategy is
+`environment_hostname_mode = "branch"`, so `feature-login` remains available at
+`feature-login.dev.example.com` and continues to work with
+`*.dev.example.com` DNS or wildcard certificates.
+
+Set `environment_hostname_mode = "slots"` explicitly when Let's Encrypt
+certificate reuse is more important than descriptive URLs. For
+`hostname = "dev.example.com"`, that mode allocates `dev1.example.com` through
+`devN.example.com`; assignments survive stops and updates and return to the
+pool on deletion. Pass `hostname="qa"` to request `qa.example.com` in either
+mode. Explicit hostnames still consume environment capacity.
 
 When creating an environment, Oduflow:
 
@@ -1836,9 +1845,9 @@ with it, so the browser tab you have open keeps working. Two things to know:
 - **The scoped MCP endpoint moves too**, from `/mcp/dev1` to `/mcp/next-task`
   (the token itself is unchanged). Re-point any MCP client configured against
   the old path.
-- **Environments without a pooled hostname slot** — created before
-  `environment_slots` was configured, so their hostname is derived from their
-  name — get a new URL, since the hostname follows the name.
+- **Environments using branch-derived hostnames** get a new URL because the
+  hostname follows the environment name. Pooled and explicit hostnames remain
+  stable across the rename.
 
 The name must be free: a rename onto a name that already has an environment,
 workspace directory or database is refused before anything is touched.
@@ -3603,29 +3612,44 @@ For production-like access with HTTPS, Oduflow can deploy a **Traefik** reverse 
    [team.1]
    hostname = "dev.example.com"
    environment_slots = 20
+   environment_hostname_mode = "branch"
    ```
 
 3. **Start (or restart) Oduflow.** On startup, Oduflow will create a Traefik v3 container that:
    - Listens on ports 80 and 443
    - Automatically redirects HTTP to HTTPS
-   - Obtains a separate TLS certificate from Let's Encrypt for each reusable environment hostname via HTTP-01 challenge
+   - Obtains a TLS certificate from Let's Encrypt for each routed hostname via HTTP-01 challenge
    - Routes requests to the correct Odoo container based on the subdomain
    - Also routes the Oduflow server itself via the team `hostname`
 
-## How certificates work
+## Hostname and certificate strategies
 
-With `hostname = "dev.example.com"` and `environment_slots = 20`, Oduflow
-allocates `dev1.example.com` through `dev20.example.com`: it removes the first
-hostname label, adds the slot number to it, and keeps the parent domain.
-Deleting an environment returns its hostname to the pool, so later environments
-reuse the same certificates from Traefik's persistent ACME store instead of
-continuously issuing certificates for branch names.
-`create_environment(hostname="qa")` requests `qa.example.com`. Set
-`environment_slots = 0` to retain the legacy branch-derived hostname behavior.
-The configured hostname must include a distinct prefix (`dev.example.com`, not
-bare `example.com`) so Oduflow has a label to number.
+The default `environment_hostname_mode = "branch"` keeps descriptive and
+backward-compatible routes: `feature-login.dev.example.com`,
+`fix-invoice.dev.example.com`, and so on. `environment_slots = 20` limits how
+many environments may exist but does not change those names. This mode matches
+the `*.dev.example.com` DNS record shown above and works with a Cloudflare or
+other wildcard certificate for `*.dev.example.com`.
 
-Wildcard certificates (`*.dev.example.com`) via DNS-01 validation are also possible but require additional Traefik configuration with a provider-specific plugin.
+For Traefik HTTP-01 installations that need to bound Let's Encrypt issuance,
+opt into a reusable pool:
+
+```toml
+[team.1]
+hostname = "dev.example.com"
+environment_slots = 20
+environment_hostname_mode = "slots"
+```
+
+Oduflow then allocates `dev1.example.com` through `dev20.example.com` and
+returns names to the pool on deletion. These names are one DNS level higher
+than branch-derived routes: configure individual `dev1`…`dev20` records or a
+wildcard record for `*.example.com`. A `*.dev.example.com` record or certificate
+does not cover `dev1.example.com`.
+
+`create_environment(hostname="qa")` requests `qa.example.com` in either mode.
+The configured team hostname must include a distinct prefix
+(`dev.example.com`, not bare `example.com`) for pooled or explicit short names.
 
 ## OAuth on each team's hostname
 

@@ -14,7 +14,7 @@ oduflow call create_environment feature-login "" none https://github.com/owner/r
 # Create with JSON arguments (more explicit)
 oduflow call create_environment '{"branch":"feature-login","template_name":"myproject","repo_url":"https://github.com/owner/repo.git","odoo_image":"odoo:19.0"}'
 
-# Override the numbered Traefik prefix (dev.example.com -> qa.example.com)
+# Override the Traefik hostname prefix (dev.example.com -> qa.example.com)
 oduflow call create_environment '{"branch":"feature-login","hostname":"qa","template_name":"myproject"}'
 
 # Inject container environment variables (comma-separated KEY=VALUE)
@@ -33,13 +33,18 @@ alone, because its database and URL are in use; move it deliberately with
 `env_name`, or delete it. The dashboard and the REST API keep the strict
 behaviour and report the conflict instead.
 
-In Traefik mode, a team with `environment_slots = N` numbers the first label of
-its hostname. For `dev.example.com`, the reusable pool is `dev1.example.com`
-through `devN.example.com`. The assignment survives stops and container updates
-and is released only when the environment is deleted. Pass `hostname` to replace
-the numbered prefix: `hostname="qa"` produces `qa.example.com`. The default is
-20 concurrent environment slots; set `environment_slots = 0` to retain legacy
-branch-derived hostnames.
+`environment_slots = N` caps concurrent environments without changing their
+public names. The default Traefik strategy is
+`environment_hostname_mode = "branch"`, so `feature-login` remains available at
+`feature-login.dev.example.com` and continues to work with
+`*.dev.example.com` DNS or wildcard certificates.
+
+Set `environment_hostname_mode = "slots"` explicitly when Let's Encrypt
+certificate reuse is more important than descriptive URLs. For
+`hostname = "dev.example.com"`, that mode allocates `dev1.example.com` through
+`devN.example.com`; assignments survive stops and updates and return to the
+pool on deletion. Pass `hostname="qa"` to request `qa.example.com` in either
+mode. Explicit hostnames still consume environment capacity.
 
 When creating an environment, Oduflow:
 
@@ -242,9 +247,9 @@ with it, so the browser tab you have open keeps working. Two things to know:
 - **The scoped MCP endpoint moves too**, from `/mcp/dev1` to `/mcp/next-task`
   (the token itself is unchanged). Re-point any MCP client configured against
   the old path.
-- **Environments without a pooled hostname slot** — created before
-  `environment_slots` was configured, so their hostname is derived from their
-  name — get a new URL, since the hostname follows the name.
+- **Environments using branch-derived hostnames** get a new URL because the
+  hostname follows the environment name. Pooled and explicit hostnames remain
+  stable across the rename.
 
 The name must be free: a rename onto a name that already has an environment,
 workspace directory or database is refused before anything is touched.
