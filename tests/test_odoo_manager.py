@@ -2582,6 +2582,72 @@ class TestApplyActionsConf:
         container.restart.assert_not_called()
 
 
+class TestApplyActionsExitCode:
+    """A failed install must not be masked by a later successful upgrade.
+
+    ``exit_code`` is the whole apply's status: the compact ``pull_and_apply``
+    response derives "Status: ok/failed" from it and keeps the log server-side,
+    and the live-mount snapshot is only written when it is 0.
+    """
+
+    @staticmethod
+    def _client_with_container():
+        client = MagicMock()
+        container = MagicMock()
+        client.containers.get.return_value = container
+        return client, container
+
+    def _apply(self):
+        client, _ = self._client_with_container()
+        return env_ops._apply_actions(
+            client,
+            TEST_SETTINGS,
+            TEST_TEAM,
+            "feature/x",
+            "oduflow-1-feature-x-odoo",
+            to_install=["new_module"],
+            to_upgrade=["sale"],
+            do_restart=False,
+            changed_files=["new_module/__manifest__.py", "sale/models/sale.py"],
+        )
+
+    @patch(
+        "oduflow.docker_ops.odoo_ops.upgrade_odoo_modules",
+        return_value={"exit_code": 0, "output": "upgraded"},
+    )
+    @patch(
+        "oduflow.docker_ops.odoo_ops.install_odoo_modules",
+        return_value={"exit_code": 1, "output": "install traceback"},
+    )
+    def test_failed_install_survives_successful_upgrade(self, mock_install, mock_up):
+        result = self._apply()
+
+        assert result["exit_code"] == 1
+        assert "install traceback" in result["output"]
+
+    @patch(
+        "oduflow.docker_ops.odoo_ops.upgrade_odoo_modules",
+        return_value={"exit_code": 2, "output": "upgrade traceback"},
+    )
+    @patch(
+        "oduflow.docker_ops.odoo_ops.install_odoo_modules",
+        return_value={"exit_code": 0, "output": "installed"},
+    )
+    def test_failed_upgrade_is_reported(self, mock_install, mock_up):
+        assert self._apply()["exit_code"] == 2
+
+    @patch(
+        "oduflow.docker_ops.odoo_ops.upgrade_odoo_modules",
+        return_value={"exit_code": 0, "output": "upgraded"},
+    )
+    @patch(
+        "oduflow.docker_ops.odoo_ops.install_odoo_modules",
+        return_value={"exit_code": 0, "output": "installed"},
+    )
+    def test_all_successful_reports_zero(self, mock_install, mock_up):
+        assert self._apply()["exit_code"] == 0
+
+
 class TestApplyActionsDeps:
     """A changed dependency descriptor must reinstall apt/pip deps into the
     running container and restart it — not fall through to an XML/JS refresh."""

@@ -171,8 +171,8 @@ For OAuth-based MCP clients like Claude.ai Remote MCP, Oduflow runs its own OAut
 - `upgrade_odoo_modules` — upgrade Odoo modules
 - `export_module_translations` — export a module's .pot/.po translation catalogue
 - `translation_status` — check what translations actually loaded, and lint the .po files
-- `run_odoo_tests` — run Odoo tests for specific modules (`test_tags` narrows to one class/method; `upgrade=False` skips the `-u`, collects `post_install` tests only, and requires module-scoped positive tags)
-- `pull_and_apply` — pull latest code and auto-install/upgrade/restart as needed
+- `run_odoo_tests` — run Odoo tests for specific modules (`summary_only=True` returns only the final test count plus an `output_id`; `test_tags` narrows to one class/method; `upgrade=False` skips the `-u`, collects `post_install` tests only, and requires module-scoped positive tags)
+- `pull_and_apply` — pull latest code and auto-install/upgrade/restart as needed (`summary_only=True` returns one action/status line and caches command logs for `read_output`)
 - `get_environment_logs` — retrieve container logs
 - `run_odoo_command` — execute shell commands inside the Odoo container (through `sh -c`, so pipes and redirections work; `shell=False` for exact argv)
 - `run_odoo_shell` — execute Python code in the Odoo shell with full ORM access
@@ -228,8 +228,8 @@ sanitization scripts followed by project scripts from
 
 1. Call `list_environments` to check if an environment for the branch exists
 2. If not, call `create_environment` with `branch`, `template_name`, `repo_url`, and `odoo_image`
-3. Write code, `git push`, then call `pull_and_apply` (auto-detects what to do); read its response for install/upgrade errors
-4. Use `install_odoo_modules` / `run_odoo_tests` and read their direct responses; use `get_environment_logs` only for errors from the running Odoo server
+3. Write code, `git push`, then call `pull_and_apply(summary_only=True)` (auto-detects what to do); inspect its `output_id` only when the compact status reports a failure
+4. Use `install_odoo_modules` / `run_odoo_tests(summary_only=True)`; inspect the cached output on failure, and use `get_environment_logs` only for errors from the running Odoo server
 5. Inspect and manipulate data with the `odoo_*` ORM tools — `odoo_schema` first to get the real field names, then `odoo_search_read`; add `as_user` to check what a given role can actually see or change
 6. Call `delete_environment` when the task is done
 
@@ -1914,6 +1914,17 @@ oduflow call upgrade_odoo_modules feature-login sale,crm
 oduflow call run_odoo_tests feature-login sale,crm
 ```
 
+For agent loops, pass `summary_only=true` to keep the complete Odoo log out of
+the MCP response:
+
+```bash
+oduflow call run_odoo_tests '{"env_name":"feature-login","modules":"sale,crm","summary_only":true}'
+```
+
+The response is one `N failed, M error(s) of K tests` line plus an `output_id`.
+The full log remains server-side and can be inspected with `read_output` only
+when the summary reports a failure or Odoo aborts before producing a test count.
+
 This runs `odoo --test-enable --stop-after-init --workers 0 --http-port 8089 --gevent-port 8090 -u
 <modules>` inside the container. The module must already be installed — tests run via an upgrade
 (`-u`); `-i` on an already-installed module is a no-op that never enters the test phase ("0 of 0
@@ -1931,6 +1942,11 @@ The `pull_and_apply` tool is one of Oduflow's most powerful features. It pulls t
 ```bash
 oduflow call pull_and_apply feature-login
 ```
+
+`summary_only=true` suppresses install/upgrade logs and changed-file names from
+the MCP response. It returns one line containing the applied action, changed
+file count and exit status; when command output exists, the line includes an
+`output_id` for targeted inspection with `read_output`.
 
 ### How it works
 
@@ -3188,12 +3204,12 @@ All tools are accessible via MCP clients (Cursor, Cline, Amp, etc.) and the CLI 
 | `update_environment` | ✓ | Re-create the container, preserving DB and filestore; optional `odoo_image` switches the image and `env_vars` replaces the container environment variables |
 | `switch_branch` | ✓ | Point an existing environment at another branch and apply the difference, keeping its database, filestore, hostname and URL — reuse instead of delete-and-create; optional `new_name` renames the environment in the same operation (its scoped MCP endpoint moves with the name) |
 | **Odoo Operations** | | |
-| `pull_and_apply` | ✓ | Git pull + smart analysis → auto install/upgrade/restart |
+| `pull_and_apply` | ✓ | Git pull + smart analysis → auto install/upgrade/restart; `summary_only=True` returns one action/status line and caches command logs for `read_output` |
 | `install_odoo_modules` | ✓ | Install Odoo modules (`-i`) |
 | `upgrade_odoo_modules` | ✓ | Upgrade Odoo modules (`-u`) |
 | `export_module_translations` | ✓ | Export a module's `.pot`/`.po` with Odoo's own exporter, write it into the module's `i18n/`, and return a summary plus an HTTP download URL or local temporary path |
 | `translation_status` | ✓ | Verdict per language (OK, PARTIAL, NOT LOADED, NOT TRANSLATED, IMPORT SILENTLY DROPPED, IMPORT ABORTS, NO FILE, NOT ACTIVATED) from the module's terms, the database and the committed `.po` files, including the sibling-POT metadata merge Odoo performs before import, plus the call that fixes it |
-| `run_odoo_tests` | ✓ | Run Odoo tests for specific modules; `test_tags` narrows the run to one class or method, `upgrade=False` skips the `-u` for a fast re-run (collects `post_install` tests only and requires module-scoped positive tags) |
+| `run_odoo_tests` | ✓ | Run Odoo tests for specific modules; `summary_only=True` returns the final `N failed, M error(s) of K tests` line and an `output_id`; `test_tags` narrows the run, while `upgrade=False` skips `-u` for a fast `post_install` re-run |
 | `get_environment_logs` | | Retrieve recent container logs |
 | `run_odoo_command` | ✓ | Execute an arbitrary shell command inside the Odoo container (runs through `sh -c`, so pipes, redirections and `&&` work; `shell=False` for exact argv) |
 | `run_odoo_shell` | ✓ | Execute Python code in the Odoo shell context with full ORM access; `auto_commit=True` commits successful writes, while `False` leaves the shell transaction uncommitted |

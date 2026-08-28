@@ -1,5 +1,5 @@
 # Oduflow — Agentic Odoo Development
-Version: 6
+Version: 7
 
 ## Purpose
 
@@ -45,9 +45,9 @@ Call `create_environment` with the branch, correct Odoo image, and either
 3. get_odoo_development_guide before module code changes
 4. edit code locally
 5. repo_url: commit + push; local_path: no delivery step
-6. pull_and_apply with the action required by the edit
+6. pull_and_apply with the action required by the edit and summary_only=true
 7. read that response; if it failed, fix and repeat from step 4
-8. run_odoo_tests for the changed modules
+8. run_odoo_tests with summary_only=true for the changed modules
 9. leave the environment for the next branch, or delete_environment when
    nobody still needs the URL or its test data
 ```
@@ -99,9 +99,15 @@ command output, errors, and tracebacks. Read that response. Do not call
 Odoo server process and is appropriate for failures during HTTP requests or
 after a restart.
 
-Large command responses are cached automatically. The response includes an
-`output_id`; use `read_output` with `errors`, `grep`, `lines`, or `tail` only
-when the returned summary does not answer the question.
+Pass `summary_only=true` to `pull_and_apply` and `run_odoo_tests` during the
+normal development loop. Test runs then return the final
+`N failed, M error(s) of K tests` result, while applies return one compact line
+with the action, changed-file count and exit status. The complete command log
+stays server-side and the response includes an `output_id`; use `read_output`
+with `errors`, `grep`, `lines`, or `tail` only when that compact result reports
+a failure or does not answer the question. Without `summary_only`, command
+responses keep their verbose backward-compatible format and large ones are
+cached automatically.
 
 Use the most specific inspection surface:
 

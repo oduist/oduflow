@@ -73,6 +73,9 @@ _CACHE_THRESHOLD = 5_000  # chars — outputs above this are cached + summarized
 _SUMMARY_HEAD_LINES = 200
 _SUMMARY_TAIL_LINES = 100
 _SUMMARY_ERROR_CONTEXT = 5
+_ODOO_TEST_SUMMARY_RE = re.compile(
+    r"\b\d+ failed, \d+ error\(s\) of \d+ tests\b", re.IGNORECASE
+)
 
 _output_cache = OutputCache()
 
@@ -208,6 +211,46 @@ def _maybe_cache(output: str, header: str, source_tool: str, source_args: str) -
         )
         return f"{header}\n\n{_make_summary(cached)}"
     return f"{header}\n\nOutput:\n{output}"
+
+
+def _cache_output(output: str, source_tool: str, source_args: str) -> CachedOutput:
+    """Store command output when the caller explicitly requested a terse response."""
+    return _output_cache.store(output, source_tool=source_tool, source_args=source_args)
+
+
+def _odoo_test_summary(output: str) -> str | None:
+    """Return Odoo's final aggregate test result without its log prefix."""
+    matches = list(_ODOO_TEST_SUMMARY_RE.finditer(output))
+    return matches[-1].group(0) if matches else None
+
+
+def _compact_pull_result(
+    result: dict[str, Any], woke_note: str, output: str, env_name: str
+) -> str:
+    """Build a one-line apply result while keeping raw command output server-side."""
+    parts = [" ".join((woke_note + str(result["message"])).split())]
+    if result.get("modules_installed"):
+        parts.append(f"Installed: {', '.join(result['modules_installed'])}")
+    if result.get("modules_upgraded"):
+        parts.append(f"Upgraded: {', '.join(result['modules_upgraded'])}")
+    parts.append(f"Changed files: {len(result.get('changed_files', []))}")
+
+    exit_code = int(result.get("exit_code", 0) or 0)
+    parts.append(f"Status: {'failed' if exit_code else 'ok'} (exit_code={exit_code})")
+
+    warnings = result.get("warnings") or []
+    if warnings:
+        compact_warnings = [" ".join(str(warning).split()) for warning in warnings]
+        parts.append(f"Guardrail warnings: {' | '.join(compact_warnings)}")
+
+    if output:
+        cached = _cache_output(
+            output,
+            source_tool="pull_and_apply",
+            source_args=f"env={env_name}, summary_only=True",
+        )
+        parts.append(f"output_id={cached.output_id}")
+    return "; ".join(parts)
 
 
 def _artifact_url(settings: Settings, team: TeamSettings, token: str) -> str | None:
@@ -1421,6 +1464,7 @@ def run_odoo_tests(
     modules: str,
     test_tags: str = "",
     upgrade: bool = True,
+    summary_only: bool = False,
     ctx: Context | None = None,
 ) -> str:
     """
@@ -1450,6 +1494,9 @@ def run_odoo_tests(
             upgrade Odoo only collects **post_install** tests, so classes at the
             default at_install position (plain TransactionCase/TestCase) will report
             "0 tests". If a class you expect does not run, re-run with upgrade=True.
+        summary_only: Return only Odoo's aggregate test result and an output_id
+            instead of command logs. The complete output remains available through
+            read_output. Default False preserves the verbose response.
     """
     settings = _get_settings()
     team = _resolve_team(ctx)
@@ -1457,12 +1504,27 @@ def run_odoo_tests(
     output = odoo_ops.run_environment_tests(
         settings, team, env_name, modules, test_tags=test_tags, upgrade=upgrade
     )
+    source_args = (
+        f"env={env_name}, modules={modules}, test_tags={test_tags}, upgrade={upgrade}"
+    )
+    if summary_only:
+        cached = _cache_output(
+            output, "run_odoo_tests", f"{source_args}, summary_only=True"
+        )
+        summary = _odoo_test_summary(output) or "Test summary not found"
+        # Keep the wake note (whitespace-collapsed, so the response stays one
+        # line): the caller still has to know the environment was stopped and
+        # started by this call.
+        note = " ".join(woke.split())
+        prefix = f"{note} " if note else ""
+        return f"{prefix}{summary} [output_id={cached.output_id}]"
+
     header = woke + f"Test Results for {env_name}:"
     return _maybe_cache(
         output,
         header,
         "run_odoo_tests",
-        f"env={env_name}, modules={modules}, test_tags={test_tags}, upgrade={upgrade}",
+        source_args,
     )
 
 
@@ -1703,6 +1765,7 @@ def pull_and_apply(
     upgrade: str = "",
     restart: bool = False,
     strict: bool = False,
+    summary_only: bool = False,
     ctx: Context | None = None,
 ) -> str:
     """
@@ -1739,7 +1802,9 @@ def pull_and_apply(
       update_environment.)
 
     Errors and tracebacks are returned directly in this response — do NOT call
-    get_environment_logs to check for them.
+    get_environment_logs to check for them. With summary_only=True they are not
+    inlined: the response reports the exit status and an `output_id`, and the
+    full log is read with read_output.
 
     Args:
         env_name: The environment to apply changes to.
@@ -1748,6 +1813,10 @@ def pull_and_apply(
         restart: Restart the Odoo container (for Python-only changes).
         strict: If True, refuse to apply when the guardrail finds a likely
             missing action (default False: warn but apply anyway).
+        summary_only: Return a compact one-line action/status summary instead of
+            command logs and changed-file names. Raw output is cached and remains
+            available through read_output. Default False preserves the verbose
+            response.
     """
     settings = _get_settings()
     team = _resolve_team(ctx)
@@ -1792,6 +1861,8 @@ def pull_and_apply(
 
     header = "\n".join(header_lines)
     output = result.get("output", "")
+    if summary_only:
+        return _compact_pull_result(result, woke_note, output, env_name)
     if output:
         return _maybe_cache(output, header, "pull_and_apply", f"env={env_name}")
     return header
