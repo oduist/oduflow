@@ -65,7 +65,8 @@ hide:
 
     ---
 
-    Every MCP tool is one `oduflow call` away from your terminal and CI pipelines.
+    Use `oduflow call` for local in-process execution or `oduflow client` for a
+    remote authenticated server from terminals, scripts, and CI pipelines.
 
     [:octicons-arrow-right-24: CLI Reference](cli.md)
 
@@ -143,5 +144,6 @@ The agent writes code, installs the module, reads the traceback, fixes the error
 - **Hosted coding agent** — an opt-in, per-team AI agent (Claude Code / OpenAI Codex / OpenCode) with a browser **Agent Chat** and **Agent CLI**, driving environments through MCP (see [Coding Agent](agent.md))
 - **Web dashboard** — a built-in HTML dashboard for managing environments from a browser
 - **REST API** — full JSON API for programmatic control from any HTTP client
-- **CLI tools** — every MCP tool can be called directly from the command line via `oduflow call`
+- **CLI tools** — call every MCP tool locally via `oduflow call` or remotely via
+  the schema-driven `oduflow client`
 - **Dual transport** — stdio (default, for local MCP clients) and HTTP (Streamable HTTP, for remote/multi-user)

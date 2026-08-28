@@ -4,6 +4,16 @@
 
 ### Features
 
+- **Built-in remote MCP CLI** — `oduflow client <tool>` now calls a running
+  Oduflow server through FastMCP using `ODUFLOW_MCP_URL` and
+  `ODUFLOW_MCP_TOKEN`. It discovers the live tool schemas, accepts named flags
+  or a JSON argument object, derives a required environment target from an
+  explicit override or the current Git branch (and the `create_environment`
+  branch from the current checkout), supports full team and scoped
+  `/mcp/<env>` endpoints, emits machine-readable JSON for automation, and
+  preserves server-side tool errors and output-cache summaries. The existing
+  `oduflow call <tool>` remains the local in-process path.
+
 - **Token-safe summaries for apply and test calls** — `pull_and_apply` and
   `run_odoo_tests` now accept `summary_only=True`, keeping verbose Odoo command
   logs server-side instead of injecting them into the calling agent's context.
