@@ -63,7 +63,13 @@ from oduflow.docker_ops.stats import (
     refresh_env_storage,
     refresh_team_storage,
 )
-from oduflow.errors import BusyError, ConflictError, FlowError, NotFoundError
+from oduflow.errors import (
+    BusyError,
+    ConflictError,
+    ExternalCommandError,
+    FlowError,
+    NotFoundError,
+)
 from oduflow.licensing import get_license_info, install_license_from_text
 from oduflow.locking import (
     LockManager,
@@ -354,14 +360,33 @@ async def _read_login_password(request: Request) -> str:
     return (parsed.get("password", [""])[0]).strip()
 
 
-def _error_response(e: FlowError) -> JSONResponse:
+_EXTERNAL_COMMAND_UI_ERROR = "Operation failed. Check server logs for details."
+
+
+def _flow_error_status(e: FlowError) -> int:
     if isinstance(e, NotFoundError):
-        status = 404
-    elif isinstance(e, BusyError):
-        status = 409
-    else:
-        status = 400
-    return JSONResponse({"ok": False, "error": str(e)}, status_code=status)
+        return 404
+    if isinstance(e, BusyError):
+        return 409
+    if isinstance(e, ExternalCommandError):
+        return 500
+    return 400
+
+
+def _public_flow_error(e: FlowError, *, context: str = "Dashboard operation") -> str:
+    if isinstance(e, ExternalCommandError):
+        # Command output can contain tracebacks, filesystem paths, or connection
+        # details. Keep it in the server log instead of returning it to browsers.
+        logger.error("%s failed: %s", context, e)
+        return _EXTERNAL_COMMAND_UI_ERROR
+    return str(e)
+
+
+def _error_response(e: FlowError) -> JSONResponse:
+    return JSONResponse(
+        {"ok": False, "error": _public_flow_error(e)},
+        status_code=_flow_error_status(e),
+    )
 
 
 async def _offload(func: Callable[..., Any], /, *args: Any, **kwargs: Any) -> Any:
@@ -3407,11 +3432,18 @@ def _build_routes(
 
     async def api_connect_as(request: Request) -> JSONResponse:
         branch = request.path_params["branch"]
+        lock_acquired = False
         try:
             settings = get_settings()
             team = _get_ui_team(request)
+            # Read the body before taking the env lock (same order as
+            # api_update): a client that stalls mid-body would otherwise hold
+            # the branch lock for as long as it likes, 409-ing every other
+            # operation on the branch and blocking team-level ones.
             body = await request.json()
             user = (body.get("user") or "admin").strip() or "admin"
+            locks.acquire_env(branch, team.team_id, operation="connect_as_user")
+            lock_acquired = True
             activity.touch(team, branch)
             result = await _offload(
                 odoo_ops.connect_as_user, settings, team, branch, user
@@ -3440,6 +3472,9 @@ def _build_routes(
             return JSONResponse(
                 {"ok": False, "error": "Internal server error."}, status_code=500
             )
+        finally:
+            if lock_acquired:
+                locks.release_env(branch)
 
     async def api_connect_open(request: Request) -> Response:
         """ "Open": mint a session and land the browser in the env already
@@ -3462,9 +3497,12 @@ def _build_routes(
         host-only there.
         """
         branch = request.path_params["branch"]
+        lock_acquired = False
         try:
             settings = get_settings()
             team = _get_ui_team(request)
+            locks.acquire_env(branch, team.team_id, operation="connect_as_user")
+            lock_acquired = True
             user = (request.query_params.get("user") or "admin").strip() or "admin"
             activity.touch(team, branch)
             result = await _offload(
@@ -3489,13 +3527,20 @@ def _build_routes(
             return response
         except FlowError as e:
             return Response(
-                f"Connect failed: {e}", status_code=400, media_type="text/plain"
+                f"Connect failed: {_public_flow_error(e, context='Connect As')}",
+                status_code=_flow_error_status(e),
+                media_type="text/plain",
             )
-        except Exception as e:
+        except Exception:
             logger.exception("Unexpected error in api_connect_open")
             return Response(
-                f"Connect failed: {e}", status_code=500, media_type="text/plain"
+                "Connect failed: Internal server error.",
+                status_code=500,
+                media_type="text/plain",
             )
+        finally:
+            if lock_acquired:
+                locks.release_env(branch)
 
     async def api_connect_land(request: Request) -> Response:
         """Traefik cross-subdomain Connect As landing, served ON the env host.
