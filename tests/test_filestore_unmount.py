@@ -10,6 +10,7 @@ profile — must be tried first.
 
 from __future__ import annotations
 
+import os
 import subprocess
 from unittest.mock import MagicMock
 
@@ -23,16 +24,21 @@ def _team(workspaces_dir: str):
     return team
 
 
-def _mount_present(monkeypatch) -> None:
-    """Make the merged dir look like a live mountpoint."""
-    monkeypatch.setattr(env_ops.os.path, "isdir", lambda p: True)
+def _mount_present(monkeypatch, merged: str) -> None:
+    """Make the merged dir look like a live mountpoint.
+
+    The directory has to exist: liveness is decided by stat'ing the mountpoint
+    (a stale FUSE mount is the case where that stat fails), not by ``ismount``
+    alone.
+    """
+    os.makedirs(merged, exist_ok=True)
     monkeypatch.setattr(env_ops.os.path, "ismount", lambda p: True)
 
 
 class TestUnmountFilestore:
     def test_tries_clean_umount_first(self, tmp_path, monkeypatch):
         merged = get_filestore_paths("env1", str(tmp_path))["merged"]
-        _mount_present(monkeypatch)
+        _mount_present(monkeypatch, merged)
         calls = []
 
         def fake_run(cmd, **kw):
@@ -49,7 +55,7 @@ class TestUnmountFilestore:
 
     def test_falls_back_through_helpers_to_lazy(self, tmp_path, monkeypatch):
         merged = get_filestore_paths("env1", str(tmp_path))["merged"]
-        _mount_present(monkeypatch)
+        _mount_present(monkeypatch, merged)
         calls = []
 
         def fake_run(cmd, **kw):
@@ -71,7 +77,8 @@ class TestUnmountFilestore:
         ]
 
     def test_noop_when_not_mounted(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(env_ops.os.path, "isdir", lambda p: True)
+        merged = get_filestore_paths("env1", str(tmp_path))["merged"]
+        os.makedirs(merged, exist_ok=True)
         monkeypatch.setattr(env_ops.os.path, "ismount", lambda p: False)
         called = []
         monkeypatch.setattr(env_ops.subprocess, "run", lambda *a, **k: called.append(a))

@@ -1,4 +1,4 @@
-"""System health checks: dev PG, prod PG, Traefik, S3, disk, productions.
+"""System health checks: dev PG, prod PG, Traefik, S3, disk, overlays, productions.
 
 Backs the public ``GET /healthz`` endpoint (uptime-monitor friendly:
 200 all-ok / 503 degraded) and the dashboard's status-bar chips. Results
@@ -91,6 +91,53 @@ def _check_disk(settings: Settings) -> dict[str, Any]:
     }
 
 
+def _check_overlays(settings: Settings) -> dict[str, Any]:
+    """Filestore overlays that are stale, missing, or cannot be inspected.
+
+    A stale overlay is invisible from the outside — the environment's container
+    is up and the dashboard shows it green — while every filestore read inside
+    it fails with ENOTCONN. Surfacing it here is what turns that into something
+    an operator sees before a user does.
+    """
+    from oduflow.docker_ops.env_ops import overlay_mount_issues
+
+    try:
+        issues = overlay_mount_issues(settings)
+    except Exception:  # noqa: BLE001 - health must answer, but never false-green
+        logger.exception("Could not inspect filestore overlays")
+        return {
+            "status": "error",
+            "detail": "filestore overlay scan failed; check server logs",
+            "count": 0,
+            "affected": [],
+        }
+    if not issues:
+        return {"status": "ok", "detail": "", "count": 0, "affected": []}
+
+    # /healthz is public. Report bounded logical identifiers here and keep host
+    # filesystem paths in authenticated operator logs only.
+    public = [
+        {
+            "team_id": issue["team_id"],
+            "env_name": issue["env_name"],
+            "state": issue["state"],
+        }
+        for issue in issues[:20]
+    ]
+    identifiers = [f"{item['team_id']}/{item['env_name']}" for item in public]
+    suffix = (
+        f" (+{len(issues) - len(public)} more)" if len(issues) > len(public) else ""
+    )
+    return {
+        "status": "error",
+        "detail": "filestore overlay needs attention: "
+        + ", ".join(identifiers)
+        + suffix,
+        "count": len(issues),
+        "affected": public,
+    }
+
+
 def _unhealthy_productions(settings: Settings) -> list[str]:
     from oduflow import production_registry
 
@@ -161,6 +208,7 @@ def collect_health(settings: Settings, *, force: bool = False) -> dict[str, Any]
         checks["traefik"] = _check_traefik(client, settings)
     checks["s3"] = _check_s3(settings)
     checks["disk"] = _check_disk(settings)
+    checks["overlays"] = _check_overlays(settings)
 
     if not settings.prod_enabled and client is not None:
         checks["productions"] = _disabled_production_status(client, settings)
@@ -173,8 +221,17 @@ def collect_health(settings: Settings, *, force: bool = False) -> dict[str, Any]
         }
 
     # Critical checks: dev PG always; prod PG only when provisioned; traefik
-    # when in traefik mode; S3 when configured; unhealthy productions.
-    critical = ["dev_pg", "prod_pg", "traefik", "s3", "productions", "docker"]
+    # when in traefik mode; S3 when configured; unhealthy productions; broken
+    # filestore overlays (stale, unexpectedly absent, or unreadable).
+    critical = [
+        "dev_pg",
+        "prod_pg",
+        "traefik",
+        "s3",
+        "productions",
+        "docker",
+        "overlays",
+    ]
     ok = all(
         checks.get(name, {}).get("status") in ("ok", "warn", "off", None)
         for name in critical

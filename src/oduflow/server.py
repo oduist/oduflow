@@ -4787,6 +4787,22 @@ def _ensure_initialized(settings: Settings) -> None:
             os.path.join(team.data_dir, "templates"),
         )
 
+    # Filestore overlays do not survive an Oduflow restart in Docker: the
+    # fuse-overlayfs daemons die with the container's PID namespace while their
+    # mounts live on in the host's. Repair them before anything serves traffic,
+    # so environments do not come back up on a filestore that raises ENOTCONN.
+    try:
+        repaired = env_ops.reconcile_overlay_mounts(settings)
+    except Exception:  # noqa: BLE001 - a repair pass must never block startup
+        logger.warning("Filestore overlay reconciliation failed", exc_info=True)
+    else:
+        if repaired:
+            logger.warning(
+                "Filestore overlay reconciliation: %d repaired, %d need attention",
+                sum(1 for r in repaired if r["repaired"]),
+                sum(1 for r in repaired if not r["repaired"]),
+            )
+
     global _instance_id  # noqa: PLW0603
     from oduflow.telemetry import record_startup
 
