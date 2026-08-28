@@ -304,8 +304,12 @@ class TestImportTemplateFromOdoo:
 
 
 class TestCreateEnvironmentTool:
+    @patch(
+        "oduflow.docker_ops.env_ops.adopt_existing_environment",
+        return_value=None,
+    )
     @patch("oduflow.docker_ops.env_ops.create_environment")
-    def test_create(self, mock_create):
+    def test_create(self, mock_create, mock_adopt):
         mock_create.return_value = {
             "url": "http://localhost:50000",
             "odoo_container": "oduflow-main-odoo",
@@ -323,8 +327,12 @@ class TestCreateEnvironmentTool:
         assert "Database: oduflow_1_main" in result
         assert "Template: none (init from scratch)" in result
 
+    @patch(
+        "oduflow.docker_ops.env_ops.adopt_existing_environment",
+        return_value=None,
+    )
     @patch("oduflow.docker_ops.env_ops.create_environment")
-    def test_create_with_env_vars(self, mock_create):
+    def test_create_with_env_vars(self, mock_create, mock_adopt):
         mock_create.return_value = {
             "url": "http://localhost:50000",
             "odoo_container": "oduflow-main-odoo",
@@ -345,8 +353,12 @@ class TestCreateEnvironmentTool:
         }
         assert "Env vars: FOO=bar, BAZ=qux" in result
 
+    @patch(
+        "oduflow.docker_ops.env_ops.adopt_existing_environment",
+        return_value=None,
+    )
     @patch("oduflow.docker_ops.env_ops.create_environment")
-    def test_create_without_env_vars(self, mock_create):
+    def test_create_without_env_vars(self, mock_create, mock_adopt):
         mock_create.return_value = {
             "url": "http://localhost:50000",
             "odoo_container": "oduflow-main-odoo",
@@ -362,8 +374,12 @@ class TestCreateEnvironmentTool:
         )
         assert mock_create.call_args.kwargs["env_vars"] is None
 
+    @patch(
+        "oduflow.docker_ops.env_ops.adopt_existing_environment",
+        return_value=None,
+    )
     @patch("oduflow.docker_ops.env_ops.create_environment")
-    def test_create_with_short_hostname(self, mock_create):
+    def test_create_with_short_hostname(self, mock_create, mock_adopt):
         mock_create.return_value = {
             "url": "https://dev3.example.com",
             "hostname": "dev3",
@@ -383,6 +399,73 @@ class TestCreateEnvironmentTool:
 
         assert mock_create.call_args.kwargs["hostname"] == "dev3"
         assert "Hostname: dev3" in result
+
+
+class TestCreateEnvironmentAdoptsExisting:
+    @patch("oduflow.docker_ops.env_ops.create_environment")
+    @patch("oduflow.docker_ops.env_ops.adopt_existing_environment")
+    def test_existing_environment_is_returned_without_provisioning(
+        self, mock_adopt, mock_create
+    ):
+        mock_adopt.return_value = {
+            "env_name": "main",
+            "url": "https://dev1.example.com",
+            "git_branch": "main",
+            "odoo_image": "odoo:17.0",
+            "template_name": "myproject",
+            "hostname": "dev1",
+            "odoo_container": "oduflow-main-odoo",
+            "database": "oduflow_1_main",
+            "workspace": "/tmp/ws",
+            "local_path": "",
+            "status": "exited",
+            "started": True,
+        }
+
+        result = _call_tool(
+            "create_environment",
+            branch="main",
+            template_name="myproject",
+            repo_url="https://8.8.8.8/repo.git",
+            odoo_image="odoo:17.0",
+        )
+
+        mock_create.assert_not_called()
+        assert "Environment already exists" in result
+        assert "URL: https://dev1.example.com" in result
+        assert "It was stopped and has been started for you." in result
+        assert 'get_odoo_development_guide(version="17")' in result
+
+    @patch("oduflow.docker_ops.env_ops.create_environment")
+    @patch("oduflow.docker_ops.env_ops.adopt_existing_environment")
+    def test_mismatched_image_and_template_are_reported(self, mock_adopt, mock_create):
+        mock_adopt.return_value = {
+            "env_name": "main",
+            "url": "https://dev1.example.com",
+            "git_branch": "main",
+            "odoo_image": "odoo:17.0",
+            "template_name": "myproject",
+            "hostname": "dev1",
+            "odoo_container": "oduflow-main-odoo",
+            "database": "oduflow_1_main",
+            "workspace": "/tmp/ws",
+            "local_path": "",
+            "status": "running",
+            "started": False,
+        }
+
+        result = _call_tool(
+            "create_environment",
+            branch="main",
+            template_name="other",
+            repo_url="https://8.8.8.8/repo.git",
+            odoo_image="odoo:18.0",
+        )
+
+        mock_create.assert_not_called()
+        assert "you asked for image 'odoo:18.0'" in result
+        assert "you asked for template 'other'" in result
+        assert "It was stopped" not in result
 
 
 class TestUpdateEnvironmentTool:
@@ -520,7 +603,7 @@ class TestAgentInstructionsTool:
 
         assert len(guide) < 16_000
         assert "Per-environment Odoo configuration" in guide
-        assert "Version: 6" in guide
+        assert "Version: 7" in guide
         assert "git push -u origin HEAD" in guide
         assert "cannot see a local-only branch" in guide
         assert "db_maxconn" in guide

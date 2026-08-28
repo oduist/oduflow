@@ -1078,6 +1078,80 @@ def build_env_traefik_labels(
     return labels
 
 
+def adopt_existing_environment(
+    settings: Settings,
+    team: TeamSettings,
+    env_name: str,
+    *,
+    branch: str = "",
+) -> dict[str, Any] | None:
+    """Describe an environment that already exists, starting it when stopped.
+
+    The agent-facing create path calls this first, so asking for an environment
+    that is already provisioned is a fast successful answer ("here is its URL")
+    instead of an error the agent has to recover from — no `list_environments`
+    round-trip needed before every create.
+
+    Returns ``None`` when nothing is provisioned under *env_name*, so the caller
+    goes on to create it for real. A **different git branch is never adopted**:
+    the database, the URL and the running code are shared state, and moving them
+    onto another branch is a decision for the person driving the task
+    (``switch_branch``), not a side effect of a create call.
+    """
+    try:
+        client = get_client()
+    except PrerequisiteNotMetError:
+        # This lookup is an optimisation, not the place to report a dead Docker
+        # daemon — the creation path right after it says that properly.
+        return None
+    odoo_container_name = get_resource_name(
+        env_name, "odoo", settings.prefix, team.team_id
+    )
+    try:
+        container = client.containers.get(odoo_container_name)
+    except docker.errors.NotFound:
+        return None
+    _assert_team_owns(container, settings, team, env_name)
+
+    labels = container.labels
+    current_branch = labels.get("oduflow.git_branch", env_name)
+    if branch and branch != current_branch:
+        raise ConflictError(
+            f"Environment '{env_name}' already exists and tracks branch "
+            f"'{current_branch}', not '{branch}'. Move it with switch_branch "
+            f"(env_name='{env_name}', branch='{branch}'), which keeps its "
+            "database and URL, or delete it first if you want a fresh one."
+        )
+
+    started = container.status != "running"
+    if started:
+        start_environment(settings, env_name, team)
+        container.reload()
+
+    if settings.routing_mode == "traefik":
+        url = f"https://{get_env_hostname(env_name, team.hostname, labels.get(ENV_HOSTNAME_LABEL, ''))}"
+    else:
+        ports = container.ports.get("8069/tcp")
+        url = f"http://{team.hostname}:{ports[0]['HostPort']}" if ports else ""
+
+    return {
+        "env_name": env_name,
+        "url": url,
+        "git_branch": current_branch,
+        "odoo_image": labels.get(settings.image_label, ""),
+        "template_name": labels.get("oduflow.template", "none"),
+        "hostname": get_env_short_hostname(
+            env_name, labels.get(ENV_HOSTNAME_LABEL, "")
+        ),
+        "odoo_container": odoo_container_name,
+        "database": get_db_name(env_name, team.team_id),
+        "workspace": get_workspace_path(env_name, team.workspaces_dir),
+        "local_path": labels.get("oduflow.local_path", ""),
+        "status": container.status,
+        "started": started,
+    }
+
+
 def create_environment(
     settings: Settings,
     team: TeamSettings,

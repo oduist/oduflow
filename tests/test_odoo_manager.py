@@ -166,6 +166,76 @@ class TestDestroySystem:
         net.remove.assert_called_once()
 
 
+class TestAdoptExistingEnvironment:
+    """create_environment answers with the existing environment instead of an
+    error, so an agent can call it first without listing environments."""
+
+    @staticmethod
+    def _container(status="running", branch="main"):
+        container = MagicMock()
+        container.status = status
+        container.labels = {
+            "oduflow.git_branch": branch,
+            "oduflow.template": "myproject",
+            TEST_SETTINGS.image_label: "odoo:17.0",
+            TEST_SETTINGS.team_label: "1",
+        }
+        container.ports = {"8069/tcp": [{"HostPort": "50000"}]}
+        return container
+
+    def test_missing_environment_returns_none(self, mock_docker_client):
+        mock_docker_client.containers.get.side_effect = docker.errors.NotFound("nope")
+        assert (
+            env_ops.adopt_existing_environment(TEST_SETTINGS, TEST_TEAM, "main") is None
+        )
+
+    def test_running_environment_is_described(self, mock_docker_client):
+        mock_docker_client.containers.get.return_value = self._container()
+
+        result = env_ops.adopt_existing_environment(
+            TEST_SETTINGS, TEST_TEAM, "main", branch="main"
+        )
+
+        assert result is not None
+        assert result["url"] == "http://localhost:50000"
+        assert result["git_branch"] == "main"
+        assert result["odoo_image"] == "odoo:17.0"
+        assert result["template_name"] == "myproject"
+        assert result["started"] is False
+
+    @patch("oduflow.docker_ops.env_ops.start_environment")
+    def test_stopped_environment_is_started(self, mock_start, mock_docker_client):
+        mock_docker_client.containers.get.return_value = self._container(
+            status="exited"
+        )
+
+        result = env_ops.adopt_existing_environment(
+            TEST_SETTINGS, TEST_TEAM, "main", branch="main"
+        )
+
+        mock_start.assert_called_once_with(TEST_SETTINGS, "main", TEST_TEAM)
+        assert result is not None
+        assert result["started"] is True
+
+    def test_other_branch_is_refused(self, mock_docker_client):
+        mock_docker_client.containers.get.return_value = self._container(branch="main")
+
+        with pytest.raises(ConflictError, match="switch_branch"):
+            env_ops.adopt_existing_environment(
+                TEST_SETTINGS, TEST_TEAM, "main", branch="feature/x"
+            )
+
+    def test_unreachable_docker_defers_to_the_creation_path(self):
+        with patch(
+            "oduflow.docker_ops.env_ops.get_client",
+            side_effect=PrerequisiteNotMetError("no docker"),
+        ):
+            assert (
+                env_ops.adopt_existing_environment(TEST_SETTINGS, TEST_TEAM, "main")
+                is None
+            )
+
+
 class TestCreateEnvironment:
     @patch(
         "oduflow.extra_addons.generate_odoo_conf",

@@ -1588,6 +1588,16 @@ oduflow call create_environment '{"branch":"feature-login","template_name":"mypr
 
 `env_vars` are added on top of the database connection variables (`HOST`/`USER`/`PASSWORD`). They are stored on the container and can later be replaced with [`update_environment`](#lifecycle-management).
 
+Creating an environment that already exists is not an error over MCP: the call
+returns that environment's URL and details right away, starts it when it was
+stopped, and provisions nothing. So an agent can call `create_environment`
+first, with no `list_environments` lookup before it. The one refusal is a
+**branch mismatch** — an existing environment tracking another branch is left
+alone, because its database and URL are in use; move it deliberately with
+[`switch_branch`](#reusing-an-environment-for-the-next-branch), pick another
+`env_name`, or delete it. The dashboard and the REST API keep the strict
+behaviour and report the conflict instead.
+
 In Traefik mode, a team with `environment_slots = N` numbers the first label of
 its hostname. For `dev.example.com`, the reusable pool is `dev1.example.com`
 through `devN.example.com`. The assignment survives stops and container updates
@@ -1752,7 +1762,13 @@ oduflow call delete_environment feature-login
 
 An environment is not tied for life to the branch it was created from. When a
 branch is finished — PR merged, worktree gone — point the same environment at the
-next branch instead of deleting it and provisioning a new one:
+next branch instead of deleting it and provisioning a new one.
+
+This is the answer to a **full slot pool**, not the default way to start a task.
+While the team still has free `environment_slots`, create a new environment; it
+costs a clone and a template copy and keeps the branches independent. Reuse when
+`create_environment` reports "No free environment slots", or when that specific
+database and URL are worth carrying over:
 
 ```bash
 # Same environment, next branch. The branch must already exist on origin.
@@ -3171,7 +3187,7 @@ All tools are accessible via MCP clients (Cursor, Cline, Amp, etc.) and the CLI 
 | Tool | Lock | Description |
 |---|:---:|---|
 | **Environment Management** | | |
-| `create_environment` | ✓ | Provision an Odoo environment for a branch (clone, DB, container, filestore); optional `hostname` selects a short Traefik hostname and `env_vars` injects container environment variables |
+| `create_environment` | ✓ | Provision an Odoo environment for a branch (clone, DB, container, filestore); an environment that already exists is returned as is (started if stopped) instead of raising, unless it tracks another branch; optional `hostname` selects a short Traefik hostname and `env_vars` injects container environment variables |
 | `delete_environment` | ✓ | Tear down all resources for a branch |
 | `list_environments` | | List all managed environments with status and URLs |
 | `get_environment_info` | | Full environment details: DB name, URL, repo, image, template, extra addons, workspace, container status, CPU/RAM stats |
@@ -3179,7 +3195,7 @@ All tools are accessible via MCP clients (Cursor, Cline, Amp, etc.) and the CLI 
 | `stop_environment` | | Stop a running environment |
 | `restart_environment` | | Restart the Odoo container |
 | `update_environment` | ✓ | Re-create the container, preserving DB and filestore; optional `odoo_image` switches the image and `env_vars` replaces the container environment variables |
-| `switch_branch` | ✓ | Point an existing environment at another branch and apply the difference, keeping its database, filestore, hostname and URL — reuse instead of delete-and-create; optional `new_name` renames the environment in the same operation (its scoped MCP endpoint moves with the name) |
+| `switch_branch` | ✓ | Point an existing environment at another branch and apply the difference, keeping its database, filestore, hostname and URL — the way to work when the team is out of environment slots; optional `new_name` renames the environment in the same operation (its scoped MCP endpoint moves with the name) |
 | **Odoo Operations** | | |
 | `pull_and_apply` | ✓ | Git pull + smart analysis → auto install/upgrade/restart |
 | `install_odoo_modules` | ✓ | Install Odoo modules (`-i`) |
