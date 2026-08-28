@@ -88,6 +88,21 @@ Authorization: Bearer secret-token-team-1
 
 This works whether or not `oauth_base_url` is configured.
 
+The built-in remote CLI uses the same Bearer authentication and live MCP tool
+schemas:
+
+```bash
+export ODUFLOW_MCP_URL="https://your-server.com/mcp"
+export ODUFLOW_MCP_TOKEN="secret-token-team-1"
+
+oduflow client list_environments
+```
+
+`oduflow client` does not use the dashboard's `ui_password`. For an automation
+that needs only one development environment, prefer its scoped `/mcp/<env>` URL
+and per-environment Secret Key instead of the team token. The server then hides
+team-wide tools and injects the environment target itself.
+
 ## Scoped single-environment access (`/mcp/<env>`)
 
 The team `auth_token` unlocks the **full** tool surface — create, delete, and stop
@@ -127,7 +142,13 @@ environment's URL, so the credential itself is the boundary.
 
 In the web dashboard, open an environment's **More → MCP Access**. The dialog
 shows the `/mcp/<env>` URL and the Secret Key (with copy buttons) ready to paste
-into an agent's MCP configuration.
+into an agent's MCP configuration or the built-in remote CLI:
+
+```bash
+export ODUFLOW_MCP_URL="https://your-server.com/mcp/<env>"
+export ODUFLOW_MCP_TOKEN="<environment-secret-key>"
+oduflow client get_environment_info
+```
 
 Environments created before this feature carry no Secret Key (Docker labels can't
 be added to a live container); recreate the environment to issue one. Recreating

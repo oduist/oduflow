@@ -9,7 +9,7 @@ import pathlib
 import re
 import sys
 import warnings
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from typing import Any, ParamSpec, TypeVar, cast
 
 # Suppress a third-party deprecation warning emitted at import time by fastmcp's
@@ -6005,8 +6005,23 @@ def _get_version() -> str:
 # =============================================================================
 
 
+def _dispatch_client(argv: Sequence[str]) -> None:
+    """Run the remote MCP client and turn its exit code into a process exit."""
+    from oduflow.client import run_client
+
+    exit_code = run_client(list(argv))
+    if exit_code:
+        raise SystemExit(exit_code)
+
+
 def _run_cli() -> None:
     """Entry point for the Oduflow MCP server."""
+    # The remote client accepts flags defined by the live server's tool schemas,
+    # so the static top-level parser must not try to interpret them first.
+    if len(sys.argv) > 1 and sys.argv[1] == "client":
+        _dispatch_client(sys.argv[2:])
+        return
+
     parser = argparse.ArgumentParser(
         prog="oduflow", description="Oduflow — Odoo dev environment manager"
     )
@@ -6221,6 +6236,17 @@ def _run_cli() -> None:
         "call_args", nargs="*", default=[], help="Tool name and arguments"
     )
 
+    p_client = sub.add_parser(
+        "client",
+        help="Call tools on a remote Oduflow MCP server",
+        add_help=False,
+    )
+    p_client.add_argument(
+        "client_args",
+        nargs=argparse.REMAINDER,
+        help="client options, remote tool name, and tool arguments",
+    )
+
     # --- Declarative stacks ---
     p_stack = sub.add_parser(
         "stack", help="Validate, plan, apply, or inspect a declarative Stack"
@@ -6255,6 +6281,13 @@ def _run_cli() -> None:
 
     if args.command == "call":
         _run_call(args.call_args)
+        return
+
+    # Reached only when a global option precedes the subcommand, as in
+    # "oduflow -t http client list"; the fast path at the top of _run_cli
+    # handles the plain "oduflow client ..." form.
+    if args.command == "client":
+        _dispatch_client(args.client_args)
         return
 
     if args.command == "stack" and args.stack_command == "validate":

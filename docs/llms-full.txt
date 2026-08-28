@@ -303,7 +303,8 @@ sanitization scripts followed by project scripts from
 
     ---
 
-    Every MCP tool is one `oduflow call` away from your terminal and CI pipelines.
+    Use `oduflow call` for local in-process execution or `oduflow client` for a
+    remote authenticated server from terminals, scripts, and CI pipelines.
 
     [:octicons-arrow-right-24: CLI Reference](cli.md)
 
@@ -381,7 +382,8 @@ The agent writes code, installs the module, reads the traceback, fixes the error
 - **Hosted coding agent** — an opt-in, per-team AI agent (Claude Code / OpenAI Codex / OpenCode) with a browser **Agent Chat** and **Agent CLI**, driving environments through MCP (see [Coding Agent](agent.md))
 - **Web dashboard** — a built-in HTML dashboard for managing environments from a browser
 - **REST API** — full JSON API for programmatic control from any HTTP client
-- **CLI tools** — every MCP tool can be called directly from the command line via `oduflow call`
+- **CLI tools** — call every MCP tool locally via `oduflow call` or remotely via
+  the schema-driven `oduflow client`
 - **Dual transport** — stdio (default, for local MCP clients) and HTTP (Streamable HTTP, for remote/multi-user)
 
 ---
@@ -3246,7 +3248,9 @@ semantics.
 
 ![Agent Instructions](img/agent_instructions.png)
 
-All tools are accessible via MCP clients (Cursor, Cline, Amp, etc.) and the CLI (`oduflow call`). A subset is also available via the [REST API](web-api.md).
+All tools are accessible via MCP clients (Cursor, Cline, Amp, etc.), locally via
+`oduflow call`, and on a remote Oduflow server via `oduflow client`. A subset is
+also available via the [REST API](web-api.md).
 
 | Tool | Lock | Description |
 |---|:---:|---|
@@ -3583,6 +3587,91 @@ oduflow call create_service '{"name":"vpn","image":"linuxserver/wireguard","port
 # Type coercion is automatic: int, bool, and float parameters are cast from strings
 oduflow call get_environment_logs dev 500
 ```
+
+## Remote Tool Invocation
+
+`oduflow client` calls the same registered tools on a running Oduflow HTTP
+server through FastMCP. Unlike `oduflow call`, it does not load the local
+`oduflow.toml`, access local Docker, or execute server functions in the client
+process.
+
+Configure the exact full or scoped MCP endpoint and its Bearer credential:
+
+```bash
+export ODUFLOW_MCP_URL="https://oduflow.example.com/mcp"
+export ODUFLOW_MCP_TOKEN="<team-auth-token>"
+
+# Tools advertised by this endpoint
+oduflow client list
+oduflow client list --verbose
+
+# Read live help generated from a tool's input schema
+oduflow client create_environment --help
+
+# Call team-wide tools
+oduflow client list_environments
+oduflow client create_environment \
+  --repo-url https://github.com/owner/addons.git \
+  --odoo-image odoo:19.0 \
+  --template-name myproject
+```
+
+The client reads the live `tools/list` response, converts kebab-case flags to
+MCP parameter names, validates basic scalar/JSON types, and then calls the tool.
+A single JSON object is also accepted for complex arguments:
+
+```bash
+oduflow client create_service '{
+  "name": "redis",
+  "image": "redis:7",
+  "port": 6379
+}'
+```
+
+Client options must appear before the tool name:
+
+```bash
+oduflow client --timeout 1200 --json list_environments
+oduflow client --env demo pull_and_apply --upgrade sale_custom --strict
+```
+
+When a remote schema requires `env_name`, the client uses `--env`, then
+`ODUFLOW_ENV_NAME`, then the current Git branch. When `create_environment`
+requires `branch`, it uses the current Git branch unless `--branch` is supplied;
+other tools that take a required branch, such as `create_production`, always
+need it spelled out.
+An explicit environment override is useful when an environment name differs
+from its source branch.
+
+For confined development access, use the environment's scoped endpoint and
+Secret Key from **More → MCP Access**:
+
+```bash
+export ODUFLOW_MCP_URL="https://oduflow.example.com/mcp/feature-x"
+export ODUFLOW_MCP_TOKEN="<environment-secret-key>"
+
+# env_name is absent from the scoped schema and injected by the server
+oduflow client get_environment_info
+oduflow client pull_and_apply --upgrade sale_custom --strict
+oduflow client run_odoo_tests --modules sale_custom
+```
+
+The scoped server advertises only its allowlisted single-environment tools, so
+team-wide commands such as `list_environments` and `create_environment` are not
+available. The client does not maintain a second authorization list; the live
+server schema remains authoritative.
+
+For scripts and CI, `--json` emits the complete MCP result and tool failures
+return a non-zero exit code. To avoid storing a token in the environment, pass
+it on standard input:
+
+```bash
+printf '%s\n' "$TOKEN_FROM_SECRET_STORE" | \
+  oduflow client --token-stdin --json list_environments
+```
+
+In summary, `oduflow call <tool>` is local in-process execution, while
+`oduflow client <tool>` is remote authenticated MCP execution.
 
 ---
 
@@ -4024,6 +4113,21 @@ Authorization: Bearer secret-token-team-1
 
 This works whether or not `oauth_base_url` is configured.
 
+The built-in remote CLI uses the same Bearer authentication and live MCP tool
+schemas:
+
+```bash
+export ODUFLOW_MCP_URL="https://your-server.com/mcp"
+export ODUFLOW_MCP_TOKEN="secret-token-team-1"
+
+oduflow client list_environments
+```
+
+`oduflow client` does not use the dashboard's `ui_password`. For an automation
+that needs only one development environment, prefer its scoped `/mcp/<env>` URL
+and per-environment Secret Key instead of the team token. The server then hides
+team-wide tools and injects the environment target itself.
+
 ## Scoped single-environment access (`/mcp/<env>`)
 
 The team `auth_token` unlocks the **full** tool surface — create, delete, and stop
@@ -4063,7 +4167,13 @@ environment's URL, so the credential itself is the boundary.
 
 In the web dashboard, open an environment's **More → MCP Access**. The dialog
 shows the `/mcp/<env>` URL and the Secret Key (with copy buttons) ready to paste
-into an agent's MCP configuration.
+into an agent's MCP configuration or the built-in remote CLI:
+
+```bash
+export ODUFLOW_MCP_URL="https://your-server.com/mcp/<env>"
+export ODUFLOW_MCP_TOKEN="<environment-secret-key>"
+oduflow client get_environment_info
+```
 
 Environments created before this feature carry no Secret Key (Docker labels can't
 be added to a live container); recreate the environment to issue one. Recreating

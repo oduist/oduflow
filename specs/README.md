@@ -69,6 +69,7 @@ precursors).
 | [0048](0048-reusable-environment-hostname-slots.md) | 2026-08-16 | Reusable environment hostname slots decouple public routing from branch identity |
 | [0049](0049-environment-reuse-by-branch-switch.md) | 2026-08-17 | Environment reuse: the branch becomes a mutable property switched in place |
 | [0050](0050-granular-resource-locks.md) | 2026-08-17 | Resource-scoped locks: the team lock stops being the catch-all |
+| [0051](0051-remote-mcp-cli-client.md) | 2026-08-29 | Built-in remote CLI over the live FastMCP tool surface |
 
 ## Design docs
 
