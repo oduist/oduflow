@@ -79,7 +79,13 @@ from oduflow.locking import (
     service_preset_lock_key,
     volume_lock_key,
 )
-from oduflow.naming import parse_env_vars, validate_template_name
+from oduflow.naming import (
+    PROD_ENV_PREFIX,
+    parse_env_vars,
+    slugify_branch,
+    validate_env_name,
+    validate_template_name,
+)
 from oduflow.settings import Settings, TeamSettings
 
 logger = logging.getLogger("oduflow")
@@ -387,6 +393,17 @@ def _error_response(e: FlowError) -> JSONResponse:
         {"ok": False, "error": _public_flow_error(e)},
         status_code=_flow_error_status(e),
     )
+
+
+def _validate_dev_env_name(env_name: str) -> str:
+    """Validate a dev environment name without entering production namespace."""
+    validate_env_name(env_name)
+    if slugify_branch(env_name).startswith(PROD_ENV_PREFIX):
+        raise ValueError(
+            f"'{env_name}' is a production environment. Use the production "
+            "deployment workflow instead of dev module operations."
+        )
+    return env_name
 
 
 async def _offload(func: Callable[..., Any], /, *args: Any, **kwargs: Any) -> Any:
@@ -959,6 +976,145 @@ def _build_routes(
             return _error_response(e)
         except Exception:
             logger.exception("Unexpected error in api_sync")
+            return JSONResponse(
+                {"ok": False, "error": "Internal server error."}, status_code=500
+            )
+        finally:
+            locks.release_env(branch)
+
+    def api_modules(request: Request) -> JSONResponse:
+        """Installed modules, for the dashboard's Upgrade modules picker."""
+        try:
+            branch = _validate_dev_env_name(request.path_params["branch"])
+            team = _get_ui_team(request)
+            modules = odoo_ops.list_installed_module_records(
+                get_settings(), team, branch
+            )
+            return JSONResponse({"ok": True, "modules": modules})
+        except FlowError as e:
+            return _error_response(e)
+        except ValueError as e:
+            return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
+        except Exception:
+            logger.exception("Unexpected error in api_modules")
+            return JSONResponse(
+                {"ok": False, "error": "Internal server error."}, status_code=500
+            )
+
+    async def api_modules_apply(request: Request) -> JSONResponse:
+        try:
+            branch = _validate_dev_env_name(request.path_params["branch"])
+        except ValueError as e:
+            return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
+        team = _get_ui_team(request)
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        if not isinstance(body, dict):
+            return JSONResponse(
+                {"ok": False, "error": "Request body must be a JSON object."},
+                status_code=400,
+            )
+        raw_action = body.get("action")
+        action = raw_action.strip() if isinstance(raw_action, str) else ""
+        if action not in {"install", "upgrade"}:
+            return JSONResponse(
+                {"ok": False, "error": "Action must be 'install' or 'upgrade'."},
+                status_code=400,
+            )
+        raw_modules = body.get("modules", "")
+        if not isinstance(raw_modules, str):
+            return JSONResponse(
+                {
+                    "ok": False,
+                    "error": "Modules must be a comma-separated string.",
+                },
+                status_code=400,
+            )
+        modules = [m.strip() for m in raw_modules.split(",")]
+        modules = [m for m in modules if m]
+        if not modules:
+            return JSONResponse(
+                {"ok": False, "error": "At least one module name is required."},
+                status_code=400,
+            )
+        try:
+            locks.acquire_env(branch, team.team_id)
+        except BusyError as e:
+            return _error_response(e)
+        try:
+            settings = get_settings()
+            activity.touch(team, branch)
+            operation = (
+                odoo_ops.install_odoo_modules
+                if action == "install"
+                else odoo_ops.upgrade_odoo_modules
+            )
+            result = await _offload(operation, settings, team, branch, *modules)
+            exit_code = result["exit_code"]
+            applied = result.get("modules", modules)
+            restart_warning = ""
+            container_restarted: bool | None = None
+            # A failed run is still a completed request: the Odoo log is the
+            # answer the developer came for, so it goes to the result modal
+            # instead of a one-line toast.
+            if exit_code == 0:
+                completed_verb = "Installed" if action == "install" else "Upgraded"
+                try:
+                    await _offload(env_ops.restart_environment, settings, branch, team)
+                    container_restarted = True
+                    message = (
+                        f"{completed_verb}: {', '.join(applied)}. "
+                        "Odoo container restarted."
+                    )
+                except FlowError as e:
+                    container_restarted = False
+                    restart_error = _public_flow_error(
+                        e, context=f"Restart after module {action} in {branch}"
+                    )
+                    restart_warning = (
+                        f"Modules were {action}d, but the Odoo container could not "
+                        f"be restarted. {restart_error}"
+                    )
+                    message = f"{completed_verb}: {', '.join(applied)}. Restart failed."
+                except Exception:
+                    container_restarted = False
+                    logger.exception(
+                        "Unexpected restart error after module %s in %s",
+                        action,
+                        branch,
+                    )
+                    restart_warning = (
+                        f"Modules were {action}d, but the Odoo container could not "
+                        "be restarted. Check server logs for details."
+                    )
+                    message = f"{completed_verb}: {', '.join(applied)}. Restart failed."
+            else:
+                verb = "Install" if action == "install" else "Upgrade"
+                message = f"{verb} failed: {', '.join(applied)}."
+            payload: dict[str, Any] = {
+                "action": action,
+                "message": message,
+                "exit_code": exit_code,
+                "output": result.get("output", ""),
+                "modules_attempted": applied,
+            }
+            if exit_code == 0:
+                success_key = (
+                    "modules_installed" if action == "install" else "modules_upgraded"
+                )
+                payload[success_key] = applied
+                payload["container_restarted"] = container_restarted
+                if restart_warning:
+                    payload["warnings"] = [restart_warning]
+            return JSONResponse({"ok": True, "result": payload})
+        except FlowError as e:
+            return _error_response(e)
+        except ValueError as e:
+            return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
+        except Exception:
+            logger.exception("Unexpected error in api_modules_apply")
             return JSONResponse(
                 {"ok": False, "error": "Internal server error."}, status_code=500
             )
@@ -5014,6 +5170,12 @@ def _build_routes(
         Route("/api/environments/{branch:path}/stop", api_stop, methods=["POST"]),
         Route("/api/environments/{branch:path}/restart", api_restart, methods=["POST"]),
         Route("/api/environments/{branch:path}/sync", api_sync, methods=["POST"]),
+        Route("/api/environments/{branch:path}/modules", api_modules, methods=["GET"]),
+        Route(
+            "/api/environments/{branch:path}/modules",
+            api_modules_apply,
+            methods=["POST"],
+        ),
         Route(
             "/api/environments/{branch:path}/switch-branch",
             api_switch_branch,

@@ -24,6 +24,9 @@ _DASHBOARD = (
 def _js_function(source: str, name: str) -> str:
     """Extract one top-level dashboard function for a focused Node harness."""
     start = source.index(f"function {name}(")
+    async_start = start - len("async ")
+    if async_start >= 0 and source[async_start:start] == "async ":
+        start = async_start
     brace = source.index("{", start)
     depth = 0
     for index in range(brace, len(source)):
@@ -207,6 +210,84 @@ def test_templates_tab_exposes_pull_import_from_odoo(tmp_path):
     assert "API_TEMPLATES + '/import-from-odoo'" in dashboard
     assert "HTTP URLs are allowed" in dashboard
     assert re.search(r"'import-from-odoo-modal':\s*closeImportFromOdooModal", dashboard)
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="Node.js is not installed")
+def test_upgrade_module_picker_discards_stale_environment_responses():
+    dashboard = _DASHBOARD.read_text(encoding="utf-8")
+    functions = "\n".join(
+        _js_function(dashboard, name)
+        for name in (
+            "openUpgradeModules",
+            "_upgradeModulesRequestIsCurrent",
+            "closeUpgradeModules",
+        )
+    )
+    harness = (
+        functions
+        + r"""
+var API = '/api/environments';
+var _upgradeModulesEnv = null;
+var _upgradeModules = [];
+var _upgradeSelected = new Set();
+var _upgradeModulesRequest = 0;
+var modalShown = false;
+var pending = {};
+var renders = [];
+var elements = {
+  'upgrade-modules-title': {textContent: ''},
+  'upgrade-modules-filter': {value: '', focus: function () {}},
+  'upgrade-modules-list': {innerHTML: ''},
+  'upgrade-modules-count': {textContent: ''},
+  'upgrade-modules-shown': {textContent: ''}
+};
+var document = {getElementById: function (id) { return elements[id]; }};
+function showModal() { modalShown = true; }
+function hideModal() { modalShown = false; }
+function _modalShown() { return modalShown; }
+function fetch(url) {
+  return new Promise(function (resolve) { pending[url] = resolve; });
+}
+async function readResult(value) { return value; }
+function renderUpgradeModules() {
+  renders.push({
+    env: _upgradeModulesEnv,
+    modules: _upgradeModules.map(function (item) { return item.name; })
+  });
+}
+
+(async function () {
+  var first = openUpgradeModules('alpha');
+  closeUpgradeModules();
+  var second = openUpgradeModules('beta');
+
+  pending['/api/environments/beta/modules']({
+    ok: true,
+    modules: [{name: 'beta_module', version: '1'}]
+  });
+  await second;
+  pending['/api/environments/alpha/modules']({
+    ok: true,
+    modules: [{name: 'alpha_module', version: '1'}]
+  });
+  await first;
+
+  process.stdout.write(JSON.stringify({
+    env: _upgradeModulesEnv,
+    modules: _upgradeModules.map(function (item) { return item.name; }),
+    renders: renders
+  }));
+})();
+"""
+    )
+
+    result = _run_node(harness)
+
+    assert result == {
+        "env": "beta",
+        "modules": ["beta_module"],
+        "renders": [{"env": "beta", "modules": ["beta_module"]}],
+    }
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="Node.js is not installed")

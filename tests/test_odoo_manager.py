@@ -2304,6 +2304,43 @@ class TestRunDbQuery:
 
         db_container.exec_run.assert_not_called()
 
+    def test_fixed_module_listing_supports_legacy_credentials(
+        self, tmp_path, mock_docker_client
+    ):
+        team = TeamSettings(team_id="1", data_dir=str(tmp_path))
+        db_container = MagicMock()
+        db_container.exec_run.return_value = (
+            0,
+            b'name,latest_version\nbase,18.0.1.3\nsale,"18.0,custom"\n',
+        )
+        mock_docker_client.containers.get.return_value = db_container
+
+        result = odoo_ops.list_installed_module_records(TEST_SETTINGS, team, "main")
+
+        assert result == [
+            {"name": "base", "version": "18.0.1.3"},
+            {"name": "sale", "version": "18.0,custom"},
+        ]
+        command = db_container.exec_run.call_args.args[0]
+        assert command[:6] == [
+            "psql",
+            "-U",
+            TEST_SETTINGS.db_user,
+            "-d",
+            "oduflow_1_main",
+            "--csv",
+        ]
+        assert "state = 'installed'" in command[-1]
+
+    @pytest.mark.parametrize("env_name", ["prod-erp", "Prod-erp", "pr.od-erp"])
+    def test_fixed_module_listing_rejects_production_aliases(
+        self, env_name, mock_docker_client
+    ):
+        with pytest.raises(ValueError, match="production environment"):
+            odoo_ops.list_installed_module_records(TEST_SETTINGS, TEST_TEAM, env_name)
+
+        mock_docker_client.containers.get.assert_not_called()
+
 
 class TestInstallModules:
     @patch(
