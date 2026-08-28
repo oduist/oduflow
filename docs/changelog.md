@@ -28,6 +28,17 @@
 
 ### Fixes
 
+- **Auto-installed modules are now part of atomic environment provisioning** —
+  creation no longer reports success when the serving Odoo registry misses its
+  120-second readiness deadline or the requested module install fails. The
+  readiness probe now preserves its last error and includes a bounded Odoo log
+  tail, required setup failures stop before sanitization and roll back the new
+  environment, and a final database-bound registry check runs after the
+  post-sanitization restart. This prevents an environment from surviving with
+  requested modules missing or with their neutralization SQL skipped. Module
+  names are validated up front, so a typo is rejected before anything is
+  provisioned instead of after the rollback discards it.
+
 - **PostgreSQL access follows the real Docker networks** — on every startup,
   Oduflow now reads the actual IPAM subnets of its shared and per-team networks
   and reconciles a marked block in the active `pg_hba.conf` for both development
