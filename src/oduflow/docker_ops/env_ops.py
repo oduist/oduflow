@@ -2874,6 +2874,7 @@ def list_environments(settings: Settings, team: TeamSettings) -> list[dict[str, 
         rec = records.get(env_name, {})
         env["last_activity"] = rec.get("last_activity", "")
         env["stopped_at"] = rec.get("stopped_at", "")
+        env["stopped_by"] = rec.get("stopped_by", "")
         env["auto_stopped"] = rec.get("stopped_by") == "auto"
 
     return list(envs.values())
@@ -3164,6 +3165,13 @@ def get_environment_info(
             result["odoo"]["mem_percent"] = stats["mem_percent"]
     except docker.errors.NotFound:
         pass
+
+    rec = activity.get_all(team).get(env_name, {})
+    result["protected"] = is_protected(settings, team, env_name)
+    result["last_activity"] = rec.get("last_activity", "")
+    result["stopped_at"] = rec.get("stopped_at", "")
+    result["stopped_by"] = rec.get("stopped_by", "")
+    result["auto_stopped"] = rec.get("stopped_by") == "auto"
 
     try:
         db_container = client.containers.get(settings.shared_db_container)

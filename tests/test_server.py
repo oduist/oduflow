@@ -505,6 +505,53 @@ class TestListEnvironmentsTool:
         assert "Live-mount: /Users/dev/addons" in result
         assert "Repo:" not in result
 
+    @patch("oduflow.docker_ops.env_ops.list_environments")
+    def test_list_shows_reuse_metadata(self, mock_list):
+        mock_list.return_value = [
+            {
+                "env_name": "dev1",
+                "git_branch": "feature/finished",
+                "status": "stopped",
+                "url": None,
+                "created_at": "2026-08-20T08:00:00+00:00",
+                "last_activity": "2026-08-26T09:30:00+00:00",
+                "stopped_at": "2026-08-27T09:30:00+00:00",
+                "stopped_by": "auto",
+                "protected": True,
+                "note": "Reserved for QA\nDo not reuse",
+                "stack": "demo",
+                "containers": [],
+            }
+        ]
+
+        result = _call_tool("list_environments")
+
+        assert "Git Branch: feature/finished" in result
+        assert "Created: 2026-08-20T08:00:00+00:00" in result
+        assert "Last Activity: 2026-08-26T09:30:00+00:00" in result
+        assert "Stopped At: 2026-08-27T09:30:00+00:00 (auto)" in result
+        assert "Protected: yes" in result
+        assert "Stack: demo" in result
+        assert "Note: Reserved for QA" in result
+        assert "Do not reuse" in result
+
+    @patch("oduflow.docker_ops.env_ops.list_environments")
+    def test_list_marks_missing_activity_as_unknown(self, mock_list):
+        mock_list.return_value = [
+            {
+                "env_name": "legacy",
+                "status": "stopped",
+                "containers": [],
+            }
+        ]
+
+        result = _call_tool("list_environments")
+
+        assert "Git Branch: legacy" in result
+        assert "Last Activity: unknown" in result
+        assert "Stopped At: unknown (unknown)" in result
+        assert "Protected: no" in result
+
 
 class TestAgentInstructionsTool:
     def test_bundled_guide_is_compact_and_workflow_focused(self):
@@ -520,7 +567,9 @@ class TestAgentInstructionsTool:
 
         assert len(guide) < 16_000
         assert "Per-environment Odoo configuration" in guide
-        assert "Version: 6" in guide
+        assert "Version: 7" in guide
+        assert "Never invent `#.` or `#:` metadata" in guide
+        assert "An empty `gh pr list` result proves neither" in guide
         assert "git push -u origin HEAD" in guide
         assert "cannot see a local-only branch" in guide
         assert "db_maxconn" in guide
@@ -588,6 +637,10 @@ class TestInfoTool:
             "repo_url": "https://github.com/example/repo.git",
             "odoo_image": "odoo:17.0",
             "template_name": "default",
+            "created_at": "2026-08-20T08:00:00+00:00",
+            "last_activity": "2026-08-27T10:00:00+00:00",
+            "protected": True,
+            "note": "Reserved for QA",
             "extra_addons": {},
             "git_user": "",
             "odoo": {"status": "running", "running": True},
@@ -595,6 +648,11 @@ class TestInfoTool:
         }
         result = _call_tool("get_environment_info", env_name="main")
         assert "All containers running" in result
+        assert "Git Branch: main" in result
+        assert "Created: 2026-08-20T08:00:00+00:00" in result
+        assert "Last Activity: 2026-08-27T10:00:00+00:00" in result
+        assert "Protected: yes" in result
+        assert "Note: Reserved for QA" in result
         assert "Database: oduflow_1_main" in result
         assert "DB (shared)" in result
 

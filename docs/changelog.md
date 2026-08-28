@@ -26,6 +26,25 @@
   through the line-based create field. In template Settings, such values are
   shown read-only and pointed at the raw JSON editor.
 
+### Fixes
+
+- **Environment listings now carry the evidence needed for safe slot reuse** —
+  the MCP `list_environments` output previously discarded lifecycle metadata
+  that the backend already tracked and the dashboard already showed. It now
+  reports the current git branch, creation and last-activity timestamps,
+  stopped time and source, protection, Stack ownership and operator note;
+  legacy records explicitly say `Last Activity: unknown`. The same lifecycle
+  metadata is available from `get_environment_info`, and the agent guide no
+  longer treats an empty GitHub PR result as proof that a slot is reusable.
+
+- **Translation instructions start with Odoo's exporter** — agents are now told
+  to run `export_module_translations` before creating a `.po`, never invent
+  `#.`/`#:` metadata by hand, and verify the loaded result with
+  `translation_status` after the module upgrade. The guide also warns that
+  re-exporting over a catalogue that has not been imported overwrites it with
+  the database's contents. This makes the existing silent-zero-import detector
+  preventive instead of merely diagnostic.
+
 ## v1.71.0
 
 ### Features

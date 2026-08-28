@@ -1406,9 +1406,21 @@ def list_environments(ctx: Context | None = None) -> str:
         if env.get("url"):
             status_line += f" - {env['url']}"
         output += status_line + "\n"
-        git_branch = env.get("git_branch", "")
-        if git_branch and git_branch != env["env_name"]:
-            output += f"  Git Branch: {git_branch}\n"
+        output += f"  Git Branch: {env.get('git_branch') or env['env_name']}\n"
+        if env.get("created_at"):
+            output += f"  Created: {env['created_at']}\n"
+        output += f"  Last Activity: {env.get('last_activity') or 'unknown'}\n"
+        if env["status"] == "stopped" or env.get("stopped_at"):
+            stopped_at = env.get("stopped_at") or "unknown"
+            stopped_by = env.get("stopped_by") or "unknown"
+            output += f"  Stopped At: {stopped_at} ({stopped_by})\n"
+        output += f"  Protected: {'yes' if env.get('protected') else 'no'}\n"
+        if env.get("stack"):
+            output += f"  Stack: {env['stack']}\n"
+        note = str(env.get("note") or "").strip()
+        if note:
+            note = note.replace("\n", "\n        ")
+            output += f"  Note: {note}\n"
         if env.get("db_name"):
             output += f"  Database: {env['db_name']}\n"
         if env.get("odoo_image"):
@@ -1618,9 +1630,24 @@ def get_environment_info(env_name: str, ctx: Context | None = None) -> str:
         else "Some containers not running"
     )
     lines = [f"Environment Info for '{env_name}': {overall}"]
-    git_branch = info.get("git_branch", "")
-    if git_branch and git_branch != env_name:
-        lines.append(f"Git Branch: {git_branch}")
+    lines.append(f"Git Branch: {info.get('git_branch') or env_name}")
+    if info.get("created_at"):
+        lines.append(f"Created: {info['created_at']}")
+    lines.append(f"Last Activity: {info.get('last_activity') or 'unknown'}")
+    odoo_status = info.get("odoo", {})
+    if info.get("stopped_at") or (
+        not odoo_status.get("running") and odoo_status.get("status") != "not found"
+    ):
+        stopped_at = info.get("stopped_at") or "unknown"
+        stopped_by = info.get("stopped_by") or "unknown"
+        lines.append(f"Stopped At: {stopped_at} ({stopped_by})")
+    lines.append(f"Protected: {'yes' if info.get('protected') else 'no'}")
+    if info.get("stack"):
+        lines.append(f"Stack: {info['stack']}")
+    note = str(info.get("note") or "").strip()
+    if note:
+        note = note.replace("\n", "\n      ")
+        lines.append(f"Note: {note}")
     lines.append(f"Database: {info['db_name']}")
     if info.get("url"):
         lines.append(f"URL: {info['url']}")
