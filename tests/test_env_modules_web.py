@@ -6,7 +6,7 @@ import pytest
 from starlette.applications import Starlette
 from starlette.testclient import TestClient
 
-from oduflow.errors import BusyError, NotFoundError
+from oduflow.errors import BusyError, ExternalCommandError, NotFoundError
 from oduflow.locking import LockManager
 from oduflow.settings import Settings, TeamSettings
 from oduflow.web_ui import mount_web_ui
@@ -77,8 +77,37 @@ def test_install_restarts_the_container_on_success(tmp_path):
     assert body["modules_installed"] == ["sale"]
     assert body["modules_attempted"] == ["sale"]
     assert body["exit_code"] == 0
+    assert body["container_restarted"] is True
     assert install.call_args.args[3:] == ("sale", "crm")
     assert restart.called
+
+
+def test_install_reports_success_when_the_followup_restart_fails(tmp_path):
+    client = _client(tmp_path)
+    result = {"modules": ["sale"], "exit_code": 0, "output": "Modules loaded."}
+
+    with (
+        patch("oduflow.web_ui.odoo_ops.install_odoo_modules", return_value=result),
+        patch(
+            "oduflow.web_ui.env_ops.restart_environment",
+            side_effect=ExternalCommandError("docker restart", 1, "secret output"),
+        ),
+    ):
+        response = client.post(
+            "/api/environments/feature-x/modules",
+            json={"action": "install", "modules": "sale"},
+        )
+
+    assert response.status_code == 200
+    body = response.json()["result"]
+    assert body["modules_installed"] == ["sale"]
+    assert body["modules_attempted"] == ["sale"]
+    assert body["container_restarted"] is False
+    assert body["exit_code"] == 0
+    assert body["message"] == "Installed: sale. Restart failed."
+    assert "could not be restarted" in body["warnings"][0]
+    assert "Check server logs" in body["warnings"][0]
+    assert "secret output" not in str(body)
 
 
 def test_failed_install_returns_the_odoo_output_without_restarting(tmp_path):

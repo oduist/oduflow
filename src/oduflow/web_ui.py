@@ -1053,12 +1053,38 @@ def _build_routes(
             result = await _offload(operation, settings, team, branch, *modules)
             exit_code = result["exit_code"]
             applied = result.get("modules", modules)
+            restart_warning = ""
+            container_restarted: bool | None = None
             # A failed run is still a completed request: the Odoo log is the
             # answer the developer came for, so it goes to the result modal
             # instead of a one-line toast.
             if action == "install" and exit_code == 0:
-                await _offload(env_ops.restart_environment, settings, branch, team)
-                message = f"Installed: {', '.join(applied)}. Odoo container restarted."
+                try:
+                    await _offload(env_ops.restart_environment, settings, branch, team)
+                    container_restarted = True
+                    message = (
+                        f"Installed: {', '.join(applied)}. Odoo container restarted."
+                    )
+                except FlowError as e:
+                    container_restarted = False
+                    restart_error = _public_flow_error(
+                        e, context=f"Restart after module install in {branch}"
+                    )
+                    restart_warning = (
+                        "Modules were installed, but the Odoo container could not "
+                        f"be restarted. {restart_error}"
+                    )
+                    message = f"Installed: {', '.join(applied)}. Restart failed."
+                except Exception:
+                    container_restarted = False
+                    logger.exception(
+                        "Unexpected restart error after module install in %s", branch
+                    )
+                    restart_warning = (
+                        "Modules were installed, but the Odoo container could not "
+                        "be restarted. Check server logs for details."
+                    )
+                    message = f"Installed: {', '.join(applied)}. Restart failed."
             elif exit_code == 0:
                 message = f"Upgraded: {', '.join(applied)}."
             else:
@@ -1076,6 +1102,10 @@ def _build_routes(
                     "modules_installed" if action == "install" else "modules_upgraded"
                 )
                 payload[success_key] = applied
+                if action == "install":
+                    payload["container_restarted"] = container_restarted
+                    if restart_warning:
+                        payload["warnings"] = [restart_warning]
             return JSONResponse({"ok": True, "result": payload})
         except FlowError as e:
             return _error_response(e)
