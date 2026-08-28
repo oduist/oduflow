@@ -2,6 +2,7 @@ import json
 import os
 import re
 import tarfile
+from contextlib import ExitStack
 from unittest.mock import MagicMock, patch
 from unittest.mock import call as mock_call
 from urllib.parse import urlsplit
@@ -331,7 +332,10 @@ class TestCreateEnvironment:
         instance_conf.exists.return_value = False
         setup_error = PrerequisiteNotMetError("registry not ready")
 
-        with (
+        # Entered through an ExitStack rather than a parenthesized `with` group:
+        # CPython 3.10 caps a function at 20 statically nested blocks, and the
+        # patches needed to reach the serving container exceed it.
+        provisioning_patches = [
             patch("oduflow.docker_ops.env_ops._db_exists", return_value=True),
             patch("oduflow.docker_ops.env_ops._ensure_system_ready"),
             patch("oduflow.docker_ops.env_ops.ensure_team_network"),
@@ -366,10 +370,14 @@ class TestCreateEnvironment:
                 "oduflow.docker_ops.env_ops._configure_serving_environment",
                 side_effect=setup_error,
             ),
-            patch(
-                "oduflow.docker_ops.env_ops._rollback_partial_environment"
-            ) as mock_rollback,
-        ):
+        ]
+
+        with ExitStack() as stack:
+            for provisioning_patch in provisioning_patches:
+                stack.enter_context(provisioning_patch)
+            mock_rollback = stack.enter_context(
+                patch("oduflow.docker_ops.env_ops._rollback_partial_environment")
+            )
             with pytest.raises(PrerequisiteNotMetError, match="registry not ready"):
                 env_ops.create_environment(
                     TEST_SETTINGS,
