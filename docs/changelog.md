@@ -4,6 +4,15 @@
 
 ### Features
 
+- **Token-safe summaries for apply and test calls** — `pull_and_apply` and
+  `run_odoo_tests` now accept `summary_only=True`, keeping verbose Odoo command
+  logs server-side instead of injecting them into the calling agent's context.
+  Test runs return the final `N failed, M error(s) of K tests` result; applies
+  return one line with the action, changed-file count and exit status. Both
+  include an `output_id` when detailed output is available, so failures can be
+  inspected selectively through `read_output`. The existing verbose responses
+  remain the default for backward compatibility.
+
 - **Templates carry environment variables** — a template's `metadata.json` can
   now hold an `env_vars` object, and every environment created from that
   template gets those variables injected into its Odoo container. Saving a
@@ -27,6 +36,13 @@
   shown read-only and pointed at the raw JSON editor.
 
 ### Fixes
+
+- **A failed install is no longer masked by a later successful upgrade** — when
+  a single `pull_and_apply` both installed and upgraded modules, the reported
+  exit code was the last command's, so a broken install followed by a clean
+  upgrade came back as a success. The apply now keeps the first non-zero exit
+  code, which is what the compact `summary_only` status line and the live-mount
+  snapshot both key off.
 
 - **Environment listings now carry the evidence needed for safe slot reuse** —
   the MCP `list_environments` output previously discarded lifecycle metadata

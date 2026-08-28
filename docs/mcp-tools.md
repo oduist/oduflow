@@ -17,12 +17,12 @@ All tools are accessible via MCP clients (Cursor, Cline, Amp, etc.) and the CLI 
 | `update_environment` | ✓ | Re-create the container, preserving DB and filestore; optional `odoo_image` switches the image and `env_vars` replaces the container environment variables |
 | `switch_branch` | ✓ | Point an existing environment at another branch and apply the difference, keeping its database, filestore, hostname and URL — reuse instead of delete-and-create; optional `new_name` renames the environment in the same operation (its scoped MCP endpoint moves with the name) |
 | **Odoo Operations** | | |
-| `pull_and_apply` | ✓ | Git pull + smart analysis → auto install/upgrade/restart |
+| `pull_and_apply` | ✓ | Git pull + smart analysis → auto install/upgrade/restart; `summary_only=True` returns one action/status line and caches command logs for `read_output` |
 | `install_odoo_modules` | ✓ | Install Odoo modules (`-i`) |
 | `upgrade_odoo_modules` | ✓ | Upgrade Odoo modules (`-u`) |
 | `export_module_translations` | ✓ | Export a module's `.pot`/`.po` with Odoo's own exporter, write it into the module's `i18n/`, and return a summary plus an HTTP download URL or local temporary path |
 | `translation_status` | ✓ | Verdict per language (OK, PARTIAL, NOT LOADED, NOT TRANSLATED, IMPORT SILENTLY DROPPED, IMPORT ABORTS, NO FILE, NOT ACTIVATED) from the module's terms, the database and the committed `.po` files, including the sibling-POT metadata merge Odoo performs before import, plus the call that fixes it |
-| `run_odoo_tests` | ✓ | Run Odoo tests for specific modules; `test_tags` narrows the run to one class or method, `upgrade=False` skips the `-u` for a fast re-run (collects `post_install` tests only and requires module-scoped positive tags) |
+| `run_odoo_tests` | ✓ | Run Odoo tests for specific modules; `summary_only=True` returns the final `N failed, M error(s) of K tests` line and an `output_id`; `test_tags` narrows the run, while `upgrade=False` skips `-u` for a fast `post_install` re-run |
 | `get_environment_logs` | | Retrieve recent container logs |
 | `run_odoo_command` | ✓ | Execute an arbitrary shell command inside the Odoo container (runs through `sh -c`, so pipes, redirections and `&&` work; `shell=False` for exact argv) |
 | `run_odoo_shell` | ✓ | Execute Python code in the Odoo shell context with full ORM access; `auto_commit=True` commits successful writes, while `False` leaves the shell transaction uncommitted |

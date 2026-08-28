@@ -3395,16 +3395,21 @@ def _apply_actions(
     if to_install or to_upgrade:
         messages: list[str] = []
         odoo_output_parts: list[str] = []
-        last_exit_code = 0
+        # Keep the FIRST non-zero code: a failed install followed by a
+        # successful upgrade must still report failure. Callers treat this as
+        # the whole apply's status (the compact pull_and_apply summary hides the
+        # log behind an output_id, and the live-mount snapshot is only written
+        # on 0), so a later success must not overwrite an earlier failure.
+        apply_exit_code = 0
         if to_install:
             res = install_odoo_modules(settings, team, env_name, *to_install)
-            last_exit_code = res["exit_code"]
+            apply_exit_code = apply_exit_code or res["exit_code"]
             messages.append(f"Installed modules: {','.join(to_install)}")
             if res.get("output"):
                 odoo_output_parts.append(res["output"])
         if to_upgrade:
             res = upgrade_odoo_modules(settings, team, env_name, *to_upgrade)
-            last_exit_code = res["exit_code"]
+            apply_exit_code = apply_exit_code or res["exit_code"]
             messages.append(f"Upgraded modules: {','.join(to_upgrade)}")
             if res.get("output"):
                 odoo_output_parts.append(res["output"])
@@ -3422,7 +3427,7 @@ def _apply_actions(
             "action": "install" if to_install else "upgrade",
             "modules_installed": to_install,
             "modules_upgraded": to_upgrade,
-            "exit_code": last_exit_code or dep_exit,
+            "exit_code": apply_exit_code or dep_exit,
             "changed_files": changed_files,
             "message": " ".join(messages),
             "output": "\n".join(dep_logs + odoo_output_parts),

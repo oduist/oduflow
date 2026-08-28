@@ -351,6 +351,17 @@ oduflow call upgrade_odoo_modules feature-login sale,crm
 oduflow call run_odoo_tests feature-login sale,crm
 ```
 
+For agent loops, pass `summary_only=true` to keep the complete Odoo log out of
+the MCP response:
+
+```bash
+oduflow call run_odoo_tests '{"env_name":"feature-login","modules":"sale,crm","summary_only":true}'
+```
+
+The response is one `N failed, M error(s) of K tests` line plus an `output_id`.
+The full log remains server-side and can be inspected with `read_output` only
+when the summary reports a failure or Odoo aborts before producing a test count.
+
 This runs `odoo --test-enable --stop-after-init --workers 0 --http-port 8089 --gevent-port 8090 -u
 <modules>` inside the container. The module must already be installed — tests run via an upgrade
 (`-u`); `-i` on an already-installed module is a no-op that never enters the test phase ("0 of 0
@@ -368,6 +379,11 @@ The `pull_and_apply` tool is one of Oduflow's most powerful features. It pulls t
 ```bash
 oduflow call pull_and_apply feature-login
 ```
+
+`summary_only=true` suppresses install/upgrade logs and changed-file names from
+the MCP response. It returns one line containing the applied action, changed
+file count and exit status; when command output exists, the line includes an
+`output_id` for targeted inspection with `read_output`.
 
 ### How it works
 
