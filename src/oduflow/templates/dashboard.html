@@ -1476,7 +1476,7 @@
       <div class="form-group">
         <label for="cr-env-vars">Environment variables</label>
         <textarea id="cr-env-vars" rows="3" spellcheck="false" placeholder="WORKERS=2&#10;LIMIT_TIME_CPU=600"></textarea>
-        <div class="hint">One KEY=VALUE per line, injected into the Odoo container. A value may contain commas.</div>
+        <div class="hint" id="cr-env-vars-hint">One KEY=VALUE per line, injected into the Odoo container. A value may contain commas.</div>
       </div>
 
       <div class="form-actions">
@@ -1919,6 +1919,11 @@
           <label for="tset-auto-install">Auto-install modules</label>
           <input type="text" id="tset-auto-install" placeholder="e.g. sale,purchase,stock">
           <div class="hint">Comma-separated list of modules to install after provisioning</div>
+        </div>
+        <div class="form-group">
+          <label for="tset-env-vars">Environment variables</label>
+          <textarea id="tset-env-vars" rows="4" spellcheck="false" placeholder="WORKERS=2&#10;LIMIT_TIME_CPU=600"></textarea>
+          <div class="hint" id="tset-env-vars-hint">One KEY=VALUE per line. Injected into environments created from this template; values given at creation time override them per key.</div>
         </div>
         <div class="form-group">
           <label for="tset-overlay">Filestore mode</label>
@@ -3298,7 +3303,10 @@ var _updateEnvSeq = 0;
 // Only a line boundary separates assignments: a value may contain commas (and
 // even "X=" pairs), and a stack-managed environment routinely has them.
 function parseEnvLines(text) {
-  var out = {};
+  // Null prototype, like _tsetNormalizeExtras: a variable literally named
+  // __proto__ must land as an own key instead of hitting the setter and
+  // vanishing on its way to the container.
+  var out = Object.create(null);
   text.split(/\r?\n/).forEach(function(line) {
     var entry = line.trim();
     var i = entry.indexOf('=');
@@ -3306,6 +3314,34 @@ function parseEnvLines(text) {
     out[entry.slice(0, i).trim()] = entry.slice(i + 1);
   });
   return out;
+}
+
+function formatEnvLines(vars) {
+  return Object.keys(vars || {}).map(function(k) { return k + '=' + vars[k]; }).join('\n');
+}
+
+var CREATE_ENV_HINT = 'One KEY=VALUE per line, injected into the Odoo container. A value may contain commas.';
+
+function fillCreateTemplateEnvVars(tpl) {
+  var ta = document.getElementById('cr-env-vars');
+  var hint = document.getElementById('cr-env-vars-hint');
+  var vars = (tpl && tpl.env_vars) || {};
+  var singleLine = Object.create(null);
+  var multilineCount = 0;
+  Object.keys(vars).forEach(function(k) {
+    if (/\r|\n/.test(String(vars[k]))) multilineCount += 1;
+    else singleLine[k] = vars[k];
+  });
+  // The request is merged over template metadata server-side. Omitting values
+  // this textarea cannot represent leaves their exact multiline form inherited
+  // instead of sending a truncated override. Replacing the field on every
+  // template change also prevents values from the previous template leaking in.
+  ta.value = formatEnvLines(singleLine);
+  hint.textContent = multilineCount
+    ? CREATE_ENV_HINT + ' ' + multilineCount + ' multiline template ' +
+      (multilineCount === 1 ? 'value is' : 'values are') +
+      ' inherited unchanged and omitted here.'
+    : CREATE_ENV_HINT;
 }
 
 async function doUpdate(branch) {
@@ -3860,6 +3896,8 @@ var _templateSettingsLoadToken = 0;
 var _templateSettingsMeta = {};
 var _templateSettingsRawMode = false;
 
+var TSET_ENV_HINT = 'One KEY=VALUE per line. Injected into environments created from this template; values given at creation time override them per key.';
+
 // Provenance and size keys: recorded by the import/snapshot code, not editable
 // in the form (raw JSON mode can still change them).
 var TSET_FACTS = [
@@ -3978,6 +4016,17 @@ function _tsetFillForm(meta) {
   document.getElementById('tset-repo').value = meta.repo_url || '';
   document.getElementById('tset-local-path').value = meta.local_path || '';
   document.getElementById('tset-auto-install').value = meta.auto_install_modules || '';
+  // A line-per-assignment field cannot represent a value that itself spans
+  // lines, so show those read-only and send the editor to raw JSON instead of
+  // letting a save write back a mangled version.
+  var envTa = document.getElementById('tset-env-vars');
+  var envVars = meta.env_vars || {};
+  var envMultiline = Object.keys(envVars).some(function(k) { return /[\r\n]/.test(String(envVars[k])); });
+  envTa.value = formatEnvLines(envVars);
+  envTa.readOnly = envMultiline;
+  document.getElementById('tset-env-vars-hint').textContent = envMultiline
+    ? 'A variable holds a multi-line value — edit these in raw JSON mode.'
+    : TSET_ENV_HINT;
   var overlay = meta.use_overlay;
   document.getElementById('tset-overlay').value =
     overlay === true ? 'overlay' : (overlay === false ? 'copy' : 'auto');
@@ -4011,6 +4060,10 @@ function _tsetCollectForm() {
   meta.repo_url = document.getElementById('tset-repo').value.trim();
   meta.git_user = document.getElementById('tset-git-user').value;
   meta.auto_install_modules = document.getElementById('tset-auto-install').value.trim();
+  var envTa = document.getElementById('tset-env-vars');
+  var envVars = envTa.readOnly ? (_templateSettingsMeta.env_vars || {}) : parseEnvLines(envTa.value);
+  if (Object.keys(envVars).length) { meta.env_vars = envVars; }
+  else { delete meta.env_vars; }
   meta.extra_addons = extras;
   var localPath = document.getElementById('tset-local-path').value.trim();
   if (localPath) { meta.local_path = localPath; }
@@ -4380,6 +4433,8 @@ function renderTemplates(templates) {
       if (t.repo_url) parts.push('<span>Repo: <strong>' + esc(t.repo_url) + '</strong></span>');
       if (t.git_user) parts.push('<span>Git User: <strong>' + esc(t.git_user) + '</strong></span>');
       if (t.auto_install_modules) parts.push('<span>Auto-install: <strong>' + esc(t.auto_install_modules) + '</strong></span>');
+      var envCount = Object.keys(t.env_vars || {}).length;
+      if (envCount) parts.push('<span>Env vars: <strong>' + envCount + '</strong></span>');
       metaHtml = '<div class="tpl-meta" style="margin-top:8px;flex-wrap:wrap;">' + parts.join('') + '</div>';
     }
     return '<div class="tpl-card tpl-card-stacked">' +
@@ -4427,7 +4482,9 @@ function populateTemplateSelect() {
         if (brInput) brInput.value = tplExtras[cb.value] || '';
       });
     }
+    fillCreateTemplateEnvVars(tpl);
   };
+  fillCreateTemplateEnvVars(cachedTemplates.find(function(t) { return t.template_name === sel.value; }));
 }
 
 function openCreateFromTemplate(templateName) {
@@ -4438,6 +4495,7 @@ function openCreateFromTemplate(templateName) {
   document.getElementById('cr-repo').value = tpl && tpl.repo_url ? tpl.repo_url : '';
   document.getElementById('cr-image').value = tpl && tpl.odoo_image ? tpl.odoo_image : '';
   document.getElementById('cr-auto-install').value = tpl && tpl.auto_install_modules ? tpl.auto_install_modules : '';
+  fillCreateTemplateEnvVars(tpl);
   var errEl = document.getElementById('create-error');
   errEl.style.display = 'none';
   errEl.textContent = '';
@@ -4446,6 +4504,7 @@ function openCreateFromTemplate(templateName) {
     populateTemplateSelect();
     var sel = document.getElementById('cr-template');
     sel.value = templateName;
+    fillCreateTemplateEnvVars(cachedTemplates.find(function(t) { return t.template_name === templateName; }) || tpl);
   });
   loadCredentials().then(function() {
     var sel = document.getElementById('cr-git-user');
@@ -4485,6 +4544,7 @@ function openCreateModal() {
   document.getElementById('cr-image').value = '';
   document.getElementById('cr-auto-install').value = '';
   document.getElementById('cr-env-vars').value = '';
+  document.getElementById('cr-env-vars-hint').textContent = CREATE_ENV_HINT;
 
   var errEl = document.getElementById('create-error');
   errEl.style.display = 'none';

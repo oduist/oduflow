@@ -214,7 +214,12 @@ def test_template_settings_form_round_trips_attribute_and_prototype_key_values()
     dashboard = _DASHBOARD.read_text(encoding="utf-8")
     functions = "\n".join(
         _js_function(dashboard, name)
-        for name in ("escHtmlAttr", "_tsetNormalizeExtras", "_tsetCollectForm")
+        for name in (
+            "escHtmlAttr",
+            "parseEnvLines",
+            "_tsetNormalizeExtras",
+            "_tsetCollectForm",
+        )
     )
     harness = (
         functions
@@ -225,6 +230,7 @@ var fields = {
   'tset-repo': {value: 'https://example.test/addons.git'},
   'tset-git-user': {value: "O'Reilly"},
   'tset-auto-install': {value: ''},
+  'tset-env-vars': {value: '__proto__=polluted\nWORKERS=2', readOnly: false},
   'tset-local-path': {value: ''},
   'tset-overlay': {value: 'auto'}
 };
@@ -281,10 +287,60 @@ process.stdout.write(JSON.stringify({
             "repo_url": "https://example.test/addons.git",
             "git_user": "O'Reilly",
             "auto_install_modules": "",
+            "env_vars": {"__proto__": "polluted", "WORKERS": "2"},
             "extra_addons": {
                 "__proto__": "feature'quote",
                 'missing"repo\\name': "release\\candidate",
             },
             "use_overlay": None,
         },
+    }
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="Node.js is not installed")
+def test_create_template_env_vars_refresh_and_preserve_multiline_inheritance():
+    dashboard = _DASHBOARD.read_text(encoding="utf-8")
+    functions = "\n".join(
+        _js_function(dashboard, name)
+        for name in ("parseEnvLines", "formatEnvLines", "fillCreateTemplateEnvVars")
+    )
+    harness = (
+        functions
+        + r"""
+var CREATE_ENV_HINT = 'Environment variables';
+var fields = {
+  'cr-env-vars': {value: ''},
+  'cr-env-vars-hint': {textContent: ''}
+};
+global.document = {
+  getElementById: function (id) { return fields[id]; }
+};
+fillCreateTemplateEnvVars({env_vars: {TOKEN: 'customer-a', WORKERS: '2'}});
+var first = fields['cr-env-vars'].value;
+fields['cr-env-vars'].value = 'TOKEN=manual-edit';
+fillCreateTemplateEnvVars({env_vars: {TOKEN: 'customer-b', LIMIT: '600'}});
+var switched = fields['cr-env-vars'].value;
+fillCreateTemplateEnvVars({env_vars: {
+  CERT: '-----BEGIN-----\nbase64=payload\n-----END-----',
+  WORKERS: '4'
+}});
+process.stdout.write(JSON.stringify({
+  first: first,
+  switched: switched,
+  multilineField: fields['cr-env-vars'].value,
+  multilineParsed: parseEnvLines(fields['cr-env-vars'].value),
+  multilineHint: fields['cr-env-vars-hint'].textContent
+}));
+"""
+    )
+
+    assert _run_node(harness) == {
+        "first": "TOKEN=customer-a\nWORKERS=2",
+        "switched": "TOKEN=customer-b\nLIMIT=600",
+        "multilineField": "WORKERS=4",
+        "multilineParsed": {"WORKERS": "4"},
+        "multilineHint": (
+            "Environment variables 1 multiline template value is inherited "
+            "unchanged and omitted here."
+        ),
     }
