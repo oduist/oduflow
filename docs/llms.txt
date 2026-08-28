@@ -171,8 +171,8 @@ For OAuth-based MCP clients like Claude.ai Remote MCP, Oduflow runs its own OAut
 - `upgrade_odoo_modules` — upgrade Odoo modules
 - `export_module_translations` — export a module's .pot/.po translation catalogue
 - `translation_status` — check what translations actually loaded, and lint the .po files
-- `run_odoo_tests` — run Odoo tests for specific modules (`test_tags` narrows to one class/method; `upgrade=False` skips the `-u`, collects `post_install` tests only, and requires module-scoped positive tags)
-- `pull_and_apply` — pull latest code and auto-install/upgrade/restart as needed
+- `run_odoo_tests` — run Odoo tests for specific modules (`summary_only=True` returns only the final test count plus an `output_id`; `test_tags` narrows to one class/method; `upgrade=False` skips the `-u`, collects `post_install` tests only, and requires module-scoped positive tags)
+- `pull_and_apply` — pull latest code and auto-install/upgrade/restart as needed (`summary_only=True` returns one action/status line and caches command logs for `read_output`)
 - `get_environment_logs` — retrieve container logs
 - `run_odoo_command` — execute shell commands inside the Odoo container (through `sh -c`, so pipes and redirections work; `shell=False` for exact argv)
 - `run_odoo_shell` — execute Python code in the Odoo shell with full ORM access
@@ -186,7 +186,7 @@ For OAuth-based MCP clients like Claude.ai Remote MCP, Oduflow runs its own OAut
 - `reset_admin_password` — reset the admin user password (default: "test")
 - `connect_as_user` — mint a passwordless Odoo login session for a user and return the `session_id` cookie + URL (Playwright-ready; skips the login form, supports any role incl. portal)
 - `read_output` — read from a cached tool output by ID (paginate, grep, errors, tail)
-- `list_environments` / `get_environment_info` — inspect environments
+- `list_environments` / `get_environment_info` — inspect environments, including current branch, last activity, stopped time/source, protection, Stack ownership and operator notes used for safe slot reuse
 - `create_service` / `delete_service` / `restart_service` / `update_service` / `list_services` / `get_service_info` / `get_service_logs` / `run_service_command` — manage auxiliary services
   - In Traefik TLS mode every service implicitly receives the exact `oduflow-traefik-acme:/etc/traefik:ro` mount; do not pass or override that system volume
 - `create_volume` / `list_volumes` / `inspect_volume` / `delete_volume` — manage Docker volumes
@@ -228,8 +228,8 @@ sanitization scripts followed by project scripts from
 
 1. Call `list_environments` to check if an environment for the branch exists
 2. If not, call `create_environment` with `branch`, `template_name`, `repo_url`, and `odoo_image`
-3. Write code, `git push`, then call `pull_and_apply` (auto-detects what to do); read its response for install/upgrade errors
-4. Use `install_odoo_modules` / `run_odoo_tests` and read their direct responses; use `get_environment_logs` only for errors from the running Odoo server
+3. Write code, `git push`, then call `pull_and_apply(summary_only=True)` (auto-detects what to do); inspect its `output_id` only when the compact status reports a failure
+4. Use `install_odoo_modules` / `run_odoo_tests(summary_only=True)`; inspect the cached output on failure, and use `get_environment_logs` only for errors from the running Odoo server
 5. Inspect and manipulate data with the `odoo_*` ORM tools — `odoo_schema` first to get the real field names, then `odoo_search_read`; add `as_user` to check what a given role can actually see or change
 6. Call `delete_environment` when the task is done
 

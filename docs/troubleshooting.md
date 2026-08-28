@@ -150,6 +150,44 @@ the overlay mount is broken — see [Overlay filestore](#overlay-filestore).
 Otherwise the failure is usually inside Odoo (a module install/upgrade error);
 read the container logs.
 
+### PostgreSQL reports `no pg_hba.conf entry`
+
+An error such as:
+
+```text
+FATAL: no pg_hba.conf entry for host "172.20.0.3", user "u_1_main",
+database "postgres", no encryption
+```
+
+means Docker networking already works: the client reached PostgreSQL, but the
+active HBA file has no matching host rule. Oduflow normally self-heals this on
+startup by reading the actual Docker IPAM subnets and reconciling its marked
+`ODUFLOW MANAGED NETWORKS` block in the active file. It then reloads PostgreSQL
+and validates `pg_hba_file_rules`; a failed candidate is rolled back.
+
+The generated rules use `md5` while any role still holds a pre-PostgreSQL-14
+md5 verifier, and `scram-sha-256` once every role has migrated. `md5` is not a
+downgrade: PostgreSQL performs a SCRAM exchange whenever the stored verifier is
+SCRAM. Reset the affected passwords under `password_encryption =
+scram-sha-256` to move an old cluster over.
+
+Restart Oduflow and inspect its startup log first. If reconciliation fails, the
+message names the invalid subnet, unsupported authentication method, existing
+HBA parse error, or file operation that blocked it. These read-only commands
+show the source state without guessing a Docker subnet:
+
+```bash
+docker exec oduflow-db psql -U odoo -d postgres -Atc \
+  'SHOW hba_file; SHOW password_encryption;'
+docker exec oduflow-db psql -U odoo -d postgres -P pager=off -c \
+  'SELECT line_number, type, address, auth_method, error FROM pg_hba_file_rules ORDER BY line_number;'
+docker network inspect oduflow-1-net --format '{{json .IPAM.Config}}'
+```
+
+Do not add a fixed `172.x` rule or replace the whole HBA manually. Docker may
+allocate a different subnet after a network recreate, and replacing the file
+can discard local or replication rules that PostgreSQL needs.
+
 ---
 
 ## An environment runs out of database connections
@@ -286,9 +324,35 @@ du -sh /srv/oduflow/team_1/workspaces/<env-slug>/filestore         # ~= template
 
 ### A broken mount (`Transport endpoint is not connected`)
 
-The `fuse-overlayfs` process for a mount died (e.g. it was killed when the disk
-filled). Detach the stale mount, then bring the environment back up through
-Oduflow (which remounts it):
+The `fuse-overlayfs` process for a mount died. Two ways that happens:
+
+- **Oduflow runs in Docker and was restarted.** The daemon lives in the Oduflow
+  container's PID namespace and dies with it, while the mount itself lives in
+  the host's mount namespace (it has to — Odoo containers bind-mount the merged
+  path, which Docker resolves on the host) and survives. So *every* overlay
+  environment goes stale at once on a restart. Running Oduflow directly on the
+  host, the daemon is detached from the Oduflow process and a restart leaves it
+  alone.
+- **The daemon was killed** — an OOM kill, or the disk filling up.
+
+Oduflow repairs this by itself: on every start it detects stale overlays,
+detaches them, remounts each against its template's lower layer **keeping the
+environment's own `filestore_upper` deltas**, and restarts the affected Odoo
+containers (required — a running container's bind mount still points at the
+dead mount). Recovery fails closed: Oduflow does not detach a mount unless the
+container is confirmed stopped, does not restart the container unless the new
+overlay is confirmed live, and always reuses the existing upper layer even if
+the template's default mode was later changed to copy. The `/healthz` endpoint
+and the dashboard's `OVERLAY` chip report stale or unexpectedly absent overlays;
+full filesystem paths stay in server logs. An environment whose template is
+gone is logged for manual recovery rather than touched.
+
+Note that a stale mount reads as *absent*, not as *mounted*: `stat` on the
+mountpoint fails with `ENOTCONN`, so `ls`, `os.path.ismount()` and
+`os.path.isdir()` all behave as if nothing is there.
+
+To detach one by hand — remount then happens through Oduflow (`restart` the
+server, or `update_environment`):
 
 ```bash
 umount /srv/oduflow/team_1/workspaces/<env-slug>/filestore \

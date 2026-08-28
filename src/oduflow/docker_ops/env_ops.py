@@ -2,16 +2,19 @@ from __future__ import annotations
 
 import contextlib
 import datetime
+import errno
 import json
 import logging
 import os
 import pathlib
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import time
 from collections.abc import Iterator
+from dataclasses import dataclass
 from typing import Any
 
 import docker
@@ -375,6 +378,105 @@ def _template_code_lineage(
         return empty
 
 
+# A dead ``fuse-overlayfs`` daemon leaves its mount table entry behind, and
+# every access to the mountpoint then fails with ENOTCONN ("Transport endpoint
+# is not connected"). Restarting Oduflow *in Docker* produces this on every
+# overlay environment at once: the daemon lives in the container's PID
+# namespace and dies with it, while the mount lives in the host's mount
+# namespace and survives — it has to live there, because Odoo containers
+# bind-mount the merged path and Docker resolves that on the host. Running
+# Oduflow directly on the host, the daemon is detached from the Oduflow process
+# and a restart leaves it alone; there a mount only goes stale to an OOM kill
+# or a full disk.
+#
+# ``os.path.ismount()`` cannot see this state: it swallows the ENOTCONN from
+# its own ``lstat`` and returns False, exactly as for a path that is not
+# mounted at all (``os.path.isdir()`` returns False for the same reason). So a
+# stale overlay is indistinguishable from an absent one unless we probe the
+# mountpoint and look at errno — which is what this module does everywhere it
+# needs to know whether an overlay is usable.
+_STALE_MOUNT_ERRNOS = frozenset({errno.ENOTCONN, errno.ECONNABORTED})
+
+MOUNT_ALIVE = "alive"
+MOUNT_STALE = "stale"
+MOUNT_ABSENT = "absent"
+
+
+def _is_directory_strict(path: str) -> bool:
+    """Like ``isdir``, but propagate permission and filesystem I/O errors."""
+    try:
+        mode = os.stat(path).st_mode
+    except FileNotFoundError:
+        return False
+    return stat.S_ISDIR(mode)
+
+
+def overlay_mount_state(merged: str) -> str:
+    """Liveness of a filestore mountpoint.
+
+    ``MOUNT_ALIVE`` — mounted and serving; ``MOUNT_STALE`` — mounted but its
+    daemon is gone (needs detaching and remounting); ``MOUNT_ABSENT`` — no
+    overlay mount here, which also covers a copy-mode filestore directory and a
+    path that does not exist.
+    """
+    try:
+        os.stat(merged)
+    except FileNotFoundError:
+        return MOUNT_ABSENT
+    except OSError as exc:
+        if exc.errno in _STALE_MOUNT_ERRNOS:
+            return MOUNT_STALE
+        # Permission and I/O failures are not evidence that a mount is absent.
+        # Let operational callers fail closed and let the health check surface
+        # the probe error instead of reporting a false green.
+        raise
+    return MOUNT_ALIVE if os.path.ismount(merged) else MOUNT_ABSENT
+
+
+def overlay_mount_issues(settings: Settings) -> list[dict[str, str]]:
+    """Stale or unexpectedly absent workspace overlay mounts.
+
+    A plain filesystem walk with no Docker calls, for the health check — there
+    the question is only whether anything needs repair, not what to do about it.
+    An existing ``upper`` directory makes an absent mount an error: it contains
+    environment-specific deltas that a plain template copy would ignore.
+    """
+    issues: list[dict[str, str]] = []
+    for team in settings.teams.values():
+        try:
+            entries = list(os.scandir(team.workspaces_dir))
+        except FileNotFoundError:
+            continue  # team never initialized
+        for entry in entries:
+            try:
+                if not entry.is_dir(follow_symlinks=False):
+                    continue
+            except FileNotFoundError:
+                continue  # workspace disappeared during the health scan
+            paths = get_filestore_paths(entry.name, team.workspaces_dir)
+            state = overlay_mount_state(paths["merged"])
+            expected = _is_directory_strict(paths["upper"])
+            if state == MOUNT_STALE or (state == MOUNT_ABSENT and expected):
+                issues.append(
+                    {
+                        "team_id": team.team_id,
+                        "env_name": entry.name,
+                        "state": state,
+                        "path": paths["merged"],
+                    }
+                )
+    return sorted(issues, key=lambda item: (item["team_id"], item["env_name"]))
+
+
+def stale_overlay_paths(settings: Settings) -> list[str]:
+    """Compatibility helper returning only dead-daemon mount paths."""
+    return [
+        issue["path"]
+        for issue in overlay_mount_issues(settings)
+        if issue["state"] == MOUNT_STALE
+    ]
+
+
 def _mount_filestore(
     client: DockerClient,
     settings: Settings,
@@ -385,15 +487,40 @@ def _mount_filestore(
     odoo_volumes: dict[str, Any],
     *,
     template_name: str,
+    force_overlay: bool = False,
 ) -> None:
     template_filestore = team.get_template_filestore_path(template_name)
     if not template_filestore or not os.path.isdir(template_filestore):
+        if force_overlay:
+            raise PrerequisiteNotMetError(
+                f"Template filestore is missing: {template_filestore}"
+            )
         logger.debug(
             "Dump filestore not found at %s, skipping overlay mount", template_filestore
         )
         return
 
     paths = get_filestore_paths(env_name, team.workspaces_dir)
+    if force_overlay and not _is_directory_strict(paths["upper"]):
+        raise PrerequisiteNotMetError(
+            f"Overlay upper layer is missing: {paths['upper']}"
+        )
+
+    # Detach a stale mount before anything else, whichever mode we end up in:
+    # mounting over it would stack a live overlay on a dead one, and the copy
+    # path (like the makedirs/chmod below) would just fail with ENOTCONN.
+    if overlay_mount_state(paths["merged"]) == MOUNT_STALE:
+        logger.warning(
+            "Stale filestore overlay at %s (fuse-overlayfs is gone); detaching",
+            paths["merged"],
+            extra={"env_name": env_name},
+        )
+        _unmount_filestore(env_name, team)
+        _wait_unmounted(paths["merged"])
+        if overlay_mount_state(paths["merged"]) != MOUNT_ABSENT:
+            raise PrerequisiteNotMetError(
+                f"Could not detach stale filestore overlay at {paths['merged']}"
+            )
 
     # Read use_overlay flag from template metadata (avoids slow filestore scan)
     use_overlay = None
@@ -406,7 +533,12 @@ def _mount_filestore(
         except (json.JSONDecodeError, OSError):
             pass
 
-    if use_overlay is None:
+    if force_overlay:
+        # A stale/live mount plus an existing upper layer proves that this
+        # environment is overlay-backed. Recovery must preserve those deltas
+        # even if the template's mutable default has since changed to copy.
+        use_overlay = True
+    elif use_overlay is None:
         # Fallback for old templates without the flag
         size_mb = _dir_size_mb(template_filestore)
         use_overlay = size_mb >= settings.overlay_threshold_mb
@@ -414,6 +546,10 @@ def _mount_filestore(
     # fuse-overlayfs is a Linux/FUSE binary; it cannot run on macOS. Off Linux,
     # always fall back to a plain filestore copy instead of failing.
     if use_overlay and not sys.platform.startswith("linux"):
+        if force_overlay:
+            raise PrerequisiteNotMetError(
+                "Cannot preserve an overlay filestore on a non-Linux platform"
+            )
         logger.info(
             "Non-Linux platform (%s): using filestore copy instead of overlay",
             sys.platform,
@@ -502,7 +638,10 @@ def _mount_filestore(
 def _unmount_filestore(env_name: str, team: TeamSettings) -> None:
     paths = get_filestore_paths(env_name, team.workspaces_dir)
     merged = paths["merged"]
-    if not os.path.isdir(merged) or not os.path.ismount(merged):
+    # Deliberately not ``isdir``/``ismount``: both report False for a stale
+    # mount, because the stat they rely on fails with ENOTCONN — and that is
+    # exactly the mount that most needs detaching.
+    if overlay_mount_state(merged) == MOUNT_ABSENT:
         return
 
     # Prefer a direct, clean ``umount``: Oduflow runs as root, and umount(2) is
@@ -535,7 +674,7 @@ def _unmount_filestore(env_name: str, team: TeamSettings) -> None:
 def _wait_unmounted(merged: str, timeout: float = 3.0) -> None:
     """Poll until ``merged`` is no longer a mount point (best-effort)."""
     deadline = time.time() + timeout
-    while time.time() < deadline and os.path.ismount(merged):
+    while time.time() < deadline and overlay_mount_state(merged) != MOUNT_ABSENT:
         time.sleep(0.1)
 
 
@@ -592,7 +731,9 @@ def remount_template_overlays(
         if env.get("template_name") != template_name:
             continue
         merged = get_filestore_paths(env_name, team.workspaces_dir)["merged"]
-        if not os.path.ismount(merged):
+        # Stale mounts are included: they need the very same stop / unmount /
+        # remount treatment, and skipping them left them broken and unnoticed.
+        if overlay_mount_state(merged) == MOUNT_ABSENT:
             continue
 
         container_name = get_resource_name(
@@ -643,8 +784,10 @@ def remount_template_overlays(
             env_name = a["env_name"]
             paths = get_filestore_paths(env_name, team.workspaces_dir)
             try:
-                if os.path.ismount(paths["merged"]):
-                    # Unmount failed earlier — don't stack a second mount.
+                if overlay_mount_state(paths["merged"]) == MOUNT_ALIVE:
+                    # Unmount failed earlier — don't stack a second mount. A
+                    # stale mount is not a reason to skip: _mount_filestore
+                    # detaches it first.
                     result.failures.append((env_name, "still mounted, skipped remount"))
                 else:
                     if reset_upper:
@@ -662,6 +805,7 @@ def remount_template_overlays(
                         a["image"],
                         {},
                         template_name=template_name,
+                        force_overlay=True,
                     )
                     logger.info("Remounted overlay for env %s", env_name)
                 if a["was_running"]:
@@ -674,6 +818,208 @@ def remount_template_overlays(
             except Exception as exc:  # noqa: BLE001 - best-effort, reported via result
                 logger.warning("Could not remount overlay for %s: %s", env_name, exc)
                 result.failures.append((env_name, f"remount: {exc}"))
+
+
+def reconcile_overlay_mounts(settings: Settings) -> list[dict[str, Any]]:
+    """Repair stale or unexpectedly absent filestore overlays.
+
+    Run on every server start. When Oduflow itself runs in Docker this is the
+    normal case rather than an exception (see :func:`overlay_mount_state`), and
+    until this existed every overlay environment came back from a restart with
+    a filestore that raised ENOTCONN on first access — with nothing in Oduflow
+    noticing, reporting or repairing it.
+
+    Each affected environment is stopped, detached when needed, remounted
+    against its template's lower layer keeping its own ``upper`` deltas, and
+    started again if it had been running. The container restart is required
+    rather than incidental: a running container's bind mount still points at
+    the dead mount, so remounting on the host alone would not reach it.
+
+    Best-effort per environment — a failure is logged and reported, never
+    raised, so one broken environment cannot keep the server from starting.
+    Returns one record per environment that needed attention.
+    """
+    results: list[dict[str, Any]] = []
+    client = get_client()
+
+    for team in settings.teams.values():
+        try:
+            envs = list_environments(settings, team)
+        except Exception as exc:  # noqa: BLE001 - startup must survive this
+            logger.warning(
+                "[team.%s] Could not list environments to reconcile overlays: %s",
+                team.team_id,
+                exc,
+            )
+            continue
+
+        for env in envs:
+            env_name = env["env_name"]
+            paths = get_filestore_paths(env_name, team.workspaces_dir)
+            record: dict[str, Any] = {
+                "team_id": team.team_id,
+                "env_name": env_name,
+                "repaired": False,
+                "detail": "",
+            }
+            try:
+                mount_state = overlay_mount_state(paths["merged"])
+                has_overlay_upper = _is_directory_strict(paths["upper"])
+            except OSError as exc:
+                record["detail"] = f"mount probe failed: {exc}"
+                logger.error(
+                    "Could not inspect filestore overlay for %s: %s", env_name, exc
+                )
+                results.append(record)
+                continue
+            if mount_state != MOUNT_STALE and not (
+                mount_state == MOUNT_ABSENT and has_overlay_upper
+            ):
+                continue
+            if not has_overlay_upper:
+                record["detail"] = "overlay upper layer is missing"
+                logger.error(
+                    "Broken filestore overlay for %s has no upper layer at %s; "
+                    "leaving the mount alone for manual recovery",
+                    env_name,
+                    paths["upper"],
+                )
+                results.append(record)
+                continue
+
+            template_name = env.get("template_name") or ""
+            if not template_name or template_name == "none":
+                # Without a template there is no lower layer to remount against,
+                # and only an operator can decide what to restore this from.
+                record["detail"] = "no template to remount against"
+                logger.error(
+                    "Broken filestore overlay for %s has no template: %s needs "
+                    "manual recovery",
+                    env_name,
+                    paths["merged"],
+                )
+                results.append(record)
+                continue
+
+            # _mount_filestore returns quietly when the lower layer is gone, so
+            # check it here — before detaching anything. Otherwise this pass
+            # would unmount the environment and report a repair it never made.
+            template_filestore = team.get_template_filestore_path(template_name)
+            if not template_filestore or not os.path.isdir(template_filestore):
+                record["detail"] = f"template filestore missing: {template_filestore}"
+                logger.error(
+                    "Broken filestore overlay for %s: template '%s' has no "
+                    "filestore at %s; leaving the mount alone for manual recovery",
+                    env_name,
+                    template_name,
+                    template_filestore,
+                )
+                results.append(record)
+                continue
+
+            logger.warning(
+                "[team.%s] Broken filestore overlay for %s (%s); repairing",
+                team.team_id,
+                env_name,
+                mount_state,
+            )
+            container_name = get_resource_name(
+                env_name, "odoo", settings.prefix, team.team_id
+            )
+            image = env.get("odoo_image") or "odoo:19.0"
+            was_running = False
+            container = None
+            try:
+                container = client.containers.get(container_name)
+                was_running = container.status == "running"
+                if container.image.tags:
+                    image = container.image.tags[0]
+            except docker.errors.NotFound:
+                pass
+            except Exception as exc:  # noqa: BLE001 - fail closed per environment
+                record["detail"] = f"container lookup failed: {exc}"
+                logger.error("Could not inspect %s: %s", container_name, exc)
+                results.append(record)
+                continue
+
+            if container is not None:
+                status = container.status
+                if status == "running":
+                    try:
+                        container.stop(timeout=10)
+                        container.reload()
+                    except Exception as exc:  # noqa: BLE001 - fail closed
+                        record["detail"] = f"stop failed: {exc}"
+                        logger.error("Could not stop %s: %s", container_name, exc)
+                        results.append(record)
+                        continue
+                    if container.status == "running":
+                        record["detail"] = "stop failed: container is still running"
+                        logger.error("Container %s is still running", container_name)
+                        results.append(record)
+                        continue
+                elif status not in {"created", "exited", "dead"}:
+                    record["detail"] = f"unsafe container state: {status}"
+                    logger.error(
+                        "Will not detach overlay while %s is %s",
+                        container_name,
+                        status,
+                    )
+                    results.append(record)
+                    continue
+
+            try:
+                _unmount_filestore(env_name, team)
+                _wait_unmounted(paths["merged"])
+                if overlay_mount_state(paths["merged"]) != MOUNT_ABSENT:
+                    raise PrerequisiteNotMetError("mount did not detach")
+                _mount_filestore(
+                    client,
+                    settings,
+                    team,
+                    env_name,
+                    get_db_name(env_name, team.team_id),
+                    image,
+                    {},
+                    template_name=template_name,
+                    force_overlay=True,
+                )
+                state = overlay_mount_state(paths["merged"])
+                if state != MOUNT_ALIVE:
+                    raise PrerequisiteNotMetError(
+                        f"remount did not become live (state: {state})"
+                    )
+            except Exception as exc:  # noqa: BLE001 - never block startup
+                record["detail"] = str(exc)
+                logger.error(
+                    "Could not repair filestore overlay for %s: %s", env_name, exc
+                )
+                # Do not restart against an absent or unverified filestore.
+                results.append(record)
+                continue
+
+            if was_running and container is not None:
+                try:
+                    container.start()
+                    container.reload()
+                    if container.status != "running":
+                        raise RuntimeError(
+                            f"container status after start is {container.status}"
+                        )
+                except Exception as exc:  # noqa: BLE001 - best-effort
+                    record["detail"] = f"restart failed: {exc}"
+                    logger.error("Could not restart %s: %s", container_name, exc)
+                    results.append(record)
+                    continue
+
+            record["repaired"] = True
+            logger.warning(
+                "Remounted filestore overlay for %s (upper deltas kept)",
+                env_name,
+            )
+            results.append(record)
+
+    return results
 
 
 def _install_apt_packages(container: Any, repo_path: str) -> str:
@@ -790,22 +1136,42 @@ def _install_pip_requirements(
 
 def _odoo_registry_probe(env_db: str) -> list[str]:
     """Build an in-container probe that forces the target registry to load."""
-    script = (
-        "import http.cookiejar,sys,urllib.parse,urllib.request;"
-        f"db={env_db!r};"
-        "jar=http.cookiejar.CookieJar();"
-        "opener=urllib.request.build_opener("
-        "urllib.request.HTTPCookieProcessor(jar));"
-        "url='http://127.0.0.1:8069/web/login?'+urllib.parse.urlencode({'db':db});"
-        "response=opener.open(url,timeout=5);"
-        "sys.exit(0 if response.status==200 else 1)"
+    script = "\n".join(
+        [
+            "import http.cookiejar",
+            "import sys",
+            "import urllib.parse",
+            "import urllib.request",
+            f"db = {env_db!r}",
+            "jar = http.cookiejar.CookieJar()",
+            "opener = urllib.request.build_opener(",
+            "    urllib.request.HTTPCookieProcessor(jar)",
+            ")",
+            "url = 'http://127.0.0.1:8069/web/login?' + urllib.parse.urlencode({'db': db})",
+            "try:",
+            "    response = opener.open(url, timeout=5)",
+            "    if response.status != 200:",
+            "        raise RuntimeError(f'HTTP {response.status}')",
+            "except Exception as exc:",
+            "    print(f'{type(exc).__name__}: {exc}', file=sys.stderr)",
+            "    sys.exit(1)",
+        ]
     )
     return ["python3", "-c", script]
 
 
+@dataclass(frozen=True)
+class _OdooReadinessResult:
+    ready: bool
+    elapsed_seconds: float
+    attempts: int
+    timeout_seconds: int
+    last_error: str = ""
+
+
 def _wait_for_container_odoo_ready(
     container: Any, env_db: str, timeout: int = 120
-) -> bool:
+) -> _OdooReadinessResult:
     """Wait until the serving Odoo process has finished registry startup.
 
     The probe runs inside the container so readiness does not depend on public
@@ -818,36 +1184,113 @@ def _wait_for_container_odoo_ready(
     database-independent and can respond before registry preloading completes.
     """
     probe = _odoo_registry_probe(env_db)
-    deadline = time.monotonic() + timeout
+    started = time.monotonic()
+    deadline = started + timeout
+    attempts = 0
+    last_error = "readiness probe has not run"
+    next_progress_log = 30.0
     while True:
+        attempts += 1
         try:
-            if container.exec_run(probe)[0] == 0:
-                return True
-        except docker.errors.APIError:
+            exit_code, output = container.exec_run(probe)
+            output_str = (
+                output.decode("utf-8", errors="replace")
+                if isinstance(output, bytes)
+                else str(output)
+            ).strip()
+            if exit_code == 0:
+                return _OdooReadinessResult(
+                    ready=True,
+                    elapsed_seconds=round(time.monotonic() - started, 1),
+                    attempts=attempts,
+                    timeout_seconds=timeout,
+                )
+            last_error = output_str or f"probe exited with code {exit_code}"
+        except docker.errors.APIError as exc:
             # The container may briefly reject execs while restarting after a
             # dependency install. Treat that exactly like a failed probe.
-            pass
-        if time.monotonic() >= deadline:
-            return False
+            last_error = f"Docker exec failed: {exc}"
+        now = time.monotonic()
+        elapsed = now - started
+        if now >= deadline:
+            return _OdooReadinessResult(
+                ready=False,
+                elapsed_seconds=round(elapsed, 1),
+                attempts=attempts,
+                timeout_seconds=timeout,
+                last_error=last_error[-2000:],
+            )
+        if elapsed >= next_progress_log:
+            logger.info(
+                "Still waiting for serving Odoo registry for '%s' after %.0f seconds: %s",
+                env_db,
+                elapsed,
+                last_error[-500:],
+            )
+            next_progress_log += 30.0
         time.sleep(2)
 
 
+def _recent_container_logs(container: Any, tail: int = 200) -> str:
+    """Return a bounded log tail without masking the readiness failure."""
+    try:
+        output = container.logs(tail=tail, stdout=True, stderr=True)
+    except Exception as exc:
+        return f"Could not read container logs: {exc}"
+    output_str = (
+        output.decode("utf-8", errors="replace")
+        if isinstance(output, bytes)
+        else str(output)
+    ).strip()
+    return output_str[-20_000:] or "(container produced no logs)"
+
+
+def _readiness_error(
+    container: Any,
+    env_db: str,
+    result: _OdooReadinessResult,
+    *,
+    action: str,
+) -> PrerequisiteNotMetError:
+    logs = _recent_container_logs(container)
+    return PrerequisiteNotMetError(
+        f"{action}: serving Odoo did not load registry for database '{env_db}' "
+        f"within {result.timeout_seconds} seconds ({result.attempts} probes). "
+        f"Last readiness error: {result.last_error}\n\n"
+        f"Recent Odoo container logs:\n{logs}"
+    )
+
+
 def _auto_install_modules(
-    container: Any, env_db: str, modules: list[str], env_name: str = ""
+    container: Any,
+    settings: Settings,
+    team: TeamSettings,
+    env_db: str,
+    modules: list[str],
+    env_name: str,
 ) -> str:
     """Install modules after the serving registry is ready and return its log."""
+    from oduflow.docker_ops.odoo_ops import (
+        _require_installed_modules,
+        _validate_module_names,
+    )
+
+    _validate_module_names(modules)
     modules_str = ",".join(modules)
     logger.info(
         "Waiting for serving Odoo before auto-installing modules",
         extra={"env_name": env_name},
     )
-    if not _wait_for_container_odoo_ready(container, env_db):
-        message = (
-            f"[AUTO-INSTALL] odoo -i {modules_str} FAILED: serving Odoo did not "
-            "become ready within 120 seconds; installation was not attempted"
+    readiness = _wait_for_container_odoo_ready(container, env_db)
+    if not readiness.ready:
+        error = _readiness_error(
+            container,
+            env_db,
+            readiness,
+            action=f"Auto-install of modules {modules_str} was not attempted",
         )
-        logger.error(message, extra={"env_name": env_name})
-        return message
+        logger.error(str(error), extra={"env_name": env_name})
+        raise error
 
     install_cmd = (
         f"/entrypoint.sh odoo -d {env_db} -i {modules_str} --stop-after-init --no-http"
@@ -861,11 +1304,79 @@ def _auto_install_modules(
             output_str,
             extra={"env_name": env_name},
         )
-        return (
-            f"[AUTO-INSTALL] odoo -i {modules_str} FAILED (exit {exit_code}):\n"
-            f"{output_str}"
-        )
+        raise ExternalCommandError(install_cmd, exit_code, output_str[-20_000:])
+    _require_installed_modules(settings, team, env_name, tuple(modules))
     return f"[AUTO-INSTALL] odoo -i {modules_str} completed successfully"
+
+
+def _configure_serving_environment(
+    client: DockerClient,
+    settings: Settings,
+    team: TeamSettings,
+    container: Any,
+    repo_path: str,
+    env_db: str,
+    env_name: str,
+    template_name: str | None,
+    sanitize: bool,
+    auto_install_modules: list[str] | None,
+    odoo_conf_to_copy: str | None,
+) -> list[str]:
+    """Run required post-start setup before the environment is declared ready."""
+    setup_logs: list[str] = []
+    if odoo_conf_to_copy:
+        _copy_file_to_container(container, odoo_conf_to_copy, "/etc/odoo")
+
+    apt_log = _install_apt_packages(container, repo_path)
+    if apt_log:
+        setup_logs.append(apt_log)
+    _, pip_log = _install_pip_requirements(container, repo_path)
+    if pip_log:
+        setup_logs.append(pip_log)
+
+    # Install first so neutralization includes SQL shipped by the new modules.
+    if auto_install_modules:
+        modules_str = ",".join(auto_install_modules)
+        logger.info(
+            "Auto-installing modules: %s",
+            modules_str,
+            extra={"env_name": env_name},
+        )
+        setup_logs.append(
+            _auto_install_modules(
+                container,
+                settings,
+                team,
+                env_db,
+                auto_install_modules,
+                env_name,
+            )
+        )
+
+    if sanitize and template_name is not None:
+        from oduflow.sanitizer import neutralize_environment, sanitize_environment
+
+        setup_logs.extend(neutralize_environment(client, settings, team, env_name))
+        setup_logs.extend(sanitize_environment(client, settings, team, env_name))
+
+    if auto_install_modules:
+        # Reload only after sanitization has disabled the newly-installed
+        # modules' crons and external credentials.
+        container.restart()
+        logger.info(
+            "Waiting for serving Odoo after auto-install setup",
+            extra={"env_name": env_name},
+        )
+        readiness = _wait_for_container_odoo_ready(container, env_db)
+        if not readiness.ready:
+            raise _readiness_error(
+                container,
+                env_db,
+                readiness,
+                action="Environment setup did not complete",
+            )
+
+    return setup_logs
 
 
 def _cleanup_old_environment(
@@ -913,6 +1424,24 @@ def _cleanup_old_environment(
     if os.path.exists(workspace_path):
         _unmount_filestore(env_name, team)
         shutil.rmtree(workspace_path)
+
+
+def _rollback_partial_environment(
+    client: DockerClient,
+    settings: Settings,
+    team: TeamSettings,
+    env_name: str,
+) -> None:
+    """Best-effort rollback that preserves the original provisioning error."""
+    if settings.routing_mode == "port":
+        try:
+            release_port(team.port_registry_path, env_name)
+        except Exception:
+            logger.exception("Failed to release port while rolling back '%s'", env_name)
+    try:
+        _cleanup_old_environment(client, settings, team, env_name)
+    except Exception:
+        logger.exception("Failed to fully roll back environment '%s'", env_name)
 
 
 def _init_empty_database(
@@ -1265,6 +1794,14 @@ def _create_environment_impl(
             f"Environment names starting with '{PROD_ENV_PREFIX}' are reserved "
             "for production environments. Use create_production instead."
         )
+    if auto_install_modules:
+        # Fail before anything is provisioned: a malformed module name would
+        # otherwise only surface at the auto-install step, after the clone,
+        # template restore, container start and dependency installs — all of
+        # which the setup rollback then discards.
+        from oduflow.docker_ops.odoo_ops import _validate_module_names
+
+        _validate_module_names(auto_install_modules)
     start_time = time.time()
     try:
         client = get_client()
@@ -1638,66 +2175,32 @@ def _create_environment_impl(
             "containers.run failed for '%s'; rolling back partial environment",
             env_name,
         )
-        if settings.routing_mode == "port":
-            release_port(team.port_registry_path, env_name)
-        _cleanup_old_environment(client, settings, team, env_name)
+        _rollback_partial_environment(client, settings, team, env_name)
         raise
 
-    if odoo_conf_to_copy:
-        _copy_file_to_container(container, odoo_conf_to_copy, "/etc/odoo")
-
-    # Install repo apt/pip dependencies onto the serving container (both paths).
-    # base needs no custom deps, so this runs after the DB is ready.
-    apt_log = _install_apt_packages(container, repo_path)
-    if apt_log:
-        setup_logs.append(apt_log)
-    _, pip_log = _install_pip_requirements(container, repo_path)
-    if pip_log:
-        setup_logs.append(pip_log)
-
-    # --- Auto-install modules ---
-    # MUST run before sanitization below: Odoo's native neutralization gathers
-    # SQL only from already-installed modules, so any `data/neutralize.sql`
-    # shipped by an auto-installed module — and the crons, payment providers, or
-    # connector credentials those modules create — would be missed if neutralize
-    # ran first. Install now, neutralize after.
-    if auto_install_modules:
-        modules_str = ",".join(auto_install_modules)
-        logger.info(
-            "Auto-installing modules: %s",
-            modules_str,
-            extra={"env_name": env_name},
-        )
-        setup_logs.append(
-            _auto_install_modules(
-                container, env_db, auto_install_modules, env_name=env_name
+    try:
+        setup_logs.extend(
+            _configure_serving_environment(
+                client,
+                settings,
+                team,
+                container,
+                repo_path,
+                env_db,
+                env_name,
+                template_name,
+                sanitize,
+                auto_install_modules,
+                odoo_conf_to_copy,
             )
         )
-        # NOTE: the serving container is restarted further down, AFTER
-        # sanitization, so the newly-installed modules' crons are already
-        # deactivated in the DB before PID1 reloads them into a live registry.
-
-    # --- Sanitize environment database ---
-    # Runs AFTER auto-install so Odoo's native neutralization sees the final set
-    # of installed modules (see the auto-install note above).
-    if sanitize and template_name is not None:
-        from oduflow.sanitizer import neutralize_environment, sanitize_environment
-
-        # Layer 1: Odoo's native neutralization — the baseline safety net that
-        # blocks anything going out (mail off, crons off, payment providers off,
-        # third-party credentials scrubbed, database.is_neutralized=true). Runs
-        # in the serving container so it sees the full addons_path.
-        setup_logs.extend(neutralize_environment(client, settings, team, env_name))
-        # Layer 2: custom team/repo sanitization scripts (e.g. PII scrubbing)
-        # run on top of the neutralized database. Project scripts live under
-        # .oduflow/odoo_sanitize in the active checkout.
-        sanitize_logs = sanitize_environment(client, settings, team, env_name)
-        setup_logs.extend(sanitize_logs)
-
-    # Reload any auto-installed modules into the serving registry — done after
-    # sanitization so their crons/credentials are neutralized in the DB first.
-    if auto_install_modules:
-        container.restart()
+    except Exception:
+        logger.error(
+            "Environment setup failed for '%s'; rolling back partial environment",
+            env_name,
+        )
+        _rollback_partial_environment(client, settings, team, env_name)
+        raise
 
     if settings.routing_mode == "traefik":
         url = f"https://{get_env_hostname(env_name, team.hostname, hostname)}"
@@ -2603,6 +3106,7 @@ def list_environments(settings: Settings, team: TeamSettings) -> list[dict[str, 
         rec = records.get(env_name, {})
         env["last_activity"] = rec.get("last_activity", "")
         env["stopped_at"] = rec.get("stopped_at", "")
+        env["stopped_by"] = rec.get("stopped_by", "")
         env["auto_stopped"] = rec.get("stopped_by") == "auto"
 
     return list(envs.values())
@@ -2894,6 +3398,13 @@ def get_environment_info(
     except docker.errors.NotFound:
         pass
 
+    rec = activity.get_all(team).get(env_name, {})
+    result["protected"] = is_protected(settings, team, env_name)
+    result["last_activity"] = rec.get("last_activity", "")
+    result["stopped_at"] = rec.get("stopped_at", "")
+    result["stopped_by"] = rec.get("stopped_by", "")
+    result["auto_stopped"] = rec.get("stopped_by") == "auto"
+
     try:
         db_container = client.containers.get(settings.shared_db_container)
         result["db"]["status"] = db_container.status
@@ -3117,16 +3628,21 @@ def _apply_actions(
     if to_install or to_upgrade:
         messages: list[str] = []
         odoo_output_parts: list[str] = []
-        last_exit_code = 0
+        # Keep the FIRST non-zero code: a failed install followed by a
+        # successful upgrade must still report failure. Callers treat this as
+        # the whole apply's status (the compact pull_and_apply summary hides the
+        # log behind an output_id, and the live-mount snapshot is only written
+        # on 0), so a later success must not overwrite an earlier failure.
+        apply_exit_code = 0
         if to_install:
             res = install_odoo_modules(settings, team, env_name, *to_install)
-            last_exit_code = res["exit_code"]
+            apply_exit_code = apply_exit_code or res["exit_code"]
             messages.append(f"Installed modules: {','.join(to_install)}")
             if res.get("output"):
                 odoo_output_parts.append(res["output"])
         if to_upgrade:
             res = upgrade_odoo_modules(settings, team, env_name, *to_upgrade)
-            last_exit_code = res["exit_code"]
+            apply_exit_code = apply_exit_code or res["exit_code"]
             messages.append(f"Upgraded modules: {','.join(to_upgrade)}")
             if res.get("output"):
                 odoo_output_parts.append(res["output"])
@@ -3144,7 +3660,7 @@ def _apply_actions(
             "action": "install" if to_install else "upgrade",
             "modules_installed": to_install,
             "modules_upgraded": to_upgrade,
-            "exit_code": last_exit_code or dep_exit,
+            "exit_code": apply_exit_code or dep_exit,
             "changed_files": changed_files,
             "message": " ".join(messages),
             "output": "\n".join(dep_logs + odoo_output_parts),
@@ -4247,7 +4763,10 @@ def update_environment(
     fs_paths = get_filestore_paths(env_name, team.workspaces_dir)
     merged = fs_paths["merged"]
     has_overlay_dirs = os.path.isdir(fs_paths["upper"])
-    if has_overlay_dirs and os.path.isdir(merged) and not os.path.ismount(merged):
+    # ``os.path.isdir(merged)`` used to be part of this condition and silently
+    # excluded the stale case, where it reports False (ENOTCONN) — the one
+    # state that most needs a remount.
+    if has_overlay_dirs and overlay_mount_state(merged) != MOUNT_ALIVE:
         env_db = get_db_name(env_name)
         template_name = labels.get("oduflow.template", "none")
         if template_name and template_name != "none":
@@ -4262,6 +4781,7 @@ def update_environment(
                     run_image,
                     _tmp_vols,
                     template_name=template_name,
+                    force_overlay=True,
                 )
             except Exception as exc:
                 logger.warning("Could not re-mount filestore overlay: %s", exc)

@@ -1,5 +1,5 @@
 # Oduflow — Agentic Odoo Development
-Version: 7
+Version: 9
 
 ## Purpose
 
@@ -46,9 +46,9 @@ Call `create_environment` with the branch, correct Odoo image, and either
 3. get_odoo_development_guide before module code changes
 4. edit code locally
 5. repo_url: commit + push; local_path: no delivery step
-6. pull_and_apply with the action required by the edit
+6. pull_and_apply with the action required by the edit and summary_only=true
 7. read that response; if it failed, fix and repeat from step 4
-8. run_odoo_tests for the changed modules
+8. run_odoo_tests with summary_only=true for the changed modules
 9. leave the environment for the next branch, or delete_environment when
    nobody still needs the URL or its test data
 ```
@@ -67,6 +67,17 @@ carry a module installed in that database, the response warns.
 different branch: that environment's database and URL are in use, so moving it
 is the user's call. Report the conflict and let them choose `switch_branch`, a
 different `env_name`, or deleting the old environment.
+
+When you do have to take over a slot, treat the reuse metadata in
+`list_environments` as evidence, not decoration.
+Never switch a running, protected, Stack-managed, or explicitly reserved
+(`Note:`) environment. When the repository's own instructions allow reclaiming
+idle slots, choose among eligible stopped environments by `Last Activity` and
+`Stopped At`, oldest first; `unknown` is not evidence that a slot is abandoned.
+Confirm that its previous work is finished from an affirmative signal such as a
+merged PR, a branch merged into the target branch, or the user's instruction.
+An empty `gh pr list` result proves neither completion nor continued use. If the
+safe choice cannot be established, create a new environment.
 
 The environment name is a slot label, not a description of the branch, so a
 mismatch is normal — no need to rename on every switch. When the user asks for
@@ -106,9 +117,15 @@ command output, errors, and tracebacks. Read that response. Do not call
 Odoo server process and is appropriate for failures during HTTP requests or
 after a restart.
 
-Large command responses are cached automatically. The response includes an
-`output_id`; use `read_output` with `errors`, `grep`, `lines`, or `tail` only
-when the returned summary does not answer the question.
+Pass `summary_only=true` to `pull_and_apply` and `run_odoo_tests` during the
+normal development loop. Test runs then return the final
+`N failed, M error(s) of K tests` result, while applies return one compact line
+with the action, changed-file count and exit status. The complete command log
+stays server-side and the response includes an `output_id`; use `read_output`
+with `errors`, `grep`, `lines`, or `tail` only when that compact result reports
+a failure or does not answer the question. Without `summary_only`, command
+responses keep their verbose backward-compatible format and large ones are
+cached automatically.
 
 Use the most specific inspection surface:
 
@@ -193,10 +210,20 @@ errors. Never recreate the environment as a substitute for the upgrade.
 
 ## Translations
 
-After loading translation changes, call `translation_status`. It compares the
-module catalogue, committed `.po`, and database, then returns a verdict and a
-`Next:` action. Follow that action instead of deriving a diagnosis from raw
-counts. Use `export_module_translations` when it asks for a fresh catalogue.
+Before creating a new `i18n/<lang>.po`, call
+`export_module_translations(env_name, module, lang)` and edit the generated
+catalogue. Never invent `#.` or `#:` metadata: Odoo derives the translation
+target from it, and a malformed reference can import as zero translations
+without a warning. Do not run that export over a catalogue you have already
+written: it overwrites `i18n/<lang>.po` with what the database holds, so
+translations that never imported are lost. When repairing an existing
+hand-written catalogue, follow `translation_status`'s `Next:` action; it may
+ask for a sibling `<module>.pot` whose generated metadata Odoo merges into the
+`.po` during import.
+
+After upgrading the module, call `translation_status`. It compares the module
+catalogue, committed `.po`, and database, then returns a verdict and a `Next:`
+action. Follow that action instead of deriving a diagnosis from raw counts.
 
 Write English source strings; localized text belongs in `i18n/*.po`.
 

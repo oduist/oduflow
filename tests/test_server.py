@@ -588,6 +588,53 @@ class TestListEnvironmentsTool:
         assert "Live-mount: /Users/dev/addons" in result
         assert "Repo:" not in result
 
+    @patch("oduflow.docker_ops.env_ops.list_environments")
+    def test_list_shows_reuse_metadata(self, mock_list):
+        mock_list.return_value = [
+            {
+                "env_name": "dev1",
+                "git_branch": "feature/finished",
+                "status": "stopped",
+                "url": None,
+                "created_at": "2026-08-20T08:00:00+00:00",
+                "last_activity": "2026-08-26T09:30:00+00:00",
+                "stopped_at": "2026-08-27T09:30:00+00:00",
+                "stopped_by": "auto",
+                "protected": True,
+                "note": "Reserved for QA\nDo not reuse",
+                "stack": "demo",
+                "containers": [],
+            }
+        ]
+
+        result = _call_tool("list_environments")
+
+        assert "Git Branch: feature/finished" in result
+        assert "Created: 2026-08-20T08:00:00+00:00" in result
+        assert "Last Activity: 2026-08-26T09:30:00+00:00" in result
+        assert "Stopped At: 2026-08-27T09:30:00+00:00 (auto)" in result
+        assert "Protected: yes" in result
+        assert "Stack: demo" in result
+        assert "Note: Reserved for QA" in result
+        assert "Do not reuse" in result
+
+    @patch("oduflow.docker_ops.env_ops.list_environments")
+    def test_list_marks_missing_activity_as_unknown(self, mock_list):
+        mock_list.return_value = [
+            {
+                "env_name": "legacy",
+                "status": "stopped",
+                "containers": [],
+            }
+        ]
+
+        result = _call_tool("list_environments")
+
+        assert "Git Branch: legacy" in result
+        assert "Last Activity: unknown" in result
+        assert "Stopped At: unknown (unknown)" in result
+        assert "Protected: no" in result
+
 
 class TestAgentInstructionsTool:
     def test_bundled_guide_is_compact_and_workflow_focused(self):
@@ -603,7 +650,9 @@ class TestAgentInstructionsTool:
 
         assert len(guide) < 16_000
         assert "Per-environment Odoo configuration" in guide
-        assert "Version: 7" in guide
+        assert "Version: 9" in guide
+        assert "Never invent `#.` or `#:` metadata" in guide
+        assert "An empty `gh pr list` result proves neither" in guide
         assert "git push -u origin HEAD" in guide
         assert "cannot see a local-only branch" in guide
         assert "db_maxconn" in guide
@@ -671,6 +720,10 @@ class TestInfoTool:
             "repo_url": "https://github.com/example/repo.git",
             "odoo_image": "odoo:17.0",
             "template_name": "default",
+            "created_at": "2026-08-20T08:00:00+00:00",
+            "last_activity": "2026-08-27T10:00:00+00:00",
+            "protected": True,
+            "note": "Reserved for QA",
             "extra_addons": {},
             "git_user": "",
             "odoo": {"status": "running", "running": True},
@@ -678,6 +731,11 @@ class TestInfoTool:
         }
         result = _call_tool("get_environment_info", env_name="main")
         assert "All containers running" in result
+        assert "Git Branch: main" in result
+        assert "Created: 2026-08-20T08:00:00+00:00" in result
+        assert "Last Activity: 2026-08-27T10:00:00+00:00" in result
+        assert "Protected: yes" in result
+        assert "Note: Reserved for QA" in result
         assert "Database: oduflow_1_main" in result
         assert "DB (shared)" in result
 
@@ -713,6 +771,144 @@ class TestErrorHandling:
         mock_restart.side_effect = NotFoundError("container not found")
         with pytest.raises(ToolError, match="container not found"):
             _call_tool("restart_environment", env_name="main")
+
+
+def _compact_output_id(response: str) -> str:
+    return response.rsplit("output_id=", 1)[1].rstrip("]")
+
+
+class TestCompactCommandResponses:
+    @patch("oduflow.docker_ops.env_ops.ensure_running", return_value=False)
+    @patch("oduflow.docker_ops.odoo_ops.run_environment_tests")
+    def test_run_odoo_tests_returns_only_the_last_aggregate_summary(
+        self, mock_run, mock_ensure
+    ):
+        mock_run.return_value = "\n".join(
+            [
+                "2026-01-01 INFO 2 failed, 0 error(s) of 10 tests",
+                *(f"2026-01-01 WARNING noisy line {i}" for i in range(2_000)),
+                "unique full-log detail",
+                "2026-01-01 INFO 1 failed, 2 error(s) of 30 tests when loading database",
+            ]
+        )
+
+        result = _call_tool(
+            "run_odoo_tests",
+            env_name="main",
+            modules="sale",
+            summary_only=True,
+        )
+
+        assert result.startswith("1 failed, 2 error(s) of 30 tests [output_id=")
+        assert "\n" not in result
+        assert "noisy line" not in result
+
+        output_id = _compact_output_id(result)
+        cached = _call_tool(
+            "read_output", output_id=output_id, mode="grep", grep="unique full-log"
+        )
+        assert "unique full-log detail" in cached
+
+    @patch("oduflow.docker_ops.env_ops.ensure_running", return_value=False)
+    @patch("oduflow.docker_ops.odoo_ops.run_environment_tests")
+    def test_run_odoo_tests_has_a_short_fallback_when_odoo_aborts_early(
+        self, mock_run, mock_ensure
+    ):
+        mock_run.return_value = "Traceback\nImportError: broken module"
+
+        result = _call_tool(
+            "run_odoo_tests",
+            env_name="main",
+            modules="sale",
+            summary_only=True,
+        )
+
+        assert result.startswith("Test summary not found [output_id=")
+        assert "Traceback" not in result
+        output_id = _compact_output_id(result)
+        assert "ImportError: broken module" in _call_tool(
+            "read_output", output_id=output_id, mode="tail"
+        )
+
+    @patch(
+        "oduflow.server._wake_for_work",
+        return_value="Note: environment was stopped; started it for this call.\n",
+    )
+    @patch("oduflow.docker_ops.odoo_ops.run_environment_tests")
+    def test_run_odoo_tests_summary_keeps_the_wake_note(self, mock_run, mock_wake):
+        mock_run.return_value = "INFO 0 failed, 0 error(s) of 7 tests"
+
+        result = _call_tool(
+            "run_odoo_tests",
+            env_name="main",
+            modules="sale",
+            summary_only=True,
+        )
+
+        assert result.startswith("Note: environment was stopped; started it for ")
+        assert "0 failed, 0 error(s) of 7 tests [output_id=" in result
+        assert "\n" not in result
+
+    @patch("oduflow.docker_ops.env_ops.ensure_running", return_value=False)
+    @patch("oduflow.docker_ops.odoo_ops.run_environment_tests")
+    def test_run_odoo_tests_is_verbose_by_default(self, mock_run, mock_ensure):
+        mock_run.return_value = "complete Odoo command output"
+
+        result = _call_tool("run_odoo_tests", env_name="main", modules="sale")
+
+        assert "Test Results for main:" in result
+        assert "complete Odoo command output" in result
+
+    @patch("oduflow.docker_ops.env_ops.ensure_running", return_value=False)
+    @patch("oduflow.docker_ops.env_ops.pull_environment")
+    def test_pull_and_apply_suppresses_logs_and_file_names(
+        self, mock_pull, mock_ensure
+    ):
+        mock_pull.return_value = {
+            "action": "upgrade",
+            "message": "Upgraded modules: sale. Container restarted.",
+            "modules_installed": [],
+            "modules_upgraded": ["sale"],
+            "changed_files": ["sale/models/order.py", "sale/security/rules.xml"],
+            "warnings": ["restart is also\nrecommended"],
+            "exit_code": 1,
+            "output": "RAW ODOO LOG\nunique apply failure",
+        }
+
+        result = _call_tool(
+            "pull_and_apply",
+            env_name="main",
+            upgrade="sale",
+            summary_only=True,
+        )
+
+        assert "\n" not in result
+        assert "Changed files: 2" in result
+        assert "Status: failed (exit_code=1)" in result
+        assert "Guardrail warnings: restart is also recommended" in result
+        assert "sale/models/order.py" not in result
+        assert "RAW ODOO LOG" not in result
+
+        output_id = _compact_output_id(result)
+        assert "unique apply failure" in _call_tool(
+            "read_output", output_id=output_id, mode="tail"
+        )
+
+    @patch("oduflow.docker_ops.env_ops.ensure_running", return_value=False)
+    @patch("oduflow.docker_ops.env_ops.pull_environment")
+    def test_pull_and_apply_is_verbose_by_default(self, mock_pull, mock_ensure):
+        mock_pull.return_value = {
+            "action": "restart",
+            "message": "Container restarted.",
+            "changed_files": ["sale/models/order.py"],
+            "exit_code": 0,
+            "output": "complete apply output",
+        }
+
+        result = _call_tool("pull_and_apply", env_name="main", restart=True)
+
+        assert "sale/models/order.py" in result
+        assert "complete apply output" in result
 
 
 class TestProductionFeatureGate:

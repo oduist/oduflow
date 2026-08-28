@@ -1,5 +1,6 @@
 import os
 import re
+from typing import Any
 from urllib.parse import urlparse, urlunparse
 
 # A template name becomes both a filesystem path (templates/<name>, where "/"
@@ -319,6 +320,44 @@ def parse_env_vars(raw: str) -> dict[str, str]:
     """
     items = re.split(r"\r?\n|,(?=\s*[A-Za-z_][A-Za-z0-9_]*=)", raw)
     return dict(item.strip().split("=", 1) for item in items if "=" in item)
+
+
+_ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def normalize_env_vars(raw: object) -> dict[str, str]:
+    """Coerce a stored or user-supplied env-var set into {NAME: value} strings.
+
+    Accepts the mapping shape (how templates and container labels store them)
+    or the KEY=VALUE text shape (MCP arguments, REST clients), so both reach
+    the container through one validated representation. Values are cast to str
+    because JSON round-trips integers ("WORKERS": 2) that Docker rejects.
+
+    Raises ValueError for a name that could not be exported anyway; a bad name
+    is a typo the caller must see, not something to silently drop.
+    """
+    if raw is None:
+        return {}
+    parsed: dict[Any, Any]
+    if isinstance(raw, str):
+        parsed = parse_env_vars(raw)
+    elif isinstance(raw, dict):
+        parsed = raw
+    else:
+        raise TypeError("Environment variables must be a mapping or KEY=VALUE text.")
+
+    result: dict[str, str] = {}
+    for name, value in parsed.items():
+        key = str(name).strip()
+        if not key:
+            continue
+        if not _ENV_VAR_NAME_RE.match(key):
+            raise ValueError(
+                f"Invalid environment variable name '{key}': use letters, "
+                "digits and underscores, not starting with a digit."
+            )
+        result[key] = "" if value is None else str(value)
+    return result
 
 
 def sanitize_repo_url(url: str) -> str:

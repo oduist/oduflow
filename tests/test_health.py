@@ -288,3 +288,68 @@ class TestDiskCheck:
         assert result["status"] == "error"
         assert result["percent"] == 0
         assert "gone" in result["detail"]
+
+
+class TestOverlayCheck:
+    """A stale overlay is invisible without this check: the environment's
+    container is up and green while every filestore read inside it fails with
+    ENOTCONN."""
+
+    def test_no_overlays_is_ok(self, settings):
+        assert health._check_overlays(settings)["status"] == "ok"
+
+    def test_stale_overlay_is_an_error(self, settings):
+        with patch(
+            "oduflow.docker_ops.env_ops.overlay_mount_issues",
+            return_value=[
+                {
+                    "team_id": "1",
+                    "env_name": "wise-moth",
+                    "state": "stale",
+                    "path": "/srv/oduflow/team_1/workspaces/wise-moth/filestore",
+                }
+            ],
+        ):
+            result = health._check_overlays(settings)
+
+        assert result["status"] == "error"
+        assert result["count"] == 1
+        assert result["affected"] == [
+            {"team_id": "1", "env_name": "wise-moth", "state": "stale"}
+        ]
+        assert "wise-moth" in result["detail"]
+        assert "/srv/oduflow" not in str(result)
+
+    def test_scan_failure_is_reported_not_raised(self, settings):
+        with patch(
+            "oduflow.docker_ops.env_ops.overlay_mount_issues",
+            side_effect=OSError("nope"),
+        ):
+            result = health._check_overlays(settings)
+
+        assert result["status"] == "error"
+        assert result["detail"] == "filestore overlay scan failed; check server logs"
+        assert "nope" not in str(result)
+
+    def test_stale_overlay_degrades_healthz(self, settings):
+        client = _client(
+            {"oduflow-db": True, "oduflow-prod-db": True, "oduflow-traefik": True}
+        )
+        with (
+            patch("oduflow.docker_ops.client.get_client", return_value=client),
+            patch(
+                "oduflow.docker_ops.env_ops.overlay_mount_issues",
+                return_value=[
+                    {
+                        "team_id": "1",
+                        "env_name": "prod",
+                        "state": "stale",
+                        "path": "/srv/oduflow/team_1/workspaces/prod/filestore",
+                    }
+                ],
+            ),
+        ):
+            result = health.collect_health(settings, force=True)
+
+        assert result["ok"] is False
+        assert result["checks"]["overlays"]["status"] == "error"

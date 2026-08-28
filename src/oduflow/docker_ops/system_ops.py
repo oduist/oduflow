@@ -22,6 +22,7 @@ from typing import Any
 
 import docker
 from docker import DockerClient
+from oduflow import pg_hba
 from oduflow.docker_ops.client import chown_recursive, get_client, get_odoo_uid_gid
 from oduflow.docker_ops.stats import default_env_limits
 from oduflow.errors import (
@@ -35,6 +36,7 @@ from oduflow.naming import (
     get_tablespace_name,
     get_team_network_name,
     get_template_db_name,
+    normalize_env_vars,
     validate_template_name,
 )
 from oduflow.settings import Settings, TeamSettings
@@ -1927,6 +1929,11 @@ def ensure_prod_infra(
     # Attach the (possibly new) prod DB to every team network.
     for team in settings.teams.values():
         ensure_team_network(client, settings, team)
+    _reconcile_pg_hba(
+        client,
+        settings,
+        container_name=settings.prod_db_container,
+    )
 
     try:
         walg.apply_archive_command(
@@ -2102,6 +2109,208 @@ def ensure_team_network(
     return net_name
 
 
+def _managed_pg_network_cidrs(client: DockerClient, settings: Settings) -> list[str]:
+    """Return the real IPAM subnets from every Oduflow-managed client network."""
+    network_names = {settings.shared_network}
+    network_names.update(
+        get_team_network_name(team.team_id, settings.prefix)
+        for team in settings.teams.values()
+    )
+
+    cidrs: list[str] = []
+    for network_name in sorted(network_names):
+        try:
+            network = client.networks.get(network_name)
+        except docker.errors.NotFound:
+            continue
+        attrs = getattr(network, "attrs", {})
+        ipam = attrs.get("IPAM", {}) if isinstance(attrs, dict) else {}
+        configs = ipam.get("Config", []) if isinstance(ipam, dict) else []
+        if not isinstance(configs, list):
+            continue
+        for config in configs:
+            if isinstance(config, dict) and config.get("Subnet"):
+                cidrs.append(str(config["Subnet"]))
+
+    try:
+        return pg_hba.normalize_cidrs(cidrs)
+    except ValueError as exc:
+        raise PrerequisiteNotMetError(
+            f"Docker reported an invalid network subnet for PostgreSQL: {exc}"
+        ) from exc
+
+
+def _container_output(output: bytes | str) -> str:
+    return (
+        output.decode("utf-8", errors="replace")
+        if isinstance(output, bytes)
+        else str(output)
+    )
+
+
+def _install_pg_hba_content(container: Any, hba_path: str, content: str) -> None:
+    """Atomically install *content* at the active HBA path in the PG volume."""
+    import tempfile
+
+    destination_dir = os.path.dirname(hba_path)
+    staged_name = f".pg_hba.oduflow-{uuid.uuid4().hex}"
+    staged_path = os.path.join(destination_dir, staged_name)
+    with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", delete=False) as tmp:
+        tmp.write(content)
+        tmp_path = tmp.name
+    try:
+        _copy_file_to_container(
+            container,
+            tmp_path,
+            destination_dir,
+            archive_name=staged_name,
+        )
+        command = [
+            "sh",
+            "-c",
+            "set -eu; "
+            f"chown postgres:postgres {shlex.quote(staged_path)}; "
+            f"chmod 600 {shlex.quote(staged_path)}; "
+            f"mv -f {shlex.quote(staged_path)} {shlex.quote(hba_path)}",
+        ]
+        exit_code, output = container.exec_run(command, user="root")
+        if exit_code != 0:
+            raise ExternalCommandError(
+                "install pg_hba.conf", exit_code, _container_output(output)
+            )
+    finally:
+        os.remove(tmp_path)
+        with contextlib.suppress(Exception):
+            container.exec_run(["rm", "-f", staged_path], user="root")
+
+
+def _pg_hba_errors(
+    client: DockerClient,
+    settings: Settings,
+    *,
+    container_name: str,
+) -> str:
+    return _exec_sql(
+        client,
+        settings,
+        "SELECT COALESCE(string_agg(line_number::text || ': ' || error, "
+        "E'\\n' ORDER BY line_number), '') FROM pg_hba_file_rules "
+        "WHERE error IS NOT NULL;",
+        container_name=container_name,
+    )
+
+
+def _pg_hba_auth_method(
+    client: DockerClient,
+    settings: Settings,
+    *,
+    container_name: str,
+) -> str:
+    """The HBA auth method every existing role can still authenticate with.
+
+    ``password_encryption`` only governs how *new* passwords are hashed, so a
+    data volume initialized by a pre-14 PostgreSQL image can report
+    ``scram-sha-256`` while its roles still hold md5 verifiers — and a strict
+    ``scram-sha-256`` rule locks those roles out. ``md5`` is the compatible
+    choice: PostgreSQL upgrades the exchange to SCRAM whenever the stored
+    verifier is SCRAM, so it costs nothing once every role has migrated.
+    """
+    legacy_md5 = _exec_sql(
+        client,
+        settings,
+        "SELECT EXISTS (SELECT 1 FROM pg_authid WHERE rolpassword LIKE 'md5%');",
+        container_name=container_name,
+    )
+    if legacy_md5.strip().lower() in {"t", "true"}:
+        return "md5"
+    return _exec_sql(
+        client,
+        settings,
+        "SHOW password_encryption;",
+        container_name=container_name,
+    )
+
+
+def _reconcile_pg_hba(
+    client: DockerClient,
+    settings: Settings,
+    *,
+    container_name: str,
+) -> bool:
+    """Allow password-authenticated access from the current managed networks."""
+    cidrs = _managed_pg_network_cidrs(client, settings)
+    if not cidrs:
+        raise PrerequisiteNotMetError(
+            "No Docker IPAM subnets were found for Oduflow-managed networks"
+        )
+
+    hba_path = _exec_sql(
+        client,
+        settings,
+        "SHOW hba_file;",
+        container_name=container_name,
+    )
+    auth_method = _pg_hba_auth_method(
+        client,
+        settings,
+        container_name=container_name,
+    )
+    container = client.containers.get(container_name)
+    exit_code, output = container.exec_run(["cat", hba_path])
+    if exit_code != 0:
+        raise ExternalCommandError(
+            "cat pg_hba.conf", exit_code, _container_output(output)
+        )
+    current = _container_output(output)
+
+    try:
+        candidate = pg_hba.reconcile_managed_block(current, cidrs, auth_method)
+    except ValueError as exc:
+        raise PrerequisiteNotMetError(
+            f"Could not generate PostgreSQL host authentication rules: {exc}"
+        ) from exc
+    if candidate == current:
+        return False
+
+    existing_errors = _pg_hba_errors(client, settings, container_name=container_name)
+    if existing_errors:
+        raise PrerequisiteNotMetError(
+            "The existing pg_hba.conf contains parse errors; refusing to modify it: "
+            f"{existing_errors}"
+        )
+
+    try:
+        _install_pg_hba_content(container, hba_path, candidate)
+        _exec_sql(
+            client,
+            settings,
+            "SELECT pg_reload_conf();",
+            container_name=container_name,
+        )
+        new_errors = _pg_hba_errors(client, settings, container_name=container_name)
+        if new_errors:
+            raise PrerequisiteNotMetError(
+                f"Generated pg_hba.conf contains parse errors: {new_errors}"
+            )
+    except Exception:
+        with contextlib.suppress(Exception):
+            _install_pg_hba_content(container, hba_path, current)
+            _exec_sql(
+                client,
+                settings,
+                "SELECT pg_reload_conf();",
+                container_name=container_name,
+            )
+        raise
+
+    logger.info(
+        "Reconciled %s access for Docker networks: %s",
+        container_name,
+        ", ".join(cidrs),
+    )
+    return True
+
+
 def _ensure_iptables_accept(client: DockerClient, network_name: str) -> None:
     try:
         net = client.networks.get(network_name)
@@ -2157,6 +2366,11 @@ def init_system(
 
     for team in settings.teams.values():
         ensure_team_network(client, settings, team)
+    _reconcile_pg_hba(
+        client,
+        settings,
+        container_name=settings.shared_db_container,
+    )
 
     # Production hosting is a strict opt-in. Disabled installations stop all
     # managed production workloads without deleting them; enabled installations
@@ -2719,6 +2933,15 @@ def _source_env_metadata(settings: Settings, labels: dict[str, Any]) -> dict[str
     raw_auto = labels.get("oduflow.auto_install_modules", "")
     if raw_auto:
         metadata["auto_install_modules"] = raw_auto
+    raw_env = labels.get("oduflow.env_vars", "")
+    if raw_env:
+        try:
+            env_vars = normalize_env_vars(json.loads(raw_env))
+        except (json.JSONDecodeError, TypeError, ValueError) as exc:
+            logger.warning("Could not record env vars on the template: %s", exc)
+        else:
+            if env_vars:
+                metadata["env_vars"] = env_vars
     return metadata
 
 
@@ -3030,6 +3253,7 @@ def publish_env_as_template(
                 source_image,
                 {},
                 template_name=template_name,
+                force_overlay=True,
             )
             if source_was_running:
                 try:
@@ -4379,6 +4603,10 @@ def update_template_metadata(
         ) from exc
     if not isinstance(metadata, dict):
         raise TypeError("Template metadata must be a JSON object.")
+    if metadata.get("env_vars") is not None:
+        # Rejected here rather than at environment creation: a name Docker
+        # cannot export is worth surfacing while the editor is still open.
+        metadata["env_vars"] = normalize_env_vars(metadata["env_vars"])
 
     normalized = (json.dumps(metadata, indent=2, ensure_ascii=False) + "\n").encode(
         "utf-8"
@@ -4405,6 +4633,27 @@ def update_template_metadata(
         "content": normalized.decode("utf-8"),
         "revision": hashlib.sha256(normalized).hexdigest(),
     }
+
+
+def _template_env_vars(metadata: dict[str, Any], template_name: str) -> dict[str, str]:
+    """Env vars recorded on a template, or {} if the entry is unusable.
+
+    Never raises: a template whose metadata was hand-edited into an invalid
+    env_vars block must still list and still provision — the variables are
+    dropped with a warning instead of taking the environment down with them.
+    """
+    raw = metadata.get("env_vars")
+    if not raw:
+        return {}
+    try:
+        return normalize_env_vars(raw)
+    except (TypeError, ValueError) as exc:
+        logger.warning(
+            "Ignoring invalid env_vars in template %s metadata: %s",
+            template_name,
+            exc,
+        )
+        return {}
 
 
 def list_templates(settings: Settings, team: TeamSettings) -> list[dict[str, Any]]:
@@ -4455,6 +4704,7 @@ def list_templates(settings: Settings, team: TeamSettings) -> list[dict[str, Any
                 "filestore_size_mb": metadata.get("filestore_size_mb"),
                 "dump_size_mb": metadata.get("dump_size_mb"),
                 "auto_install_modules": metadata.get("auto_install_modules", ""),
+                "env_vars": _template_env_vars(metadata, template_name),
                 # Code the snapshot was taken from — the anchor for the lineage
                 # check run at environment creation.
                 "source_branch": metadata.get("source_branch", ""),

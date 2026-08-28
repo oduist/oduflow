@@ -24,6 +24,7 @@ except Exception:  # pragma: no cover - authlib internals may change
 
 from fastmcp import Context, FastMCP
 from fastmcp.exceptions import ToolError
+from fastmcp.server.dependencies import get_access_token, get_http_request
 
 from oduflow import (
     activity,
@@ -58,7 +59,7 @@ from oduflow.locking import (
     service_preset_lock_key,
     volume_lock_key,
 )
-from oduflow.naming import parse_env_vars
+from oduflow.naming import normalize_env_vars, parse_env_vars
 from oduflow.output_cache import CachedOutput, OutputCache
 from oduflow.po_tools import PoEntry
 from oduflow.settings import Settings, TeamSettings, find_toml
@@ -72,6 +73,9 @@ _CACHE_THRESHOLD = 5_000  # chars — outputs above this are cached + summarized
 _SUMMARY_HEAD_LINES = 200
 _SUMMARY_TAIL_LINES = 100
 _SUMMARY_ERROR_CONTEXT = 5
+_ODOO_TEST_SUMMARY_RE = re.compile(
+    r"\b\d+ failed, \d+ error\(s\) of \d+ tests\b", re.IGNORECASE
+)
 
 _output_cache = OutputCache()
 
@@ -114,30 +118,29 @@ def _get_settings() -> Settings:
 
 
 def _resolve_team(ctx: Context | None) -> TeamSettings:
-    """Resolve the team from MCP Context.
+    """Resolve the team for the current MCP request.
 
     Priority: token/OAuth client_id → Host header → single-team → team "1".
     """
     settings = _get_settings()
-    # 1. Token-based: client_id set by auth provider maps to team_id
-    team_id = ctx.client_id if ctx and ctx.client_id else None
+    # 1. Context.client_id comes from caller-controlled MCP request metadata,
+    # not the verified credential. Only trust the access token established by auth.
+    access_token = get_access_token()
+    team_id = access_token.client_id if access_token else None
     if team_id and team_id in settings.teams:
         return settings.teams[team_id]
     # 2. Hostname-based: match Host header against team hostnames
-    if ctx:
-        try:
-            from fastmcp.server.dependencies import get_http_request
-
-            request = get_http_request()
-            host = request.headers.get("host", "")
-            team = settings.get_team_by_hostname(host)
-            if team:
-                return team
-        except Exception:
-            # No HTTP request in scope (e.g. stdio transport) — fall through to
-            # the single-team / default-team resolution below. Logged, not
-            # silently swallowed, so misrouting is traceable.
-            logger.debug("Host-header team resolution unavailable", exc_info=True)
+    try:
+        request = get_http_request()
+        host = request.headers.get("host", "")
+        team = settings.get_team_by_hostname(host)
+        if team:
+            return team
+    except Exception:
+        # No HTTP request in scope (e.g. stdio transport) — fall through to
+        # the single-team / default-team resolution below. Logged, not
+        # silently swallowed, so misrouting is traceable.
+        logger.debug("Host-header team resolution unavailable", exc_info=True)
     # 3. Fallback: single team or default team "1". Only for stdio (implicit
     # local single user) and explicitly-unauthenticated HTTP: in a hosted
     # multi-client deployment a request that matches no token and no hostname
@@ -208,6 +211,46 @@ def _maybe_cache(output: str, header: str, source_tool: str, source_args: str) -
         )
         return f"{header}\n\n{_make_summary(cached)}"
     return f"{header}\n\nOutput:\n{output}"
+
+
+def _cache_output(output: str, source_tool: str, source_args: str) -> CachedOutput:
+    """Store command output when the caller explicitly requested a terse response."""
+    return _output_cache.store(output, source_tool=source_tool, source_args=source_args)
+
+
+def _odoo_test_summary(output: str) -> str | None:
+    """Return Odoo's final aggregate test result without its log prefix."""
+    matches = list(_ODOO_TEST_SUMMARY_RE.finditer(output))
+    return matches[-1].group(0) if matches else None
+
+
+def _compact_pull_result(
+    result: dict[str, Any], woke_note: str, output: str, env_name: str
+) -> str:
+    """Build a one-line apply result while keeping raw command output server-side."""
+    parts = [" ".join((woke_note + str(result["message"])).split())]
+    if result.get("modules_installed"):
+        parts.append(f"Installed: {', '.join(result['modules_installed'])}")
+    if result.get("modules_upgraded"):
+        parts.append(f"Upgraded: {', '.join(result['modules_upgraded'])}")
+    parts.append(f"Changed files: {len(result.get('changed_files', []))}")
+
+    exit_code = int(result.get("exit_code", 0) or 0)
+    parts.append(f"Status: {'failed' if exit_code else 'ok'} (exit_code={exit_code})")
+
+    warnings = result.get("warnings") or []
+    if warnings:
+        compact_warnings = [" ".join(str(warning).split()) for warning in warnings]
+        parts.append(f"Guardrail warnings: {' | '.join(compact_warnings)}")
+
+    if output:
+        cached = _cache_output(
+            output,
+            source_tool="pull_and_apply",
+            source_args=f"env={env_name}, summary_only=True",
+        )
+        parts.append(f"output_id={cached.output_id}")
+    return "; ".join(parts)
 
 
 def _artifact_url(settings: Settings, team: TeamSettings, token: str) -> str | None:
@@ -692,7 +735,7 @@ def create_environment(
         extra_addons: Comma-separated list of extra addon repo names with branches (e.g. "enterprise:19.0,custom-themes:main"). Each entry must include a branch after a colon.
         sanitize: Sanitize the database after provisioning (default: True). Runs Odoo's native neutralization (deactivates outgoing mail servers and crons, disables payment providers, scrubs third-party API credentials, sets database.is_neutralized) and then any custom scripts from the .oduflow/odoo_sanitize/ folder in the repository. Only applies to environments created from a template.
         auto_install_modules: Comma-separated list of Odoo modules to install automatically after the environment is provisioned (e.g. "sale,purchase,stock"). When a template is specified and this is empty, the value is loaded from template metadata.
-        env_vars: Comma- or newline-separated KEY=VALUE pairs injected as environment variables into the Odoo container (e.g. "WORKERS=2,LIMIT_TIME_CPU=600"). Commas inside values are preserved unless what follows the comma looks like another KEY=; put one pair per line when in doubt. These are added on top of the database connection variables (HOST/USER/PASSWORD).
+        env_vars: Comma- or newline-separated KEY=VALUE pairs injected as environment variables into the Odoo container (e.g. "WORKERS=2,LIMIT_TIME_CPU=600"). Commas inside values are preserved unless what follows the comma looks like another KEY=; put one pair per line when in doubt. These are added on top of the database connection variables (HOST/USER/PASSWORD). When a template records env_vars, the two sets are merged per key and the values passed here win.
         local_path: LOCAL FAST-PATH. Absolute path to a checkout on THIS host. When set, Oduflow skips git clone and bind-mounts the directory live into the container — your file edits are visible instantly, no git push/pull needed. After editing, call pull_and_apply with explicit install/upgrade/restart to apply. repo_url is not required in this mode. Gated by allow_local_path (default: true).
     """
     import json
@@ -727,6 +770,7 @@ def create_environment(
         effective_repo_url = repo_url
         effective_odoo_image = odoo_image
         effective_git_user = ""
+        template_env_vars: dict[str, str] = {}
         local_path = (local_path or "").strip()
         local_path_from_template = False
         if resolved_template:
@@ -752,6 +796,9 @@ def create_environment(
                             )
                 if not auto_install_modules:
                     auto_install_modules = metadata.get("auto_install_modules", "")
+                template_env_vars = system_ops._template_env_vars(
+                    metadata, resolved_template
+                )
                 # The template's live-mount path applies only when the caller
                 # gave no code source of their own (explicit repo_url wins, so
                 # http clients can still clone from a real remote).
@@ -808,7 +855,10 @@ def create_environment(
             if auto_install_modules
             else []
         )
-        parsed_env = parse_env_vars(env_vars) or None
+        # Per-key merge: the template supplies the baseline and an explicit
+        # argument overrides just the keys it names, so a caller can bump
+        # WORKERS without having to restate the template's whole set.
+        parsed_env = {**template_env_vars, **normalize_env_vars(env_vars)} or None
         result = env_ops.create_environment(
             settings,
             team,
@@ -973,6 +1023,10 @@ def list_templates(ctx: Context | None = None) -> str:
             size_info = f", Filestore size={fs_str}, Dump size={dump_str}"
         auto_install = r.get("auto_install_modules", "")
         auto_info = f", Auto-install={auto_install}" if auto_install else ""
+        # Names only — a template's env vars routinely carry API keys, and this
+        # listing is the one template view an agent reads unprompted.
+        env_names = sorted(r.get("env_vars") or {})
+        env_info = f", Env={','.join(env_names)}" if env_names else ""
         # Provenance: which code this database snapshot came from. A branch that
         # does not contain that commit will hit upgrade failures against newer data.
         origin_parts = []
@@ -983,7 +1037,7 @@ def list_templates(ctx: Context | None = None) -> str:
         if r.get("snapshot_at"):
             origin_parts.append(f"snapshot {str(r['snapshot_at'])[:10]}")
         origin_info = f", Source={' @ '.join(origin_parts)}" if origin_parts else ""
-        output += f"- {r['template_name']}: DB={db_status}, SQL={r['has_sql']}, Filestore={r['has_filestore']}, Mode={overlay_status}{size_info}{auto_info}{origin_info}\n"
+        output += f"- {r['template_name']}: DB={db_status}, SQL={r['has_sql']}, Filestore={r['has_filestore']}, Mode={overlay_status}{size_info}{auto_info}{env_info}{origin_info}\n"
     return output
 
 
@@ -1478,9 +1532,21 @@ def list_environments(ctx: Context | None = None) -> str:
         if env.get("url"):
             status_line += f" - {env['url']}"
         output += status_line + "\n"
-        git_branch = env.get("git_branch", "")
-        if git_branch and git_branch != env["env_name"]:
-            output += f"  Git Branch: {git_branch}\n"
+        output += f"  Git Branch: {env.get('git_branch') or env['env_name']}\n"
+        if env.get("created_at"):
+            output += f"  Created: {env['created_at']}\n"
+        output += f"  Last Activity: {env.get('last_activity') or 'unknown'}\n"
+        if env["status"] == "stopped" or env.get("stopped_at"):
+            stopped_at = env.get("stopped_at") or "unknown"
+            stopped_by = env.get("stopped_by") or "unknown"
+            output += f"  Stopped At: {stopped_at} ({stopped_by})\n"
+        output += f"  Protected: {'yes' if env.get('protected') else 'no'}\n"
+        if env.get("stack"):
+            output += f"  Stack: {env['stack']}\n"
+        note = str(env.get("note") or "").strip()
+        if note:
+            note = note.replace("\n", "\n        ")
+            output += f"  Note: {note}\n"
         if env.get("db_name"):
             output += f"  Database: {env['db_name']}\n"
         if env.get("odoo_image"):
@@ -1504,6 +1570,7 @@ def run_odoo_tests(
     modules: str,
     test_tags: str = "",
     upgrade: bool = True,
+    summary_only: bool = False,
     ctx: Context | None = None,
 ) -> str:
     """
@@ -1533,6 +1600,9 @@ def run_odoo_tests(
             upgrade Odoo only collects **post_install** tests, so classes at the
             default at_install position (plain TransactionCase/TestCase) will report
             "0 tests". If a class you expect does not run, re-run with upgrade=True.
+        summary_only: Return only Odoo's aggregate test result and an output_id
+            instead of command logs. The complete output remains available through
+            read_output. Default False preserves the verbose response.
     """
     settings = _get_settings()
     team = _resolve_team(ctx)
@@ -1540,12 +1610,27 @@ def run_odoo_tests(
     output = odoo_ops.run_environment_tests(
         settings, team, env_name, modules, test_tags=test_tags, upgrade=upgrade
     )
+    source_args = (
+        f"env={env_name}, modules={modules}, test_tags={test_tags}, upgrade={upgrade}"
+    )
+    if summary_only:
+        cached = _cache_output(
+            output, "run_odoo_tests", f"{source_args}, summary_only=True"
+        )
+        summary = _odoo_test_summary(output) or "Test summary not found"
+        # Keep the wake note (whitespace-collapsed, so the response stays one
+        # line): the caller still has to know the environment was stopped and
+        # started by this call.
+        note = " ".join(woke.split())
+        prefix = f"{note} " if note else ""
+        return f"{prefix}{summary} [output_id={cached.output_id}]"
+
     header = woke + f"Test Results for {env_name}:"
     return _maybe_cache(
         output,
         header,
         "run_odoo_tests",
-        f"env={env_name}, modules={modules}, test_tags={test_tags}, upgrade={upgrade}",
+        source_args,
     )
 
 
@@ -1690,9 +1775,24 @@ def get_environment_info(env_name: str, ctx: Context | None = None) -> str:
         else "Some containers not running"
     )
     lines = [f"Environment Info for '{env_name}': {overall}"]
-    git_branch = info.get("git_branch", "")
-    if git_branch and git_branch != env_name:
-        lines.append(f"Git Branch: {git_branch}")
+    lines.append(f"Git Branch: {info.get('git_branch') or env_name}")
+    if info.get("created_at"):
+        lines.append(f"Created: {info['created_at']}")
+    lines.append(f"Last Activity: {info.get('last_activity') or 'unknown'}")
+    odoo_status = info.get("odoo", {})
+    if info.get("stopped_at") or (
+        not odoo_status.get("running") and odoo_status.get("status") != "not found"
+    ):
+        stopped_at = info.get("stopped_at") or "unknown"
+        stopped_by = info.get("stopped_by") or "unknown"
+        lines.append(f"Stopped At: {stopped_at} ({stopped_by})")
+    lines.append(f"Protected: {'yes' if info.get('protected') else 'no'}")
+    if info.get("stack"):
+        lines.append(f"Stack: {info['stack']}")
+    note = str(info.get("note") or "").strip()
+    if note:
+        note = note.replace("\n", "\n      ")
+        lines.append(f"Note: {note}")
     lines.append(f"Database: {info['db_name']}")
     if info.get("url"):
         lines.append(f"URL: {info['url']}")
@@ -1786,6 +1886,7 @@ def pull_and_apply(
     upgrade: str = "",
     restart: bool = False,
     strict: bool = False,
+    summary_only: bool = False,
     ctx: Context | None = None,
 ) -> str:
     """
@@ -1822,7 +1923,9 @@ def pull_and_apply(
       update_environment.)
 
     Errors and tracebacks are returned directly in this response — do NOT call
-    get_environment_logs to check for them.
+    get_environment_logs to check for them. With summary_only=True they are not
+    inlined: the response reports the exit status and an `output_id`, and the
+    full log is read with read_output.
 
     Args:
         env_name: The environment to apply changes to.
@@ -1831,6 +1934,10 @@ def pull_and_apply(
         restart: Restart the Odoo container (for Python-only changes).
         strict: If True, refuse to apply when the guardrail finds a likely
             missing action (default False: warn but apply anyway).
+        summary_only: Return a compact one-line action/status summary instead of
+            command logs and changed-file names. Raw output is cached and remains
+            available through read_output. Default False preserves the verbose
+            response.
     """
     settings = _get_settings()
     team = _resolve_team(ctx)
@@ -1875,6 +1982,8 @@ def pull_and_apply(
 
     header = "\n".join(header_lines)
     output = result.get("output", "")
+    if summary_only:
+        return _compact_pull_result(result, woke_note, output, env_name)
     if output:
         return _maybe_cache(output, header, "pull_and_apply", f"env={env_name}")
     return header
@@ -4859,6 +4968,22 @@ def _ensure_initialized(settings: Settings) -> None:
             team.workspaces_dir,
             os.path.join(team.data_dir, "templates"),
         )
+
+    # Filestore overlays do not survive an Oduflow restart in Docker: the
+    # fuse-overlayfs daemons die with the container's PID namespace while their
+    # mounts live on in the host's. Repair them before anything serves traffic,
+    # so environments do not come back up on a filestore that raises ENOTCONN.
+    try:
+        repaired = env_ops.reconcile_overlay_mounts(settings)
+    except Exception:  # noqa: BLE001 - a repair pass must never block startup
+        logger.warning("Filestore overlay reconciliation failed", exc_info=True)
+    else:
+        if repaired:
+            logger.warning(
+                "Filestore overlay reconciliation: %d repaired, %d need attention",
+                sum(1 for r in repaired if r["repaired"]),
+                sum(1 for r in repaired if not r["repaired"]),
+            )
 
     global _instance_id  # noqa: PLW0603
     from oduflow.telemetry import record_startup

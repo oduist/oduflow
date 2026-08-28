@@ -76,6 +76,10 @@ def _build(tmp_path, envs, mounted_envs, statuses=None):
         paths = get_filestore_paths(env_name, team.workspaces_dir)
         os.makedirs(paths["upper"], exist_ok=True)
         os.makedirs(paths["work"], exist_ok=True)
+        # The mountpoint has to exist: overlay liveness is decided by stat'ing
+        # it (a stale FUSE mount is the case where that stat fails), not by
+        # ``ismount`` alone.
+        os.makedirs(paths["merged"], exist_ok=True)
         with open(os.path.join(paths["upper"], "marker.txt"), "w") as f:
             f.write("delta")
         env_dicts.append(
@@ -134,6 +138,9 @@ class TestRemountTemplateOverlays:
         # Each env unmounted + remounted.
         assert unmount_mock.call_count == 2
         assert mount_mock.call_count == 2
+        assert all(
+            call.kwargs["force_overlay"] is True for call in mount_mock.call_args_list
+        )
         # Containers cycled.
         for c in mapping.values():
             assert c.stop_calls == 1

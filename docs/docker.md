@@ -62,6 +62,13 @@ Alternatively, start with `--network oduflow-net` if the network already exists.
 
 Shared infrastructure (Docker network, PostgreSQL, team directories) is initialized automatically on startup — no separate init step needed.
 
+Oduflow also reconciles the active PostgreSQL `pg_hba.conf` with the actual
+subnets reported by Docker IPAM for `oduflow-net` and every per-team network.
+Only a marked `ODUFLOW MANAGED NETWORKS` block is changed; the standard local,
+replication, and operator-managed rules remain intact. This works the same way
+when Oduflow runs directly on the host or through Docker-out-of-Docker because
+the file is updated through the Docker API rather than another host bind mount.
+
 To set up a template database:
 
 ```bash
