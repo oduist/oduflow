@@ -626,6 +626,73 @@ def _parse_extra_addons(raw: str) -> dict[str, str]:
     return result
 
 
+def _odoo_guide_reminder(odoo_image: str) -> str:
+    """The "load the version guide before writing code" line, if the image says
+    which Odoo version this is."""
+    import re
+
+    match = re.search(r"odoo[:/](\d+)(?:\.0)?", odoo_image)
+    if not match:
+        return ""
+    version = match.group(1)
+    return (
+        f"\n⚠️ Immediately call "
+        f'get_odoo_development_guide(version="{version}") to load Odoo {version} '
+        "development standards and constraints. Do not wait for the user to ask "
+        "— these guidelines must be loaded before writing any code."
+    )
+
+
+def _existing_environment_message(
+    existing: dict[str, Any],
+    *,
+    requested_image: str,
+    requested_template: str,
+) -> str:
+    """Report an environment that create_environment found already provisioned."""
+    lines = [
+        "Environment already exists — reusing it. Nothing was recreated.",
+        f"Environment: {existing['env_name']}",
+        f"URL: {existing['url']}",
+        f"Git Branch: {existing['git_branch']}",
+        f"Hostname: {existing['hostname']}",
+        f"Odoo Container: {existing['odoo_container']}",
+        f"Database: {existing['database']}",
+        f"Workspace: {existing['workspace']}",
+        f"Odoo Image: {existing['odoo_image']}",
+        f"Template: {existing['template_name']}",
+    ]
+    if existing.get("local_path"):
+        lines.append(
+            f"Live-mount: {existing['local_path']} "
+            "(edit files directly; call pull_and_apply to apply)"
+        )
+    if existing.get("started"):
+        lines.append("It was stopped and has been started for you.")
+    if requested_image and requested_image != existing["odoo_image"]:
+        lines.append(
+            f"Note: you asked for image '{requested_image}', but this "
+            f"environment runs '{existing['odoo_image']}'. Change it with "
+            "update_environment, or delete and create it again."
+        )
+    if (
+        requested_template
+        and requested_template.lower() != "none"
+        and requested_template != existing["template_name"]
+    ):
+        lines.append(
+            f"Note: you asked for template '{requested_template}', but this "
+            f"environment was created from '{existing['template_name']}'. Its "
+            "database is the one that already exists; delete and create the "
+            "environment again to start from another template."
+        )
+    lines.append("Apply your code with pull_and_apply.")
+    reminder = _odoo_guide_reminder(existing["odoo_image"])
+    if reminder:
+        lines.append(reminder)
+    return "\n".join(lines)
+
+
 # =============================================================================
 # MCP Tools — Environments
 # =============================================================================
@@ -650,6 +717,14 @@ def create_environment(
     """
     Provision a new ephemeral Odoo environment.
 
+    Safe to call first, without listing environments: if one already exists
+    under this name it is returned as is — with its URL, and started when it
+    was stopped — and nothing is recreated. The single refusal is a branch
+    mismatch: an environment tracking another branch is left alone, since its
+    database and URL are in use. Move it with switch_branch, pass a different
+    env_name, or delete it first. When the team runs out of environment slots,
+    switch_branch onto a finished (merged) environment is the way forward.
+
     Args:
         branch: The git branch to clone (e.g. "19.0", "feature/my-feature").
         env_name: Optional environment name. If empty, defaults to the branch name. Use this to create multiple environments from the same branch (e.g. env_name="client-a" with branch="19.0").
@@ -672,6 +747,19 @@ def create_environment(
     team = _resolve_team(ctx)
     _locks.acquire_env(resolved_env_name, team.team_id, operation="create_environment")
     try:
+        # Creating an environment that already exists is not a mistake worth an
+        # error: the agent wanted one for this branch and there is one. Answer
+        # with its URL before doing any of the expensive work below, so calling
+        # create first — without a list_environments round-trip — is the cheap,
+        # correct default. A branch mismatch still raises (see the helper).
+        existing = env_ops.adopt_existing_environment(
+            settings, team, resolved_env_name, branch=branch
+        )
+        if existing is not None:
+            return _existing_environment_message(
+                existing, requested_image=odoo_image, requested_template=template_name
+            )
+
         resolved_template: str | None
         if not template_name or template_name.lower() == "none":
             resolved_template = None
@@ -838,14 +926,9 @@ def create_environment(
         if setup_logs:
             lines.append("\n--- Setup Log ---")
             lines.extend(setup_logs)
-        import re
-
-        _ver_match = re.search(r"odoo[:/](\d+)(?:\.0)?", effective_odoo_image)
-        if _ver_match:
-            _odoo_ver = _ver_match.group(1)
-            lines.append(
-                f'\n⚠️ After creating an environment, immediately call get_odoo_development_guide(version="{_odoo_ver}") to load Odoo {_odoo_ver} development standards and constraints. Do not wait for the user to ask — these guidelines must be loaded before writing any code.'
-            )
+        reminder = _odoo_guide_reminder(effective_odoo_image)
+        if reminder:
+            lines.append(reminder)
         return "\n".join(lines)
     finally:
         _locks.release_env(resolved_env_name)
@@ -1921,14 +2004,15 @@ def switch_branch(
     ctx: Context | None = None,
 ) -> str:
     """
-    Move an existing environment onto another git branch — reuse it instead of
-    creating a new one.
+    Move an existing environment onto another git branch.
 
     Everything except the code stays: the database, filestore, URL / hostname,
-    ports, database credentials and the scoped MCP token. Use this at the start
-    of a task when a previous branch is finished (merged) — it replaces "delete
-    the old environment, create a fresh one", which re-clones the repository and
-    re-copies the template database.
+    ports, database credentials and the scoped MCP token. Reach for this when
+    the team has no free environment slots left and a previous branch is
+    finished (merged), or when that database and URL are worth keeping — it
+    replaces "delete the old environment, create a fresh one", which re-clones
+    the repository and re-copies the template database. With slots still free,
+    create_environment is the simpler path.
 
     The branch must already exist on origin, so push it first. Oduflow then
     diffs the old and new tips and applies exactly the logic of pull_and_apply:

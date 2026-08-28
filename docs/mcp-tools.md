@@ -7,7 +7,7 @@ All tools are accessible via MCP clients (Cursor, Cline, Amp, etc.) and the CLI 
 | Tool | Lock | Description |
 |---|:---:|---|
 | **Environment Management** | | |
-| `create_environment` | ✓ | Provision an Odoo environment for a branch (clone, DB, container, filestore); optional `hostname` selects a short Traefik hostname and `env_vars` injects container environment variables, merged per key over any recorded on the template |
+| `create_environment` | ✓ | Provision an Odoo environment for a branch (clone, DB, container, filestore); an environment that already exists is returned as is (started if stopped) instead of raising, unless it tracks another branch; optional `hostname` selects a short Traefik hostname and `env_vars` injects container environment variables, merged per key over any recorded on the template |
 | `delete_environment` | ✓ | Tear down all resources for a branch |
 | `list_environments` | | List all managed environments with status, URL, current git branch, creation/last-activity/stopped timestamps, stop source, protection, Stack ownership and operator note |
 | `get_environment_info` | | Full environment details: lifecycle/reuse metadata, DB name, URL, repo, image, template, extra addons, workspace, container status, CPU/RAM stats |
@@ -15,7 +15,7 @@ All tools are accessible via MCP clients (Cursor, Cline, Amp, etc.) and the CLI 
 | `stop_environment` | | Stop a running environment |
 | `restart_environment` | | Restart the Odoo container |
 | `update_environment` | ✓ | Re-create the container, preserving DB and filestore; optional `odoo_image` switches the image and `env_vars` replaces the container environment variables |
-| `switch_branch` | ✓ | Point an existing environment at another branch and apply the difference, keeping its database, filestore, hostname and URL — reuse instead of delete-and-create; optional `new_name` renames the environment in the same operation (its scoped MCP endpoint moves with the name) |
+| `switch_branch` | ✓ | Point an existing environment at another branch and apply the difference, keeping its database, filestore, hostname and URL — the way to work when the team is out of environment slots; optional `new_name` renames the environment in the same operation (its scoped MCP endpoint moves with the name) |
 | **Odoo Operations** | | |
 | `pull_and_apply` | ✓ | Git pull + smart analysis → auto install/upgrade/restart; `summary_only=True` returns one action/status line and caches command logs for `read_output` |
 | `install_odoo_modules` | ✓ | Install Odoo modules (`-i`) |

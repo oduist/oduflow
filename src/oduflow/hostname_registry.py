@@ -99,7 +99,8 @@ def allocate_hostname(
         if slot_count > 0 and len(occupied_envs) >= slot_count:
             raise FlowError(
                 f"No free environment slots (configured: {slot_count}). "
-                "Delete an unused environment to free a slot."
+                "Move a finished environment onto your branch with "
+                "switch_branch, or delete an unused one to free a slot."
             )
 
         occupied_hostnames = {
@@ -137,7 +138,8 @@ def allocate_hostname(
     raise FlowError(
         f"No free environment hostnames in {hostname_prefix}1-"
         f"{hostname_prefix}{slot_count}. "
-        "Delete an unused environment to free a slot."
+        "Move a finished environment onto your branch with switch_branch, or "
+        "delete an unused one to free a slot."
     )
 
 

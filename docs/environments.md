@@ -23,6 +23,16 @@ oduflow call create_environment '{"branch":"feature-login","template_name":"mypr
 
 `env_vars` are added on top of the database connection variables (`HOST`/`USER`/`PASSWORD`). They are stored on the container and can later be replaced with [`update_environment`](#lifecycle-management).
 
+Creating an environment that already exists is not an error over MCP: the call
+returns that environment's URL and details right away, starts it when it was
+stopped, and provisions nothing. So an agent can call `create_environment`
+first, with no `list_environments` lookup before it. The one refusal is a
+**branch mismatch** — an existing environment tracking another branch is left
+alone, because its database and URL are in use; move it deliberately with
+[`switch_branch`](#reusing-an-environment-for-the-next-branch), pick another
+`env_name`, or delete it. The dashboard and the REST API keep the strict
+behaviour and report the conflict instead.
+
 In Traefik mode, a team with `environment_slots = N` numbers the first label of
 its hostname. For `dev.example.com`, the reusable pool is `dev1.example.com`
 through `devN.example.com`. The assignment survives stops and container updates
@@ -187,7 +197,13 @@ oduflow call delete_environment feature-login
 
 An environment is not tied for life to the branch it was created from. When a
 branch is finished — PR merged, worktree gone — point the same environment at the
-next branch instead of deleting it and provisioning a new one:
+next branch instead of deleting it and provisioning a new one.
+
+This is the answer to a **full slot pool**, not the default way to start a task.
+While the team still has free `environment_slots`, create a new environment; it
+costs a clone and a template copy and keeps the branches independent. Reuse when
+`create_environment` reports "No free environment slots", or when that specific
+database and URL are worth carrying over:
 
 ```bash
 # Same environment, next branch. The branch must already exist on origin.
@@ -400,12 +416,13 @@ After `git pull --rebase`, Oduflow compares `HEAD` before and after, then classi
 | `i18n/*.po` | Translation terms, loaded into the database on upgrade | **Upgrade** the module |
 | `*.xml` (not in security/) | Views, actions, data | **Refresh** (hot-reloaded via `--dev=xml`) |
 | `*.js` | Frontend assets | **Refresh** (hot-reloaded via `--dev=xml`) |
+| `*.md` (nothing else changed) | Documentation, never loaded by Odoo | **None** — nothing is applied |
 
 ### Action priority
 
-`install` > `upgrade` > `restart` > `refresh`
+`install` > `upgrade` > `restart` > `refresh` > `none`
 
-If any module needs installation, all pending upgrades are also executed. If only Python files changed (without field modifications), a container restart is sufficient. If only XML/JS changed, no server-side action is needed — just refresh the browser.
+If any module needs installation, all pending upgrades are also executed. If only Python files changed (without field modifications), a container restart is sufficient. If only XML/JS changed, no server-side action is needed — just refresh the browser. If the pull brought Markdown files only, nothing is applied at all — in development and in production alike, since the container is not restarted either.
 
 !!! note
     `pull_and_apply` updates only the **main project repository**. Extra addons repositories are pinned to the commit they were deployed with and are not affected. See [Extra Addons — Updating](extra-addons.md#updating-extra-repos) for details.

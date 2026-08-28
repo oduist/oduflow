@@ -1,5 +1,5 @@
 # Oduflow — Agentic Odoo Development
-Version: 8
+Version: 9
 
 ## Purpose
 
@@ -20,9 +20,10 @@ version (15–19).
   directly; no push is required. Git commits are optional and do not control
   what Oduflow applies.
 
-Use `list_environments` before creating anything. Reuse the environment for
-the current branch when it exists. If none exists, prepare the selected
-delivery mode before calling `create_environment`:
+Call `create_environment` first, without looking anything up: if an environment
+with that name already exists, the call returns its URL immediately, starts it
+when it was stopped, and creates nothing. Prepare the selected delivery mode
+before that call:
 
 - **`repo_url`: first run `git push -u origin HEAD`** so the current branch
   exists in the remote repository, then create the environment. Oduflow can
@@ -37,11 +38,11 @@ Call `create_environment` with the branch, correct Odoo image, and either
 ## Core workflow
 
 ```text
-1. list_environments
-2. if an existing environment's branch is finished (merged), reuse it:
-   git push -u origin HEAD, then switch_branch to your branch;
-   otherwise create_environment (repo_url must be pushed first;
-   local_path needs no push)
+1. create_environment for your branch (repo_url must be pushed first;
+   local_path needs no push). An environment that already exists is
+   returned as is, so this is safe to call first
+2. if the team is out of environment slots, take a finished (merged)
+   environment instead: git push -u origin HEAD, then switch_branch
 3. get_odoo_development_guide before module code changes
 4. edit code locally
 5. repo_url: commit + push; local_path: no delivery step
@@ -52,16 +53,23 @@ Call `create_environment` with the branch, correct Odoo image, and either
    nobody still needs the URL or its test data
 ```
 
-Prefer step 2's reuse over a new environment. `switch_branch` keeps the
-database, filestore, URL and scoped MCP endpoint and only changes the code, so
-it is much faster than provisioning — and the address you are already using
-stays valid. It applies the branch difference exactly like `pull_and_apply`. The
-target branch must exist on origin; live-mounted environments are rejected
-(switch the branch in the mounted checkout and call `pull_and_apply`). If the
-target branch does not carry a module installed in that database, the response
-warns; create a separate environment when that matters.
+Create a fresh environment while the team still has free slots — that is the
+normal path, and there is no need to hunt for an environment to take over.
+`create_environment` fails with "No free environment slots" when they run out;
+that is when step 2 applies. `switch_branch` keeps the database, filestore, URL
+and scoped MCP endpoint and only changes the code, and it applies the branch
+difference exactly like `pull_and_apply`. The target branch must exist on
+origin; live-mounted environments are rejected (switch the branch in the
+mounted checkout and call `pull_and_apply`). If the target branch does not
+carry a module installed in that database, the response warns.
 
-Treat the reuse metadata in `list_environments` as evidence, not decoration.
+`create_environment` refuses an existing environment only when it tracks a
+different branch: that environment's database and URL are in use, so moving it
+is the user's call. Report the conflict and let them choose `switch_branch`, a
+different `env_name`, or deleting the old environment.
+
+When you do have to take over a slot, treat the reuse metadata in
+`list_environments` as evidence, not decoration.
 Never switch a running, protected, Stack-managed, or explicitly reserved
 (`Note:`) environment. When the repository's own instructions allow reclaiming
 idle slots, choose among eligible stopped environments by `Last Activity` and

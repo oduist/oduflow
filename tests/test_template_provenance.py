@@ -302,9 +302,13 @@ class TestTemplateCodeLineage:
 
 
 class TestCreateEnvironmentReportsLineage:
+    @patch(
+        "oduflow.docker_ops.env_ops.adopt_existing_environment",
+        return_value=None,
+    )
     @patch("oduflow.docker_ops.env_ops.create_environment")
     def test_diverged_branch_is_reported_with_the_remedy(
-        self, mock_create, tool_env, tmp_path
+        self, mock_create, mock_adopt, tool_env, tmp_path
     ):
         settings, team = tool_env
         _write_template(
@@ -329,8 +333,14 @@ class TestCreateEnvironmentReportsLineage:
         assert "Code is behind the template database" in result
         assert "Merge prod into this branch" in result
 
+    @patch(
+        "oduflow.docker_ops.env_ops.adopt_existing_environment",
+        return_value=None,
+    )
     @patch("oduflow.docker_ops.env_ops.create_environment")
-    def test_aligned_branch_says_nothing(self, mock_create, tool_env, tmp_path):
+    def test_aligned_branch_says_nothing(
+        self, mock_create, mock_adopt, tool_env, tmp_path
+    ):
         settings, team = tool_env
         _write_template(
             team,
@@ -353,8 +363,14 @@ class TestCreateEnvironmentReportsLineage:
 
         assert "template database" not in result
 
+    @patch(
+        "oduflow.docker_ops.env_ops.adopt_existing_environment",
+        return_value=None,
+    )
     @patch("oduflow.docker_ops.env_ops.create_environment")
-    def test_ahead_branch_gets_the_upgrade_list(self, mock_create, tool_env, tmp_path):
+    def test_ahead_branch_gets_the_upgrade_list(
+        self, mock_create, mock_adopt, tool_env, tmp_path
+    ):
         settings, team = tool_env
         _write_template(
             team,

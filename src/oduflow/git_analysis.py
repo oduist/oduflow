@@ -178,6 +178,10 @@ def _is_translation_file(file_path: str) -> bool:
     return os.path.splitext(file_path)[1].lower() == ".po"
 
 
+def _is_markdown_file(file_path: str) -> bool:
+    return os.path.splitext(file_path)[1].lower() == ".md"
+
+
 def _is_active_dep_file(file_path: str, repo_path: str) -> bool:
     """Whether a changed dependency file is the one Oduflow actually reads."""
     normalized = file_path.replace(os.sep, "/")
@@ -215,6 +219,15 @@ def classify_changes(
 
     if not changed_files:
         _trace("classify_changes: no changed files -> action=none")
+        return {
+            "action": "none",
+            "modules_to_upgrade": [],
+            "modules_to_install": [],
+            "details": {},
+        }
+
+    if all(_is_markdown_file(f) for f in changed_files):
+        _trace("classify_changes: only Markdown files changed -> action=none")
         return {
             "action": "none",
             "modules_to_upgrade": [],
@@ -437,6 +450,14 @@ def shallow_classify(changed_files: list[str], repo_path: str = "") -> dict[str,
     ``__manifest__.py`` is treated as *upgrade*). Returns the same dict shape.
     """
     if not changed_files:
+        return {
+            "action": "none",
+            "modules_to_upgrade": [],
+            "modules_to_install": [],
+            "details": {},
+        }
+
+    if all(_is_markdown_file(f) for f in changed_files):
         return {
             "action": "none",
             "modules_to_upgrade": [],
