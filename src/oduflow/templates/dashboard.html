@@ -822,6 +822,15 @@
   .sync-exit-code { font-size: var(--text-xs); margin-top: 6px; }
   .sync-exit-ok { color: var(--green); }
   .sync-exit-err { color: var(--red); }
+  .module-picker { border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg); max-height: 260px; overflow-y: auto; }
+  .module-picker-empty { padding: 12px; font-size: var(--text-xs); color: var(--text-dim); }
+  .module-row { display: flex; align-items: center; gap: 8px; padding: 5px 10px; font-size: var(--text-sm); cursor: pointer; border-bottom: 1px solid color-mix(in oklab, var(--border) 50%, transparent); }
+  .module-row:last-child { border-bottom: none; }
+  .module-row:hover { background: var(--surface); }
+  .module-row input { margin: 0; width: 15px; height: 15px; accent-color: var(--accent); cursor: pointer; }
+  .module-row .module-name { font-family: var(--font-mono); }
+  .module-row .module-version { margin-left: auto; font-size: var(--text-xs); color: var(--text-dim); font-family: var(--font-mono); }
+  .module-picker-status { display: flex; justify-content: space-between; gap: 8px; font-size: var(--text-xs); color: var(--text-dim); margin-top: 6px; }
   .toast {
     position: fixed;
     bottom: 24px;
@@ -2082,6 +2091,53 @@
     </div>
   </div>
 </div>
+<div class="modal-overlay" id="install-modules-modal" onclick="closeInstallModules(event)">
+  <div class="modal modal-sm">
+    <div class="modal-header">
+      <h2 id="install-modules-title">Install modules</h2>
+      <button class="modal-close" onclick="closeInstallModules()">&times;</button>
+    </div>
+    <div class="modal-body">
+      <p class="modal-note">Runs <code>odoo -i</code> against this environment's database and restarts the container when it succeeds. Modules already installed are left as they are — use Upgrade modules for those.</p>
+      <div class="form-group">
+        <label for="install-modules-input">Modules</label>
+        <input id="install-modules-input" class="mono-input" type="text" placeholder="e.g. sale,purchase,stock"
+               onkeydown="if (event.key === 'Enter') { event.preventDefault(); confirmInstallModules(); }">
+        <div class="hint">Comma-separated list of module technical names</div>
+      </div>
+      <div class="form-actions">
+        <button class="btn" onclick="closeInstallModules()">Cancel</button>
+        <button class="btn-create" onclick="confirmInstallModules()">Install</button>
+      </div>
+    </div>
+  </div>
+</div>
+<div class="modal-overlay" id="upgrade-modules-modal" onclick="closeUpgradeModules(event)">
+  <div class="modal modal-sm">
+    <div class="modal-header">
+      <h2 id="upgrade-modules-title">Upgrade modules</h2>
+      <button class="modal-close" onclick="closeUpgradeModules()">&times;</button>
+    </div>
+    <div class="modal-body">
+      <p class="modal-note">Runs <code>odoo -u</code> for the modules you pick. Only installed modules are listed; filtering never clears a selection.</p>
+      <div class="form-group">
+        <label for="upgrade-modules-filter">Filter</label>
+        <input id="upgrade-modules-filter" class="mono-input" type="text" placeholder="Type to filter, e.g. sale"
+               oninput="renderUpgradeModules()"
+               onkeydown="if (event.key === 'Enter') { event.preventDefault(); confirmUpgradeModules(); }">
+      </div>
+      <div class="module-picker" id="upgrade-modules-list"></div>
+      <div class="module-picker-status">
+        <span id="upgrade-modules-count">No modules selected</span>
+        <span id="upgrade-modules-shown"></span>
+      </div>
+      <div class="form-actions">
+        <button class="btn" onclick="closeUpgradeModules()">Cancel</button>
+        <button class="btn-create" onclick="confirmUpgradeModules()">Upgrade</button>
+      </div>
+    </div>
+  </div>
+</div>
 <div class="modal-overlay" id="mcp-access-modal" onclick="closeMcpAccess(event)">
   <div class="modal modal-sm">
     <div class="modal-header">
@@ -2751,6 +2807,10 @@ function renderEnvironments(envs, force) {
                 (allStopped ? 'disabled' : '') + '>Open console</button>' +
               '<button role="menuitem" title="psql session on the environment database" onclick="openSqlConsole(\'' + escAttr(env.branch) + '\')" ' +
                 (allStopped ? 'disabled' : '') + '>Open SQL console</button>' +
+              '<button role="menuitem" title="Install modules with odoo -i, then restart" onclick="openInstallModules(\'' + escAttr(env.branch) + '\')" ' + dis +
+                (allStopped ? 'disabled' : '') + '>Install modules</button>' +
+              '<button role="menuitem" title="Pick installed modules and upgrade them with odoo -u" onclick="openUpgradeModules(\'' + escAttr(env.branch) + '\')" ' + dis +
+                (allStopped ? 'disabled' : '') + '>Upgrade modules</button>' +
               '<button role="menuitem" title="Scoped MCP endpoint and Secret Key for this environment only" onclick="openMcpAccess(\'' + escAttr(env.branch) + '\')">MCP Access</button>' +
               (showAgent
                 ? '<button role="menuitem" title="Terminal session with the coding agent for this environment" onclick="openAgentConsole(\'' + escAttr(env.branch) + '\')">Agent CLI</button>'
@@ -3342,6 +3402,151 @@ function fillCreateTemplateEnvVars(tpl) {
       (multilineCount === 1 ? 'value is' : 'values are') +
       ' inherited unchanged and omitted here.'
     : CREATE_ENV_HINT;
+}
+
+// --- Install / Upgrade modules ----------------------------------------------
+// Install takes free text: a module that is not in the database yet cannot be
+// picked from a list. Upgrade is the opposite — the set is known, so it is a
+// filterable picker and the selection survives every keystroke in the filter.
+var _installModulesEnv = null;
+var _upgradeModulesEnv = null;
+var _upgradeModules = [];
+var _upgradeSelected = new Set();
+var _upgradeModulesRequest = 0;
+
+function openInstallModules(branch) {
+  _installModulesEnv = branch;
+  document.getElementById('install-modules-title').textContent = 'Install modules — ' + branch;
+  var input = document.getElementById('install-modules-input');
+  input.value = '';
+  showModal('install-modules-modal');
+  input.focus();
+}
+
+function closeInstallModules(event) {
+  if (event && event.target !== event.currentTarget) return;
+  hideModal('install-modules-modal');
+}
+
+async function confirmInstallModules() {
+  var modules = document.getElementById('install-modules-input').value.trim();
+  if (!modules) { showToast('Enter at least one module name', true); return; }
+  hideModal('install-modules-modal');
+  await applyModules(_installModulesEnv, 'install', modules);
+}
+
+async function openUpgradeModules(branch) {
+  var requestId = ++_upgradeModulesRequest;
+  _upgradeModulesEnv = branch;
+  _upgradeModules = [];
+  _upgradeSelected = new Set();
+  document.getElementById('upgrade-modules-title').textContent = 'Upgrade modules — ' + branch;
+  document.getElementById('upgrade-modules-filter').value = '';
+  document.getElementById('upgrade-modules-list').innerHTML =
+    '<div class="module-picker-empty">Loading installed modules&hellip;</div>';
+  document.getElementById('upgrade-modules-count').textContent = 'No modules selected';
+  document.getElementById('upgrade-modules-shown').textContent = '';
+  showModal('upgrade-modules-modal');
+  document.getElementById('upgrade-modules-filter').focus();
+  try {
+    const r = await fetch(API + '/' + encodeURIComponent(branch) + '/modules');
+    const data = await readResult(r);
+    if (!_upgradeModulesRequestIsCurrent(requestId, branch)) return;
+    if (!data.ok) {
+      document.getElementById('upgrade-modules-list').innerHTML =
+        '<div class="module-picker-empty">' + esc(data.error || 'Failed to load modules') + '</div>';
+      return;
+    }
+    _upgradeModules = data.modules || [];
+  } catch (e) {
+    if (!_upgradeModulesRequestIsCurrent(requestId, branch)) return;
+    document.getElementById('upgrade-modules-list').innerHTML =
+      '<div class="module-picker-empty">Connection error: ' + esc(e.message) + '</div>';
+    return;
+  }
+  renderUpgradeModules();
+}
+
+function _upgradeModulesRequestIsCurrent(requestId, branch) {
+  return requestId === _upgradeModulesRequest &&
+    branch === _upgradeModulesEnv &&
+    _modalShown('upgrade-modules-modal');
+}
+
+function closeUpgradeModules(event) {
+  if (event && event.target !== event.currentTarget) return;
+  _upgradeModulesRequest++;
+  hideModal('upgrade-modules-modal');
+}
+
+function renderUpgradeModules() {
+  var list = document.getElementById('upgrade-modules-list');
+  if (!list) return;
+  var filter = document.getElementById('upgrade-modules-filter').value.trim().toLowerCase();
+  var shown = _upgradeModules.filter(function(m) {
+    return !filter || m.name.toLowerCase().indexOf(filter) !== -1;
+  });
+  if (!_upgradeModules.length) {
+    list.innerHTML = '<div class="module-picker-empty">No installed modules found.</div>';
+  } else if (!shown.length) {
+    list.innerHTML = '<div class="module-picker-empty">No module matches "' + esc(filter) + '".</div>';
+  } else {
+    list.innerHTML = shown.map(function(m) {
+      return '<label class="module-row">' +
+        '<input type="checkbox" value="' + escAttr(m.name) + '"' +
+          (_upgradeSelected.has(m.name) ? ' checked' : '') +
+          ' onchange="toggleUpgradeModule(this)">' +
+        '<span class="module-name">' + esc(m.name) + '</span>' +
+        (m.version ? '<span class="module-version">' + esc(m.version) + '</span>' : '') +
+      '</label>';
+    }).join('');
+  }
+  document.getElementById('upgrade-modules-shown').textContent =
+    shown.length === _upgradeModules.length
+      ? _upgradeModules.length + ' installed'
+      : shown.length + ' of ' + _upgradeModules.length + ' shown';
+  updateUpgradeCount();
+}
+
+function toggleUpgradeModule(input) {
+  if (input.checked) _upgradeSelected.add(input.value);
+  else _upgradeSelected.delete(input.value);
+  updateUpgradeCount();
+}
+
+function updateUpgradeCount() {
+  var n = _upgradeSelected.size;
+  document.getElementById('upgrade-modules-count').textContent =
+    n === 0 ? 'No modules selected' : n + (n === 1 ? ' module selected' : ' modules selected');
+}
+
+async function confirmUpgradeModules() {
+  if (!_upgradeSelected.size) { showToast('Select at least one module', true); return; }
+  var modules = Array.from(_upgradeSelected).join(',');
+  var branch = _upgradeModulesEnv;
+  closeUpgradeModules();
+  await applyModules(branch, 'upgrade', modules);
+}
+
+async function applyModules(branch, action, modules) {
+  setBusy(branch, action === 'install' ? 'Installing modules' : 'Upgrading modules');
+  try {
+    const r = await fetch(API + '/' + encodeURIComponent(branch) + '/modules', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({action: action, modules: modules})
+    });
+    const data = await readResult(r);
+    if (data.ok) {
+      showSyncResult(branch, data.result, action === 'install' ? 'Install modules' : 'Upgrade modules');
+    } else {
+      showToast(data.error || (action === 'install' ? 'Install failed' : 'Upgrade failed'), true);
+    }
+  } catch (e) {
+    showToast('Connection error: ' + e.message, true);
+  }
+  clearBusy(branch);
+  await loadEnvironments(true);
 }
 
 async function doUpdate(branch) {
@@ -6296,7 +6501,9 @@ var MODAL_CLOSERS = {
   'import-odoo-modal': closeImportOdooModal,
   'template-settings-modal': closeTemplateSettingsModal,
   'confirm-modal': cancelConfirm,
-  'note-modal': closeNoteModal
+  'note-modal': closeNoteModal,
+  'install-modules-modal': closeInstallModules,
+  'upgrade-modules-modal': closeUpgradeModules
 };
 
 document.addEventListener('keydown', function(e) {

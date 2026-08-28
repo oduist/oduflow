@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 import logging
 import os
 import re
@@ -15,7 +16,13 @@ from oduflow.errors import (
     NotFoundError,
     PrerequisiteNotMetError,
 )
-from oduflow.naming import get_db_name, get_repo_path, get_resource_name
+from oduflow.naming import (
+    PROD_ENV_PREFIX,
+    get_db_name,
+    get_repo_path,
+    get_resource_name,
+    validate_env_name,
+)
 from oduflow.settings import Settings, TeamSettings
 
 logger = logging.getLogger("oduflow")
@@ -726,6 +733,36 @@ def run_db_query(
         output_format,
         allow_fallback=False,
     )
+
+
+def list_installed_module_records(
+    settings: Settings, team: TeamSettings, env_name: str
+) -> list[dict[str, str]]:
+    """Return installed module names and versions using a fixed safe query.
+
+    The query is server-controlled, so legacy environments may use the shared
+    database credential without exposing an arbitrary-query surface.
+    """
+    validate_env_name(env_name)
+    if env_name.startswith(PROD_ENV_PREFIX):
+        raise ValueError(
+            f"'{env_name}' is a production environment. Use the production "
+            "deployment workflow instead of dev module operations."
+        )
+    result = _execute_db_query(
+        settings,
+        team,
+        env_name,
+        "SELECT name, latest_version FROM ir_module_module "
+        "WHERE state = 'installed' ORDER BY name",
+        allow_fallback=True,
+    )
+    modules: list[dict[str, str]] = []
+    for row in csv.DictReader(result.get("output", "").splitlines()):
+        name = row.get("name") or ""
+        if name:
+            modules.append({"name": name, "version": row.get("latest_version") or ""})
+    return modules
 
 
 _WRITE_FILE_LIMIT = 1_000_000  # 1 MB
