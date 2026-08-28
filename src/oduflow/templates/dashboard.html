@@ -6697,7 +6697,8 @@ async function loadHealth() {
     var el = document.getElementById('health-chips');
     if (!el || !data.checks) return;
     var labels = {
-      dev_pg: 'PG DEV', prod_pg: 'PG PROD', traefik: 'TRAEFIK', s3: 'S3', disk: 'DISK'
+      dev_pg: 'PG DEV', prod_pg: 'PG PROD', traefik: 'TRAEFIK', s3: 'S3', disk: 'DISK',
+      overlays: 'OVERLAY'
     };
     el.innerHTML = Object.keys(labels).map(function(key) {
       var check = data.checks[key];

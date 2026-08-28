@@ -3243,6 +3243,7 @@ def publish_env_as_template(
                 source_image,
                 {},
                 template_name=template_name,
+                force_overlay=True,
             )
             if source_was_running:
                 try:
