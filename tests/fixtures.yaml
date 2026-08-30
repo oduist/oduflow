@@ -67,6 +67,16 @@ scenarios:
     args: {}
     expect_contains: []
 
+  # ── PostgreSQL storage for auxiliary services ───────────────────
+  create_service_database:
+    tool: create_service_database
+    args:
+      name: "integration-data"
+    expect_contains:
+      - "Service database created successfully"
+      - "PGDATABASE=oduflow_service_1_integration-data"
+      - "PGUSER=svc_1_integration-data"
+
   info_main:
     tool: get_environment_info
     needs_env: true

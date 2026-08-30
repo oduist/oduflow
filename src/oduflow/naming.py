@@ -1,3 +1,4 @@
+import hashlib
 import os
 import re
 from typing import Any
@@ -11,6 +12,7 @@ from urllib.parse import urlparse, urlunparse
 # semicolons and whitespace — i.e. SQL-identifier break-out).
 _TEMPLATE_SEGMENT_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_.-]*$")
 _SERVICE_NAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_.-]*$")
+_SERVICE_DATABASE_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,30}$")
 
 
 def validate_template_name(template_name: str) -> str:
@@ -98,6 +100,90 @@ def validate_service_name(name: str) -> str:
             "'odoo-mcp-server')."
         )
     return name
+
+
+def validate_service_database_name(name: str) -> str:
+    """Validate the stable logical name of a sidecar PostgreSQL database.
+
+    Unlike Docker service names these names are deliberately lowercase and
+    short: they become credential-file names and feed two PostgreSQL
+    identifiers whose hard limit is 63 bytes.  Rejecting instead of silently
+    normalising keeps every control surface referring to the same resource.
+    """
+    if not name or not _SERVICE_DATABASE_NAME_RE.fullmatch(name):
+        raise ValueError(
+            f"Invalid service database name '{name}': must start with a "
+            "lowercase letter or digit, contain only lowercase letters, digits, "
+            "hyphens, and underscores, and be at most 31 characters."
+        )
+    return name
+
+
+_PG_UNSAFE_RE = re.compile(r"[^a-zA-Z0-9_.-]")
+_PG_IDENTIFIER_MAX_BYTES = 63
+_PG_DIGEST_LEN = 10
+# Marks an identifier whose readable rendering is not a faithful encoding of
+# its (team, name) pair. Service database names cannot contain a dot, so a dot
+# after the final underscore appears only on identifiers carrying this digest.
+_PG_DIGEST_SEPARATOR = "."
+
+
+def _pg_digest(prefix: str, team_id: str, name: str) -> str:
+    """Digest the exact component tuple, never its rendered form.
+
+    NUL cannot occur in any component, so joining on it keeps the digest
+    injective over the tuple: ``("a", "b_c")`` and ``("a_b", "c")`` hash
+    differently even though they render identically.
+    """
+    raw = "\x00".join((prefix, team_id, name))
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:_PG_DIGEST_LEN]
+
+
+def _renders_faithfully(team_id: str) -> bool:
+    """Whether ``team_id`` can be recovered from the rendered identifier.
+
+    Team ids are unvalidated TOML table keys, so they may carry underscores or
+    uppercase. ``_`` separates the segments, which makes ``svc_a_b_c``
+    ambiguous between team ``a``/database ``b_c`` and team ``a_b``/database
+    ``c``; sanitising and lower-casing are lossy the same way (``A`` and ``a``
+    render identically). Database names are validated to exclude both hazards,
+    so only the team segment needs the test.
+    """
+    return "_" not in team_id and _PG_UNSAFE_RE.sub("_", team_id).lower() == team_id
+
+
+def _bounded_pg_identifier(prefix: str, team_id: str, name: str) -> str:
+    """Build a deterministic, collision-free PostgreSQL identifier.
+
+    The readable ``<prefix>_<team>_<name>`` rendering is used only when it
+    uniquely determines the pair it came from; otherwise a digest of the exact
+    pair is appended, so two distinct pairs can never share an identifier. The
+    identifier is always double-quoted at SQL sinks, so dots and hyphens are
+    retained: collapsing them to underscores would make e.g. ``worker-data``
+    collide with ``worker_data``.
+    """
+    team_segment = _PG_UNSAFE_RE.sub("_", team_id).lower()
+    safe = f"{prefix}_{team_segment}_{name}"
+    if not _renders_faithfully(team_id):
+        safe = f"{safe}{_PG_DIGEST_SEPARATOR}{_pg_digest(prefix, team_id, name)}"
+    if len(safe.encode("utf-8")) <= _PG_IDENTIFIER_MAX_BYTES:
+        return safe
+    # Every component is ASCII after sanitising, so slicing bytes and slicing
+    # characters agree. The digest keeps truncated identifiers distinct.
+    head = _PG_IDENTIFIER_MAX_BYTES - _PG_DIGEST_LEN - len(_PG_DIGEST_SEPARATOR)
+    return f"{safe[:head]}{_PG_DIGEST_SEPARATOR}{_pg_digest(prefix, team_id, name)}"
+
+
+def get_service_database_name(name: str, team_id: str) -> str:
+    """Physical database name for a managed sidecar database."""
+    validate_service_database_name(name)
+    return _bounded_pg_identifier("oduflow_service", team_id, name)
+
+
+def get_service_database_role(name: str, team_id: str) -> str:
+    """Scoped login role owning a managed sidecar database."""
+    validate_service_database_name(name)
+    return _bounded_pg_identifier("svc", team_id, name)
 
 
 # Production names are deliberately stricter than env names: they feed

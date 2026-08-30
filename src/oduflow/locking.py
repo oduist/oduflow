@@ -42,6 +42,11 @@ def service_lock_key(team_id: str, name: str) -> str:
     return f"svc:{team_id}:{name}"
 
 
+def service_database_lock_key(team_id: str, name: str) -> str:
+    """One PostgreSQL database managed for auxiliary services."""
+    return f"svc-db:{team_id}:{name}"
+
+
 def service_registry_key(team_id: str, name: str = "") -> str:
     """The team's *set* of services: slot admission and volume-usage checks."""
     return f"svc-registry:{team_id}"

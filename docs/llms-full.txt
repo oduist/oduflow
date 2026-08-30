@@ -189,6 +189,7 @@ For OAuth-based MCP clients like Claude.ai Remote MCP, Oduflow runs its own OAut
 - `list_environments` / `get_environment_info` — inspect environments, including current branch, last activity, stopped time/source, protection, Stack ownership and operator notes used for safe slot reuse
 - `create_service` / `delete_service` / `restart_service` / `update_service` / `list_services` / `get_service_info` / `get_service_logs` / `run_service_command` — manage auxiliary services
   - In Traefik TLS mode every service implicitly receives the exact `oduflow-traefik-acme:/etc/traefik:ro` mount; do not pass or override that system volume
+- `create_service_database` / `list_service_databases` / `get_service_database` / `rotate_service_database_password` / `delete_service_database` — persistent PostgreSQL storage for bridge-mode auxiliary services. Each database has a scoped non-superuser role, survives service deletion, and is removed only explicitly. Creation/get/rotation return `DATABASE_URL` and `PG*` variables; treat them as secrets
 - `create_volume` / `list_volumes` / `inspect_volume` / `delete_volume` — manage Docker volumes
 - `read_file_in_volume` / `write_file_in_volume` / `search_in_volume` / `delete_file_in_volume` — manage files inside Docker volumes
 - `list_service_presets` / `restore_service` / `delete_service_preset` — manage service presets
@@ -372,6 +373,7 @@ The agent writes code, installs the module, reads the traceback, fixes the error
 
 ### Infrastructure
 - **Auxiliary services** — managed sidecar containers for Redis, Meilisearch, Elasticsearch, or any other service your Odoo setup needs
+- **Sidecar PostgreSQL storage** — persistent team-scoped databases with dedicated roles, password rotation, quota accounting, and declarative Stack wiring
 - **Traefik auto-HTTPS** — optional reverse proxy with Let's Encrypt certificates for production-like access
 - **Stable port registry** — port assignments are persisted in `ports.json` and survive container restarts
 - **Resource monitoring** — per-container CPU and RAM stats, plus system-level metrics (memory, load average)
@@ -2951,6 +2953,31 @@ MCP_TOKEN:
   environmentField: token
 ```
 
+Managed PostgreSQL credentials can be wired into an auxiliary service
+without putting the generated secret in YAML:
+
+```yaml
+databases:
+  events: {}
+
+services:
+  worker:
+    image: example/worker:1
+    port: 8080
+    env:
+      DATABASE_URL:
+        database: events
+        databaseField: url
+      PGPASSWORD:
+        database: events
+        databaseField: password
+```
+
+Supported database fields are `url`, `host`, `port`, `database`, `username`,
+and `password`. The database must be declared under `spec.databases`, and these
+references are accepted only in auxiliary service environments. They cannot be
+injected into the Odoo environment.
+
 `environmentField` is deliberately unavailable under `spec.environment.env`,
 because an environment cannot depend on an output that exists only after that
 same environment has been created. Resolved values are passed directly to the
@@ -2971,7 +2998,7 @@ oduflow.stack-resource=services.fs
 oduflow.stack-spec-hash=<sha256>
 ```
 
-Oduflow will not silently adopt an existing environment, service, or volume
+Oduflow will not silently adopt an existing environment, service, volume, or database
 with the same name. It reports an ownership conflict instead. Extra-addon bare
 repositories remain team-shared by design: an existing repository with the same
 name and URL is reused, while a different URL is a conflict.
@@ -2980,10 +3007,11 @@ The V1 apply order is:
 
 1. extra-addon repositories;
 2. named volumes;
-3. the Odoo environment;
-4. text files in volumes;
-5. auxiliary services;
-6. missing Odoo modules.
+3. managed PostgreSQL databases;
+4. the Odoo environment;
+5. text files in volumes;
+6. auxiliary services;
+7. missing Odoo modules.
 
 Module installation happens after services so an install hook can connect to a
 declared dependency. Only missing modules are installed; Stack apply never
@@ -2996,7 +3024,7 @@ V1 can reconcile these changes in place:
 - Odoo image and Odoo container environment variables;
 - service image, environment, port/routes, hostname, volumes, host mode, and
   capabilities;
-- new extra repositories, volumes, files, services, and modules.
+- new extra repositories, volumes, databases, files, services, and modules.
 
 Changing an existing environment's `repoUrl`, `branch`, `template`, or
 `extraRepositories` requires replacement and is reported as a conflict. Volume
@@ -3115,7 +3143,7 @@ Odoo.sh ingest endpoints accept the import token only in
 `Authorization: Bearer ...`, not in the URL. See
 [Template Management](templates.md) for the supported import workflow.
 
-## Services, presets, and volumes
+## Services, PostgreSQL databases, presets, and volumes
 
 | Method | Endpoint | Description |
 |---|---|---|
@@ -3125,12 +3153,23 @@ Odoo.sh ingest endpoints accept the import token only in
 | `POST` | `/api/services/{name}/restart` | Restart a service |
 | `POST` | `/api/services/{name}/delete` | Delete a service |
 | `GET` | `/api/services/{name}/logs?n=200` | Read service logs |
+| `GET` | `/api/service-databases` | List managed sidecar databases without passwords |
+| `POST` | `/api/service-databases/create` | Create a database and scoped role; body: `name` |
+| `POST` | `/api/service-databases/{name}/credentials` | Explicitly reveal connection credentials and `DATABASE_URL` |
+| `POST` | `/api/service-databases/{name}/rotate` | Rotate the database role password |
+| `POST` | `/api/service-databases/{name}/delete` | Permanently drop the database and role, terminating connections |
 | `GET` | `/api/service-presets` | List saved presets |
 | `POST` | `/api/service-presets/restore` | Restore a preset; body: `name` plus optional runtime overrides |
 | `POST` | `/api/service-presets/{name}/delete` | Delete a preset |
 | `GET` | `/api/volumes` | List managed volumes and service usage |
 | `POST` | `/api/volumes/create` | Create a volume; body: `name`, optional `description` |
 | `POST` | `/api/volumes/{name}/delete` | Delete an unused volume |
+
+Service databases live in the shared development PostgreSQL cluster, inside the
+current team's tablespace. They have a dedicated non-superuser owner and persist
+independently of service containers. Bridge-mode services reach them through
+the returned PostgreSQL container hostname; host-network services are not
+supported because the cluster is not published on a host port.
 
 ## Extra addons and credentials
 
@@ -3276,6 +3315,12 @@ All tools are accessible via MCP clients (Cursor, Cline, Amp, etc.) and the CLI 
 | `get_service_info` | | Full live state of a single service (image+digest, port/routes, hostname, host_mode, volumes, env, capabilities, restart count, preset). Call before recreating it |
 | `get_service_logs` | | Retrieve service container logs |
 | `run_service_command` | ✓ | Execute a shell command inside a service container (through `sh -c`; `shell=False` for exact argv) |
+| **Service PostgreSQL Databases** | | |
+| `create_service_database` | ✓ | Create a persistent team-scoped PostgreSQL database with a dedicated non-superuser owner; returns `DATABASE_URL` and `PG*` credentials |
+| `list_service_databases` | | List database names, live status, size, and connections without passwords |
+| `get_service_database` | | Explicitly reveal connection credentials for one managed database |
+| `rotate_service_database_password` | ✓ | Rotate the owner password and return replacement credentials; containers must be reconfigured |
+| `delete_service_database` | ✓ | ⚠️ Permanently drop the database and role after terminating active connections; service containers are unchanged |
 | **Volumes** | | |
 | `create_volume` | ✓ | Create a named Docker volume for use with services |
 | `list_volumes` | | List all managed Docker volumes and their usage by services |
@@ -3488,6 +3533,19 @@ oduflow import-template <odoo_url> <master_pwd> --template-name myproject [--db-
 ```bash
 # List all managed services
 oduflow list-services [--team 1]
+
+# List persistent PostgreSQL databases for auxiliary services (no passwords)
+oduflow list-service-databases [--team 1]
+```
+
+Create, inspect, rotate, and delete databases through the matching MCP tools
+with `oduflow call`, for example:
+
+```bash
+oduflow call create_service_database '{"name":"events"}'
+oduflow call get_service_database '{"name":"events"}'
+oduflow call rotate_service_database_password '{"name":"events"}'
+oduflow call delete_service_database '{"name":"events"}'
 ```
 
 ## Maintenance Commands
@@ -3861,6 +3919,7 @@ API and pick up the faster path whenever that container is next recreated.
 | Templates (DB snapshots, filestores) | Per-team |
 | Extra addon repositories | Per-team |
 | Auxiliary services | Per-team |
+| Auxiliary-service PostgreSQL databases and roles | Per-team — stored in the team's tablespace |
 | Port assignments | Per-team |
 | Git credentials | Per-team |
 
@@ -3870,6 +3929,14 @@ Databases and containers are namespaced by team ID:
 
 - Environment DB: `oduflow_{team_id}_{slugified_branch}` (e.g. `oduflow_1_feature-login`)
 - Template DB: `oduflow_template_{team_id}_{template_name}` (e.g. `oduflow_template_1_default`)
+- Service DB: `oduflow_service_{team_id}_{name}` (e.g. `oduflow_service_1_events`)
+- Service DB role: `svc_{team_id}_{name}` (e.g. `svc_1_events`)
+
+Service database identifiers carry a `.<digest>` suffix whenever the readable
+form would be ambiguous — a team id containing `_` or uppercase, or one that
+would overflow PostgreSQL's 63-byte identifier limit. The suffix is derived
+from the exact team/database pair, so two teams can never end up sharing a
+database or a role.
 - Environment containers: `oduflow-{team_id}-{env}-{type}` (e.g. `oduflow-1-feature-login-odoo`)
 - Service containers: `oduflow-{team_id}-svc-{name}` (e.g. `oduflow-1-svc-redis`)
 
@@ -3886,6 +3953,7 @@ CLI template and service commands accept a `--team` flag:
 ```bash
 oduflow init-template --odoo-image odoo:19.0 --template-name myproject --team 2
 oduflow list-templates --team 2
+oduflow list-service-databases --team 2
 oduflow cleanup --team 2
 ```
 

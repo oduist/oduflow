@@ -6,7 +6,7 @@ import pytest
 from oduflow.errors import ConflictError
 from oduflow.settings import Settings, TeamSettings
 from oduflow.stack_loader import StackValidationError, load_stack, resolve_env_values
-from oduflow.stack_models import ServiceRoute, ValueFrom
+from oduflow.stack_models import ServiceDatabase, ServiceRoute, ValueFrom
 from oduflow.stack_ops import (
     PlanAction,
     StackPlan,
@@ -101,6 +101,54 @@ def test_host_environment_value_is_required():
         resolve_env_values({"TOKEN": value}, environ={})
 
 
+def test_database_value_is_resolved_without_persisting_reference_details(stack_fixture):
+    settings, team, _manifest, _path = stack_fixture
+    value = ValueFrom(database="events", databaseField="url")
+    with patch(
+        "oduflow.docker_ops.service_database_ops.get_database",
+        return_value={"status": "ready", "url": "postgresql://secret"},
+    ):
+        resolved = resolve_env_values(
+            {"DATABASE_URL": value}, settings=settings, team=team
+        )
+
+    assert resolved == {"DATABASE_URL": "postgresql://secret"}
+
+
+def test_database_is_looked_up_once_per_resource_not_once_per_variable(stack_fixture):
+    """Every lookup costs several round trips into the PostgreSQL container,
+    and a full PG* set points six variables at the same database."""
+    settings, team, _manifest, _path = stack_fixture
+    values = {
+        key: ValueFrom(database="events", databaseField=field)
+        for key, field in (
+            ("PGHOST", "host"),
+            ("PGPORT", "port"),
+            ("PGDATABASE", "database"),
+            ("PGUSER", "username"),
+            ("PGPASSWORD", "password"),
+            ("DATABASE_URL", "url"),
+        )
+    }
+    live = {
+        "status": "ready",
+        "host": "oduflow-db",
+        "port": 5432,
+        "database": "oduflow_service_1_events",
+        "username": "svc_1_events",
+        "password": "secret",
+        "url": "postgresql://svc_1_events:secret@oduflow-db:5432/oduflow_service_1_events",
+    }
+    with patch(
+        "oduflow.docker_ops.service_database_ops.get_database", return_value=live
+    ) as get_database:
+        resolved = resolve_env_values(values, settings=settings, team=team)
+
+    assert get_database.call_count == 1
+    assert resolved["PGPORT"] == "5432"
+    assert resolved["DATABASE_URL"] == live["url"]
+
+
 @patch("oduflow.extra_addons.list_extra_repos", return_value=[])
 @patch("oduflow.stack_ops.volume_ops.list_volumes", return_value=[])
 @patch("oduflow.stack_ops.env_ops.list_environments", return_value=[])
@@ -120,6 +168,122 @@ def test_plan_new_stack_has_dependency_ordered_actions(
         ("create", "services.fs"),
         ("install", "modules"),
     ]
+
+
+@patch("oduflow.extra_addons.list_extra_repos", return_value=[])
+@patch("oduflow.stack_ops.volume_ops.list_volumes", return_value=[])
+@patch("oduflow.stack_ops.env_ops.list_environments", return_value=[])
+@patch("oduflow.stack_ops.service_ops.list_services", return_value=[])
+@patch("oduflow.stack_ops.service_database_ops.list_databases", return_value=[])
+def test_plan_creates_database_before_its_consumers(
+    _databases, _services, _envs, _volumes, _repos, stack_fixture
+):
+    settings, team, manifest, path = stack_fixture
+    manifest.spec.databases = {"events": ServiceDatabase()}
+    manifest.spec.services["fs"].env["DATABASE_URL"] = ValueFrom(
+        database="events", databaseField="url"
+    )
+
+    plan = build_plan(settings, team, manifest, path)
+    resources = [item.resource for item in plan.actions]
+
+    assert resources.index("databases.events") < resources.index("environment")
+    assert resources.index("databases.events") < resources.index("services.fs")
+
+
+@patch("oduflow.extra_addons.list_extra_repos", return_value=[])
+@patch("oduflow.stack_ops.volume_ops.list_volumes", return_value=[])
+@patch("oduflow.stack_ops.service_database_ops.list_databases", return_value=[])
+@patch("oduflow.stack_ops.env_ops.get_environment_info")
+@patch("oduflow.stack_ops.env_ops.list_environments")
+def test_plan_updates_a_service_whose_database_is_being_recreated(
+    envs, env_info, _databases, _volumes, _repos, stack_fixture
+):
+    """A database deleted out of band is recreated with a *fresh* password. The
+    consuming container still holds the superseded one, so the plan must say so
+    — otherwise apply recreates the database, skips the service, and reports
+    success while the sidecar can no longer connect."""
+    settings, team, manifest, path = stack_fixture
+    manifest.spec.extra_repositories = {}
+    manifest.spec.volumes = {}
+    manifest.spec.files = []
+    manifest.spec.environment.modules.install = []
+    manifest.spec.databases = {"events": ServiceDatabase()}
+    service = manifest.spec.services["fs"]
+    service.env = {"DATABASE_URL": ValueFrom(database="events", databaseField="url")}
+    service.volumes = []
+    envs.return_value = [
+        {
+            "env_name": "acme-dev",
+            "stack": "acme",
+            "stack_resource": "environment",
+            "repo_url": "https://github.com/acme/addons.git",
+            "git_branch": "main",
+            "template_name": "default",
+            "extra_addons": {},
+            "odoo_image": "odoo:18.0",
+            "stack_sanitize": "true",
+        }
+    ]
+    env_info.return_value = {"env_vars": {"LOG_LEVEL": "info"}}
+    actual_service = {
+        "name": "fs",
+        "image": "example/fs:1",
+        "port": 8080,
+        "hostname": None,
+        "env_vars": {"DATABASE_URL": "postgresql://svc:superseded@oduflow-db/events"},
+        "image_env_vars": {},
+        "host_mode": False,
+        "volumes": [],
+        "cap_add": [],
+        "privileged": False,
+        "routes": [],
+        "stack": "acme",
+        "stack_resource": "services.fs",
+        # Unchanged: the manifest did not move, only the database vanished.
+        "stack_spec_hash": _resource_hash(service),
+    }
+
+    with patch(
+        "oduflow.stack_ops.service_ops.list_services", return_value=[actual_service]
+    ):
+        plan = build_plan(settings, team, manifest, path)
+
+    operations = {item.resource: item.operation for item in plan.actions}
+    assert operations["databases.events"] == "create"
+    assert operations["services.fs"] == "update"
+
+
+@patch("oduflow.extra_addons.list_extra_repos", return_value=[])
+@patch("oduflow.stack_ops.volume_ops.list_volumes", return_value=[])
+@patch("oduflow.stack_ops.service_ops.list_services", return_value=[])
+@patch("oduflow.stack_ops.env_ops.list_environments", return_value=[])
+def test_plan_reports_unreadable_credentials_as_such(
+    _envs, _services, _volumes, _repos, stack_fixture
+):
+    """A row degraded by unreadable credentials carries no ownership labels;
+    reporting it as foreign ownership would send the operator hunting for a
+    conflict that does not exist."""
+    settings, team, manifest, path = stack_fixture
+    manifest.spec.databases = {"events": ServiceDatabase()}
+    degraded = [
+        {
+            "name": "events",
+            "status": "credentials-error",
+            "stack": "",
+            "stack_resource": "",
+            "stack_spec_hash": "",
+        }
+    ]
+
+    with patch(
+        "oduflow.stack_ops.service_database_ops.list_databases", return_value=degraded
+    ):
+        plan = build_plan(settings, team, manifest, path)
+
+    action = next(item for item in plan.actions if item.resource == "databases.events")
+    assert action.operation == "conflict"
+    assert action.detail == "stored credentials for this database cannot be read"
 
 
 @patch("oduflow.extra_addons.list_extra_repos", return_value=[])
@@ -436,6 +600,50 @@ def test_apply_no_changes_is_idempotent(stack_fixture):
     assert result == empty
     assert (Path(team.data_dir) / "stacks/acme.json").is_file()
     create_environment.assert_not_called()
+
+
+def test_apply_wires_generated_database_url_without_saving_it_in_state(stack_fixture):
+    settings, team, manifest, path = stack_fixture
+    manifest.spec.extra_repositories = {}
+    manifest.spec.volumes = {}
+    manifest.spec.files = []
+    manifest.spec.environment.modules.install = []
+    manifest.spec.databases = {"events": ServiceDatabase()}
+    manifest.spec.services["fs"].env = {
+        "DATABASE_URL": ValueFrom(database="events", databaseField="url")
+    }
+    actions = StackPlan(
+        "acme",
+        (
+            PlanAction("create", "databases.events"),
+            PlanAction("create", "environment"),
+            PlanAction("create", "services.fs"),
+        ),
+    )
+    generated = {
+        "status": "ready",
+        "url": "postgresql://svc:secret@oduflow-db/events",
+    }
+
+    with (
+        patch("oduflow.stack_ops.build_plan", return_value=actions),
+        patch("oduflow.stack_ops.service_database_ops.create_database"),
+        patch(
+            "oduflow.docker_ops.service_database_ops.get_database",
+            return_value=generated,
+        ),
+        patch("oduflow.stack_ops.env_ops.create_environment"),
+        patch("oduflow.stack_ops.service_ops.create_service") as create_service,
+    ):
+        apply_stack(settings, team, manifest, path)
+
+    assert create_service.call_args.kwargs["env_vars"] == {
+        "DATABASE_URL": generated["url"]
+    }
+    state = Path(team.data_dir) / "stacks/acme.json"
+    text = state.read_text(encoding="utf-8")
+    assert "events" in text
+    assert "secret" not in text
 
 
 @patch("oduflow.extra_addons.list_extra_repos", return_value=[])

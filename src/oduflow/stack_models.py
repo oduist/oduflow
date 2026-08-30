@@ -28,6 +28,10 @@ ResourceName = Annotated[
     str,
     StringConstraints(pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$"),
 ]
+ServiceDatabaseName = Annotated[
+    str,
+    StringConstraints(pattern=r"^[a-z0-9][a-z0-9_-]{0,30}$"),
+]
 ExtraRepositoryName = Annotated[
     str,
     StringConstraints(pattern=r"^[A-Za-z0-9_-]{1,63}$"),
@@ -69,11 +73,23 @@ class ValueFrom(StackModel):
 
     from_env: str | None = None
     environment_field: Literal["url", "token"] | None = None
+    database: ServiceDatabaseName | None = None
+    database_field: (
+        Literal["url", "host", "port", "database", "username", "password"] | None
+    ) = None
 
     @model_validator(mode="after")
     def exactly_one_source(self) -> ValueFrom:
-        if (self.from_env is None) == (self.environment_field is None):
-            raise ValueError("set exactly one of fromEnv or environmentField")
+        sources = sum(
+            value is not None
+            for value in (self.from_env, self.environment_field, self.database)
+        )
+        if sources != 1:
+            raise ValueError(
+                "set exactly one of fromEnv, environmentField, or database"
+            )
+        if (self.database is None) != (self.database_field is None):
+            raise ValueError("database and databaseField must be set together")
         if self.from_env is not None and not re.fullmatch(
             r"[A-Za-z_][A-Za-z0-9_]*", self.from_env
         ):
@@ -144,6 +160,12 @@ class Environment(StackModel):
 
 class Volume(StackModel):
     description: str = ""
+
+
+class ServiceDatabase(StackModel):
+    """An empty managed PostgreSQL database; credentials are generated at apply."""
+
+    pass
 
 
 class VolumeFile(StackModel):
@@ -236,6 +258,7 @@ class StackSpec(StackModel):
         default_factory=dict
     )
     volumes: dict[ResourceName, Volume] = Field(default_factory=dict)
+    databases: dict[ServiceDatabaseName, ServiceDatabase] = Field(default_factory=dict)
     files: list[VolumeFile] = Field(default_factory=list)
     services: dict[ResourceName, Service] = Field(default_factory=dict)
 
@@ -260,6 +283,24 @@ class StackSpec(StackModel):
                         f"service '{service_name}' references undeclared volume "
                         f"'{mount.source}'"
                     )
+            for key, value in service.env.items():
+                if isinstance(value, ValueFrom) and value.database is not None:
+                    if service.host_mode:
+                        raise ValueError(
+                            f"host-mode service '{service_name}' cannot reference "
+                            "a managed database because PostgreSQL has no host port"
+                        )
+                    if value.database not in self.databases:
+                        raise ValueError(
+                            f"service '{service_name}' env '{key}' references "
+                            f"undeclared database '{value.database}'"
+                        )
+        for key, value in self.environment.env.items():
+            if isinstance(value, ValueFrom) and value.database is not None:
+                raise ValueError(
+                    f"environment env '{key}' cannot reference a managed database; "
+                    "database value sources are only available to auxiliary services"
+                )
         return self
 
 

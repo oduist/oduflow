@@ -129,6 +129,31 @@ MCP_TOKEN:
   environmentField: token
 ```
 
+Managed PostgreSQL credentials can be wired into an auxiliary service
+without putting the generated secret in YAML:
+
+```yaml
+databases:
+  events: {}
+
+services:
+  worker:
+    image: example/worker:1
+    port: 8080
+    env:
+      DATABASE_URL:
+        database: events
+        databaseField: url
+      PGPASSWORD:
+        database: events
+        databaseField: password
+```
+
+Supported database fields are `url`, `host`, `port`, `database`, `username`,
+and `password`. The database must be declared under `spec.databases`, and these
+references are accepted only in auxiliary service environments. They cannot be
+injected into the Odoo environment.
+
 `environmentField` is deliberately unavailable under `spec.environment.env`,
 because an environment cannot depend on an output that exists only after that
 same environment has been created. Resolved values are passed directly to the
@@ -149,7 +174,7 @@ oduflow.stack-resource=services.fs
 oduflow.stack-spec-hash=<sha256>
 ```
 
-Oduflow will not silently adopt an existing environment, service, or volume
+Oduflow will not silently adopt an existing environment, service, volume, or database
 with the same name. It reports an ownership conflict instead. Extra-addon bare
 repositories remain team-shared by design: an existing repository with the same
 name and URL is reused, while a different URL is a conflict.
@@ -158,10 +183,11 @@ The V1 apply order is:
 
 1. extra-addon repositories;
 2. named volumes;
-3. the Odoo environment;
-4. text files in volumes;
-5. auxiliary services;
-6. missing Odoo modules.
+3. managed PostgreSQL databases;
+4. the Odoo environment;
+5. text files in volumes;
+6. auxiliary services;
+7. missing Odoo modules.
 
 Module installation happens after services so an install hook can connect to a
 declared dependency. Only missing modules are installed; Stack apply never
@@ -174,7 +200,7 @@ V1 can reconcile these changes in place:
 - Odoo image and Odoo container environment variables;
 - service image, environment, port/routes, hostname, volumes, host mode, and
   capabilities;
-- new extra repositories, volumes, files, services, and modules.
+- new extra repositories, volumes, databases, files, services, and modules.
 
 Changing an existing environment's `repoUrl`, `branch`, `template`, or
 `extraRepositories` requires replacement and is reported as a conflict. Volume

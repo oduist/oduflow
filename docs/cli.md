@@ -154,6 +154,19 @@ oduflow import-template <odoo_url> <master_pwd> --template-name myproject [--db-
 ```bash
 # List all managed services
 oduflow list-services [--team 1]
+
+# List persistent PostgreSQL databases for auxiliary services (no passwords)
+oduflow list-service-databases [--team 1]
+```
+
+Create, inspect, rotate, and delete databases through the matching MCP tools
+with `oduflow call`, for example:
+
+```bash
+oduflow call create_service_database '{"name":"events"}'
+oduflow call get_service_database '{"name":"events"}'
+oduflow call rotate_service_database_password '{"name":"events"}'
+oduflow call delete_service_database '{"name":"events"}'
 ```
 
 ## Maintenance Commands

@@ -107,7 +107,8 @@ def _scenario(request: pytest.FixtureRequest) -> dict:
 def _needs_system(scenario: dict) -> bool:
     return (
         scenario.get("needs_env", False)
-        or scenario.get("tool") in {"create_environment", "delete_environment"}
+        or scenario.get("tool")
+        in {"create_environment", "delete_environment", "create_service_database"}
         or scenario.get("cli") == "destroy"
     )
 

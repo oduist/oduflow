@@ -7,11 +7,14 @@ from oduflow.naming import (
     get_repo_path,
     get_resource_name,
     get_service_container_name,
+    get_service_database_name,
+    get_service_database_role,
     get_template_db_name,
     get_workspace_path,
     slugify_branch,
     split_team_hostname,
     validate_env_hostname,
+    validate_service_database_name,
     validate_service_name,
     validate_template_name,
 )
@@ -155,6 +158,61 @@ class TestServiceNaming:
             "underscores. Spaces are not allowed; use hyphens instead (for "
             "example, 'odoo-mcp-server')."
         )
+
+
+class TestServiceDatabaseNaming:
+    @pytest.mark.parametrize("good", ["worker", "worker-data", "events_2", "1db"])
+    def test_accepts_stable_names(self, good):
+        assert validate_service_database_name(good) == good
+        assert get_service_database_name(good, "1") == f"oduflow_service_1_{good}"
+        assert get_service_database_role(good, "1") == f"svc_1_{good}"
+
+    @pytest.mark.parametrize(
+        "bad", ["", "Worker", "worker.data", "worker/data", "-worker", "x" * 32]
+    )
+    def test_rejects_ambiguous_or_unsafe_names(self, bad):
+        with pytest.raises(ValueError, match="Invalid service database name"):
+            validate_service_database_name(bad)
+
+    def test_long_team_id_gets_stable_bounded_identifiers(self):
+        team_id = "customer-" + "x" * 70
+        database = get_service_database_name("events", team_id)
+        role = get_service_database_role("events", team_id)
+
+        assert len(database) <= 63
+        assert len(role) <= 63
+        assert database == get_service_database_name("events", team_id)
+        assert role == get_service_database_role("events", team_id)
+
+    def test_underscore_in_team_id_cannot_collide_with_another_team(self):
+        """``_`` separates the segments, so team ``a``/db ``b_c`` and team
+        ``a_b``/db ``c`` would otherwise render to the same identifier."""
+        assert get_service_database_name("b_c", "a") != get_service_database_name(
+            "c", "a_b"
+        )
+        assert get_service_database_role("b_c", "a") != get_service_database_role(
+            "c", "a_b"
+        )
+
+    def test_team_id_case_cannot_collide(self):
+        """Identifiers are lower-cased, so ``A`` and ``a`` would otherwise
+        render identically."""
+        assert get_service_database_name("events", "A") != get_service_database_name(
+            "events", "a"
+        )
+
+    def test_unambiguous_team_id_keeps_the_readable_form(self):
+        assert get_service_database_name("events", "1") == "oduflow_service_1_events"
+        assert get_service_database_name("events", "acme-eu") == (
+            "oduflow_service_acme-eu_events"
+        )
+
+    def test_disambiguated_identifiers_stay_within_the_postgres_limit(self):
+        for team_id in ("a_b", "A", "team ${x}", "customer_" + "y" * 70):
+            for builder in (get_service_database_name, get_service_database_role):
+                identifier = builder("events", team_id)
+                assert len(identifier.encode("utf-8")) <= 63, identifier
+                assert identifier == builder("events", team_id)
 
 
 class TestGetWorkspacePath:

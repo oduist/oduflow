@@ -22,7 +22,7 @@ from typing import Any
 
 import docker
 from docker import DockerClient
-from oduflow import pg_hba
+from oduflow import pg_hba, service_database_credentials
 from oduflow.docker_ops.client import chown_recursive, get_client, get_odoo_uid_gid
 from oduflow.docker_ops.stats import default_env_limits
 from oduflow.errors import (
@@ -33,6 +33,7 @@ from oduflow.errors import (
 )
 from oduflow.naming import (
     get_db_name,
+    get_service_database_name,
     get_tablespace_name,
     get_team_network_name,
     get_template_db_name,
@@ -788,15 +789,23 @@ def _exec_sql(
 
 
 def get_team_db_usage_bytes(
-    client: DockerClient, settings: Settings, team_id: str
+    client: DockerClient, settings: Settings, team: TeamSettings
 ) -> int:
-    """Combined on-disk size of the team's PostgreSQL databases (environments
-    and templates).
+    """Combined on-disk size of the team's PostgreSQL databases (environments,
+    templates, and auxiliary-service databases).
 
     One catalog query: ``pg_database_size()`` stats the database's files under
     PGDATA (each database is one directory there) — it does not scan table
     contents, so this is milliseconds, not a table walk. Names are filtered in
     Python to avoid LIKE-pattern escaping of the team id.
+
+    Environment and template databases are matched by prefix, which is what
+    their released naming allows. Service databases are matched by exact name
+    instead: team ids are unvalidated, so a prefix like
+    ``oduflow_service_<team>_`` would also capture the *environment* databases
+    of a team literally named ``service_<team>`` and bill them to the wrong
+    quota. The credential records are authoritative for which service
+    databases a team owns, so the exact set is cheap to derive.
     """
     rows = _exec_sql(
         client,
@@ -804,11 +813,20 @@ def get_team_db_usage_bytes(
         "SELECT datname, pg_database_size(datname) FROM pg_database "
         "WHERE NOT datistemplate;",
     )
-    prefixes = (f"oduflow_{team_id}_", f"oduflow_template_{team_id}_")
+    prefixes = (
+        f"oduflow_{team.team_id}_",
+        f"oduflow_template_{team.team_id}_",
+    )
+    service_databases = {
+        get_service_database_name(item, team.team_id)
+        for item in service_database_credentials.list_names(team)
+    }
     total = 0
     for line in rows.splitlines():
         name, _, size = line.partition("|")
-        if name.startswith(prefixes) and size.strip().isdigit():
+        if not size.strip().isdigit():
+            continue
+        if name.startswith(prefixes) or name in service_databases:
             total += int(size)
     return total
 
@@ -831,7 +849,7 @@ def check_db_quota(
     """
     if team.db_quota_gb <= 0:
         return
-    used = get_team_db_usage_bytes(client, settings, team.team_id)
+    used = get_team_db_usage_bytes(client, settings, team)
     quota = team.db_quota_gb * 1024**3
     projected = used + max(estimated_new_db_bytes, 0)
     if projected >= quota:
@@ -840,8 +858,8 @@ def check_db_quota(
             f"{used / 1024**3:.1f} GB used plus an estimated "
             f"{max(estimated_new_db_bytes, 0) / 1024**3:.1f} GB for the new "
             f"database exceeds the {team.db_quota_gb} GB quota "
-            "(db_quota_gb in oduflow.toml). Delete unused environments or "
-            "templates, or raise the quota."
+            "(db_quota_gb in oduflow.toml). Delete unused environments, "
+            "templates, or service databases, or raise the quota."
         )
 
 

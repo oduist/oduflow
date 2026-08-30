@@ -43,6 +43,7 @@ from oduflow.docker_ops import (
     odoo_ops,
     odoo_rpc,
     production_ops,
+    service_database_ops,
     service_ops,
     service_presets,
     system_ops,
@@ -55,6 +56,7 @@ from oduflow.locking import (
     LockManager,
     credentials_lock_key,
     prod_backups_lock_key,
+    service_database_lock_key,
     service_lock_key,
     service_preset_lock_key,
     volume_lock_key,
@@ -3482,6 +3484,125 @@ def odoo_schema(
 
 
 # =============================================================================
+# MCP Tools — PostgreSQL databases for auxiliary services
+# =============================================================================
+
+
+def _service_database_connection_text(result: dict[str, Any]) -> str:
+    lines = [
+        f"Name: {result['name']}",
+        f"Status: {result['status']}",
+        f"Host: {result['host']}",
+        f"Port: {result['port']}",
+        f"Database: {result['database']}",
+        f"Username: {result['username']}",
+    ]
+    if result.get("password"):
+        lines.extend(
+            [
+                f"Password: {result['password']}",
+                f"DATABASE_URL: {result['url']}",
+                "Environment variables:",
+                f"PGHOST={result['host']}",
+                f"PGPORT={result['port']}",
+                f"PGDATABASE={result['database']}",
+                f"PGUSER={result['username']}",
+                f"PGPASSWORD={result['password']}",
+            ]
+        )
+    return "\n".join(lines)
+
+
+@mcp.tool()
+@handle_errors
+@with_key_lock(service_database_lock_key)
+def create_service_database(name: str, ctx: Context | None = None) -> str:
+    """Create a persistent PostgreSQL database for auxiliary services.
+
+    The database belongs to the current team, uses a dedicated non-superuser
+    role, and survives service updates and deletion. It is reachable from
+    bridge-mode team services at the returned host and port.
+
+    Args:
+        name: Stable lowercase resource name using letters, digits, '-' or '_'.
+    """
+    result = service_database_ops.create_database(
+        _get_settings(), _resolve_team(ctx), name
+    )
+    return (
+        "Service database created successfully!\n"
+        + _service_database_connection_text(result)
+    )
+
+
+@mcp.tool()
+@handle_errors
+def list_service_databases(ctx: Context | None = None) -> str:
+    """List managed PostgreSQL databases for auxiliary services without secrets."""
+    rows = service_database_ops.list_databases(_get_settings(), _resolve_team(ctx))
+    if not rows:
+        return "No service databases found."
+    lines = ["Service databases:"]
+    for row in rows:
+        size_mb = int(row.get("size_bytes", 0)) / 1024**2
+        lines.append(
+            f"- {row['name']}: {row['status']}, database={row.get('database', 'unknown')}, "
+            f"size={size_mb:.1f} MB, connections={row.get('connections', 0)}"
+        )
+    return "\n".join(lines)
+
+
+@mcp.tool()
+@handle_errors
+@with_key_lock(service_database_lock_key)
+def get_service_database(name: str, ctx: Context | None = None) -> str:
+    """Get connection credentials for a managed auxiliary-service database.
+
+    The response contains a plaintext password and DATABASE_URL; treat it as a
+    secret and pass only the variables the target service needs.
+    """
+    result = service_database_ops.get_database(
+        _get_settings(), _resolve_team(ctx), name, reveal_password=True
+    )
+    return _service_database_connection_text(result)
+
+
+@mcp.tool()
+@handle_errors
+@with_key_lock(service_database_lock_key)
+def rotate_service_database_password(name: str, ctx: Context | None = None) -> str:
+    """Rotate a service database password and return the new credentials.
+
+    Existing containers keep the old value until their environment variables
+    are updated and the containers are recreated or restarted.
+    """
+    result = service_database_ops.rotate_password(
+        _get_settings(), _resolve_team(ctx), name
+    )
+    return "Service database password rotated.\n" + _service_database_connection_text(
+        result
+    )
+
+
+@mcp.tool()
+@handle_errors
+@with_key_lock(service_database_lock_key)
+def delete_service_database(name: str, ctx: Context | None = None) -> str:
+    """Permanently delete an auxiliary-service database and its login role.
+
+    Active PostgreSQL connections are terminated. Service containers are not
+    modified and will fail to reconnect until reconfigured.
+    """
+    result = service_database_ops.delete_database(
+        _get_settings(), _resolve_team(ctx), name
+    )
+    return (
+        f"Service database '{result['name']}' deleted permanently. "
+        f"Database '{result['database']}' and role '{result['username']}' removed."
+    )
+
+
+# =============================================================================
 # MCP Tools — Auxiliary services
 # =============================================================================
 
@@ -5768,6 +5889,21 @@ def _run_list_services(settings: Settings, team: TeamSettings) -> None:
             print(f"    Env: {env_str}")
 
 
+def _run_list_service_databases(settings: Settings, team: TeamSettings) -> None:
+    rows = service_database_ops.list_databases(settings, team)
+    if not rows:
+        print("No service databases found.")
+        return
+    print("Service databases:")
+    for row in rows:
+        size_mb = int(row.get("size_bytes", 0)) / 1024**2
+        print(
+            f"  {row['name']}: {row['status']} "
+            f"({row.get('database', 'unknown')}, {size_mb:.1f} MB, "
+            f"{row.get('connections', 0)} connections)"
+        )
+
+
 def _run_cleanup(settings: Settings, team: TeamSettings, dry_run: bool = True) -> None:
     result = system_ops.cleanup_orphans(settings, team, dry_run=dry_run)
     mode = "DRY RUN" if result["dry_run"] else "CLEANUP"
@@ -6104,6 +6240,11 @@ def _run_cli() -> None:
         "list-services", help="List managed auxiliary service containers"
     )
     p_ls.add_argument("--team", default="1", help="Team ID (default: 1)")
+    p_lsd = sub.add_parser(
+        "list-service-databases",
+        help="List PostgreSQL databases managed for auxiliary services",
+    )
+    p_lsd.add_argument("--team", default="1", help="Team ID (default: 1)")
 
     # --- Cleanup ---
     p_cleanup = sub.add_parser(
@@ -6404,6 +6545,10 @@ def _run_cli() -> None:
 
     if args.command == "list-services":
         _run_list_services(_settings, _cli_team())
+        return
+
+    if args.command == "list-service-databases":
+        _run_list_service_databases(_settings, _cli_team())
         return
 
     if args.command == "cleanup":

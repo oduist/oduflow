@@ -223,6 +223,13 @@
       "title": "Service",
       "type": "object"
     },
+    "ServiceDatabase": {
+      "additionalProperties": false,
+      "description": "An empty managed PostgreSQL database; credentials are generated at apply.",
+      "properties": {},
+      "title": "ServiceDatabase",
+      "type": "object"
+    },
     "ServiceMount": {
       "additionalProperties": false,
       "properties": {
@@ -303,6 +310,15 @@
           "title": "Volumes",
           "type": "object"
         },
+        "databases": {
+          "patternProperties": {
+            "^[a-z0-9][a-z0-9_-]{0,30}$": {
+              "$ref": "#/$defs/ServiceDatabase"
+            }
+          },
+          "title": "Databases",
+          "type": "object"
+        },
         "files": {
           "items": {
             "$ref": "#/$defs/VolumeFile"
@@ -357,6 +373,39 @@
           ],
           "default": null,
           "title": "Environmentfield"
+        },
+        "database": {
+          "anyOf": [
+            {
+              "pattern": "^[a-z0-9][a-z0-9_-]{0,30}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Database"
+        },
+        "databaseField": {
+          "anyOf": [
+            {
+              "enum": [
+                "url",
+                "host",
+                "port",
+                "database",
+                "username",
+                "password"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Databasefield"
         }
       },
       "title": "ValueFrom",
