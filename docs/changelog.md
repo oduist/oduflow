@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v1.72.0
 
 ### Features
 
@@ -12,7 +12,7 @@
   and `PG*` values only on explicit credential surfaces. Declarative Stacks can
   declare databases and resolve individual connection fields into auxiliary
   service environment variables without persisting generated passwords in the
-  manifest or Stack state.
+  manifest or Stack state. (#217)
 
 - **Built-in remote MCP CLI** — `oduflow client <tool>` now calls a running
   Oduflow server through FastMCP using `ODUFLOW_MCP_URL` and
@@ -22,7 +22,7 @@
   branch from the current checkout), supports full team and scoped
   `/mcp/<env>` endpoints, emits machine-readable JSON for automation, and
   preserves server-side tool errors and output-cache summaries. The existing
-  `oduflow call <tool>` remains the local in-process path.
+  `oduflow call <tool>` remains the local in-process path. (#214)
 
 - **Token-safe summaries for apply and test calls** — `pull_and_apply` and
   `run_odoo_tests` now accept `summary_only=True`, keeping verbose Odoo command
@@ -31,7 +31,7 @@
   return one line with the action, changed-file count and exit status. Both
   include an `output_id` when detailed output is available, so failures can be
   inspected selectively through `read_output`. The existing verbose responses
-  remain the default for backward compatibility.
+  remain the default for backward compatibility. (#210)
 
 - **Templates carry environment variables** — a template's `metadata.json` can
   now hold an `env_vars` object, and every environment created from that
@@ -43,13 +43,31 @@
   time are merged **per key** over the template's, so one variable can be
   overridden without restating the rest. Names are validated as shell
   identifiers when a template is saved; a hand-edited file with an invalid entry
-  is ignored with a warning rather than blocking provisioning.
+  is ignored with a warning rather than blocking provisioning. (#207)
+
+- **`create_environment` returns an environment that already exists** — instead
+  of raising a conflict it answers with the existing environment's URL,
+  database, image and template, starting it when it was stopped and
+  provisioning nothing. Agents no longer need a defensive `list_environments`
+  round-trip before every create. The lookup runs under the environment lock
+  ahead of template and repository validation, so the fast path stays fast. A
+  branch mismatch is still refused — that database and URL are in use, and
+  moving them stays an explicit `switch_branch` decision. (#212)
 
 ### Dashboard
 
+- **Install and upgrade modules from the environment card** — each running
+  development environment gains Install modules and Upgrade modules actions,
+  backed by a fixed internal SQL query for the installed-module list with a
+  legacy-credential fallback. Input is validated, normalized production aliases
+  are rejected, and failed attempts are reported truthfully rather than as
+  success. A successful install or upgrade restarts the environment, and a
+  restart failure is still surfaced as a partial success. Stale upgrade-picker
+  responses can no longer replace the active environment's module list. (#216)
+
 - **Service database controls** — the new Databases tab shows live database
   size, connections, and drift status, with guarded create, credential reveal,
-  password rotation, copy-environment, and permanent-delete actions.
+  password rotation, copy-environment, and permanent-delete actions. (#217)
 
 - **Environment variables in the template Settings dialog** — a new field edits
   a template's variables as one `KEY=VALUE` per line, the template card shows
@@ -57,9 +75,20 @@
   secrets), and the create-environment form prefills them from the selected
   template. Multiline values stay inherited server-side instead of being put
   through the line-based create field. In template Settings, such values are
-  shown read-only and pointed at the raw JSON editor.
+  shown read-only and pointed at the raw JSON editor. (#207)
 
 ### Fixes
+
+- **Auto-installed modules are now part of atomic environment provisioning** —
+  creation no longer reports success when the serving Odoo registry misses its
+  120-second readiness deadline or the requested module install fails. The
+  readiness probe now preserves its last error and includes a bounded Odoo log
+  tail, required setup failures stop before sanitization and roll back the new
+  environment, and a final database-bound registry check runs after the
+  post-sanitization restart. This prevents an environment from surviving with
+  requested modules missing or with their neutralization SQL skipped. Module
+  names are validated up front, so a typo is rejected before anything is
+  provisioned instead of after the rollback discards it. (#211)
 
 - **Environment limits no longer rewrite existing Traefik hostnames** —
   `environment_slots` is now only a concurrency-safe team capacity limit and
@@ -70,13 +99,27 @@
   custom hostnames remain stable. Environments that were automatically moved
   to a numbered hostname by v1.69-v1.71 return to their branch-derived route on
   their next update in branch mode, while their capacity reservation remains.
+  (#213)
+
+- **Stale filestore overlays are recovered safely** — stale and unexpectedly
+  absent fuse-overlayfs mounts are now detected at startup and recovered
+  fail-closed, preserving each environment's upper layer rather than risking
+  its writes. Overlay health is exposed through `/healthz` and the dashboard
+  with path-safe reporting. (#208)
+
+- **A Markdown-only pull no longer restarts a production container** — a pull
+  carrying documentation alone used to be classified as `refresh`, which the
+  production deploy engine promotes to a container restart, so a docs commit
+  bounced Odoo for nothing. `classify_changes` and `shallow_classify` now
+  return `action="none"` when every changed file is Markdown, while still
+  reporting what was pulled. (#212)
 
 - **A failed install is no longer masked by a later successful upgrade** — when
   a single `pull_and_apply` both installed and upgraded modules, the reported
   exit code was the last command's, so a broken install followed by a clean
   upgrade came back as a success. The apply now keeps the first non-zero exit
   code, which is what the compact `summary_only` status line and the live-mount
-  snapshot both key off.
+  snapshot both key off. (#210)
 
 - **Environment listings now carry the evidence needed for safe slot reuse** —
   the MCP `list_environments` output previously discarded lifecycle metadata
@@ -86,6 +129,7 @@
   legacy records explicitly say `Last Activity: unknown`. The same lifecycle
   metadata is available from `get_environment_info`, and the agent guide no
   longer treats an empty GitHub PR result as proof that a slot is reusable.
+  (#209)
 
 - **Translation instructions start with Odoo's exporter** — agents are now told
   to run `export_module_translations` before creating a `.po`, never invent
@@ -93,7 +137,22 @@
   `translation_status` after the module upgrade. The guide also warns that
   re-exporting over a catalogue that has not been imported overwrites it with
   the database's contents. This makes the existing silent-zero-import detector
-  preventive instead of merely diagnostic.
+  preventive instead of merely diagnostic. (#209)
+
+### Security
+
+- **Dashboard errors no longer leak external command output** —
+  `ExternalCommandError` carries the failed process's full output (Docker
+  internals, absolute paths, Python tracebacks), and the dashboard returned it
+  verbatim. It now answers `Operation failed. Check server logs for details.`
+  and keeps the detail server-side, matching the existing HTTP-500 handlers;
+  the status code moves from 400 to 500, since a failed external command is a
+  server-side failure. The Connect As bridge shares the same rule and no longer
+  interpolates raw exceptions into its plain-text response. Both Connect As
+  endpoints now take the environment lock — after reading the request body, so
+  a stalled client cannot hold the branch lock open — so minting a session
+  cannot race a delete or recreate of the same branch. MCP tool responses stay
+  verbose and are unaffected. (#215)
 
 ## v1.71.0
 
@@ -122,17 +181,6 @@
   and the MCP tools are unchanged. (#204)
 
 ### Fixes
-
-- **Auto-installed modules are now part of atomic environment provisioning** —
-  creation no longer reports success when the serving Odoo registry misses its
-  120-second readiness deadline or the requested module install fails. The
-  readiness probe now preserves its last error and includes a bounded Odoo log
-  tail, required setup failures stop before sanitization and roll back the new
-  environment, and a final database-bound registry check runs after the
-  post-sanitization restart. This prevents an environment from surviving with
-  requested modules missing or with their neutralization SQL skipped. Module
-  names are validated up front, so a typo is rejected before anything is
-  provisioned instead of after the rollback discards it.
 
 - **PostgreSQL access follows the real Docker networks** — on every startup,
   Oduflow now reads the actual IPAM subnets of its shared and per-team networks
