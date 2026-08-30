@@ -85,6 +85,7 @@ from oduflow.naming import (
     PROD_ENV_PREFIX,
     parse_env_vars,
     slugify_branch,
+    validate_env_hostname,
     validate_env_name,
     validate_template_name,
 )
@@ -1448,10 +1449,13 @@ def _build_routes(
                 {"ok": False, "error": "branch is required."},
                 status_code=400,
             )
-        from oduflow.naming import validate_env_name
-
         try:
             env_name = validate_env_name(env_name)
+            # Validated here as well as in create_environment: rejecting a bad
+            # DNS label before the lock is taken keeps the message immediate
+            # and starts no work that has to be unwound.
+            if hostname:
+                hostname = validate_env_hostname(hostname)
         except ValueError as e:
             return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
 
@@ -1565,6 +1569,14 @@ def _build_routes(
             # in the server journal.
             logger.warning("create_environment failed for %s: %s", env_name, e)
             return _error_response(e)
+        except ValueError as e:
+            # Deliberate input validation raised deeper in the create path
+            # (unsupported hostname for the routing mode, malformed team
+            # hostname, …). Same policy as the MCP tools' handle_errors: these
+            # messages are authored for the user, so surface them as 400
+            # instead of masking them behind a 500.
+            logger.warning("create_environment rejected %s: %s", env_name, e)
+            return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
         except Exception:
             logger.exception("Unexpected error in api_create")
             return JSONResponse(
