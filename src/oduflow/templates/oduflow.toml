@@ -113,7 +113,8 @@ auto_delete_hours = 0             # delete stopped environments after N hours (D
 
 [team.1]
 hostname = "localhost"            # port: http://{hostname}:{port}, traefik: https://{slug}.{hostname}
-environment_slots = 20            # traefik: dev.example.com + N => dev1.example.com..devN.example.com; 0 = legacy hostnames
+environment_slots = 20            # maximum concurrent environments; 0 = unlimited
+environment_hostname_mode = "branch" # "branch": feature.dev.example.com; "slots": dev1.example.com..devN.example.com
 service_slots = 10                # maximum managed auxiliary services; 0 = unlimited
 auth_token = ""                   # MCP bearer token / OAuth client_id+secret (auto-generated on first run; HTTP refuses to start if empty)
 ui_password = ""                  # Web UI password (auto-generated on first run; HTTP refuses to start if empty unless allow_insecure_http)

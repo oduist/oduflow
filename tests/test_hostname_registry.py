@@ -7,9 +7,12 @@ import docker
 from oduflow.docker_ops import env_ops
 from oduflow.errors import ConflictError, FlowError
 from oduflow.hostname_registry import (
+    CAPACITY_RESERVATION,
     allocate_hostname,
+    clear_hostname_assignment,
     get_hostname,
     release_hostname,
+    reserve_environment_slot,
 )
 from oduflow.settings import Settings, TeamSettings
 
@@ -87,7 +90,34 @@ def test_parallel_allocations_never_share_a_slot(tmp_path):
     assert set(hostnames) == {f"dev{number}" for number in range(1, 21)}
 
 
-def _traefik_settings(tmp_path, slots=2):
+def test_capacity_reservations_are_concurrency_safe_without_hostname_changes(tmp_path):
+    path = _path(tmp_path)
+    envs = [f"feature-{number}" for number in range(10)]
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        list(
+            pool.map(
+                lambda env: reserve_environment_slot(path, env, len(envs)),
+                envs,
+            )
+        )
+
+    assert {get_hostname(path, env) for env in envs} == {CAPACITY_RESERVATION}
+    with pytest.raises(FlowError, match="No free environment slots"):
+        reserve_environment_slot(path, "overflow", len(envs))
+
+
+def test_hostname_assignment_can_return_to_capacity_only(tmp_path):
+    path = _path(tmp_path)
+    reserve_environment_slot(path, "feature-a", 2)
+    assert allocate_hostname(path, "feature-a", 2, hostname_prefix="dev") == "dev1"
+
+    clear_hostname_assignment(path, "feature-a", retain_slot=True)
+
+    assert get_hostname(path, "feature-a") == CAPACITY_RESERVATION
+
+
+def _traefik_settings(tmp_path, slots=2, hostname_mode="slots"):
     data_dir = tmp_path / "team_1"
     team = TeamSettings(
         team_id="1",
@@ -95,6 +125,7 @@ def _traefik_settings(tmp_path, slots=2):
         data_dir=str(data_dir),
         hostname_registry_path=str(data_dir / "hostnames.json"),
         environment_slots=slots,
+        environment_hostname_mode=hostname_mode,
     )
     return Settings(
         routing_mode="traefik",
@@ -122,7 +153,10 @@ def test_create_wrapper_assigns_short_hostname(tmp_path):
 
     assert result["url"] == "https://dev1.example.com"
     assert provision.call_args.kwargs["hostname"] == "dev1"
+    assert provision.call_args.kwargs["hostname_source"] == "slot"
     assert get_hostname(team.hostname_registry_path, "feature-a") == "dev1"
+    # Capacity and hostname usage come from one container listing.
+    assert client.containers.list.call_count == 1
 
 
 def test_create_wrapper_accepts_explicit_parent_domain_prefix(tmp_path):
@@ -148,7 +182,34 @@ def test_create_wrapper_accepts_explicit_parent_domain_prefix(tmp_path):
         )
 
     assert provision.call_args.kwargs["hostname"] == "qa"
+    assert provision.call_args.kwargs["hostname_source"] == "custom"
     assert get_hostname(team.hostname_registry_path, "feature-a") == "qa"
+
+
+def test_internal_recreate_preserves_slot_hostname_source(tmp_path):
+    settings, team = _traefik_settings(tmp_path)
+    client = MagicMock()
+    client.containers.get.side_effect = docker.errors.NotFound("missing")
+    client.containers.list.return_value = []
+
+    with (
+        patch("oduflow.docker_ops.env_ops.get_client", return_value=client),
+        patch(
+            "oduflow.docker_ops.env_ops._create_environment_impl",
+            return_value={"url": "https://dev1.example.com"},
+        ) as provision,
+    ):
+        env_ops.create_environment(
+            settings,
+            team,
+            "feature-a",
+            "repo",
+            "odoo:19.0",
+            hostname="dev1",
+            hostname_source="slot",
+        )
+
+    assert provision.call_args.kwargs["hostname_source"] == "slot"
 
 
 def test_automatic_allocation_skips_hostname_used_by_service(tmp_path):
@@ -194,6 +255,132 @@ def test_failed_create_releases_hostname_before_container_exists(tmp_path):
         env_ops.create_environment(settings, team, "feature-a", "repo", "odoo:19.0")
 
     assert get_hostname(team.hostname_registry_path, "feature-a") is None
+
+
+def test_branch_mode_keeps_legacy_hostname_while_enforcing_capacity(tmp_path):
+    settings, team = _traefik_settings(tmp_path, slots=1, hostname_mode="branch")
+    client = MagicMock()
+    client.containers.get.side_effect = docker.errors.NotFound("missing")
+    client.containers.list.return_value = []
+
+    with (
+        patch("oduflow.docker_ops.env_ops.get_client", return_value=client),
+        patch(
+            "oduflow.docker_ops.env_ops._create_environment_impl",
+            return_value={"url": "https://feature-a.dev.example.com"},
+        ) as provision,
+    ):
+        env_ops.create_environment(settings, team, "feature-a", "repo", "odoo:19.0")
+
+    assert provision.call_args.kwargs["hostname"] == ""
+    assert get_hostname(team.hostname_registry_path, "feature-a") == (
+        CAPACITY_RESERVATION
+    )
+
+    with (
+        patch("oduflow.docker_ops.env_ops.get_client", return_value=client),
+        pytest.raises(FlowError, match="No free environment slots"),
+    ):
+        env_ops.create_environment(settings, team, "feature-b", "repo", "odoo:19.0")
+
+
+def test_port_mode_enforces_environment_capacity(tmp_path):
+    data_dir = tmp_path / "team_1"
+    team = TeamSettings(
+        team_id="1",
+        data_dir=str(data_dir),
+        hostname_registry_path=str(data_dir / "hostnames.json"),
+        environment_slots=1,
+    )
+    settings = Settings(routing_mode="port", teams={"1": team})
+    client = MagicMock()
+    client.containers.get.side_effect = docker.errors.NotFound("missing")
+    existing = MagicMock()
+    existing.labels = {
+        settings.managed_label: "true",
+        settings.team_label: "1",
+        settings.branch_label: "feature-a",
+    }
+    client.containers.list.return_value = [existing]
+
+    with (
+        patch("oduflow.docker_ops.env_ops.get_client", return_value=client),
+        pytest.raises(FlowError, match="No free environment slots"),
+    ):
+        env_ops.create_environment(settings, team, "feature-b", "repo", "odoo:19.0")
+
+
+def test_update_keeps_unlabeled_legacy_hostname_in_branch_mode(tmp_path):
+    settings, team = _traefik_settings(tmp_path, hostname_mode="branch")
+    labels = {}
+
+    clear_after_update = env_ops._reconcile_environment_hostname_for_update(
+        MagicMock(), settings, team, "feature-a", labels
+    )
+
+    assert clear_after_update is False
+    assert env_ops.ENV_HOSTNAME_LABEL not in labels
+    assert env_ops.ENV_HOSTNAME_SOURCE_LABEL not in labels
+
+
+def test_update_clears_stale_registry_assignment_for_unlabeled_hostname(tmp_path):
+    settings, team = _traefik_settings(tmp_path, hostname_mode="branch")
+    reserve_environment_slot(team.hostname_registry_path, "feature-a", 2)
+    allocate_hostname(
+        team.hostname_registry_path, "feature-a", 2, hostname_prefix="dev"
+    )
+    labels = {}
+
+    clear_after_update = env_ops._reconcile_environment_hostname_for_update(
+        MagicMock(), settings, team, "feature-a", labels
+    )
+
+    assert clear_after_update is True
+
+
+def test_update_returns_legacy_automatic_slot_to_branch_hostname(tmp_path):
+    settings, team = _traefik_settings(tmp_path, hostname_mode="branch")
+    reserve_environment_slot(team.hostname_registry_path, "feature-a", 2)
+    allocate_hostname(
+        team.hostname_registry_path, "feature-a", 2, hostname_prefix="dev"
+    )
+    labels = {env_ops.ENV_HOSTNAME_LABEL: "dev1"}
+
+    clear_after_update = env_ops._reconcile_environment_hostname_for_update(
+        MagicMock(), settings, team, "feature-a", labels
+    )
+
+    assert clear_after_update is True
+    assert env_ops.ENV_HOSTNAME_LABEL not in labels
+    assert env_ops.ENV_HOSTNAME_SOURCE_LABEL not in labels
+
+
+def test_update_preserves_legacy_custom_hostname_in_branch_mode(tmp_path):
+    settings, team = _traefik_settings(tmp_path, hostname_mode="branch")
+    labels = {env_ops.ENV_HOSTNAME_LABEL: "qa"}
+
+    clear_after_update = env_ops._reconcile_environment_hostname_for_update(
+        MagicMock(), settings, team, "feature-a", labels
+    )
+
+    assert clear_after_update is False
+    assert labels[env_ops.ENV_HOSTNAME_LABEL] == "qa"
+    assert labels[env_ops.ENV_HOSTNAME_SOURCE_LABEL] == "custom"
+
+
+def test_update_assigns_slot_only_when_slot_mode_is_explicit(tmp_path):
+    settings, team = _traefik_settings(tmp_path, hostname_mode="slots")
+    client = MagicMock()
+    client.containers.list.return_value = []
+    labels = {}
+
+    clear_after_update = env_ops._reconcile_environment_hostname_for_update(
+        client, settings, team, "feature-a", labels
+    )
+
+    assert clear_after_update is False
+    assert labels[env_ops.ENV_HOSTNAME_LABEL] == "dev1"
+    assert labels[env_ops.ENV_HOSTNAME_SOURCE_LABEL] == "slot"
 
 
 def test_base_url_reads_persisted_short_hostname(tmp_path):

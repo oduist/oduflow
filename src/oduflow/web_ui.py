@@ -64,7 +64,13 @@ from oduflow.docker_ops.stats import (
     refresh_env_storage,
     refresh_team_storage,
 )
-from oduflow.errors import BusyError, ConflictError, FlowError, NotFoundError
+from oduflow.errors import (
+    BusyError,
+    ConflictError,
+    ExternalCommandError,
+    FlowError,
+    NotFoundError,
+)
 from oduflow.licensing import get_license_info, install_license_from_text
 from oduflow.locking import (
     LockManager,
@@ -75,7 +81,13 @@ from oduflow.locking import (
     service_preset_lock_key,
     volume_lock_key,
 )
-from oduflow.naming import parse_env_vars, validate_template_name
+from oduflow.naming import (
+    PROD_ENV_PREFIX,
+    parse_env_vars,
+    slugify_branch,
+    validate_env_name,
+    validate_template_name,
+)
 from oduflow.settings import Settings, TeamSettings
 
 logger = logging.getLogger("oduflow")
@@ -356,14 +368,44 @@ async def _read_login_password(request: Request) -> str:
     return (parsed.get("password", [""])[0]).strip()
 
 
-def _error_response(e: FlowError) -> JSONResponse:
+_EXTERNAL_COMMAND_UI_ERROR = "Operation failed. Check server logs for details."
+
+
+def _flow_error_status(e: FlowError) -> int:
     if isinstance(e, NotFoundError):
-        status = 404
-    elif isinstance(e, BusyError):
-        status = 409
-    else:
-        status = 400
-    return JSONResponse({"ok": False, "error": str(e)}, status_code=status)
+        return 404
+    if isinstance(e, BusyError):
+        return 409
+    if isinstance(e, ExternalCommandError):
+        return 500
+    return 400
+
+
+def _public_flow_error(e: FlowError, *, context: str = "Dashboard operation") -> str:
+    if isinstance(e, ExternalCommandError):
+        # Command output can contain tracebacks, filesystem paths, or connection
+        # details. Keep it in the server log instead of returning it to browsers.
+        logger.error("%s failed: %s", context, e)
+        return _EXTERNAL_COMMAND_UI_ERROR
+    return str(e)
+
+
+def _error_response(e: FlowError) -> JSONResponse:
+    return JSONResponse(
+        {"ok": False, "error": _public_flow_error(e)},
+        status_code=_flow_error_status(e),
+    )
+
+
+def _validate_dev_env_name(env_name: str) -> str:
+    """Validate a dev environment name without entering production namespace."""
+    validate_env_name(env_name)
+    if slugify_branch(env_name).startswith(PROD_ENV_PREFIX):
+        raise ValueError(
+            f"'{env_name}' is a production environment. Use the production "
+            "deployment workflow instead of dev module operations."
+        )
+    return env_name
 
 
 async def _offload(func: Callable[..., Any], /, *args: Any, **kwargs: Any) -> Any:
@@ -942,6 +984,145 @@ def _build_routes(
         finally:
             locks.release_env(branch)
 
+    def api_modules(request: Request) -> JSONResponse:
+        """Installed modules, for the dashboard's Upgrade modules picker."""
+        try:
+            branch = _validate_dev_env_name(request.path_params["branch"])
+            team = _get_ui_team(request)
+            modules = odoo_ops.list_installed_module_records(
+                get_settings(), team, branch
+            )
+            return JSONResponse({"ok": True, "modules": modules})
+        except FlowError as e:
+            return _error_response(e)
+        except ValueError as e:
+            return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
+        except Exception:
+            logger.exception("Unexpected error in api_modules")
+            return JSONResponse(
+                {"ok": False, "error": "Internal server error."}, status_code=500
+            )
+
+    async def api_modules_apply(request: Request) -> JSONResponse:
+        try:
+            branch = _validate_dev_env_name(request.path_params["branch"])
+        except ValueError as e:
+            return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
+        team = _get_ui_team(request)
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        if not isinstance(body, dict):
+            return JSONResponse(
+                {"ok": False, "error": "Request body must be a JSON object."},
+                status_code=400,
+            )
+        raw_action = body.get("action")
+        action = raw_action.strip() if isinstance(raw_action, str) else ""
+        if action not in {"install", "upgrade"}:
+            return JSONResponse(
+                {"ok": False, "error": "Action must be 'install' or 'upgrade'."},
+                status_code=400,
+            )
+        raw_modules = body.get("modules", "")
+        if not isinstance(raw_modules, str):
+            return JSONResponse(
+                {
+                    "ok": False,
+                    "error": "Modules must be a comma-separated string.",
+                },
+                status_code=400,
+            )
+        modules = [m.strip() for m in raw_modules.split(",")]
+        modules = [m for m in modules if m]
+        if not modules:
+            return JSONResponse(
+                {"ok": False, "error": "At least one module name is required."},
+                status_code=400,
+            )
+        try:
+            locks.acquire_env(branch, team.team_id)
+        except BusyError as e:
+            return _error_response(e)
+        try:
+            settings = get_settings()
+            activity.touch(team, branch)
+            operation = (
+                odoo_ops.install_odoo_modules
+                if action == "install"
+                else odoo_ops.upgrade_odoo_modules
+            )
+            result = await _offload(operation, settings, team, branch, *modules)
+            exit_code = result["exit_code"]
+            applied = result.get("modules", modules)
+            restart_warning = ""
+            container_restarted: bool | None = None
+            # A failed run is still a completed request: the Odoo log is the
+            # answer the developer came for, so it goes to the result modal
+            # instead of a one-line toast.
+            if exit_code == 0:
+                completed_verb = "Installed" if action == "install" else "Upgraded"
+                try:
+                    await _offload(env_ops.restart_environment, settings, branch, team)
+                    container_restarted = True
+                    message = (
+                        f"{completed_verb}: {', '.join(applied)}. "
+                        "Odoo container restarted."
+                    )
+                except FlowError as e:
+                    container_restarted = False
+                    restart_error = _public_flow_error(
+                        e, context=f"Restart after module {action} in {branch}"
+                    )
+                    restart_warning = (
+                        f"Modules were {action}d, but the Odoo container could not "
+                        f"be restarted. {restart_error}"
+                    )
+                    message = f"{completed_verb}: {', '.join(applied)}. Restart failed."
+                except Exception:
+                    container_restarted = False
+                    logger.exception(
+                        "Unexpected restart error after module %s in %s",
+                        action,
+                        branch,
+                    )
+                    restart_warning = (
+                        f"Modules were {action}d, but the Odoo container could not "
+                        "be restarted. Check server logs for details."
+                    )
+                    message = f"{completed_verb}: {', '.join(applied)}. Restart failed."
+            else:
+                verb = "Install" if action == "install" else "Upgrade"
+                message = f"{verb} failed: {', '.join(applied)}."
+            payload: dict[str, Any] = {
+                "action": action,
+                "message": message,
+                "exit_code": exit_code,
+                "output": result.get("output", ""),
+                "modules_attempted": applied,
+            }
+            if exit_code == 0:
+                success_key = (
+                    "modules_installed" if action == "install" else "modules_upgraded"
+                )
+                payload[success_key] = applied
+                payload["container_restarted"] = container_restarted
+                if restart_warning:
+                    payload["warnings"] = [restart_warning]
+            return JSONResponse({"ok": True, "result": payload})
+        except FlowError as e:
+            return _error_response(e)
+        except ValueError as e:
+            return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
+        except Exception:
+            logger.exception("Unexpected error in api_modules_apply")
+            return JSONResponse(
+                {"ok": False, "error": "Internal server error."}, status_code=500
+            )
+        finally:
+            locks.release_env(branch)
+
     async def api_switch_branch(request: Request) -> JSONResponse:
         branch = request.path_params["branch"]
         team = _get_ui_team(request)
@@ -1125,7 +1306,12 @@ def _build_routes(
             # (several environments off one branch), so recreate from the
             # recorded branch label rather than from the environment name.
             git_branch = labels.get("oduflow.git_branch", branch)
-            hostname = labels.get(env_ops.ENV_HOSTNAME_LABEL, "")
+            recreate_labels = dict(labels)
+            env_ops._reconcile_environment_hostname_for_update(
+                client, settings, team, branch, recreate_labels
+            )
+            hostname = recreate_labels.get(env_ops.ENV_HOSTNAME_LABEL, "")
+            hostname_source = recreate_labels.get(env_ops.ENV_HOSTNAME_SOURCE_LABEL, "")
 
             # Check disk space BEFORE deleting the old environment: refusing
             # here loses nothing, while failing after delete_environment would
@@ -1160,6 +1346,7 @@ def _build_routes(
                 env_vars=env_vars,
                 local_path=local_path,
                 hostname=hostname,
+                hostname_source=hostname_source,
             )
             return JSONResponse({"ok": True, "result": result})
         except FlowError as e:
@@ -3539,11 +3726,18 @@ def _build_routes(
 
     async def api_connect_as(request: Request) -> JSONResponse:
         branch = request.path_params["branch"]
+        lock_acquired = False
         try:
             settings = get_settings()
             team = _get_ui_team(request)
+            # Read the body before taking the env lock (same order as
+            # api_update): a client that stalls mid-body would otherwise hold
+            # the branch lock for as long as it likes, 409-ing every other
+            # operation on the branch and blocking team-level ones.
             body = await request.json()
             user = (body.get("user") or "admin").strip() or "admin"
+            locks.acquire_env(branch, team.team_id, operation="connect_as_user")
+            lock_acquired = True
             activity.touch(team, branch)
             result = await _offload(
                 odoo_ops.connect_as_user, settings, team, branch, user
@@ -3572,6 +3766,9 @@ def _build_routes(
             return JSONResponse(
                 {"ok": False, "error": "Internal server error."}, status_code=500
             )
+        finally:
+            if lock_acquired:
+                locks.release_env(branch)
 
     async def api_connect_open(request: Request) -> Response:
         """ "Open": mint a session and land the browser in the env already
@@ -3594,9 +3791,12 @@ def _build_routes(
         host-only there.
         """
         branch = request.path_params["branch"]
+        lock_acquired = False
         try:
             settings = get_settings()
             team = _get_ui_team(request)
+            locks.acquire_env(branch, team.team_id, operation="connect_as_user")
+            lock_acquired = True
             user = (request.query_params.get("user") or "admin").strip() or "admin"
             activity.touch(team, branch)
             result = await _offload(
@@ -3621,13 +3821,20 @@ def _build_routes(
             return response
         except FlowError as e:
             return Response(
-                f"Connect failed: {e}", status_code=400, media_type="text/plain"
+                f"Connect failed: {_public_flow_error(e, context='Connect As')}",
+                status_code=_flow_error_status(e),
+                media_type="text/plain",
             )
-        except Exception as e:
+        except Exception:
             logger.exception("Unexpected error in api_connect_open")
             return Response(
-                f"Connect failed: {e}", status_code=500, media_type="text/plain"
+                "Connect failed: Internal server error.",
+                status_code=500,
+                media_type="text/plain",
             )
+        finally:
+            if lock_acquired:
+                locks.release_env(branch)
 
     async def api_connect_land(request: Request) -> Response:
         """Traefik cross-subdomain Connect As landing, served ON the env host.
@@ -5101,6 +5308,12 @@ def _build_routes(
         Route("/api/environments/{branch:path}/stop", api_stop, methods=["POST"]),
         Route("/api/environments/{branch:path}/restart", api_restart, methods=["POST"]),
         Route("/api/environments/{branch:path}/sync", api_sync, methods=["POST"]),
+        Route("/api/environments/{branch:path}/modules", api_modules, methods=["GET"]),
+        Route(
+            "/api/environments/{branch:path}/modules",
+            api_modules_apply,
+            methods=["POST"],
+        ),
         Route(
             "/api/environments/{branch:path}/switch-branch",
             api_switch_branch,

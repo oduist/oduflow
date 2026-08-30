@@ -42,6 +42,20 @@ TEST_SETTINGS = Settings(
 
 
 @pytest.fixture(autouse=True)
+def _isolated_hostname_registry(tmp_path, monkeypatch):
+    # create_environment reserves an environment slot in the team's
+    # hostnames.json before provisioning. Keep that registry per-test: the
+    # shared /tmp data dir would carry reservations across runs, and several
+    # tests below patch ``env_ops.os.makedirs``, which resolves to the shared
+    # ``os`` module and so also disables the registry's directory creation.
+    monkeypatch.setattr(
+        env_ops,
+        "_hostname_registry_path",
+        lambda team: str(tmp_path / "hostnames.json"),
+    )
+
+
+@pytest.fixture(autouse=True)
 def _no_db_quota(monkeypatch):
     # Quota enforcement is covered by tests/test_db_quota.py; here it would
     # only add a psql exec to every mocked create_environment call chain.
@@ -180,6 +194,76 @@ class TestDestroySystem:
         db.remove.assert_called_once()
         vol.remove.assert_called_once()
         net.remove.assert_called_once()
+
+
+class TestAdoptExistingEnvironment:
+    """create_environment answers with the existing environment instead of an
+    error, so an agent can call it first without listing environments."""
+
+    @staticmethod
+    def _container(status="running", branch="main"):
+        container = MagicMock()
+        container.status = status
+        container.labels = {
+            "oduflow.git_branch": branch,
+            "oduflow.template": "myproject",
+            TEST_SETTINGS.image_label: "odoo:17.0",
+            TEST_SETTINGS.team_label: "1",
+        }
+        container.ports = {"8069/tcp": [{"HostPort": "50000"}]}
+        return container
+
+    def test_missing_environment_returns_none(self, mock_docker_client):
+        mock_docker_client.containers.get.side_effect = docker.errors.NotFound("nope")
+        assert (
+            env_ops.adopt_existing_environment(TEST_SETTINGS, TEST_TEAM, "main") is None
+        )
+
+    def test_running_environment_is_described(self, mock_docker_client):
+        mock_docker_client.containers.get.return_value = self._container()
+
+        result = env_ops.adopt_existing_environment(
+            TEST_SETTINGS, TEST_TEAM, "main", branch="main"
+        )
+
+        assert result is not None
+        assert result["url"] == "http://localhost:50000"
+        assert result["git_branch"] == "main"
+        assert result["odoo_image"] == "odoo:17.0"
+        assert result["template_name"] == "myproject"
+        assert result["started"] is False
+
+    @patch("oduflow.docker_ops.env_ops.start_environment")
+    def test_stopped_environment_is_started(self, mock_start, mock_docker_client):
+        mock_docker_client.containers.get.return_value = self._container(
+            status="exited"
+        )
+
+        result = env_ops.adopt_existing_environment(
+            TEST_SETTINGS, TEST_TEAM, "main", branch="main"
+        )
+
+        mock_start.assert_called_once_with(TEST_SETTINGS, "main", TEST_TEAM)
+        assert result is not None
+        assert result["started"] is True
+
+    def test_other_branch_is_refused(self, mock_docker_client):
+        mock_docker_client.containers.get.return_value = self._container(branch="main")
+
+        with pytest.raises(ConflictError, match="switch_branch"):
+            env_ops.adopt_existing_environment(
+                TEST_SETTINGS, TEST_TEAM, "main", branch="feature/x"
+            )
+
+    def test_unreachable_docker_defers_to_the_creation_path(self):
+        with patch(
+            "oduflow.docker_ops.env_ops.get_client",
+            side_effect=PrerequisiteNotMetError("no docker"),
+        ):
+            assert (
+                env_ops.adopt_existing_environment(TEST_SETTINGS, TEST_TEAM, "main")
+                is None
+            )
 
 
 class TestCreateEnvironment:
@@ -1083,6 +1167,28 @@ class TestPullEnvironmentLocalAndSharedExtraCheckouts:
         assert result["action"] == "restart"
         assert mock_apply.call_args.kwargs["do_restart"] is True
         assert env_ops._detect_local_changes(str(repo), "env", team)[1] == []
+
+    def test_git_markdown_only_needs_no_odoo_action(self, mock_docker_client, tmp_path):
+        team = TeamSettings(team_id="1", data_dir=str(tmp_path / "team"))
+        settings = Settings(teams={"1": team})
+        repo = tmp_path / "team" / "workspaces" / "env" / "repo"
+        repo.mkdir(parents=True)
+
+        container = MagicMock()
+        container.labels = {"oduflow.git_branch": "main"}
+        mock_docker_client.containers.get.return_value = container
+
+        with patch(
+            "oduflow.git_ops.pull_repo", return_value=("old-head", ["README.md"])
+        ):
+            result = env_ops.pull_environment(settings, team, "env")
+
+        assert result["action"] == "none"
+        assert result["changed_files"] == ["README.md"]
+        assert result["message"] == (
+            "Only Markdown files changed. No Odoo action required."
+        )
+        container.restart.assert_not_called()
 
     @patch("oduflow.docker_ops.env_ops._apply_actions")
     def test_local_requirements_change_passes_deps_changed(
@@ -2198,6 +2304,43 @@ class TestRunDbQuery:
 
         db_container.exec_run.assert_not_called()
 
+    def test_fixed_module_listing_supports_legacy_credentials(
+        self, tmp_path, mock_docker_client
+    ):
+        team = TeamSettings(team_id="1", data_dir=str(tmp_path))
+        db_container = MagicMock()
+        db_container.exec_run.return_value = (
+            0,
+            b'name,latest_version\nbase,18.0.1.3\nsale,"18.0,custom"\n',
+        )
+        mock_docker_client.containers.get.return_value = db_container
+
+        result = odoo_ops.list_installed_module_records(TEST_SETTINGS, team, "main")
+
+        assert result == [
+            {"name": "base", "version": "18.0.1.3"},
+            {"name": "sale", "version": "18.0,custom"},
+        ]
+        command = db_container.exec_run.call_args.args[0]
+        assert command[:6] == [
+            "psql",
+            "-U",
+            TEST_SETTINGS.db_user,
+            "-d",
+            "oduflow_1_main",
+            "--csv",
+        ]
+        assert "state = 'installed'" in command[-1]
+
+    @pytest.mark.parametrize("env_name", ["prod-erp", "Prod-erp", "pr.od-erp"])
+    def test_fixed_module_listing_rejects_production_aliases(
+        self, env_name, mock_docker_client
+    ):
+        with pytest.raises(ValueError, match="production environment"):
+            odoo_ops.list_installed_module_records(TEST_SETTINGS, TEST_TEAM, env_name)
+
+        mock_docker_client.containers.get.assert_not_called()
+
 
 class TestInstallModules:
     @patch(
@@ -3101,6 +3244,7 @@ class TestApplyActionsDeps:
             to_upgrade=[],
             do_restart=False,
             changed_files=["sale/views/sale_order.xml"],
+            do_refresh=True,
             deps_changed=False,
             repo_path="/repo",
         )

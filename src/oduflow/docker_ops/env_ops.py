@@ -50,8 +50,12 @@ from oduflow.errors import (
 )
 from oduflow.git_ops import RepoAuthError, git_env_for_team
 from oduflow.hostname_registry import (
+    CAPACITY_RESERVATION,
     allocate_hostname,
+    clear_hostname_assignment,
+    get_hostname,
     release_hostname,
+    reserve_environment_slot,
 )
 from oduflow.hostname_registry import rename_env as rename_hostname_env
 from oduflow.locking import env_wake_key, keyed_mutex
@@ -85,6 +89,9 @@ logger = logging.getLogger("oduflow")
 AGENT_USER = "agent"
 AGENT_HOME = "/home/agent"
 ENV_HOSTNAME_LABEL = "oduflow.hostname"
+ENV_HOSTNAME_SOURCE_LABEL = "oduflow.hostname_source"
+HOSTNAME_SOURCE_CUSTOM = "custom"
+HOSTNAME_SOURCE_SLOT = "slot"
 
 
 def _hostname_registry_path(team: TeamSettings) -> str:
@@ -226,6 +233,27 @@ def _get_used_ports(
     return used
 
 
+def _active_environment_names(
+    client: DockerClient,
+    settings: Settings,
+    team: TeamSettings,
+    *,
+    exclude_env: str = "",
+) -> set[str]:
+    active_envs: set[str] = set()
+    filters = {
+        "label": [
+            f"{settings.managed_label}=true",
+            f"{settings.team_label}={team.team_id}",
+        ]
+    }
+    for container in client.containers.list(all=True, filters=filters):
+        env_name = container.labels.get(settings.branch_label, "")
+        if env_name and env_name != exclude_env:
+            active_envs.add(env_name)
+    return active_envs
+
+
 def _environment_hostname_usage(
     client: DockerClient,
     settings: Settings,
@@ -233,7 +261,12 @@ def _environment_hostname_usage(
     *,
     exclude_env: str = "",
 ) -> tuple[set[str], set[str]]:
-    """Return active environment names and their short routing hostnames."""
+    """Return active environment names and their short routing hostnames.
+
+    Both sets come from one container listing: allocation runs on every create
+    and update, so a second pass over the same containers would only double the
+    Docker round trips.
+    """
     active_envs: set[str] = set()
     used_hostnames: set[str] = set()
     _hostname_prefix, parent_domain = split_team_hostname(team.hostname)
@@ -260,15 +293,87 @@ def _environment_hostname_usage(
             for fqdn in re.findall(r"Host\(`([^`]+)`\)", value):
                 if fqdn.endswith(suffix):
                     used_hostnames.add(fqdn[: -len(suffix)])
-        if not env_name:
-            continue
-        active_envs.add(env_name)
-        used_hostnames.add(
-            get_env_short_hostname(
-                env_name, container.labels.get(ENV_HOSTNAME_LABEL, "")
+        if env_name:
+            active_envs.add(env_name)
+            used_hostnames.add(
+                get_env_short_hostname(
+                    env_name, container.labels.get(ENV_HOSTNAME_LABEL, "")
+                )
             )
-        )
     return active_envs, used_hostnames
+
+
+def _legacy_hostname_is_automatic(
+    team: TeamSettings, env_name: str, route_hostname: str
+) -> bool:
+    """Recognize hostname slots created before source labels were introduced."""
+    if not route_hostname:
+        return False
+    try:
+        registered = get_hostname(_hostname_registry_path(team), env_name)
+        hostname_prefix, _parent_domain = split_team_hostname(team.hostname)
+    except (OSError, ValueError):
+        return False
+    return registered == route_hostname and bool(
+        re.fullmatch(rf"{re.escape(hostname_prefix)}[1-9][0-9]*", route_hostname)
+    )
+
+
+def _reconcile_environment_hostname_for_update(
+    client: DockerClient,
+    settings: Settings,
+    team: TeamSettings,
+    env_name: str,
+    labels: dict[str, str],
+) -> bool:
+    """Apply hostname policy before a recreate; return whether assignment clears."""
+    route_hostname = labels.get(ENV_HOSTNAME_LABEL, "")
+    source = labels.get(ENV_HOSTNAME_SOURCE_LABEL, "")
+
+    if team.environment_hostname_mode == "slots":
+        if route_hostname:
+            if not source:
+                labels[ENV_HOSTNAME_SOURCE_LABEL] = (
+                    HOSTNAME_SOURCE_SLOT
+                    if _legacy_hostname_is_automatic(team, env_name, route_hostname)
+                    else HOSTNAME_SOURCE_CUSTOM
+                )
+            return False
+
+        hostname_prefix, _parent_domain = split_team_hostname(team.hostname)
+        active_envs, used_hostnames = _environment_hostname_usage(
+            client, settings, team, exclude_env=env_name
+        )
+        labels[ENV_HOSTNAME_LABEL] = allocate_hostname(
+            _hostname_registry_path(team),
+            env_name,
+            team.environment_slots,
+            hostname_prefix=hostname_prefix,
+            active_envs=active_envs,
+            used_hostnames=used_hostnames,
+        )
+        labels[ENV_HOSTNAME_SOURCE_LABEL] = HOSTNAME_SOURCE_SLOT
+        return False
+
+    if route_hostname and (
+        source == HOSTNAME_SOURCE_SLOT
+        or (
+            not source and _legacy_hostname_is_automatic(team, env_name, route_hostname)
+        )
+    ):
+        labels.pop(ENV_HOSTNAME_LABEL, None)
+        labels.pop(ENV_HOSTNAME_SOURCE_LABEL, None)
+        return True
+    if route_hostname and not source:
+        labels[ENV_HOSTNAME_SOURCE_LABEL] = HOSTNAME_SOURCE_CUSTOM
+    elif not route_hostname:
+        labels.pop(ENV_HOSTNAME_SOURCE_LABEL, None)
+        try:
+            registered = get_hostname(_hostname_registry_path(team), env_name)
+        except ValueError:
+            return False
+        return bool(registered and registered != CAPACITY_RESERVATION)
+    return False
 
 
 def _ensure_system_ready(
@@ -1607,6 +1712,80 @@ def build_env_traefik_labels(
     return labels
 
 
+def adopt_existing_environment(
+    settings: Settings,
+    team: TeamSettings,
+    env_name: str,
+    *,
+    branch: str = "",
+) -> dict[str, Any] | None:
+    """Describe an environment that already exists, starting it when stopped.
+
+    The agent-facing create path calls this first, so asking for an environment
+    that is already provisioned is a fast successful answer ("here is its URL")
+    instead of an error the agent has to recover from — no `list_environments`
+    round-trip needed before every create.
+
+    Returns ``None`` when nothing is provisioned under *env_name*, so the caller
+    goes on to create it for real. A **different git branch is never adopted**:
+    the database, the URL and the running code are shared state, and moving them
+    onto another branch is a decision for the person driving the task
+    (``switch_branch``), not a side effect of a create call.
+    """
+    try:
+        client = get_client()
+    except PrerequisiteNotMetError:
+        # This lookup is an optimisation, not the place to report a dead Docker
+        # daemon — the creation path right after it says that properly.
+        return None
+    odoo_container_name = get_resource_name(
+        env_name, "odoo", settings.prefix, team.team_id
+    )
+    try:
+        container = client.containers.get(odoo_container_name)
+    except docker.errors.NotFound:
+        return None
+    _assert_team_owns(container, settings, team, env_name)
+
+    labels = container.labels
+    current_branch = labels.get("oduflow.git_branch", env_name)
+    if branch and branch != current_branch:
+        raise ConflictError(
+            f"Environment '{env_name}' already exists and tracks branch "
+            f"'{current_branch}', not '{branch}'. Move it with switch_branch "
+            f"(env_name='{env_name}', branch='{branch}'), which keeps its "
+            "database and URL, or delete it first if you want a fresh one."
+        )
+
+    started = container.status != "running"
+    if started:
+        start_environment(settings, env_name, team)
+        container.reload()
+
+    if settings.routing_mode == "traefik":
+        url = f"https://{get_env_hostname(env_name, team.hostname, labels.get(ENV_HOSTNAME_LABEL, ''))}"
+    else:
+        ports = container.ports.get("8069/tcp")
+        url = f"http://{team.hostname}:{ports[0]['HostPort']}" if ports else ""
+
+    return {
+        "env_name": env_name,
+        "url": url,
+        "git_branch": current_branch,
+        "odoo_image": labels.get(settings.image_label, ""),
+        "template_name": labels.get("oduflow.template", "none"),
+        "hostname": get_env_short_hostname(
+            env_name, labels.get(ENV_HOSTNAME_LABEL, "")
+        ),
+        "odoo_container": odoo_container_name,
+        "database": get_db_name(env_name, team.team_id),
+        "workspace": get_workspace_path(env_name, team.workspaces_dir),
+        "local_path": labels.get("oduflow.local_path", ""),
+        "status": container.status,
+        "started": started,
+    }
+
+
 def create_environment(
     settings: Settings,
     team: TeamSettings,
@@ -1623,6 +1802,7 @@ def create_environment(
     local_path: str = "",
     stack_labels: dict[str, str] | None = None,
     hostname: str = "",
+    hostname_source: str = "",
 ) -> dict[str, Any]:
     """Allocate routing state, then provision the environment itself."""
     resolved_env_name = env_name or branch
@@ -1631,10 +1811,10 @@ def create_environment(
         raise ValueError("hostname is supported only when routing.mode = 'traefik'.")
 
     assigned_hostname = ""
-    if settings.routing_mode == "traefik" and (
-        requested_hostname or team.environment_slots > 0
-    ):
-        hostname_prefix, _parent_domain = split_team_hostname(team.hostname)
+    assigned_hostname_source = ""
+    reservation_active = False
+    needs_docker_state = team.environment_slots > 0 or bool(requested_hostname)
+    if needs_docker_state:
         try:
             client = get_client()
         except Exception as exc:
@@ -1647,18 +1827,59 @@ def create_environment(
         try:
             client.containers.get(container_name)
         except docker.errors.NotFound:
-            active_envs, used_hostnames = _environment_hostname_usage(
-                client, settings, team, exclude_env=resolved_env_name
+            # Read the team's Docker state once; both the capacity reservation
+            # and the hostname allocation below are driven from this snapshot.
+            wants_hostname = bool(requested_hostname) or (
+                team.environment_hostname_mode == "slots"
             )
-            assigned_hostname = allocate_hostname(
-                _hostname_registry_path(team),
-                resolved_env_name,
-                team.environment_slots,
-                requested_hostname=requested_hostname,
-                hostname_prefix=hostname_prefix,
-                active_envs=active_envs,
-                used_hostnames=used_hostnames,
-            )
+            hostname_prefix = ""
+            used_hostnames: set[str] = set()
+            if wants_hostname:
+                hostname_prefix, _parent_domain = split_team_hostname(team.hostname)
+                active_envs, used_hostnames = _environment_hostname_usage(
+                    client, settings, team, exclude_env=resolved_env_name
+                )
+            else:
+                active_envs = _active_environment_names(
+                    client, settings, team, exclude_env=resolved_env_name
+                )
+            if team.environment_slots > 0:
+                reserve_environment_slot(
+                    _hostname_registry_path(team),
+                    resolved_env_name,
+                    team.environment_slots,
+                    active_envs=active_envs,
+                )
+                reservation_active = True
+            if wants_hostname:
+                try:
+                    assigned_hostname = allocate_hostname(
+                        _hostname_registry_path(team),
+                        resolved_env_name,
+                        team.environment_slots,
+                        requested_hostname=requested_hostname,
+                        hostname_prefix=hostname_prefix,
+                        active_envs=active_envs,
+                        used_hostnames=used_hostnames,
+                    )
+                    reservation_active = True
+                    assigned_hostname_source = (
+                        hostname_source
+                        if requested_hostname
+                        and hostname_source
+                        in (HOSTNAME_SOURCE_CUSTOM, HOSTNAME_SOURCE_SLOT)
+                        else (
+                            HOSTNAME_SOURCE_CUSTOM
+                            if requested_hostname
+                            else HOSTNAME_SOURCE_SLOT
+                        )
+                    )
+                except Exception:
+                    if reservation_active:
+                        release_hostname(
+                            _hostname_registry_path(team), resolved_env_name
+                        )
+                    raise
 
     try:
         return _create_environment_impl(
@@ -1677,9 +1898,10 @@ def create_environment(
             local_path=local_path,
             stack_labels=stack_labels,
             hostname=assigned_hostname,
+            hostname_source=assigned_hostname_source,
         )
     except Exception:
-        if assigned_hostname:
+        if reservation_active:
             try:
                 get_client().containers.get(
                     get_resource_name(
@@ -1711,6 +1933,7 @@ def _create_environment_impl(
     local_path: str = "",
     stack_labels: dict[str, str] | None = None,
     hostname: str = "",
+    hostname_source: str = "",
 ) -> dict[str, Any]:
     env_name = env_name or branch
     from oduflow.naming import PROD_ENV_PREFIX
@@ -1861,6 +2084,7 @@ def _create_environment_impl(
         labels.update(stack_labels)
     if hostname:
         labels[ENV_HOSTNAME_LABEL] = hostname
+        labels[ENV_HOSTNAME_SOURCE_LABEL] = hostname_source or HOSTNAME_SOURCE_CUSTOM
 
     labels.update(build_env_traefik_labels(settings, team, env_name, hostname))
 
@@ -3519,6 +3743,7 @@ def _apply_actions(
     to_upgrade: list[str],
     do_restart: bool,
     changed_files: list[str],
+    do_refresh: bool = False,
     config_changed: bool = False,
     deps_changed: bool = False,
     repo_path: str = "",
@@ -3617,7 +3842,7 @@ def _apply_actions(
             "exit_code": dep_exit,
         }
 
-    if changed_files:
+    if do_refresh:
         return {
             "action": "refresh",
             "changed_files": changed_files,
@@ -3626,7 +3851,15 @@ def _apply_actions(
                 "(--dev=xml is active)."
             ),
         }
-    return {"action": "none", "message": "No changes detected."}
+    return {
+        "action": "none",
+        "changed_files": changed_files,
+        "message": (
+            "Only Markdown files changed. No Odoo action required."
+            if changed_files
+            else "No changes detected."
+        ),
+    }
 
 
 def pull_environment(
@@ -3820,6 +4053,7 @@ def pull_environment(
     deps_changed = any(_is_active_dep_file(f, repo_path) for f in main_changed_files)
 
     warnings: list[str] = []
+    do_refresh = False
     if explicit:
         to_install = list(install or [])
         to_upgrade = list(upgrade or [])
@@ -3871,6 +4105,7 @@ def pull_environment(
         to_install = list(recommended.get("modules_to_install", []))
         to_upgrade = list(recommended.get("modules_to_upgrade", []))
         do_restart = recommended.get("action") == "restart"
+        do_refresh = recommended.get("action") == "refresh"
 
     # --- 3. Switch immutable mounts, then execute ---
     # Do this only after strict guardrails have accepted the requested action.
@@ -3897,6 +4132,7 @@ def pull_environment(
         to_install=to_install,
         to_upgrade=to_upgrade,
         do_restart=do_restart,
+        do_refresh=do_refresh,
         changed_files=all_changed,
         config_changed=config_changed,
         deps_changed=deps_changed,
@@ -4597,23 +4833,9 @@ def update_environment(
                     "locally; leaving the existing environment untouched."
                 ) from exc
 
-    if (
-        settings.routing_mode == "traefik"
-        and team.environment_slots > 0
-        and not labels.get(ENV_HOSTNAME_LABEL)
-    ):
-        hostname_prefix, _parent_domain = split_team_hostname(team.hostname)
-        active_envs, used_hostnames = _environment_hostname_usage(
-            client, settings, team, exclude_env=env_name
-        )
-        labels[ENV_HOSTNAME_LABEL] = allocate_hostname(
-            _hostname_registry_path(team),
-            env_name,
-            team.environment_slots,
-            hostname_prefix=hostname_prefix,
-            active_envs=active_envs,
-            used_hostnames=used_hostnames,
-        )
+    clear_hostname_after_update = _reconcile_environment_hostname_for_update(
+        client, settings, team, env_name, labels
+    )
 
     logger.info(
         "Updating environment – stopping old container",
@@ -4803,6 +5025,22 @@ def update_environment(
         if port_newly_allocated:
             release_port(team.port_registry_path, env_name)
         raise
+
+    if clear_hostname_after_update:
+        try:
+            clear_hostname_assignment(
+                _hostname_registry_path(team),
+                env_name,
+                retain_slot=team.environment_slots > 0,
+            )
+        except OSError as exc:
+            # The serving container already has the correct route. Keep the
+            # update successful and retry registry normalization next time.
+            logger.warning(
+                "Could not clear stale hostname assignment for '%s': %s",
+                env_name,
+                exc,
+            )
 
     # Regenerate and copy odoo.conf into the new container (repo .oduflow/ takes
     # priority over the instance conf; extra-addons paths merged from labels).

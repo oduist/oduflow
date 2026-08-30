@@ -14,6 +14,16 @@
   service environment variables without persisting generated passwords in the
   manifest or Stack state.
 
+- **Built-in remote MCP CLI** — `oduflow client <tool>` now calls a running
+  Oduflow server through FastMCP using `ODUFLOW_MCP_URL` and
+  `ODUFLOW_MCP_TOKEN`. It discovers the live tool schemas, accepts named flags
+  or a JSON argument object, derives a required environment target from an
+  explicit override or the current Git branch (and the `create_environment`
+  branch from the current checkout), supports full team and scoped
+  `/mcp/<env>` endpoints, emits machine-readable JSON for automation, and
+  preserves server-side tool errors and output-cache summaries. The existing
+  `oduflow call <tool>` remains the local in-process path.
+
 - **Token-safe summaries for apply and test calls** — `pull_and_apply` and
   `run_odoo_tests` now accept `summary_only=True`, keeping verbose Odoo command
   logs server-side instead of injecting them into the calling agent's context.
@@ -50,6 +60,16 @@
   shown read-only and pointed at the raw JSON editor.
 
 ### Fixes
+
+- **Environment limits no longer rewrite existing Traefik hostnames** —
+  `environment_slots` is now only a concurrency-safe team capacity limit and
+  applies in both port and Traefik modes. The new explicit
+  `environment_hostname_mode = "slots"` opt-in enables reusable `dev1`, `dev2`,
+  ... routes; the default `branch` mode preserves established addresses such as
+  `feature.dev.example.com`, including across `update_environment`. Explicit
+  custom hostnames remain stable. Environments that were automatically moved
+  to a numbered hostname by v1.69-v1.71 return to their branch-derived route on
+  their next update in branch mode, while their capacity reservation remains.
 
 - **A failed install is no longer masked by a later successful upgrade** — when
   a single `pull_and_apply` both installed and upgraded modules, the reported

@@ -942,7 +942,9 @@ def update_production(
     (:func:`env_ops.pull_environment`), with production semantics on top:
 
     - ``refresh`` is promoted to ``restart`` (no ``--dev=xml`` in prod —
-      any changed file requires at least a container restart);
+      any changed file Odoo loads requires at least a container restart).
+      A ``none`` outcome (Markdown-only changes) is left alone: there is
+      nothing for the server to pick up;
     - the deploy is verified (module exit codes + in-container health
       poll); on failure the checkout (and extra worktrees) are reset to
       the pre-update commits, the conf is re-applied and the container

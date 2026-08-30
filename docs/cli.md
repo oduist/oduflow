@@ -236,3 +236,88 @@ oduflow call create_service '{"name":"vpn","image":"linuxserver/wireguard","port
 # Type coercion is automatic: int, bool, and float parameters are cast from strings
 oduflow call get_environment_logs dev 500
 ```
+
+## Remote Tool Invocation
+
+`oduflow client` calls the same registered tools on a running Oduflow HTTP
+server through FastMCP. Unlike `oduflow call`, it does not load the local
+`oduflow.toml`, access local Docker, or execute server functions in the client
+process.
+
+Configure the exact full or scoped MCP endpoint and its Bearer credential:
+
+```bash
+export ODUFLOW_MCP_URL="https://oduflow.example.com/mcp"
+export ODUFLOW_MCP_TOKEN="<team-auth-token>"
+
+# Tools advertised by this endpoint
+oduflow client list
+oduflow client list --verbose
+
+# Read live help generated from a tool's input schema
+oduflow client create_environment --help
+
+# Call team-wide tools
+oduflow client list_environments
+oduflow client create_environment \
+  --repo-url https://github.com/owner/addons.git \
+  --odoo-image odoo:19.0 \
+  --template-name myproject
+```
+
+The client reads the live `tools/list` response, converts kebab-case flags to
+MCP parameter names, validates basic scalar/JSON types, and then calls the tool.
+A single JSON object is also accepted for complex arguments:
+
+```bash
+oduflow client create_service '{
+  "name": "redis",
+  "image": "redis:7",
+  "port": 6379
+}'
+```
+
+Client options must appear before the tool name:
+
+```bash
+oduflow client --timeout 1200 --json list_environments
+oduflow client --env demo pull_and_apply --upgrade sale_custom --strict
+```
+
+When a remote schema requires `env_name`, the client uses `--env`, then
+`ODUFLOW_ENV_NAME`, then the current Git branch. When `create_environment`
+requires `branch`, it uses the current Git branch unless `--branch` is supplied;
+other tools that take a required branch, such as `create_production`, always
+need it spelled out.
+An explicit environment override is useful when an environment name differs
+from its source branch.
+
+For confined development access, use the environment's scoped endpoint and
+Secret Key from **More → MCP Access**:
+
+```bash
+export ODUFLOW_MCP_URL="https://oduflow.example.com/mcp/feature-x"
+export ODUFLOW_MCP_TOKEN="<environment-secret-key>"
+
+# env_name is absent from the scoped schema and injected by the server
+oduflow client get_environment_info
+oduflow client pull_and_apply --upgrade sale_custom --strict
+oduflow client run_odoo_tests --modules sale_custom
+```
+
+The scoped server advertises only its allowlisted single-environment tools, so
+team-wide commands such as `list_environments` and `create_environment` are not
+available. The client does not maintain a second authorization list; the live
+server schema remains authoritative.
+
+For scripts and CI, `--json` emits the complete MCP result and tool failures
+return a non-zero exit code. To avoid storing a token in the environment, pass
+it on standard input:
+
+```bash
+printf '%s\n' "$TOKEN_FROM_SECRET_STORE" | \
+  oduflow client --token-stdin --json list_environments
+```
+
+In summary, `oduflow call <tool>` is local in-process execution, while
+`oduflow client <tool>` is remote authenticated MCP execution.

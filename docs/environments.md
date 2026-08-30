@@ -14,7 +14,7 @@ oduflow call create_environment feature-login "" none https://github.com/owner/r
 # Create with JSON arguments (more explicit)
 oduflow call create_environment '{"branch":"feature-login","template_name":"myproject","repo_url":"https://github.com/owner/repo.git","odoo_image":"odoo:19.0"}'
 
-# Override the numbered Traefik prefix (dev.example.com -> qa.example.com)
+# Override the Traefik hostname prefix (dev.example.com -> qa.example.com)
 oduflow call create_environment '{"branch":"feature-login","hostname":"qa","template_name":"myproject"}'
 
 # Inject container environment variables (comma-separated KEY=VALUE)
@@ -23,13 +23,28 @@ oduflow call create_environment '{"branch":"feature-login","template_name":"mypr
 
 `env_vars` are added on top of the database connection variables (`HOST`/`USER`/`PASSWORD`). They are stored on the container and can later be replaced with [`update_environment`](#lifecycle-management).
 
-In Traefik mode, a team with `environment_slots = N` numbers the first label of
-its hostname. For `dev.example.com`, the reusable pool is `dev1.example.com`
-through `devN.example.com`. The assignment survives stops and container updates
-and is released only when the environment is deleted. Pass `hostname` to replace
-the numbered prefix: `hostname="qa"` produces `qa.example.com`. The default is
-20 concurrent environment slots; set `environment_slots = 0` to retain legacy
-branch-derived hostnames.
+Creating an environment that already exists is not an error over MCP: the call
+returns that environment's URL and details right away, starts it when it was
+stopped, and provisions nothing. So an agent can call `create_environment`
+first, with no `list_environments` lookup before it. The one refusal is a
+**branch mismatch** — an existing environment tracking another branch is left
+alone, because its database and URL are in use; move it deliberately with
+[`switch_branch`](#reusing-an-environment-for-the-next-branch), pick another
+`env_name`, or delete it. The dashboard and the REST API keep the strict
+behaviour and report the conflict instead.
+
+`environment_slots = N` caps concurrent environments without changing their
+public names. The default Traefik strategy is
+`environment_hostname_mode = "branch"`, so `feature-login` remains available at
+`feature-login.dev.example.com` and continues to work with
+`*.dev.example.com` DNS or wildcard certificates.
+
+Set `environment_hostname_mode = "slots"` explicitly when Let's Encrypt
+certificate reuse is more important than descriptive URLs. For
+`hostname = "dev.example.com"`, that mode allocates `dev1.example.com` through
+`devN.example.com`; assignments survive stops and updates and return to the
+pool on deletion. Pass `hostname="qa"` to request `qa.example.com` in either
+mode. Explicit hostnames still consume environment capacity.
 
 When creating an environment, Oduflow:
 
@@ -187,7 +202,13 @@ oduflow call delete_environment feature-login
 
 An environment is not tied for life to the branch it was created from. When a
 branch is finished — PR merged, worktree gone — point the same environment at the
-next branch instead of deleting it and provisioning a new one:
+next branch instead of deleting it and provisioning a new one.
+
+This is the answer to a **full slot pool**, not the default way to start a task.
+While the team still has free `environment_slots`, create a new environment; it
+costs a clone and a template copy and keeps the branches independent. Reuse when
+`create_environment` reports "No free environment slots", or when that specific
+database and URL are worth carrying over:
 
 ```bash
 # Same environment, next branch. The branch must already exist on origin.
@@ -226,9 +247,9 @@ with it, so the browser tab you have open keeps working. Two things to know:
 - **The scoped MCP endpoint moves too**, from `/mcp/dev1` to `/mcp/next-task`
   (the token itself is unchanged). Re-point any MCP client configured against
   the old path.
-- **Environments without a pooled hostname slot** — created before
-  `environment_slots` was configured, so their hostname is derived from their
-  name — get a new URL, since the hostname follows the name.
+- **Environments using branch-derived hostnames** get a new URL because the
+  hostname follows the environment name. Pooled and explicit hostnames remain
+  stable across the rename.
 
 The name must be free: a rename onto a name that already has an environment,
 workspace directory or database is refused before anything is touched.
@@ -400,12 +421,13 @@ After `git pull --rebase`, Oduflow compares `HEAD` before and after, then classi
 | `i18n/*.po` | Translation terms, loaded into the database on upgrade | **Upgrade** the module |
 | `*.xml` (not in security/) | Views, actions, data | **Refresh** (hot-reloaded via `--dev=xml`) |
 | `*.js` | Frontend assets | **Refresh** (hot-reloaded via `--dev=xml`) |
+| `*.md` (nothing else changed) | Documentation, never loaded by Odoo | **None** — nothing is applied |
 
 ### Action priority
 
-`install` > `upgrade` > `restart` > `refresh`
+`install` > `upgrade` > `restart` > `refresh` > `none`
 
-If any module needs installation, all pending upgrades are also executed. If only Python files changed (without field modifications), a container restart is sufficient. If only XML/JS changed, no server-side action is needed — just refresh the browser.
+If any module needs installation, all pending upgrades are also executed. If only Python files changed (without field modifications), a container restart is sufficient. If only XML/JS changed, no server-side action is needed — just refresh the browser. If the pull brought Markdown files only, nothing is applied at all — in development and in production alike, since the container is not restarted either.
 
 !!! note
     `pull_and_apply` updates only the **main project repository**. Extra addons repositories are pinned to the commit they were deployed with and are not affected. See [Extra Addons — Updating](extra-addons.md#updating-extra-repos) for details.

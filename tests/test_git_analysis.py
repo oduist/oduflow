@@ -100,6 +100,17 @@ class TestClassifyChanges:
         result = classify_changes([], "/tmp")
         assert result["action"] == "none"
 
+    def test_only_markdown_needs_no_action(self):
+        files = ["README.md", "docs/deployment.MD"]
+        result = classify_changes(files, "/tmp")
+        assert result["action"] == "none"
+        assert result["modules_to_upgrade"] == []
+
+    def test_markdown_does_not_hide_refresh_changes(self):
+        files = ["README.md", "sale/views/sale_order.xml"]
+        result = classify_changes(files, "/tmp")
+        assert result["action"] == "refresh"
+
     def test_only_xml_not_security(self):
         files = ["sale/views/sale_order.xml", "crm/views/crm_lead.xml"]
         result = classify_changes(files, "/tmp")
@@ -705,6 +716,11 @@ class TestExtractFieldLines:
 
 
 class TestShallowClassify:
+    def test_only_markdown_needs_no_action(self):
+        result = shallow_classify(["README.md", "docs/setup.MD"], "/tmp")
+        assert result["action"] == "none"
+        assert result["modules_to_upgrade"] == []
+
     def test_lone_requirements_txt_restart(self):
         result = shallow_classify(["requirements.txt"], "/tmp")
         assert result["action"] == "restart"

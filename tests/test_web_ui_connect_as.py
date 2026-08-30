@@ -11,9 +11,10 @@ mirroring test_web_ui_create_lock's TestClient harness.
 from unittest.mock import patch
 
 from starlette.applications import Starlette
+from starlette.requests import Request
 from starlette.testclient import TestClient
 
-from oduflow.errors import NotFoundError
+from oduflow.errors import ExternalCommandError, NotFoundError
 from oduflow.locking import LockManager
 from oduflow.settings import Settings, TeamSettings
 from oduflow.web_ui import mount_web_ui
@@ -28,9 +29,9 @@ def _open_settings(tmp_path):
     )
 
 
-def _client(settings):
+def _client(settings, locks=None):
     app = Starlette()
-    mount_web_ui(app, lambda: settings, LockManager())
+    mount_web_ui(app, lambda: settings, locks or LockManager())
     return TestClient(app)
 
 
@@ -99,6 +100,63 @@ def test_connect_as_error_surfaced(tmp_path):
     assert data.get("error")
 
 
+def test_connect_as_external_command_error_is_scrubbed(tmp_path, caplog):
+    client = _client(_open_settings(tmp_path))
+    internal_detail = "/srv/oduflow/private/path\nTraceback: registry failed"
+    caplog.set_level("ERROR", logger="oduflow")
+    with (
+        patch(
+            "oduflow.web_ui.odoo_ops.connect_as_user",
+            side_effect=ExternalCommandError(
+                "odoo shell (connect_as_user)", 1, internal_detail
+            ),
+        ),
+        patch("oduflow.web_ui.activity.touch"),
+    ):
+        resp = client.post("/api/environments/18.0/connect-as", json={})
+
+    assert resp.status_code == 500
+    assert resp.json() == {
+        "ok": False,
+        "error": "Operation failed. Check server logs for details.",
+    }
+    assert internal_detail not in resp.text
+    assert internal_detail in caplog.text
+
+
+def test_connect_as_reads_body_before_locking(tmp_path):
+    """The env lock must not be held while the request body is being read.
+
+    request.json() waits on a client-controlled stream with no read timeout, so
+    acquiring the branch lock first would let a stalled client 409 every other
+    operation on the branch (and BusyError the whole team) for as long as it
+    keeps the socket open.
+    """
+    order = []
+
+    class _RecordingLocks(LockManager):
+        def acquire_env(self, env_name, team_id=None, operation=""):
+            order.append("lock")
+            super().acquire_env(env_name, team_id, operation)
+
+    client = _client(_open_settings(tmp_path), _RecordingLocks())
+    real_json = Request.json
+
+    async def _spy_json(self):
+        order.append("body")
+        return await real_json(self)
+
+    with (
+        patch("oduflow.web_ui.odoo_ops.connect_as_user", return_value=dict(_MINT)),
+        patch("oduflow.web_ui.activity.touch"),
+        patch.object(Request, "json", _spy_json),
+    ):
+        resp = client.post("/api/environments/18.0/connect-as", json={})
+
+    assert resp.json()["ok"] is True
+    assert order == ["body", "lock"]
+
+
 def test_connect_open_redirects_and_sets_cookie(tmp_path):
     client = _client(_open_settings(tmp_path))
     with (
@@ -134,6 +192,64 @@ def test_connect_open_defaults_to_admin(tmp_path):
     ):
         client.get("/api/environments/18.0/connect-open", follow_redirects=False)
     assert mock.call_args.args[3] == "admin"
+
+
+def test_connect_open_external_command_error_is_scrubbed(tmp_path, caplog):
+    client = _client(_open_settings(tmp_path))
+    internal_detail = "/mnt/extra-addons/private_module.py\nTraceback: registry failed"
+    caplog.set_level("ERROR", logger="oduflow")
+    with (
+        patch(
+            "oduflow.web_ui.odoo_ops.connect_as_user",
+            side_effect=ExternalCommandError(
+                "odoo shell (connect_as_user)", 1, internal_detail
+            ),
+        ),
+        patch("oduflow.web_ui.activity.touch"),
+    ):
+        resp = client.get("/api/environments/18.0/connect-open", follow_redirects=False)
+
+    assert resp.status_code == 500
+    assert (
+        resp.text == "Connect failed: Operation failed. Check server logs for details."
+    )
+    assert internal_detail not in resp.text
+    assert internal_detail in caplog.text
+
+
+def test_connect_open_unexpected_error_is_scrubbed(tmp_path):
+    client = _client(_open_settings(tmp_path))
+    internal_detail = "/srv/oduflow/private/unexpected"
+    with (
+        patch(
+            "oduflow.web_ui.odoo_ops.connect_as_user",
+            side_effect=RuntimeError(internal_detail),
+        ),
+        patch("oduflow.web_ui.activity.touch"),
+    ):
+        resp = client.get("/api/environments/18.0/connect-open", follow_redirects=False)
+
+    assert resp.status_code == 500
+    assert resp.text == "Connect failed: Internal server error."
+    assert internal_detail not in resp.text
+
+
+def test_connect_open_rejects_lifecycle_race(tmp_path):
+    locks = LockManager()
+    locks.acquire_env("18.0", "1", operation="delete_environment")
+    client = _client(_open_settings(tmp_path), locks)
+    try:
+        with patch("oduflow.web_ui.odoo_ops.connect_as_user") as connect:
+            resp = client.get(
+                "/api/environments/18.0/connect-open", follow_redirects=False
+            )
+    finally:
+        locks.release_env("18.0")
+
+    assert resp.status_code == 409
+    assert "Another operation on environment '18.0'" in resp.text
+    assert "delete_environment" in resp.text
+    connect.assert_not_called()
 
 
 def _traefik_settings(tmp_path):

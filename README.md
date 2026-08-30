@@ -99,6 +99,15 @@ oduflow -t http
 **HTTP (remote)** — point your MCP client to `http://<host>:8000/mcp` and send
 `Authorization: Bearer <auth_token>` using the token from `oduflow.toml`.
 
+The bundled CLI can call that remote MCP server without a separate agent or MCP
+client configuration:
+
+```bash
+export ODUFLOW_MCP_URL="http://<host>:8000/mcp"
+export ODUFLOW_MCP_TOKEN="<auth_token>"
+oduflow client list_environments
+```
+
 The Web Dashboard is available at `http://<host>:8000/`. Sign in as `admin`
 with the `ui_password` from `oduflow.toml`; this is separate from the MCP Bearer
 token.
