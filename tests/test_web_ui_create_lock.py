@@ -251,3 +251,66 @@ def test_api_recreate_restores_legacy_slot_to_branch_hostname(tmp_path):
     assert resp.status_code == 200
     assert create.call_args.kwargs["hostname"] == ""
     assert create.call_args.kwargs["hostname_source"] == ""
+
+
+def test_api_create_rejects_invalid_hostname(tmp_path):
+    """A hostname that is not a DNS label is a 400 with the reason, not a 500.
+
+    The dashboard shows the API error verbatim, so an underscore typed into the
+    Hostname field must come back explained ("expected one DNS label") instead
+    of as an opaque "Internal server error."
+    """
+    settings = _open_settings(tmp_path)
+    locks = LockManager()
+    app = Starlette()
+    mount_web_ui(app, lambda: settings, locks)
+    client = TestClient(app)
+
+    with patch("oduflow.web_ui.env_ops.create_environment") as create:
+        resp = client.post(
+            "/api/environments/create",
+            json={
+                "env_name": "oldstaging",
+                "hostname": "old_staging",
+                "repo_url": "r",
+                "odoo_image": "i",
+            },
+        )
+        # Rejected before any provisioning starts.
+        create.assert_not_called()
+
+    assert resp.status_code == 400
+    body = resp.json()
+    assert body["ok"] is False
+    assert "old_staging" in body["error"]
+    assert "DNS label" in body["error"]
+    # Rejecting before the lock is taken must leave the env free.
+    locks.acquire_env("oldstaging")
+
+
+def test_api_create_surfaces_value_error_from_create(tmp_path):
+    """Input validation raised inside create_environment is a 400, not a 500."""
+    settings = _open_settings(tmp_path)
+    locks = LockManager()
+    app = Starlette()
+    mount_web_ui(app, lambda: settings, locks)
+    client = TestClient(app)
+
+    message = "hostname is supported only when routing.mode = 'traefik'."
+    with patch(
+        "oduflow.web_ui.env_ops.create_environment", side_effect=ValueError(message)
+    ):
+        resp = client.post(
+            "/api/environments/create",
+            json={
+                "env_name": "main",
+                "hostname": "dev2",
+                "repo_url": "r",
+                "odoo_image": "i",
+            },
+        )
+
+    assert resp.status_code == 400
+    assert resp.json() == {"ok": False, "error": message}
+    # The finally must still have released the lock this request acquired.
+    locks.acquire_env("main")
