@@ -50,6 +50,7 @@ from oduflow.docker_ops import (
     env_ops,
     odoo_ops,
     production_ops,
+    service_database_ops,
     service_ops,
     service_presets,
     system_ops,
@@ -75,6 +76,7 @@ from oduflow.locking import (
     LockManager,
     credentials_lock_key,
     prod_backups_lock_key,
+    service_database_lock_key,
     service_lock_key,
     service_preset_lock_key,
     volume_lock_key,
@@ -2540,6 +2542,142 @@ def _build_routes(
             )
         finally:
             locks.release_team(team.team_id)
+
+    def api_service_databases(request: Request) -> JSONResponse:
+        try:
+            databases = service_database_ops.list_databases(
+                get_settings(), _get_ui_team(request)
+            )
+            return JSONResponse({"ok": True, "databases": databases})
+        except FlowError as e:
+            return _error_response(e)
+        except Exception:
+            logger.exception("Unexpected error in api_service_databases")
+            return JSONResponse(
+                {"ok": False, "error": "Internal server error."}, status_code=500
+            )
+
+    async def api_service_database_create(request: Request) -> JSONResponse:
+        team = _get_ui_team(request)
+        try:
+            body = await request.json()
+            name = (body.get("name") or "").strip()
+            if not name:
+                return JSONResponse(
+                    {"ok": False, "error": "name is required."}, status_code=400
+                )
+        except Exception:
+            return JSONResponse(
+                {"ok": False, "error": "A JSON body is required."}, status_code=400
+            )
+        key = service_database_lock_key(team.team_id, name)
+        try:
+            locks.acquire_env(key, operation="create_service_database")
+        except BusyError as e:
+            return _error_response(e)
+        try:
+            result = await _offload(
+                service_database_ops.create_database, get_settings(), team, name
+            )
+            return JSONResponse(
+                {"ok": True, "result": result},
+                headers={"Cache-Control": "no-store"},
+            )
+        except ValueError as e:
+            return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
+        except FlowError as e:
+            return _error_response(e)
+        except Exception:
+            logger.exception("Unexpected error in api_service_database_create")
+            return JSONResponse(
+                {"ok": False, "error": "Internal server error."}, status_code=500
+            )
+        finally:
+            locks.release_env(key)
+
+    def api_service_database_credentials(request: Request) -> JSONResponse:
+        name = request.path_params["name"]
+        team = _get_ui_team(request)
+        key = service_database_lock_key(team.team_id, name)
+        try:
+            locks.acquire_env(key, operation="get_service_database")
+        except BusyError as e:
+            return _error_response(e)
+        try:
+            result = service_database_ops.get_database(
+                get_settings(),
+                team,
+                name,
+                reveal_password=True,
+            )
+            return JSONResponse(
+                {"ok": True, "result": result},
+                headers={"Cache-Control": "no-store"},
+            )
+        except ValueError as e:
+            return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
+        except FlowError as e:
+            return _error_response(e)
+        except Exception:
+            logger.exception("Unexpected error in api_service_database_credentials")
+            return JSONResponse(
+                {"ok": False, "error": "Internal server error."}, status_code=500
+            )
+        finally:
+            locks.release_env(key)
+
+    async def api_service_database_rotate(request: Request) -> JSONResponse:
+        name = request.path_params["name"]
+        team = _get_ui_team(request)
+        key = service_database_lock_key(team.team_id, name)
+        try:
+            locks.acquire_env(key, operation="rotate_service_database_password")
+        except BusyError as e:
+            return _error_response(e)
+        try:
+            result = await _offload(
+                service_database_ops.rotate_password, get_settings(), team, name
+            )
+            return JSONResponse(
+                {"ok": True, "result": result},
+                headers={"Cache-Control": "no-store"},
+            )
+        except ValueError as e:
+            return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
+        except FlowError as e:
+            return _error_response(e)
+        except Exception:
+            logger.exception("Unexpected error in api_service_database_rotate")
+            return JSONResponse(
+                {"ok": False, "error": "Internal server error."}, status_code=500
+            )
+        finally:
+            locks.release_env(key)
+
+    async def api_service_database_delete(request: Request) -> JSONResponse:
+        name = request.path_params["name"]
+        team = _get_ui_team(request)
+        key = service_database_lock_key(team.team_id, name)
+        try:
+            locks.acquire_env(key, operation="delete_service_database")
+        except BusyError as e:
+            return _error_response(e)
+        try:
+            result = await _offload(
+                service_database_ops.delete_database, get_settings(), team, name
+            )
+            return JSONResponse({"ok": True, "result": result})
+        except ValueError as e:
+            return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
+        except FlowError as e:
+            return _error_response(e)
+        except Exception:
+            logger.exception("Unexpected error in api_service_database_delete")
+            return JSONResponse(
+                {"ok": False, "error": "Internal server error."}, status_code=500
+            )
+        finally:
+            locks.release_env(key)
 
     def api_services(request: Request) -> JSONResponse:
         try:
@@ -5223,6 +5361,30 @@ def _build_routes(
             methods=["POST"],
         ),
         Route("/api/environments/{branch:path}/delete", api_delete, methods=["POST"]),
+        Route("/api/service-databases", api_service_databases, methods=["GET"]),
+        Route(
+            "/api/service-databases/create",
+            api_service_database_create,
+            methods=["POST"],
+        ),
+        Route(
+            # POST, not GET: this is the only endpoint that returns an
+            # unmasked secret, and the CSRF backstop in BasicAuthMiddleware
+            # only guards unsafe methods.
+            "/api/service-databases/{name}/credentials",
+            api_service_database_credentials,
+            methods=["POST"],
+        ),
+        Route(
+            "/api/service-databases/{name}/rotate",
+            api_service_database_rotate,
+            methods=["POST"],
+        ),
+        Route(
+            "/api/service-databases/{name}/delete",
+            api_service_database_delete,
+            methods=["POST"],
+        ),
         Route("/api/services", api_services, methods=["GET"]),
         Route("/api/services/create", api_service_create, methods=["POST"]),
         Route("/api/services/{name}/update", api_service_update, methods=["POST"]),

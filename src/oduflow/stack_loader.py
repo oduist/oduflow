@@ -87,9 +87,13 @@ def resolve_env_values(
     env_name: str = "",
     environ: Mapping[str, str] | None = None,
 ) -> dict[str, str]:
-    """Resolve literal, host-env, and environment-derived values at apply time."""
+    """Resolve literal, host-env, Odoo, and database values at apply time."""
     source_env = os.environ if environ is None else environ
     result: dict[str, str] = {}
+    # One lookup per database, not per variable: a full PG* set is six keys
+    # pointing at the same resource, and each lookup costs several round trips
+    # into the PostgreSQL container.
+    databases: dict[str, dict[str, Any]] = {}
     for key, raw in values.items():
         if isinstance(raw, str):
             result[key] = raw
@@ -102,6 +106,25 @@ def resolve_env_values(
                     f"environment variable '{raw.from_env}' required by '{key}' is not set"
                 )
             result[key] = source_env[raw.from_env]
+            continue
+        if raw.database is not None:
+            if settings is None or team is None:
+                raise StackValidationError(
+                    f"'{key}' requires managed database '{raw.database}'"
+                )
+            from oduflow.docker_ops import service_database_ops
+
+            if raw.database not in databases:
+                databases[raw.database] = service_database_ops.get_database(
+                    settings, team, raw.database, reveal_password=True
+                )
+            database = databases[raw.database]
+            if database.get("status") != "ready":
+                raise StackValidationError(
+                    f"managed database '{raw.database}' required by '{key}' is not ready"
+                )
+            field = raw.database_field or ""
+            result[key] = str(database[field])
             continue
         if settings is None or team is None or not env_name:
             raise StackValidationError(f"'{key}' requires an existing Odoo environment")

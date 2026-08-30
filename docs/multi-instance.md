@@ -130,6 +130,7 @@ API and pick up the faster path whenever that container is next recreated.
 | Templates (DB snapshots, filestores) | Per-team |
 | Extra addon repositories | Per-team |
 | Auxiliary services | Per-team |
+| Auxiliary-service PostgreSQL databases and roles | Per-team — stored in the team's tablespace |
 | Port assignments | Per-team |
 | Git credentials | Per-team |
 
@@ -139,6 +140,14 @@ Databases and containers are namespaced by team ID:
 
 - Environment DB: `oduflow_{team_id}_{slugified_branch}` (e.g. `oduflow_1_feature-login`)
 - Template DB: `oduflow_template_{team_id}_{template_name}` (e.g. `oduflow_template_1_default`)
+- Service DB: `oduflow_service_{team_id}_{name}` (e.g. `oduflow_service_1_events`)
+- Service DB role: `svc_{team_id}_{name}` (e.g. `svc_1_events`)
+
+Service database identifiers carry a `.<digest>` suffix whenever the readable
+form would be ambiguous — a team id containing `_` or uppercase, or one that
+would overflow PostgreSQL's 63-byte identifier limit. The suffix is derived
+from the exact team/database pair, so two teams can never end up sharing a
+database or a role.
 - Environment containers: `oduflow-{team_id}-{env}-{type}` (e.g. `oduflow-1-feature-login-odoo`)
 - Service containers: `oduflow-{team_id}-svc-{name}` (e.g. `oduflow-1-svc-redis`)
 
@@ -155,6 +164,7 @@ CLI template and service commands accept a `--team` flag:
 ```bash
 oduflow init-template --odoo-image odoo:19.0 --template-name myproject --team 2
 oduflow list-templates --team 2
+oduflow list-service-databases --team 2
 oduflow cleanup --team 2
 ```
 

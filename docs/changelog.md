@@ -4,6 +4,16 @@
 
 ### Features
 
+- **Managed PostgreSQL databases for auxiliary services** — teams can create,
+  inspect, rotate, and explicitly delete persistent databases that are
+  independent of Odoo environments and sidecar container lifecycles. Each gets
+  a dedicated non-superuser owner, lives in the team's existing tablespace,
+  counts toward database/disk quotas, and returns ready-to-use `DATABASE_URL`
+  and `PG*` values only on explicit credential surfaces. Declarative Stacks can
+  declare databases and resolve individual connection fields into auxiliary
+  service environment variables without persisting generated passwords in the
+  manifest or Stack state.
+
 - **Built-in remote MCP CLI** — `oduflow client <tool>` now calls a running
   Oduflow server through FastMCP using `ODUFLOW_MCP_URL` and
   `ODUFLOW_MCP_TOKEN`. It discovers the live tool schemas, accepts named flags
@@ -36,6 +46,10 @@
   is ignored with a warning rather than blocking provisioning.
 
 ### Dashboard
+
+- **Service database controls** — the new Databases tab shows live database
+  size, connections, and drift status, with guarded create, credential reveal,
+  password rotation, copy-environment, and permanent-delete actions.
 
 - **Environment variables in the template Settings dialog** — a new field edits
   a template's variables as one `KEY=VALUE` per line, the template card shows

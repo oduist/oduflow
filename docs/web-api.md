@@ -106,7 +106,7 @@ Odoo.sh ingest endpoints accept the import token only in
 `Authorization: Bearer ...`, not in the URL. See
 [Template Management](templates.md) for the supported import workflow.
 
-## Services, presets, and volumes
+## Services, PostgreSQL databases, presets, and volumes
 
 | Method | Endpoint | Description |
 |---|---|---|
@@ -116,12 +116,23 @@ Odoo.sh ingest endpoints accept the import token only in
 | `POST` | `/api/services/{name}/restart` | Restart a service |
 | `POST` | `/api/services/{name}/delete` | Delete a service |
 | `GET` | `/api/services/{name}/logs?n=200` | Read service logs |
+| `GET` | `/api/service-databases` | List managed sidecar databases without passwords |
+| `POST` | `/api/service-databases/create` | Create a database and scoped role; body: `name` |
+| `POST` | `/api/service-databases/{name}/credentials` | Explicitly reveal connection credentials and `DATABASE_URL` |
+| `POST` | `/api/service-databases/{name}/rotate` | Rotate the database role password |
+| `POST` | `/api/service-databases/{name}/delete` | Permanently drop the database and role, terminating connections |
 | `GET` | `/api/service-presets` | List saved presets |
 | `POST` | `/api/service-presets/restore` | Restore a preset; body: `name` plus optional runtime overrides |
 | `POST` | `/api/service-presets/{name}/delete` | Delete a preset |
 | `GET` | `/api/volumes` | List managed volumes and service usage |
 | `POST` | `/api/volumes/create` | Create a volume; body: `name`, optional `description` |
 | `POST` | `/api/volumes/{name}/delete` | Delete an unused volume |
+
+Service databases live in the shared development PostgreSQL cluster, inside the
+current team's tablespace. They have a dedicated non-superuser owner and persist
+independently of service containers. Bridge-mode services reach them through
+the returned PostgreSQL container hostname; host-network services are not
+supported because the cluster is not published on a host port.
 
 ## Extra addons and credentials
 

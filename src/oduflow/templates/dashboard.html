@@ -1334,6 +1334,7 @@
   <button class="tab-btn active" data-tab="environments" onclick="switchTab('environments')">Environments</button>
   <button class="tab-btn" data-tab="production" onclick="switchTab('production')" __PRODUCTION_TAB_HIDDEN__>Production</button>
   <button class="tab-btn" data-tab="services" onclick="switchTab('services')">Services</button>
+  <button class="tab-btn" data-tab="databases" onclick="switchTab('databases')">Databases</button>
   <button class="tab-btn" data-tab="volumes" onclick="switchTab('volumes')">Volumes</button>
   <button class="tab-btn" data-tab="extra-addons" onclick="switchTab('extra-addons')">Extra Addons</button>
   <button class="tab-btn" data-tab="credentials" onclick="switchTab('credentials')">Credentials</button>
@@ -1383,6 +1384,13 @@
     <h2 class="section-subtitle">Saved Presets</h2>
     <div id="svc-presets-list"></div>
   </div>
+</div>
+
+<div id="tab-databases" class="tab-content">
+  <div class="tab-toolbar">
+    <button class="btn-create" onclick="openCreateDatabaseModal()">+ Create Database</button>
+  </div>
+  <div id="database-list"></div>
 </div>
 
 <div id="tab-volumes" class="tab-content">
@@ -1568,6 +1576,42 @@
       <button class="modal-close" onclick="closeServiceInfo()" aria-label="Close">&times;</button>
     </div>
     <div class="modal-body"><pre id="svc-info-content"></pre></div>
+  </div>
+</div>
+<div class="modal-overlay" id="create-database-modal" onclick="closeCreateDatabaseModal(event)">
+  <div class="modal modal-md">
+    <div class="modal-header">
+      <h2>Create Service Database</h2>
+      <button class="modal-close" onclick="closeCreateDatabaseModal()" aria-label="Close">&times;</button>
+    </div>
+    <div class="modal-body">
+      <p class="modal-note">Creates a persistent PostgreSQL database with a dedicated non-superuser role. It is not deleted with a service container.</p>
+      <div class="form-error" id="create-database-error"></div>
+      <div class="form-group">
+        <label for="database-name">Database resource name</label>
+        <input type="text" id="database-name" placeholder="e.g. worker-data" maxlength="31" autocomplete="off">
+      </div>
+      <div class="form-actions">
+        <button class="btn" onclick="closeCreateDatabaseModal()">Cancel</button>
+        <button class="btn-create" id="create-database-submit" onclick="submitCreateDatabase()">Create Database</button>
+      </div>
+    </div>
+  </div>
+</div>
+<div class="modal-overlay" id="database-credentials-modal" onclick="closeDatabaseCredentials(event)">
+  <div class="modal modal-md">
+    <div class="modal-header">
+      <h2 id="database-credentials-title">Database Credentials</h2>
+      <button class="modal-close" onclick="closeDatabaseCredentials()" aria-label="Close">&times;</button>
+    </div>
+    <div class="modal-body">
+      <p class="modal-note">These values grant access to the database. Store and pass them as secrets.</p>
+      <pre id="database-credentials-content"></pre>
+      <div class="form-actions">
+        <button class="btn" onclick="closeDatabaseCredentials()">Close</button>
+        <button class="btn-create" onclick="copyDatabaseCredentials()">Copy Environment</button>
+      </div>
+    </div>
   </div>
 </div>
 <div class="modal-overlay" id="console-modal" onclick="closeConsole(event)">
@@ -2294,6 +2338,8 @@ let storageRefreshing = {};
 let cachedTemplates = [];
 let cachedEnvs = [];
 let cachedServices = [];
+let cachedServiceDatabases = [];
+let currentDatabaseEnvironment = '';
 let _prevStatuses = {};
 // Bulk cleanup selection: survives re-renders, supports shift-click ranges.
 let selectedEnvs = new Set();
@@ -3851,6 +3897,7 @@ function switchTab(name) {
   if (name === 'production') loadProductions();
   if (name === 'templates') loadTemplates();
   if (name === 'services') loadServices();
+  if (name === 'databases') loadServiceDatabases();
   if (name === 'volumes') loadVolumes();
   if (name === 'agent-guides') loadAgentGuides();
   if (name === 'extra-addons') loadExtraRepos();
@@ -4971,6 +5018,166 @@ document.getElementById('refresh-interval').addEventListener('change', function(
 });
 
 const API_SERVICES = '/api/services';
+
+const API_SERVICE_DATABASES = '/api/service-databases';
+
+function serviceDatabaseEnvironment(db) {
+  return [
+    'DATABASE_URL=' + db.url,
+    'PGHOST=' + db.host,
+    'PGPORT=' + db.port,
+    'PGDATABASE=' + db.database,
+    'PGUSER=' + db.username,
+    'PGPASSWORD=' + db.password
+  ].join('\n');
+}
+
+function formatDatabaseBytes(bytes) {
+  var value = Number(bytes || 0);
+  if (value < 1024 * 1024) return (value / 1024).toFixed(1) + ' KB';
+  if (value < 1024 * 1024 * 1024) return (value / 1024 / 1024).toFixed(1) + ' MB';
+  return (value / 1024 / 1024 / 1024).toFixed(1) + ' GB';
+}
+
+async function loadServiceDatabases() {
+  try {
+    var r = await fetch(API_SERVICE_DATABASES);
+    var data = await readResult(r);
+    if (!data.ok) throw new Error(data.error || 'Failed to load databases');
+    cachedServiceDatabases = data.databases || [];
+    renderServiceDatabases(cachedServiceDatabases);
+  } catch (e) {
+    showToast(e.message, true);
+  }
+}
+
+function renderServiceDatabases(databases) {
+  var el = document.getElementById('database-list');
+  if (!databases.length) {
+    el.innerHTML = '<div class="empty">No service databases found.<br>Create one when a sidecar needs PostgreSQL storage.</div>';
+    return;
+  }
+  el.innerHTML = databases.map(function(db) {
+    var ready = db.status === 'ready';
+    return '<div class="svc-card" data-database="' + esc(db.name) + '">' +
+      '<div class="svc-header"><div class="left">' +
+        '<span class="svc-name">' + esc(db.name) + '</span>' +
+        '<span class="badge ' + (ready ? 'badge-running' : 'badge-partial') + '">' + esc(db.status) + '</span>' +
+      '</div><div class="svc-actions">' +
+        '<button class="btn" onclick="showDatabaseCredentials(\'' + escAttr(db.name) + '\')">Credentials</button>' +
+        '<button class="btn btn-update" onclick="rotateDatabasePassword(\'' + escAttr(db.name) + '\')">Rotate Password</button>' +
+        '<button class="btn btn-delete" onclick="deleteServiceDatabase(\'' + escAttr(db.name) + '\')">Delete</button>' +
+      '</div></div>' +
+      '<div class="svc-meta">' +
+        '<span>Database: <strong>' + esc(db.database || 'metadata unavailable') + '</strong></span>' +
+        '<span>Host: <strong>' + esc(db.host || 'unavailable') + '</strong></span>' +
+        '<span>Size: <strong>' + formatDatabaseBytes(db.size_bytes) + '</strong></span>' +
+        '<span>Connections: <strong>' + Number(db.connections || 0) + '</strong></span>' +
+        (db.created_at ? '<span>Created: <strong>' + formatDate(db.created_at) + '</strong></span>' : '') +
+      '</div></div>';
+  }).join('');
+}
+
+function openCreateDatabaseModal() {
+  document.getElementById('database-name').value = '';
+  document.getElementById('create-database-error').textContent = '';
+  showModal('create-database-modal');
+  document.getElementById('database-name').focus();
+}
+
+function closeCreateDatabaseModal(event) {
+  if (event && event.target !== event.currentTarget) return;
+  hideModal('create-database-modal');
+}
+
+async function submitCreateDatabase() {
+  var name = document.getElementById('database-name').value.trim();
+  var error = document.getElementById('create-database-error');
+  var button = document.getElementById('create-database-submit');
+  error.textContent = '';
+  if (!name) { error.textContent = 'Database resource name is required.'; return; }
+  button.disabled = true;
+  button.textContent = 'Creating…';
+  try {
+    var r = await fetch(API_SERVICE_DATABASES + '/create', {
+      method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({name: name})
+    });
+    var data = await readResult(r);
+    if (!data.ok) throw new Error(data.error || 'Database creation failed');
+    closeCreateDatabaseModal();
+    showDatabaseCredentialsResult(data.result);
+    await loadServiceDatabases();
+  } catch (e) {
+    error.textContent = e.message;
+  } finally {
+    button.disabled = false;
+    button.textContent = 'Create Database';
+  }
+}
+
+function showDatabaseCredentialsResult(db) {
+  currentDatabaseEnvironment = serviceDatabaseEnvironment(db);
+  document.getElementById('database-credentials-title').textContent = 'Database Credentials — ' + db.name;
+  document.getElementById('database-credentials-content').textContent = currentDatabaseEnvironment;
+  showModal('database-credentials-modal');
+}
+
+async function showDatabaseCredentials(name) {
+  try {
+    var r = await fetch(API_SERVICE_DATABASES + '/' + encodeURIComponent(name) + '/credentials', {method: 'POST'});
+    var data = await readResult(r);
+    if (!data.ok) throw new Error(data.error || 'Could not load credentials');
+    showDatabaseCredentialsResult(data.result);
+  } catch (e) {
+    showToast(e.message, true);
+  }
+}
+
+function closeDatabaseCredentials(event) {
+  if (event && event.target !== event.currentTarget) return;
+  currentDatabaseEnvironment = '';
+  document.getElementById('database-credentials-content').textContent = '';
+  hideModal('database-credentials-modal');
+}
+
+function copyDatabaseCredentials() {
+  if (currentDatabaseEnvironment) copyToClipboard(currentDatabaseEnvironment, 'Database environment copied');
+}
+
+async function rotateDatabasePassword(name) {
+  if (!(await confirmDialog({
+    title: 'Rotate database password',
+    message: 'Existing containers will lose access until their environment is updated. Rotate the password for "' + name + '"?',
+    confirmLabel: 'Rotate Password'
+  }))) return;
+  try {
+    var r = await fetch(API_SERVICE_DATABASES + '/' + encodeURIComponent(name) + '/rotate', {method: 'POST'});
+    var data = await readResult(r);
+    if (!data.ok) throw new Error(data.error || 'Password rotation failed');
+    showDatabaseCredentialsResult(data.result);
+    await loadServiceDatabases();
+  } catch (e) {
+    showToast(e.message, true);
+  }
+}
+
+async function deleteServiceDatabase(name) {
+  if (!(await confirmDialog({
+    title: 'Delete service database',
+    message: 'Permanently delete database "' + name + '", terminate its connections, and remove its login role? This does not delete service containers.',
+    confirmLabel: 'Delete Database',
+    danger: true
+  }))) return;
+  try {
+    var r = await fetch(API_SERVICE_DATABASES + '/' + encodeURIComponent(name) + '/delete', {method: 'POST'});
+    var data = await readResult(r);
+    if (!data.ok) throw new Error(data.error || 'Database deletion failed');
+    showToast('Database "' + name + '" deleted');
+    await loadServiceDatabases();
+  } catch (e) {
+    showToast(e.message, true);
+  }
+}
 
 async function loadServices() {
   try {
@@ -6487,6 +6694,8 @@ var MODAL_CLOSERS = {
   'feedback-modal': closeFeedbackModal,
   'logs-modal': closeLogsModal,
   'svc-info-modal': closeServiceInfo,
+  'create-database-modal': closeCreateDatabaseModal,
+  'database-credentials-modal': closeDatabaseCredentials,
   'console-modal': closeConsole,
   'sql-modal': closeSqlConsole,
   'agent-modal': closeAgentConsole,

@@ -60,6 +60,12 @@ also available via the [REST API](web-api.md).
 | `get_service_info` | | Full live state of a single service (image+digest, port/routes, hostname, host_mode, volumes, env, capabilities, restart count, preset). Call before recreating it |
 | `get_service_logs` | | Retrieve service container logs |
 | `run_service_command` | ✓ | Execute a shell command inside a service container (through `sh -c`; `shell=False` for exact argv) |
+| **Service PostgreSQL Databases** | | |
+| `create_service_database` | ✓ | Create a persistent team-scoped PostgreSQL database with a dedicated non-superuser owner; returns `DATABASE_URL` and `PG*` credentials |
+| `list_service_databases` | | List database names, live status, size, and connections without passwords |
+| `get_service_database` | | Explicitly reveal connection credentials for one managed database |
+| `rotate_service_database_password` | ✓ | Rotate the owner password and return replacement credentials; containers must be reconfigured |
+| `delete_service_database` | ✓ | ⚠️ Permanently drop the database and role after terminating active connections; service containers are unchanged |
 | **Volumes** | | |
 | `create_volume` | ✓ | Create a named Docker volume for use with services |
 | `list_volumes` | | List all managed Docker volumes and their usage by services |

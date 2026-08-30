@@ -16,6 +16,7 @@ from oduflow import git_ops
 from oduflow.docker_ops import (
     env_ops,
     odoo_ops,
+    service_database_ops,
     service_ops,
     system_ops,
     volume_file_ops,
@@ -233,11 +234,6 @@ def build_plan(
         git_ops.validate_repo_url(desired_repo.repo_url)
     actions: list[PlanAction] = []
 
-    # Resolve host variables during planning so a missing secret fails before
-    # any mutation. Environment-derived service values are resolved only when
-    # the environment already exists; a new service is unconditionally created.
-    desired_env_vars = resolve_env_values(desired_env.env, environ=environ)
-
     from oduflow import extra_addons
 
     repos = {item["name"]: item for item in extra_addons.list_extra_repos(team)}
@@ -278,6 +274,60 @@ def build_plan(
                     "volume descriptions are immutable in V1; replacement required",
                 )
             )
+
+    service_databases: dict[str, dict[str, Any]] = {}
+    if spec.databases:
+        service_databases = {
+            item["name"]: item
+            for item in service_database_ops.list_databases(settings, team)
+        }
+    pending_databases: set[str] = set()
+    for name, desired_database in spec.databases.items():
+        resource = f"databases.{name}"
+        actual = service_databases.get(name)
+        if actual is None:
+            pending_databases.add(name)
+            actions.append(PlanAction("create", resource))
+        elif actual.get("status") == "credentials-error":
+            actions.append(
+                PlanAction(
+                    "conflict",
+                    resource,
+                    "stored credentials for this database cannot be read",
+                )
+            )
+        elif not _owned_by(actual, stack, resource):
+            actions.append(
+                PlanAction(
+                    "conflict",
+                    resource,
+                    "existing database is not owned by this stack",
+                )
+            )
+        elif actual.get("status") != "ready":
+            actions.append(
+                PlanAction(
+                    "conflict",
+                    resource,
+                    "managed PostgreSQL database or role is missing",
+                )
+            )
+        elif actual.get("stack_spec_hash") != _resource_hash(desired_database):
+            actions.append(
+                PlanAction(
+                    "conflict",
+                    resource,
+                    "database metadata is inconsistent with the manifest",
+                )
+            )
+
+    desired_env_vars = resolve_env_values(
+        desired_env.env,
+        settings=settings,
+        team=team,
+        env_name=desired_env.name,
+        environ=environ,
+    )
 
     environments = {
         item["env_name"]: item for item in env_ops.list_environments(settings, team)
@@ -419,10 +469,18 @@ def build_plan(
             getattr(value, "environment_field", None) is not None
             for value in desired_service.env.values()
         )
-        if env_needs_create and has_environment_value:
-            # The environment output does not exist yet. Still validate every
-            # host-env source now; apply will resolve the generated values after
-            # creating Odoo and then update this owned service.
+        has_pending_database_value = any(
+            getattr(value, "database", None) in pending_databases
+            for value in desired_service.env.values()
+        )
+        deferred_env = (
+            env_needs_create and has_environment_value
+        ) or has_pending_database_value
+        if deferred_env:
+            # A generated input this service consumes does not exist yet, so
+            # its value cannot be compared against the running container. Still
+            # validate every host-env source now; apply resolves the generated
+            # values after creating the Odoo environment and the databases.
             for key, value in desired_service.env.items():
                 if getattr(value, "from_env", None) is not None:
                     resolve_env_values({key: value}, environ=environ)
@@ -474,6 +532,13 @@ def build_plan(
         drift.extend(
             field for field, current, wanted in comparisons if current != wanted
         )
+        if deferred_env:
+            # The generated value is about to change (a database is being
+            # recreated, or the environment is being created), and the plan is
+            # what drives apply. Without an explicit action apply would create
+            # the input and leave this container holding the superseded
+            # credentials, while still reporting success.
+            drift.append("env")
         if drift or actual.get("stack_spec_hash") != _resource_hash(desired_service):
             actions.append(
                 PlanAction("update", resource, ", ".join(drift) or "metadata")
@@ -596,8 +661,24 @@ def apply_stack(
                     stack_labels=_stack_labels(stack, resource, desired_volume),
                 )
 
+        for name, desired_database in spec.databases.items():
+            resource = f"databases.{name}"
+            if ("create", resource) in operations:
+                service_database_ops.create_database(
+                    settings,
+                    team,
+                    name,
+                    stack_labels=_stack_labels(stack, resource, desired_database),
+                )
+
         desired_env = spec.environment
-        env_vars = resolve_env_values(desired_env.env, environ=environ)
+        env_vars = resolve_env_values(
+            desired_env.env,
+            settings=settings,
+            team=team,
+            env_name=desired_env.name,
+            environ=environ,
+        )
         env_labels = _environment_labels(stack, manifest)
         extras = {name: item.branch for name, item in spec.extra_repositories.items()}
         if ("create", "environment") in operations:
@@ -685,6 +766,7 @@ def apply_stack(
                 "environment": desired_env.name,
                 "extraRepositories": sorted(spec.extra_repositories),
                 "volumes": sorted(spec.volumes),
+                "databases": sorted(spec.databases),
                 "services": sorted(spec.services),
                 "modules": list(desired_env.modules.install),
             },

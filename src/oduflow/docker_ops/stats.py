@@ -428,7 +428,7 @@ def refresh_team_storage(settings: Settings, team: TeamSettings) -> dict[str, An
     cache = {
         "envs": envs,
         "team": {
-            "db_bytes": get_team_db_usage_bytes(get_client(), settings, team.team_id),
+            "db_bytes": get_team_db_usage_bytes(get_client(), settings, team),
             "disk_bytes": _dir_size_bytes(team.data_dir, skip),
             "computed_at": _utcnow_iso(),
         },

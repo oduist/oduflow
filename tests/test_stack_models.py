@@ -104,6 +104,71 @@ def test_environment_cannot_reference_its_own_token(tmp_path):
         load_stack(path)
 
 
+def test_service_database_reference_must_be_declared(tmp_path):
+    path = _write(
+        tmp_path,
+        VALID.replace(
+            "environmentField: url",
+            "database: events\n          databaseField: url",
+        ),
+    )
+
+    with pytest.raises(StackValidationError, match="undeclared database 'events'"):
+        load_stack(path)
+
+
+def test_service_database_reference_is_typed(tmp_path):
+    content = VALID.replace(
+        "  volumes:\n",
+        "  databases:\n    events: {}\n  volumes:\n",
+        1,
+    ).replace(
+        "environmentField: url",
+        "database: events\n          databaseField: password",
+    )
+
+    manifest = load_stack(_write(tmp_path, content))
+
+    value = manifest.spec.services["fs"].env["ODOO_URL"]
+    assert value.database == "events"
+    assert value.database_field == "password"
+
+
+def test_host_mode_service_cannot_reference_managed_database(tmp_path):
+    content = (
+        VALID.replace(
+            "  volumes:\n",
+            "  databases:\n    events: {}\n  volumes:\n",
+            1,
+        )
+        .replace(
+            "environmentField: url",
+            "database: events\n          databaseField: url",
+        )
+        .replace(
+            "      image: example/fs:1\n",
+            "      image: example/fs:1\n      hostMode: true\n",
+        )
+    )
+
+    with pytest.raises(StackValidationError, match="host-mode service 'fs'"):
+        load_stack(_write(tmp_path, content))
+
+
+def test_odoo_environment_cannot_reference_managed_database(tmp_path):
+    content = VALID.replace(
+        "  volumes:\n",
+        "  databases:\n    events: {}\n  volumes:\n",
+        1,
+    ).replace(
+        "LOG_LEVEL: info",
+        "LOG_LEVEL:\n        database: events\n        databaseField: url",
+    )
+
+    with pytest.raises(StackValidationError, match="only available to auxiliary"):
+        load_stack(_write(tmp_path, content))
+
+
 def test_stack_file_must_stay_inside_manifest_directory(tmp_path):
     path = _write(tmp_path)
     outside = tmp_path.parent / "outside.txt"
