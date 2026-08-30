@@ -1,5 +1,7 @@
 import os
 import stat
+import threading
+import time
 from unittest.mock import patch
 
 import pytest
@@ -60,6 +62,59 @@ def test_create_persists_private_credentials_and_returns_connection(database_fix
     assert "NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION" in sql
     assert 'TABLESPACE "oduflow_team_1"' in sql
     assert 'REVOKE ALL ON DATABASE "oduflow_service_1_events" FROM PUBLIC' in sql
+
+
+def test_quota_admission_is_serialised_across_names(database_fixture):
+    """The caller's lock is per database *name*, so it does not serialise two
+    concurrent creates for one team. Without the registry mutex both would read
+    the same usage figure and jointly overshoot the quota."""
+    settings, team = database_fixture
+    guard = threading.Lock()
+    inside = 0
+    peak = 0
+
+    def quota_probe(*_args, **_kwargs):
+        nonlocal inside, peak
+        with guard:
+            inside += 1
+            peak = max(peak, inside)
+        time.sleep(0.05)  # widen the window a racing caller would slip through
+        with guard:
+            inside -= 1
+
+    # Patched once, from this thread: unittest.mock.patch restores attributes
+    # globally and is not safe to enter concurrently on the same targets.
+    with (
+        patch("oduflow.docker_ops.service_database_ops.get_client"),
+        patch("oduflow.docker_ops.service_database_ops._wait_pg_ready"),
+        patch("oduflow.docker_ops.service_database_ops.ensure_team_network"),
+        patch(
+            "oduflow.docker_ops.service_database_ops._catalog_exists",
+            return_value=False,
+        ),
+        patch(
+            "oduflow.docker_ops.service_database_ops.check_db_quota",
+            side_effect=quota_probe,
+        ),
+        patch(
+            "oduflow.docker_ops.service_database_ops.ensure_team_tablespace",
+            return_value="oduflow_team_1",
+        ),
+        patch("oduflow.docker_ops.service_database_ops._exec_sql"),
+    ):
+        threads = [
+            threading.Thread(
+                target=service_database_ops.create_database,
+                args=(settings, team, name),
+            )
+            for name in ("one", "two")
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+    assert peak == 1
 
 
 def test_create_refuses_unmanaged_catalog_drift(database_fixture):

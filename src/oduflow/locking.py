@@ -47,6 +47,15 @@ def service_database_lock_key(team_id: str, name: str) -> str:
     return f"svc-db:{team_id}:{name}"
 
 
+def service_database_registry_key(team_id: str) -> str:
+    """The team's *set* of managed databases: quota admission.
+
+    Distinct from :func:`service_registry_key` so creating a database never
+    contends with creating a service container or deleting a volume.
+    """
+    return f"svc-db-registry:{team_id}"
+
+
 def service_registry_key(team_id: str, name: str = "") -> str:
     """The team's *set* of services: slot admission and volume-usage checks."""
     return f"svc-registry:{team_id}"

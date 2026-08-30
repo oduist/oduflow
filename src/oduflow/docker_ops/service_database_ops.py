@@ -18,6 +18,7 @@ from oduflow.docker_ops.system_ops import (
 )
 from oduflow.env_credentials import generate_pg_password
 from oduflow.errors import ConflictError, PrerequisiteNotMetError
+from oduflow.locking import keyed_mutex, service_database_registry_key
 from oduflow.naming import (
     get_service_database_name,
     get_service_database_role,
@@ -108,71 +109,83 @@ def create_database(
             "without matching managed credentials; resolve the drift before retrying."
         )
 
-    check_db_quota(client, settings, team)
-    tablespace = ensure_team_tablespace(client, settings, team)
-    safe_password = _sql_literal(password)
-    safe_comment = _sql_literal(
-        f"Oduflow service database team={team.team_id} name={name}"
-    )
-    role_created = False
-    database_created = False
-    try:
-        _exec_sql(
-            client,
-            settings,
-            f'CREATE ROLE "{username}" WITH LOGIN NOSUPERUSER NOCREATEDB '
-            f"NOCREATEROLE NOREPLICATION PASSWORD '{safe_password}';",
+    # Registry section: the quota is read here and consumed by the CREATE
+    # DATABASE below with nothing in between. The per-name lock the caller
+    # holds does not serialise *different* names, so without this two
+    # concurrent creates for one team would both pass admission against the
+    # same stale usage figure and jointly overshoot db_quota_gb.
+    with keyed_mutex(service_database_registry_key(team.team_id)):
+        check_db_quota(client, settings, team)
+        tablespace = ensure_team_tablespace(client, settings, team)
+        safe_password = _sql_literal(password)
+        safe_comment = _sql_literal(
+            f"Oduflow service database team={team.team_id} name={name}"
         )
-        role_created = True
-        _exec_sql(
-            client,
-            settings,
-            f'CREATE DATABASE "{database}" OWNER "{username}" '
-            f'TABLESPACE "{tablespace}";',
-        )
-        database_created = True
-        _exec_sql(
-            client,
-            settings,
-            f'REVOKE ALL ON DATABASE "{database}" FROM PUBLIC; '
-            f'GRANT CONNECT, TEMPORARY ON DATABASE "{database}" TO "{username}"; '
-            f"COMMENT ON DATABASE \"{database}\" IS '{safe_comment}';",
-        )
-        created_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
-        record = {
-            "name": name,
-            "database": database,
-            "username": username,
-            "password": password,
-            "created_at": created_at,
-        }
-        if stack_labels:
-            record.update(
-                {
-                    "stack": stack_labels.get("oduflow.stack", ""),
-                    "stack_resource": stack_labels.get("oduflow.stack-resource", ""),
-                    "stack_spec_hash": stack_labels.get("oduflow.stack-spec-hash", ""),
-                }
+        role_created = False
+        database_created = False
+        try:
+            _exec_sql(
+                client,
+                settings,
+                f'CREATE ROLE "{username}" WITH LOGIN NOSUPERUSER NOCREATEDB '
+                f"NOCREATEROLE NOREPLICATION PASSWORD '{safe_password}';",
             )
-        save(team, name, record)
-    except Exception:
-        if database_created:
-            try:
-                _exec_sql(
-                    client,
-                    settings,
-                    f'DROP DATABASE IF EXISTS "{database}" WITH (FORCE);',
+            role_created = True
+            _exec_sql(
+                client,
+                settings,
+                f'CREATE DATABASE "{database}" OWNER "{username}" '
+                f'TABLESPACE "{tablespace}";',
+            )
+            database_created = True
+            _exec_sql(
+                client,
+                settings,
+                f'REVOKE ALL ON DATABASE "{database}" FROM PUBLIC; '
+                f'GRANT CONNECT, TEMPORARY ON DATABASE "{database}" TO "{username}"; '
+                f"COMMENT ON DATABASE \"{database}\" IS '{safe_comment}';",
+            )
+            created_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
+            record = {
+                "name": name,
+                "database": database,
+                "username": username,
+                "password": password,
+                "created_at": created_at,
+            }
+            if stack_labels:
+                record.update(
+                    {
+                        "stack": stack_labels.get("oduflow.stack", ""),
+                        "stack_resource": stack_labels.get(
+                            "oduflow.stack-resource", ""
+                        ),
+                        "stack_spec_hash": stack_labels.get(
+                            "oduflow.stack-spec-hash", ""
+                        ),
+                    }
                 )
-            except Exception:
-                logger.exception("Could not roll back service database %s", database)
-        if role_created:
-            try:
-                _drop_pg_role(client, settings, username)
-            except Exception:
-                logger.exception(
-                    "Could not roll back service database role %s", username
-                )
-        raise
+            save(team, name, record)
+        except Exception:
+            if database_created:
+                try:
+                    _exec_sql(
+                        client,
+                        settings,
+                        f'DROP DATABASE IF EXISTS "{database}" WITH (FORCE);',
+                    )
+                except Exception:
+                    logger.exception(
+                        "Could not roll back service database %s", database
+                    )
+            if role_created:
+                try:
+                    _drop_pg_role(client, settings, username)
+                except Exception:
+                    logger.exception(
+                        "Could not roll back service database role %s", username
+                    )
+            raise
 
     logger.info("Created service database '%s' for team '%s'", name, team.team_id)
     return {

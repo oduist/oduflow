@@ -70,7 +70,9 @@ atomically publishes credentials. Failures compensate database and role creation
 Password rotation similarly restores the old PostgreSQL password if credential
 persistence fails. Resource-scoped `svc-db:<team>:<name>` locks
 ([[0050-granular-resource-locks]]) serialize mutations without blocking unrelated
-environments or services.
+environments or services; because that key is per database name, quota
+admission and creation additionally run under a team-scoped registry mutex, so
+concurrent creates cannot jointly overshoot the quota.
 
 Stacks create databases before Odoo and auxiliary containers. A `database` plus
 `databaseField` value source resolves `url`, `host`, `port`, `database`,
