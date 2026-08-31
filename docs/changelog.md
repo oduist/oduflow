@@ -1,5 +1,19 @@
 # Changelog
 
+## v1.72.1
+
+### Bug Fixes
+
+- **Invalid environment hostnames now explain themselves** — creating an
+  environment from the dashboard with a hostname that is not a DNS label (for
+  example `old_staging`) failed with a bare "Internal server error." while the
+  one useful sentence stayed in the server log. The hostname is now validated up
+  front, next to the environment name and before the environment lock is taken,
+  and a `ValueError` raised by the create call itself is surfaced as a 400. This
+  is the policy the MCP tools already apply: messages authored for the user are
+  shown, every other exception stays masked. The create dialog now says what to
+  type instead of reporting an internal error. (#218)
+
 ## v1.72.0
 
 ### Features
