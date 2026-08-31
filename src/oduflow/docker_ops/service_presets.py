@@ -67,6 +67,7 @@ def save_preset(
     cap_add: list[str] | None = None,
     privileged: bool = False,
     routes: list[dict[str, object]] | None = None,
+    command: list[str] | None = None,
 ) -> dict[str, Any]:
     """Save (or overwrite) a single service preset and return it."""
     short_hostname = hostname or ""
@@ -90,6 +91,8 @@ def save_preset(
         preset["privileged"] = True
     if routes:
         preset["routes"] = routes
+    if command:
+        preset["command"] = list(command)
     data = _load_presets(team)
     data[name] = preset
     _save_presets(team, data)

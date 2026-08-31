@@ -86,6 +86,10 @@ spec:
       port: 8080
       hostMode: true
 
+      # Optional: replaces the image CMD. A shell-quoted string
+      # ("server /data") is accepted and split into the same argv.
+      command: ["freeswitch", "-nonat"]
+
       volumes:
         - source: fs-sounds
           target: /usr/share/freeswitch/sounds

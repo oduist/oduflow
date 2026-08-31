@@ -215,6 +215,21 @@
           },
           "title": "Routes",
           "type": "array"
+        },
+        "command": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "items": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "type": "array"
+            }
+          ],
+          "title": "Command"
         }
       },
       "required": [

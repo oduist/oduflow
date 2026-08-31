@@ -1687,6 +1687,10 @@
         <input type="text" id="svc-image" placeholder="e.g. redis:7, getmeili/meilisearch:v1.6">
       </div>
       <div class="form-group">
+        <label for="svc-command">Command (optional) <span class="label-hint">— overrides the image CMD</span></label>
+        <input type="text" id="svc-command" placeholder="e.g. server /data --console-address :9001">
+      </div>
+      <div class="form-group">
         <label for="svc-exposure">Public exposure</label>
         <select id="svc-exposure" onchange="toggleServiceExposure('svc')">
           <option value="port">Single port (all paths)</option>
@@ -1758,6 +1762,10 @@
       <div class="form-group">
         <label for="restore-svc-image">Docker image</label>
         <input type="text" id="restore-svc-image" placeholder="e.g. redis:7">
+      </div>
+      <div class="form-group">
+        <label for="restore-svc-command">Command (optional) <span class="label-hint">— overrides the image CMD</span></label>
+        <input type="text" id="restore-svc-command" placeholder="e.g. server /data --console-address :9001">
       </div>
       <div class="form-group">
         <label for="restore-svc-exposure">Public exposure</label>
@@ -5275,6 +5283,10 @@ function renderServices(services) {
       var volStr = svc.volumes.map(function(v) { return esc(v.volume) + ':' + esc(v.mount_path) + (v.mode === 'ro' ? ':ro' : ''); }).join(', ');
       volHtml = '<div class="svc-meta"><span>Volumes: <strong>' + volStr + '</strong></span></div>';
     }
+    var cmdHtml = '';
+    if (svc.command && svc.command.length > 0) {
+      cmdHtml = '<div class="svc-meta"><span>Command: <strong>' + esc(shellJoin(svc.command)) + '</strong></span></div>';
+    }
     var capBadges = '';
     if (svc.privileged) {
       capBadges += '<span class="badge badge-privileged" title="Privileged container (full host access)">privileged</span>';
@@ -5304,10 +5316,18 @@ function renderServices(services) {
       '</div>' +
       urlHtml +
       routesHtml +
+      cmdHtml +
       volHtml +
     '</div>';
   }).join('');
   applyStats();
+}
+
+function shellJoin(argv) {
+  return (argv || []).map(function(arg) {
+    var text = String(arg);
+    return /^[A-Za-z0-9_@%+=:,.\/-]+$/.test(text) ? text : "'" + text.replace(/'/g, "'\\''") + "'";
+  }).join(' ');
 }
 
 function showServiceInfo(name) {
@@ -5418,6 +5438,7 @@ async function showServiceLogs(name) {
 function openCreateServiceModal() {
    document.getElementById('svc-name').value = '';
    document.getElementById('svc-image').value = '';
+   document.getElementById('svc-command').value = '';
    document.getElementById('svc-port').value = '';
    document.getElementById('svc-exposure').value = 'port';
    setServiceRoutes('svc', []);
@@ -5466,7 +5487,9 @@ async function submitCreateService() {
     var svcVolumes = document.getElementById('svc-volumes').value.trim();
     var privileged = document.getElementById('svc-privileged').checked;
     var netAdmin = document.getElementById('svc-net-admin').checked;
+    var command = document.getElementById('svc-command').value.trim();
     var payload = { name: name, image: image, host_mode: hostMode, privileged: privileged, net_admin: netAdmin };
+    if (command) payload.command = command;
     if (routeMode) payload.routes = collectServiceRoutes('svc');
     else payload.port = parseInt(port, 10);
     if (hostname) payload.hostname = hostname;
@@ -5593,6 +5616,7 @@ function _fillRestoreFields(p) {
    document.getElementById('restore-svc-volumes').value = volStr;
    document.getElementById('restore-svc-privileged').checked = !!p.privileged;
    document.getElementById('restore-svc-net-admin').checked = !!(p.cap_add && p.cap_add.indexOf('NET_ADMIN') !== -1);
+   document.getElementById('restore-svc-command').value = shellJoin(p.command);
 }
 
 function openRestoreServiceModal(preselect) {
@@ -5602,6 +5626,7 @@ function openRestoreServiceModal(preselect) {
    document.getElementById('restore-svc-submit').disabled = false;
    document.getElementById('restore-svc-name').value = '';
    document.getElementById('restore-svc-image').value = '';
+   document.getElementById('restore-svc-command').value = '';
    document.getElementById('restore-svc-port').value = '';
    document.getElementById('restore-svc-exposure').value = 'port';
    setServiceRoutes('restore-svc', []);
@@ -5670,7 +5695,9 @@ async function submitRestoreService() {
     var restoreVolumes = document.getElementById('restore-svc-volumes').value.trim();
     var privileged = document.getElementById('restore-svc-privileged').checked;
     var netAdmin = document.getElementById('restore-svc-net-admin').checked;
+    var command = document.getElementById('restore-svc-command').value.trim();
     var payload = { name: name, image: image, host_mode: hostMode, privileged: privileged, net_admin: netAdmin };
+    if (command) payload.command = command;
     if (routeMode) payload.routes = collectServiceRoutes('restore-svc');
     else payload.port = parseInt(port, 10);
     if (hostname) payload.hostname = hostname;

@@ -16,6 +16,7 @@ from pydantic import (
 )
 
 from oduflow.naming import (
+    parse_service_command,
     validate_env_hostname,
     validate_env_name,
     validate_template_name,
@@ -45,6 +46,10 @@ EnvironmentVariableName = Annotated[
     StringConstraints(pattern=r"^[A-Za-z_][A-Za-z0-9_]*$"),
 ]
 NonEmptyString = Annotated[str, StringConstraints(min_length=1)]
+CommandArgument = Annotated[
+    str,
+    StringConstraints(strip_whitespace=False, min_length=1),
+]
 
 
 def _to_camel(value: str) -> str:
@@ -234,6 +239,17 @@ class Service(StackModel):
     privileged: bool = False
     net_admin: bool = False
     routes: list[ServiceRoute] = Field(default_factory=list)
+    command: list[CommandArgument] = Field(default_factory=list)
+
+    @field_validator(
+        "command",
+        mode="before",
+        json_schema_input_type=str | list[CommandArgument],
+    )
+    @classmethod
+    def split_command_string(cls, value: object) -> object:
+        """Accept the shell-quoted string form as well as an explicit argv list."""
+        return parse_service_command(value) if isinstance(value, str) else value
 
     @model_validator(mode="after")
     def one_exposure_mode(self) -> Service:

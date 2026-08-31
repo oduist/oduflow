@@ -84,6 +84,7 @@ from oduflow.locking import (
 from oduflow.naming import (
     PROD_ENV_PREFIX,
     parse_env_vars,
+    parse_service_command,
     slugify_branch,
     validate_env_hostname,
     validate_env_name,
@@ -437,6 +438,21 @@ def _env_vars_from_body(raw: object) -> dict[str, str]:
     if isinstance(raw, dict):
         return {str(k).strip(): str(v) for k, v in raw.items() if str(k).strip()}
     return parse_env_vars(str(raw or "").strip())
+
+
+def _command_from_body(raw: object) -> list[str]:
+    """Read a "command" request field in either supported shape.
+
+    A list is taken verbatim as argv (no re-splitting, so an argument may hold
+    spaces); the shell-quoted string form is parsed like the MCP tool does.
+    """
+    if raw is None:
+        return []
+    if isinstance(raw, str):
+        return parse_service_command(raw)
+    if isinstance(raw, list) and all(isinstance(item, str) for item in raw):
+        return list(raw)
+    raise ValueError("command must be a shell-quoted string or an array of strings")
 
 
 def _parse_extra_addons(raw: str) -> dict[str, str]:
@@ -2732,6 +2748,7 @@ def _build_routes(
             privileged = bool(body.get("privileged", False))
             net_admin = bool(body.get("net_admin", False))
             cap_add = ["NET_ADMIN"] if net_admin else None
+            command = _command_from_body(body.get("command")) or None
         except ValueError as e:
             return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
         except FlowError as e:
@@ -2761,6 +2778,7 @@ def _build_routes(
                 cap_add=cap_add,
                 privileged=privileged,
                 routes=routes,
+                command=command,
             )
             return JSONResponse({"ok": True, "result": result})
         except ValueError as e:
@@ -2820,6 +2838,10 @@ def _build_routes(
             if body and "net_admin" in body and body["net_admin"] is not None:
                 cap_add_override = ["NET_ADMIN"] if bool(body["net_admin"]) else []
 
+            command_override = None
+            if body and "command" in body and body["command"] is not None:
+                command_override = _command_from_body(body["command"])
+
             result = await _offload(
                 service_ops.update_service,
                 get_settings(),
@@ -2834,6 +2856,7 @@ def _build_routes(
                 cap_add_override=cap_add_override,
                 privileged_override=privileged_override,
                 routes_override=routes_override,
+                command_override=command_override,
             )
             return JSONResponse({"ok": True, "result": result})
         except ValueError as e:
@@ -2948,6 +2971,7 @@ def _build_routes(
             privileged = bool(body.get("privileged", False))
             net_admin = bool(body.get("net_admin", False))
             cap_add = ["NET_ADMIN"] if net_admin else None
+            command = _command_from_body(body.get("command")) or None
         except ValueError as e:
             return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
         except FlowError as e:
@@ -2977,6 +3001,7 @@ def _build_routes(
                 cap_add=cap_add,
                 privileged=privileged,
                 routes=routes,
+                command=command,
             )
             return JSONResponse({"ok": True, "result": result})
         except ValueError as e:

@@ -81,3 +81,85 @@ def test_update_service_distinguishes_missing_and_empty_routes(tmp_path):
     assert response.status_code == 200
     assert update.call_args.kwargs["routes_override"] == []
     assert update.call_args.kwargs["port_override"] == 8080
+
+
+def test_create_service_accepts_command_as_string_or_argv(tmp_path):
+    client = _client(tmp_path)
+    result = {
+        "name": "minio",
+        "container_name": "oduflow-1-svc-minio",
+        "image": "minio/minio:latest",
+        "url": "https://minio.example.com",
+    }
+    with patch(
+        "oduflow.web_ui.service_ops.create_service", return_value=result
+    ) as create:
+        client.post(
+            "/api/services/create",
+            json={
+                "name": "minio",
+                "image": "minio/minio:latest",
+                "port": 9000,
+                "command": "server /data",
+            },
+        )
+        assert create.call_args.kwargs["command"] == ["server", "/data"]
+
+        client.post(
+            "/api/services/create",
+            json={
+                "name": "minio",
+                "image": "minio/minio:latest",
+                "port": 9000,
+                # A list is argv already — an element may hold spaces.
+                "command": ["server", "/data dir"],
+            },
+        )
+        assert create.call_args.kwargs["command"] == ["server", "/data dir"]
+
+
+def test_create_service_rejects_invalid_command_shapes(tmp_path):
+    client = _client(tmp_path)
+
+    with patch("oduflow.web_ui.service_ops.create_service") as create:
+        for command in (True, 123, {"executable": "server"}, ["server", None]):
+            response = client.post(
+                "/api/services/create",
+                json={
+                    "name": "minio",
+                    "image": "minio/minio:latest",
+                    "port": 9000,
+                    "command": command,
+                },
+            )
+
+            assert response.status_code == 400
+            assert response.json() == {
+                "ok": False,
+                "error": (
+                    "command must be a shell-quoted string or an array of strings"
+                ),
+            }
+
+    create.assert_not_called()
+
+
+def test_update_service_distinguishes_missing_and_empty_command(tmp_path):
+    client = _client(tmp_path)
+    result = {
+        "name": "minio",
+        "container_name": "oduflow-1-svc-minio",
+        "image": "minio/minio:latest",
+        "url": "https://minio.example.com",
+    }
+    with patch(
+        "oduflow.web_ui.service_ops.update_service", return_value=result
+    ) as update:
+        client.post("/api/services/minio/update", json={})
+        assert update.call_args.kwargs["command_override"] is None
+
+        client.post("/api/services/minio/update", json={"command": ""})
+        assert update.call_args.kwargs["command_override"] == []
+
+        client.post("/api/services/minio/update", json={"command": "server /data"})
+        assert update.call_args.kwargs["command_override"] == ["server", "/data"]

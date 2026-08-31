@@ -192,6 +192,40 @@ def test_service_route_paths_are_canonicalized_before_duplicate_validation():
         )
 
 
+def test_service_command_accepts_argv_list_and_shell_string():
+    assert Service(
+        image="example/service:1", port=1, command=["server", "/data"]
+    ).command == [
+        "server",
+        "/data",
+    ]
+    # The string form is the one operators type; it is split with shell rules.
+    assert Service(
+        image="example/service:1", port=1, command='server "/data dir"'
+    ).command == ["server", "/data dir"]
+    assert Service(image="example/service:1", port=1).command == []
+
+
+def test_service_command_preserves_argument_whitespace():
+    assert Service(
+        image="example/service:1", port=1, command=["printf", "  value  "]
+    ).command == ["printf", "  value  "]
+    assert Service(
+        image="example/service:1", port=1, command='printf "  value  "'
+    ).command == ["printf", "  value  "]
+
+
+def test_service_command_json_schema_accepts_argv_list_and_shell_string():
+    command_schema = StackManifest.model_json_schema(by_alias=True)["$defs"]["Service"][
+        "properties"
+    ]["command"]
+
+    assert {branch["type"] for branch in command_schema["anyOf"]} == {
+        "array",
+        "string",
+    }
+
+
 def test_shipped_json_schema_matches_models():
     schema_path = (
         Path(__file__).parents[1] / "src/oduflow/schemas/oduflow-stack-v1alpha1.json"

@@ -254,6 +254,26 @@ def _needs_traefik_acme_mount(settings: Settings, container: Any) -> bool:
     return True
 
 
+def _image_command(container: Any) -> list[str]:
+    """The CMD baked into the container's image, or [] when it has none."""
+    try:
+        cmd = container.image.attrs.get("Config", {}).get("Cmd")
+    except Exception:
+        return []
+    return list(cmd) if isinstance(cmd, list) else []
+
+
+def _command_override(container: Any) -> list[str]:
+    """The container's CMD when it overrides the image default, else [].
+
+    Docker copies the image CMD into ``Config.Cmd`` when the container does not
+    set one, so an override is only visible as a difference between the two.
+    """
+    cmd = container.attrs.get("Config", {}).get("Cmd")
+    command = list(cmd) if isinstance(cmd, list) else []
+    return [] if command == _image_command(container) else command
+
+
 def _assert_free_service_slot(
     settings: Settings, team: TeamSettings, client: Any
 ) -> None:
@@ -290,6 +310,7 @@ def create_service(
     cap_add: list[str] | None = None,
     privileged: bool = False,
     routes: list[dict[str, object]] | None = None,
+    command: list[str] | None = None,
     stack_labels: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     container_name = get_service_container_name(name, settings.prefix, team.team_id)
@@ -413,6 +434,9 @@ def create_service(
     if env_vars:
         run_kwargs["environment"] = env_vars
 
+    if command:
+        run_kwargs["command"] = list(command)
+
     # Reject a missing or reserved volume before the image pull; the binds that
     # are actually used are resolved again under the registry lock below.
     _resolve_service_volume_binds(settings, team, volumes, client=client)
@@ -458,6 +482,7 @@ def create_service(
             cap_add=cap_add,
             privileged=privileged,
             routes=routes,
+            command=command,
         )
     except Exception:
         logger.warning("Failed to save service preset for %s", name, exc_info=True)
@@ -468,6 +493,7 @@ def create_service(
         "image": image,
         "url": url,
         "host_mode": host_mode,
+        "command": list(command or []),
         "routes": _routes_with_urls(routes, hostname),
     }
 
@@ -633,6 +659,8 @@ def _describe_service_container(
     host_config = container.attrs.get("HostConfig", {}) or {}
     svc_cap_add = list(host_config.get("CapAdd") or [])
     svc_privileged = bool(host_config.get("Privileged", False))
+    svc_command = _command_override(container)
+    svc_image_command = _image_command(container)
 
     return {
         "name": svc_name,
@@ -649,6 +677,8 @@ def _describe_service_container(
         "volumes": svc_volumes,
         "cap_add": svc_cap_add,
         "privileged": svc_privileged,
+        "command": svc_command,
+        "image_command": svc_image_command,
         "created_at": container.labels.get("oduflow.created_at", "")
         or container.attrs.get("Created", ""),
         "stack": container.labels.get("oduflow.stack", ""),
@@ -733,6 +763,7 @@ def update_service(
     cap_add_override: list[str] | None = None,
     privileged_override: bool | None = None,
     routes_override: list[dict[str, object]] | None = None,
+    command_override: list[str] | None = None,
     stack_labels: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Pull the latest image for a service and re-create it with the same settings.
@@ -781,6 +812,7 @@ def update_service(
         cap_add = preset.get("cap_add") or None
         privileged = preset.get("privileged", False)
         routes = normalize_http_routes(preset.get("routes"))
+        command = list(preset.get("command") or [])
     else:
         # Legacy fallback: extract from running container
         raw_env = container.attrs.get("Config", {}).get("Env", [])
@@ -797,6 +829,7 @@ def update_service(
         host_config = container.attrs.get("HostConfig", {}) or {}
         cap_add = list(host_config.get("CapAdd") or []) or None
         privileged = bool(host_config.get("Privileged", False))
+        command = _command_override(container)
 
         port = None
         hostname = None
@@ -901,6 +934,9 @@ def update_service(
     if privileged_override is not None and privileged_override != privileged:
         privileged = privileged_override
         config_changed = True
+    if command_override is not None and list(command_override) != command:
+        command = list(command_override)
+        config_changed = True
     if routes_override is not None:
         normalized_override = normalize_http_routes(routes_override)
         if normalized_override:
@@ -963,6 +999,7 @@ def update_service(
             "image": target_image,
             "url": url,
             "host_mode": is_host_mode,
+            "command": list(command),
             "image_updated": False,
             "config_updated": False,
             "old_digest": old_digest,
@@ -1006,6 +1043,7 @@ def update_service(
             cap_add=cap_add,
             privileged=privileged,
             routes=routes,
+            command=command or None,
             stack_labels=effective_stack_labels,
         )
 
