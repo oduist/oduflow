@@ -46,6 +46,10 @@ EnvironmentVariableName = Annotated[
     StringConstraints(pattern=r"^[A-Za-z_][A-Za-z0-9_]*$"),
 ]
 NonEmptyString = Annotated[str, StringConstraints(min_length=1)]
+CommandArgument = Annotated[
+    str,
+    StringConstraints(strip_whitespace=False, min_length=1),
+]
 
 
 def _to_camel(value: str) -> str:
@@ -235,12 +239,12 @@ class Service(StackModel):
     privileged: bool = False
     net_admin: bool = False
     routes: list[ServiceRoute] = Field(default_factory=list)
-    command: list[NonEmptyString] = Field(default_factory=list)
+    command: list[CommandArgument] = Field(default_factory=list)
 
     @field_validator(
         "command",
         mode="before",
-        json_schema_input_type=str | list[NonEmptyString],
+        json_schema_input_type=str | list[CommandArgument],
     )
     @classmethod
     def split_command_string(cls, value: object) -> object:

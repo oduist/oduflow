@@ -206,6 +206,15 @@ def test_service_command_accepts_argv_list_and_shell_string():
     assert Service(image="example/service:1", port=1).command == []
 
 
+def test_service_command_preserves_argument_whitespace():
+    assert Service(
+        image="example/service:1", port=1, command=["printf", "  value  "]
+    ).command == ["printf", "  value  "]
+    assert Service(
+        image="example/service:1", port=1, command='printf "  value  "'
+    ).command == ["printf", "  value  "]
+
+
 def test_service_command_json_schema_accepts_argv_list_and_shell_string():
     command_schema = StackManifest.model_json_schema(by_alias=True)["$defs"]["Service"][
         "properties"
