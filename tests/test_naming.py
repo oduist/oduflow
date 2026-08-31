@@ -11,6 +11,7 @@ from oduflow.naming import (
     get_service_database_role,
     get_template_db_name,
     get_workspace_path,
+    parse_service_command,
     slugify_branch,
     split_team_hostname,
     validate_env_hostname,
@@ -465,3 +466,21 @@ class TestRedactUrlCredentials:
         from oduflow.naming import redact_url_credentials
 
         assert redact_url_credentials("") == ""
+
+
+class TestParseServiceCommand:
+    def test_splits_with_shell_quoting(self):
+        assert parse_service_command('server /data --address ":9001"') == [
+            "server",
+            "/data",
+            "--address",
+            ":9001",
+        ]
+
+    def test_empty_means_no_override(self):
+        assert parse_service_command("") == []
+        assert parse_service_command("   ") == []
+
+    def test_unbalanced_quote_is_rejected(self):
+        with pytest.raises(ValueError, match="Invalid command"):
+            parse_service_command("server '/data")

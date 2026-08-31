@@ -16,6 +16,9 @@ oduflow call create_service meilisearch getmeili/meilisearch:v1.6 7700 "" "MEILI
 # Elasticsearch
 oduflow call create_service elasticsearch docker.elastic.co/elasticsearch/elasticsearch:8.11.0 9200 "" "discovery.type=single-node,ES_JAVA_OPTS=-Xms512m -Xmx512m"
 
+# MinIO — the image expects its start arguments as the container command
+oduflow call create_service '{"name":"minio","image":"minio/minio","port":9000,"command":"server /data"}'
+
 # WireGuard VPN — needs NET_ADMIN to manage tun/iptables
 oduflow call create_service '{"name":"vpn","image":"linuxserver/wireguard","port":51820,"net_admin":true}'
 
@@ -101,6 +104,42 @@ readable to every service container. Use only trusted service images and grant
 service-management access only to trusted operators. Read-only protects the
 store from modification, not from disclosure.
 
+### Start Command
+
+Some images ship an `ENTRYPOINT` that expects arguments, and their default
+`CMD` is not what you want (`minio/minio` needs `server /data`, for example).
+The optional `command` replaces the image `CMD`:
+
+```bash
+oduflow call create_service '{
+  "name":"minio",
+  "image":"minio/minio",
+  "port":9000,
+  "command":"server /data --console-address :9001"
+}'
+```
+
+The string is split with shell quoting rules, so `--address ":9001"` stays one
+argument; the resulting argv is what `get_service_info` reports and what the
+preset stores. The image `ENTRYPOINT` is never changed. Leave `command` out to
+run the image's own `CMD`.
+
+On `update_service` the parameter is tri-state: omitted keeps the current
+command, a new string replaces it, and an **empty string drops the override**
+so the container falls back to the image `CMD`. (This differs from `env_vars`
+and `image`, where an empty value means "keep".)
+
+```bash
+# Change the command
+oduflow call update_service '{
+  "name":"minio",
+  "command":"server /data --console-address :9090"
+}'
+
+# Drop it and use the image default again
+oduflow call update_service '{"name":"minio","command":""}'
+```
+
 ### Linux Capabilities
 
 Two optional flags grant additional container privileges:
@@ -117,7 +156,8 @@ Both can be enabled at the same time; on the Docker side, `privileged` implies a
 oduflow call list_services
 
 # Full state of a single service — image + digest, port/routes, hostname,
-# host_mode, volumes, env vars, capabilities, restart count, started_at, preset
+# host_mode, command, volumes, env vars, capabilities, restart count,
+# started_at, preset
 oduflow call get_service_info redis
 
 # View service logs
@@ -148,16 +188,16 @@ oduflow call run_service_command redis "redis-cli ping"
 
 ### Changing a Service
 
-`update_service` is the preferred way to change **any** setting of a running service — image, env vars, port/routes, hostname, `host_mode`, `volumes`, `privileged`, or `net_admin`. It recreates the container automatically and preserves every setting you do not override, so you rarely need to delete and recreate a service by hand. Passing `routes` fully replaces the route list. To return to a single catch-all port, pass `routes=[]` and the replacement `port` in the same call.
+`update_service` is the preferred way to change **any** setting of a running service — image, env vars, port/routes, hostname, `host_mode`, `command`, `volumes`, `privileged`, or `net_admin`. It recreates the container automatically and preserves every setting you do not override, so you rarely need to delete and recreate a service by hand. Passing `routes` fully replaces the route list. To return to a single catch-all port, pass `routes=[]` and the replacement `port` in the same call.
 
-If you do recreate a service manually (e.g. to rename it), call `get_service_info` first and reuse its fields in the new `create_service` call. The returned dict carries the full configuration (`image`, `port` or `routes`, `hostname`, `env_vars`, `host_mode`, `volumes`, `cap_add`, `privileged`) so you do not lose anything that `list_services` truncates or that lived only inside the preset.
+If you do recreate a service manually (e.g. to rename it), call `get_service_info` first and reuse its fields in the new `create_service` call. The returned dict carries the full configuration (`image`, `port` or `routes`, `hostname`, `env_vars`, `host_mode`, `command`, `volumes`, `cap_add`, `privileged`) so you do not lose anything that `list_services` truncates or that lived only inside the preset.
 
 ## Service Update Flow
 
 The `update_service` operation:
 
 1. Reads the saved preset (authoritative source) or inspects the running container as a legacy fallback
-2. Applies any overrides passed in (`env_vars`, `image`, `port`/`routes`, `hostname`, `host_mode`, `volumes`, `privileged`, `net_admin`) — each override **fully replaces** the current value
+2. Applies any overrides passed in (`env_vars`, `image`, `port`/`routes`, `hostname`, `host_mode`, `command`, `volumes`, `privileged`, `net_admin`) — each override **fully replaces** the current value
 3. Resolves the complete candidate volume configuration before touching the running container; invalid or missing volumes fail without stopping it
 4. Pulls the target image (the override, or the current one)
 5. Decides whether to recreate:
@@ -169,7 +209,7 @@ Overrides are optional: calling `update_service` with only `name` pulls the curr
 
 ## Service Presets
 
-Every time a service is created, its configuration (image, port or routes, hostname, environment variables, volumes, `host_mode`, `cap_add`, `privileged`) is automatically saved as a **preset** in `{team_data_dir}/service_presets.json`. This allows you to restore a service after deletion without re-entering its configuration.
+Every time a service is created, its configuration (image, port or routes, hostname, environment variables, volumes, `host_mode`, `command`, `cap_add`, `privileged`) is automatically saved as a **preset** in `{team_data_dir}/service_presets.json`. This allows you to restore a service after deletion without re-entering its configuration.
 
 ```bash
 # List saved presets

@@ -1,6 +1,7 @@
 import hashlib
 import os
 import re
+import shlex
 from typing import Any
 from urllib.parse import urlparse, urlunparse
 
@@ -406,6 +407,21 @@ def parse_env_vars(raw: str) -> dict[str, str]:
     """
     items = re.split(r"\r?\n|,(?=\s*[A-Za-z_][A-Za-z0-9_]*=)", raw)
     return dict(item.strip().split("=", 1) for item in items if "=" in item)
+
+
+def parse_service_command(raw: str) -> list[str]:
+    """Split a start-command string into the argv list Docker expects.
+
+    Shell quoting rules apply, so ``server /data --address ":9001"`` becomes
+    four arguments. An empty (or whitespace-only) string means "no override" —
+    the image's own CMD is used.
+    """
+    if not raw or not raw.strip():
+        return []
+    try:
+        return shlex.split(raw)
+    except ValueError as exc:
+        raise ValueError(f"Invalid command {raw!r}: {exc}") from None
 
 
 _ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")

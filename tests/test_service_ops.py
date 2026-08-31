@@ -482,6 +482,38 @@ class TestCreateService:
         run_kwargs = mock_docker_client.containers.run.call_args
         assert run_kwargs[1]["environment"] == env
 
+    def test_create_with_command(self, mock_docker_client):
+        mock_docker_client.networks.get.return_value = MagicMock()
+        mock_docker_client.containers.get.side_effect = docker.errors.NotFound("nf")
+        mock_docker_client.containers.run.return_value = MagicMock()
+
+        with patch(
+            "oduflow.docker_ops.service_ops.service_presets.save_preset"
+        ) as mock_save:
+            result = service_ops.create_service(
+                TEST_SETTINGS,
+                TEST_TEAM,
+                "minio",
+                "minio/minio:latest",
+                9000,
+                command=["server", "/data"],
+            )
+
+        run_kwargs = mock_docker_client.containers.run.call_args
+        assert run_kwargs[1]["command"] == ["server", "/data"]
+        assert result["command"] == ["server", "/data"]
+        assert mock_save.call_args[1]["command"] == ["server", "/data"]
+
+    def test_create_without_command(self, mock_docker_client):
+        mock_docker_client.networks.get.return_value = MagicMock()
+        mock_docker_client.containers.get.side_effect = docker.errors.NotFound("nf")
+        mock_docker_client.containers.run.return_value = MagicMock()
+
+        service_ops.create_service(TEST_SETTINGS, TEST_TEAM, "redis", "redis:7", 6379)
+
+        run_kwargs = mock_docker_client.containers.run.call_args
+        assert "command" not in run_kwargs[1]
+
     def test_create_without_env_vars(self, mock_docker_client):
         mock_docker_client.networks.get.return_value = MagicMock()
         mock_docker_client.containers.get.side_effect = docker.errors.NotFound("nf")
@@ -581,6 +613,42 @@ class TestListServices:
         svc = result[0]
         assert svc["url"] == "https://meili.example.com"
         assert svc["port"] == 7700
+
+    def test_list_reports_command_override(self, mock_docker_client):
+        container = MagicMock()
+        container.labels = {"oduflow.managed": "true", "oduflow.service": "minio"}
+        container.name = "oduflow-1-svc-minio"
+        container.status = "running"
+        container.image.tags = ["minio/minio:latest"]
+        container.image.attrs = {"Config": {"Cmd": ["minio"], "Env": []}}
+        container.attrs = {
+            "NetworkSettings": {"Ports": {}},
+            "Config": {"Cmd": ["server", "/data"], "Env": []},
+        }
+        mock_docker_client.containers.list.return_value = [container]
+
+        svc = service_ops.list_services(TEST_SETTINGS, TEST_TEAM)[0]
+
+        assert svc["command"] == ["server", "/data"]
+        assert svc["image_command"] == ["minio"]
+
+    def test_list_image_default_command_is_not_an_override(self, mock_docker_client):
+        container = MagicMock()
+        container.labels = {"oduflow.managed": "true", "oduflow.service": "redis"}
+        container.name = "oduflow-1-svc-redis"
+        container.status = "running"
+        container.image.tags = ["redis:7"]
+        container.image.attrs = {"Config": {"Cmd": ["redis-server"], "Env": []}}
+        container.attrs = {
+            "NetworkSettings": {"Ports": {}},
+            "Config": {"Cmd": ["redis-server"], "Env": []},
+        }
+        mock_docker_client.containers.list.return_value = [container]
+
+        svc = service_ops.list_services(TEST_SETTINGS, TEST_TEAM)[0]
+
+        assert svc["command"] == []
+        assert svc["image_command"] == ["redis-server"]
 
     def test_list_empty(self, mock_docker_client):
         mock_docker_client.containers.list.return_value = []
@@ -794,6 +862,158 @@ class TestUpdateService:
             # image pull) and re-resolves under the service-registry lock.
             assert mock_resolve.call_count == 3
             mock_resolve.assert_any_call(TEST_TEAM, volumes)
+
+    def test_update_preserves_preset_command(self, mock_docker_client):
+        """An update with no command override keeps the preset's command."""
+        container = self._make_container(
+            image_tags=["minio/minio:latest"],
+            labels={"oduflow.managed": "true", "oduflow.service": "minio"},
+            attrs={"Config": {"Env": []}},
+        )
+        mock_docker_client.containers.get.side_effect = [
+            container,
+            docker.errors.NotFound("nf"),
+        ]
+        mock_docker_client.networks.get.return_value = MagicMock()
+        mock_docker_client.containers.run.return_value = MagicMock()
+
+        preset = {
+            "name": "minio",
+            "image": "minio/minio:latest",
+            "port": 9000,
+            "hostname": "",
+            "env_vars": {},
+            "command": ["server", "/data"],
+        }
+
+        with patch(
+            "oduflow.docker_ops.service_ops.service_presets.get_preset",
+            return_value=preset,
+        ):
+            service_ops.update_service(TEST_SETTINGS, TEST_TEAM, "minio")
+
+        run_kwargs = mock_docker_client.containers.run.call_args
+        assert run_kwargs[1]["command"] == ["server", "/data"]
+
+    def test_update_command_override_recreates_container(self, mock_docker_client):
+        """A changed command recreates the container even on an unchanged digest."""
+        container = self._make_container(
+            image_tags=["minio/minio:latest"],
+            labels={"oduflow.managed": "true", "oduflow.service": "minio"},
+            attrs={"Config": {"Env": []}},
+        )
+        container.image.id = "sha256:same"
+        mock_docker_client.containers.get.side_effect = [
+            container,
+            docker.errors.NotFound("nf"),
+        ]
+        mock_docker_client.networks.get.return_value = MagicMock()
+        new_image = MagicMock()
+        new_image.id = "sha256:same"
+        mock_docker_client.images.pull.return_value = new_image
+        mock_docker_client.containers.run.return_value = MagicMock()
+
+        preset = {
+            "name": "minio",
+            "image": "minio/minio:latest",
+            "port": 9000,
+            "hostname": "",
+            "env_vars": {},
+            "command": ["server", "/data"],
+        }
+
+        with patch(
+            "oduflow.docker_ops.service_ops.service_presets.get_preset",
+            return_value=preset,
+        ):
+            result = service_ops.update_service(
+                TEST_SETTINGS,
+                TEST_TEAM,
+                "minio",
+                command_override=["server", "/data", "--console-address", ":9001"],
+            )
+
+        assert result["config_updated"] is True
+        assert result["image_updated"] is False
+        run_kwargs = mock_docker_client.containers.run.call_args
+        assert run_kwargs[1]["command"] == [
+            "server",
+            "/data",
+            "--console-address",
+            ":9001",
+        ]
+
+    def test_update_empty_command_override_clears_it(self, mock_docker_client):
+        """An empty override drops the command back to the image default."""
+        container = self._make_container(
+            image_tags=["minio/minio:latest"],
+            labels={"oduflow.managed": "true", "oduflow.service": "minio"},
+            attrs={"Config": {"Env": []}},
+        )
+        container.image.id = "sha256:same"
+        mock_docker_client.containers.get.side_effect = [
+            container,
+            docker.errors.NotFound("nf"),
+        ]
+        mock_docker_client.networks.get.return_value = MagicMock()
+        new_image = MagicMock()
+        new_image.id = "sha256:same"
+        mock_docker_client.images.pull.return_value = new_image
+        mock_docker_client.containers.run.return_value = MagicMock()
+
+        preset = {
+            "name": "minio",
+            "image": "minio/minio:latest",
+            "port": 9000,
+            "hostname": "",
+            "env_vars": {},
+            "command": ["server", "/data"],
+        }
+
+        with (
+            patch(
+                "oduflow.docker_ops.service_ops.service_presets.get_preset",
+                return_value=preset,
+            ),
+            patch(
+                "oduflow.docker_ops.service_ops.service_presets.save_preset"
+            ) as mock_save,
+        ):
+            result = service_ops.update_service(
+                TEST_SETTINGS, TEST_TEAM, "minio", command_override=[]
+            )
+
+        assert result["config_updated"] is True
+        run_kwargs = mock_docker_client.containers.run.call_args
+        assert "command" not in run_kwargs[1]
+        assert mock_save.call_args[1]["command"] is None
+
+    def test_update_legacy_no_preset_keeps_command_override(self, mock_docker_client):
+        """Without a preset the override is read back from the container's Cmd."""
+        container = self._make_container(
+            image_tags=["minio/minio:latest"],
+            labels={"oduflow.managed": "true", "oduflow.service": "minio"},
+            attrs={
+                "Config": {"Env": [], "Cmd": ["server", "/data"]},
+                "NetworkSettings": {"Ports": {"9000/tcp": []}},
+            },
+        )
+        container.image.attrs = {"Config": {"Cmd": ["minio"], "Env": []}}
+        mock_docker_client.containers.get.side_effect = [
+            container,
+            docker.errors.NotFound("nf"),
+        ]
+        mock_docker_client.networks.get.return_value = MagicMock()
+        mock_docker_client.containers.run.return_value = MagicMock()
+
+        with patch(
+            "oduflow.docker_ops.service_ops.service_presets.get_preset",
+            side_effect=NotFoundError("no preset"),
+        ):
+            service_ops.update_service(TEST_SETTINGS, TEST_TEAM, "minio")
+
+        run_kwargs = mock_docker_client.containers.run.call_args
+        assert run_kwargs[1]["command"] == ["server", "/data"]
 
     def test_update_port_mode_legacy_no_preset(self, mock_docker_client):
         """Legacy fallback: extract settings from container when no preset exists."""

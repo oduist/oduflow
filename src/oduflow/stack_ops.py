@@ -519,6 +519,15 @@ def build_plan(
             ),
             ("capabilities", sorted(actual.get("cap_add", [])), desired_caps),
             (
+                "command",
+                list(
+                    actual.get("command")
+                    or (actual.get("image_command") if desired_service.command else [])
+                    or []
+                ),
+                desired_service.command,
+            ),
+            (
                 "privileged",
                 bool(actual.get("privileged")),
                 desired_service.privileged,
@@ -606,6 +615,7 @@ def _service_kwargs(
         else None,
         "privileged": desired.privileged,
         "routes": _desired_routes(desired) or None,
+        "command": list(desired.command) or None,
         "stack_labels": _stack_labels(
             manifest.metadata.name, f"services.{name}", desired
         ),
@@ -742,6 +752,7 @@ def apply_stack(
                     cap_add_override=kwargs["cap_add"] or [],
                     privileged_override=kwargs["privileged"],
                     routes_override=kwargs["routes"] or [],
+                    command_override=kwargs["command"] or [],
                     stack_labels=kwargs["stack_labels"],
                 )
 

@@ -16,6 +16,7 @@ from pydantic import (
 )
 
 from oduflow.naming import (
+    parse_service_command,
     validate_env_hostname,
     validate_env_name,
     validate_template_name,
@@ -234,6 +235,17 @@ class Service(StackModel):
     privileged: bool = False
     net_admin: bool = False
     routes: list[ServiceRoute] = Field(default_factory=list)
+    command: list[NonEmptyString] = Field(default_factory=list)
+
+    @field_validator(
+        "command",
+        mode="before",
+        json_schema_input_type=str | list[NonEmptyString],
+    )
+    @classmethod
+    def split_command_string(cls, value: object) -> object:
+        """Accept the shell-quoted string form as well as an explicit argv list."""
+        return parse_service_command(value) if isinstance(value, str) else value
 
     @model_validator(mode="after")
     def one_exposure_mode(self) -> Service:

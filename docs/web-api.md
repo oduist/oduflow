@@ -111,8 +111,8 @@ Odoo.sh ingest endpoints accept the import token only in
 | Method | Endpoint | Description |
 |---|---|---|
 | `GET` | `/api/services` | List services |
-| `POST` | `/api/services/create` | Create a service with either catch-all `port` or restricted Traefik `routes`, plus optional image/runtime settings |
-| `POST` | `/api/services/{name}/update` | Pull/change settings and recreate safely; `env_vars`, `volumes`, and `routes` are full replacements when supplied |
+| `POST` | `/api/services/create` | Create a service with either catch-all `port` or restricted Traefik `routes`, plus optional image/runtime settings. `command` accepts a shell-quoted string or an argv array and replaces the image `CMD` |
+| `POST` | `/api/services/{name}/update` | Pull/change settings and recreate safely; `env_vars`, `volumes`, and `routes` are full replacements when supplied. Omit `command` to keep it, send `""`/`[]` to fall back to the image `CMD` |
 | `POST` | `/api/services/{name}/restart` | Restart a service |
 | `POST` | `/api/services/{name}/delete` | Delete a service |
 | `GET` | `/api/services/{name}/logs?n=200` | Read service logs |

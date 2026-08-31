@@ -1102,6 +1102,40 @@ class TestCreateServiceTool:
         assert mock_create.call_args.kwargs["routes"] == routes
         assert "- /RPC2 -> 8080" in result
 
+    @patch("oduflow.docker_ops.service_ops.create_service")
+    def test_create_splits_command_into_argv(self, mock_create):
+        command = ["server", "/data", "--console-address", ":9001"]
+        mock_create.return_value = {
+            "name": "minio",
+            "container_name": "oduflow-1-svc-minio",
+            "url": "http://localhost:9000",
+            "image": "minio/minio:latest",
+            "command": command,
+        }
+
+        result = _get_tool_fn("create_service")(
+            name="minio",
+            image="minio/minio:latest",
+            port=9000,
+            command='server /data --console-address ":9001"',
+        )
+
+        assert mock_create.call_args.kwargs["command"] == command
+        assert "Command: server /data --console-address :9001" in result
+
+    @patch("oduflow.docker_ops.service_ops.create_service")
+    def test_create_without_command_passes_none(self, mock_create):
+        mock_create.return_value = {
+            "name": "redis",
+            "container_name": "oduflow-1-svc-redis",
+            "url": "http://localhost:6379",
+            "image": "redis:7",
+        }
+
+        _get_tool_fn("create_service")(name="redis", image="redis:7", port=6379)
+
+        assert mock_create.call_args.kwargs["command"] is None
+
 
 class TestUpdateServiceTool:
     @patch("oduflow.docker_ops.service_ops.update_service")
@@ -1129,6 +1163,7 @@ class TestUpdateServiceTool:
             cap_add_override=None,
             privileged_override=None,
             routes_override=None,
+            command_override=None,
         )
 
     @patch("oduflow.docker_ops.service_ops.update_service")
@@ -1181,6 +1216,37 @@ class TestUpdateServiceTool:
         routes = [{"path": "/RPC2", "port": 8080, "strip_prefix": False}]
         _get_tool_fn("update_service")(name="fs", routes=routes)
         assert mock_update.call_args.kwargs["routes_override"] == routes
+
+    @patch("oduflow.docker_ops.service_ops.update_service")
+    def test_update_command_string_is_split(self, mock_update):
+        mock_update.return_value = {
+            "name": "minio",
+            "container_name": "oduflow-1-svc-minio",
+            "url": "http://localhost:9000",
+            "image": "minio/minio:latest",
+            "command": ["server", "/data"],
+            "config_updated": True,
+        }
+
+        result = _get_tool_fn("update_service")(name="minio", command="server /data")
+
+        assert mock_update.call_args.kwargs["command_override"] == ["server", "/data"]
+        assert "Command: server /data" in result
+
+    @patch("oduflow.docker_ops.service_ops.update_service")
+    def test_update_empty_command_clears_the_override(self, mock_update):
+        """An empty string means "drop it", unlike env_vars where it means "keep"."""
+        mock_update.return_value = {
+            "name": "minio",
+            "container_name": "oduflow-1-svc-minio",
+            "url": "http://localhost:9000",
+            "image": "minio/minio:latest",
+            "config_updated": True,
+        }
+
+        _get_tool_fn("update_service")(name="minio", command="")
+
+        assert mock_update.call_args.kwargs["command_override"] == []
 
     @patch("oduflow.docker_ops.service_ops.update_service")
     def test_update_net_admin_and_privileged_mapping(self, mock_update):

@@ -7,6 +7,7 @@ import logging
 import os
 import pathlib
 import re
+import shlex
 import sys
 import warnings
 from collections.abc import Awaitable, Callable, Sequence
@@ -61,7 +62,7 @@ from oduflow.locking import (
     service_preset_lock_key,
     volume_lock_key,
 )
-from oduflow.naming import normalize_env_vars, parse_env_vars
+from oduflow.naming import normalize_env_vars, parse_env_vars, parse_service_command
 from oduflow.output_cache import CachedOutput, OutputCache
 from oduflow.po_tools import PoEntry
 from oduflow.settings import Settings, TeamSettings, find_toml
@@ -3722,6 +3723,7 @@ def create_service(
     privileged: bool = False,
     net_admin: bool = False,
     routes: list[dict[str, object]] | None = None,
+    command: str = "",
     ctx: Context | None = None,
 ) -> str:
     """
@@ -3738,6 +3740,7 @@ def create_service(
         privileged: Run the container in privileged mode (full host access). Use with care — implies all Linux capabilities. Mutually exclusive with net_admin (privileged already grants NET_ADMIN).
         net_admin: Add the NET_ADMIN Linux capability. Required for VPN/WireGuard, tun/tap devices, and iptables manipulation inside the container.
         routes: Alternative Traefik exposure mode. Each object has path, backend port, and optional strip_prefix. Routes target this same service and unlisted paths return Traefik 404. Mutually exclusive with the top-level port.
+        command: Start command overriding the image CMD, written as a shell-quoted string (e.g. "server /data --console-address :9001" for minio/minio). Leave empty to use the image default. The image ENTRYPOINT is not affected.
     """
     settings = _get_settings()
     team = _resolve_team(ctx)
@@ -3746,6 +3749,7 @@ def create_service(
         parsed_env = parse_env_vars(env_vars)
     parsed_volumes = volume_ops.parse_volume_mounts(volumes) if volumes else None
     cap_add = ["NET_ADMIN"] if net_admin else None
+    parsed_command = parse_service_command(command)
     result = service_ops.create_service(
         settings,
         team,
@@ -3759,6 +3763,7 @@ def create_service(
         cap_add=cap_add,
         privileged=privileged,
         routes=routes,
+        command=parsed_command or None,
     )
     vol_info = ""
     if parsed_volumes:
@@ -3772,6 +3777,9 @@ def create_service(
             f"{' (strip prefix)' if route.get('strip_prefix') else ''}"
             for route in result["routes"]
         )
+    cmd_info = ""
+    if result.get("command"):
+        cmd_info = "\nCommand: " + shlex.join(result["command"])
     return (
         f"Service created successfully!\n"
         f"Name: {result['name']}\n"
@@ -3779,6 +3787,7 @@ def create_service(
         f"{_service_internal_host_line(result['container_name'], host_mode)}\n"
         f"Image: {result['image']}\n"
         f"URL: {result['url']}"
+        f"{cmd_info}"
         f"{vol_info}"
         f"{route_info}"
     )
@@ -3798,12 +3807,13 @@ def update_service(
     privileged: bool | None = None,
     net_admin: bool | None = None,
     routes: list[dict[str, object]] | None = None,
+    command: str | None = None,
     ctx: Context | None = None,
 ) -> str:
     """
     Update a managed auxiliary service container. Pulls the latest image and
     optionally changes any setting (env vars, image, port, hostname, host_mode,
-    volumes, privileged, net_admin, routes). The container is recreated when the image or
+    volumes, privileged, net_admin, routes, command). The container is recreated when the image or
     any setting changes; settings that are not overridden are preserved. This is
     the preferred way to change a service — you do not need to delete and
     recreate it manually.
@@ -3819,6 +3829,7 @@ def update_service(
         privileged: Run the container in privileged mode (full host access). Leave unset (null) to keep current mode. Mutually exclusive with net_admin (privileged already grants NET_ADMIN).
         net_admin: Add (True) or remove (False) the NET_ADMIN Linux capability — required for VPN/WireGuard, tun/tap, and iptables. Leave unset (null) to keep current capabilities.
         routes: Full replacement HTTP route list. Leave unset to preserve it. Pass [] together with port to return to a single catch-all port.
+        command: New start command overriding the image CMD, as a shell-quoted string (e.g. "server /data"). Leave unset (null) to keep the current command; pass an empty string to drop the override and fall back to the image CMD. Note this differs from env_vars/image, where an empty string means "keep".
     """
     settings = _get_settings()
     team = _resolve_team(ctx)
@@ -3836,6 +3847,8 @@ def update_service(
     if net_admin is not None:
         cap_add_override = ["NET_ADMIN"] if net_admin else []
 
+    command_override = parse_service_command(command) if command is not None else None
+
     result = service_ops.update_service(
         settings,
         team,
@@ -3849,6 +3862,7 @@ def update_service(
         cap_add_override=cap_add_override,
         privileged_override=privileged,
         routes_override=routes,
+        command_override=command_override,
     )
 
     if result.get("image_updated"):
@@ -3859,6 +3873,9 @@ def update_service(
         status = "Already up-to-date (no changes)"
 
     digest_short = (result.get("new_digest") or "")[:19]
+    cmd_info = ""
+    if result.get("command"):
+        cmd_info = "\nCommand: " + shlex.join(result["command"])
     return (
         f"Service updated successfully!\n"
         f"Status: {status}\n"
@@ -3868,6 +3885,7 @@ def update_service(
         f"Image: {result['image']}\n"
         f"Digest: {digest_short}\n"
         f"URL: {result['url']}"
+        f"{cmd_info}"
     )
 
 
@@ -3906,10 +3924,10 @@ def get_service_info(name: str, ctx: Context | None = None) -> str:
     Get full state and configuration of a managed auxiliary service.
 
     Returns image (with digest), runtime status, port, hostname, URL, host_mode,
-    volumes, environment variables, capabilities, privileged flag, restart count,
-    started_at, and whether a saved preset exists. Use this before recreating or
-    updating a service so all current options (volumes, host_mode, cap_add, env)
-    are preserved.
+    start command, volumes, environment variables, capabilities, privileged flag,
+    restart count, started_at, and whether a saved preset exists. Use this before
+    recreating or updating a service so all current options (volumes, host_mode,
+    cap_add, command, env) are preserved.
 
     Args:
         name: The name of the service to inspect (e.g. "redis", "fs").
@@ -3947,6 +3965,12 @@ def get_service_info(name: str, ctx: Context | None = None) -> str:
         lines.append("Privileged: true")
     if info.get("cap_add"):
         lines.append(f"Capabilities: {','.join(info['cap_add'])}")
+    if info.get("command"):
+        lines.append(f"Command: {shlex.join(info['command'])}")
+    elif info.get("image_command"):
+        lines.append(
+            f"Command: {shlex.join(info['image_command'])} (image default, not overridden)"
+        )
     user_volumes = []
     system_volumes = []
     for volume in info.get("volumes") or []:
@@ -4008,6 +4032,8 @@ def list_service_presets(ctx: Context | None = None) -> str:
             output += ", privileged=true"
         if p.get("cap_add"):
             output += f", cap_add=[{','.join(p['cap_add'])}]"
+        if p.get("command"):
+            output += f", command={shlex.join(p['command'])!r}"
         if p.get("volumes"):
             vol_str = ",".join(
                 f"{v['volume']}:{v['mount_path']}:{v.get('mode', 'rw')}"
@@ -4039,6 +4065,7 @@ def restore_service(name: str, ctx: Context | None = None) -> str:
     preset_volumes = preset.get("volumes") or None
     preset_cap_add = preset.get("cap_add") or None
     preset_privileged = preset.get("privileged", False)
+    preset_command = preset.get("command") or None
     result = service_ops.create_service(
         settings,
         team,
@@ -4052,6 +4079,7 @@ def restore_service(name: str, ctx: Context | None = None) -> str:
         cap_add=preset_cap_add,
         privileged=preset_privileged,
         routes=preset.get("routes") or None,
+        command=preset_command,
     )
     extra = ""
     if preset_volumes:
@@ -4063,6 +4091,8 @@ def restore_service(name: str, ctx: Context | None = None) -> str:
         extra += "\nPrivileged: true"
     elif preset_cap_add:
         extra += f"\nCapabilities: {','.join(preset_cap_add)}"
+    if preset_command:
+        extra += f"\nCommand: {shlex.join(preset_command)}"
     if result.get("routes"):
         extra += "\nRoutes: " + ", ".join(
             f"{route['path']}->{route['port']}" for route in result["routes"]

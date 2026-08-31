@@ -490,6 +490,75 @@ def test_plan_ignores_service_image_environment_defaults(
     assert plan.actions == ()
 
 
+@patch("oduflow.extra_addons.list_extra_repos", return_value=[])
+@patch("oduflow.stack_ops.volume_ops.list_volumes", return_value=[])
+@patch("oduflow.stack_ops.env_ops.get_environment_info")
+@patch("oduflow.stack_ops.env_ops.list_environments")
+def test_plan_reports_service_command_drift(
+    envs, env_info, _volumes, _repos, stack_fixture
+):
+    settings, team, manifest, path = stack_fixture
+    manifest.spec.extra_repositories = {}
+    manifest.spec.volumes = {}
+    manifest.spec.files = []
+    manifest.spec.environment.modules.install = []
+    service = manifest.spec.services["fs"]
+    service.env = {}
+    service.volumes = []
+    service.command = ["server", "/data"]
+    envs.return_value = [
+        {
+            "env_name": "acme-dev",
+            "stack": "acme",
+            "stack_resource": "environment",
+            "repo_url": "https://github.com/acme/addons.git",
+            "git_branch": "main",
+            "template_name": "default",
+            "extra_addons": {},
+            "odoo_image": "odoo:18.0",
+            "stack_sanitize": "true",
+        }
+    ]
+    env_info.return_value = {"env_vars": {"LOG_LEVEL": "info"}}
+    actual_service = {
+        "name": "fs",
+        "image": "example/fs:1",
+        "port": 8080,
+        "hostname": None,
+        "env_vars": {},
+        "image_env_vars": {},
+        "host_mode": False,
+        "volumes": [],
+        "cap_add": [],
+        "privileged": False,
+        "command": [],
+        "routes": [],
+        "stack": "acme",
+        "stack_resource": "services.fs",
+        "stack_spec_hash": _resource_hash(service),
+    }
+
+    with patch(
+        "oduflow.stack_ops.service_ops.list_services", return_value=[actual_service]
+    ):
+        plan = build_plan(settings, team, manifest, path)
+
+    action = next(item for item in plan.actions if item.resource == "services.fs")
+    assert action.operation == "update"
+    assert "command" in action.detail
+
+    # An explicit desired command that happens to equal the image CMD is
+    # already converged. Docker inspect cannot distinguish those two sources,
+    # but their effective argv is identical.
+    actual_service["image_command"] = ["server", "/data"]
+    with patch(
+        "oduflow.stack_ops.service_ops.list_services", return_value=[actual_service]
+    ):
+        converged_plan = build_plan(settings, team, manifest, path)
+
+    assert converged_plan.actions == ()
+
+
 def test_stack_file_comparison_uses_manifest_size_limit(stack_fixture):
     settings, team, _manifest, _path = stack_fixture
     content = "x" * 200_000

@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+### Features
+
+- **Custom start command for auxiliary services** — `create_service` and
+  `update_service` accept an optional `command` that replaces the image `CMD`,
+  so images whose entrypoint expects arguments (`minio/minio server /data`)
+  no longer need a repackaged or legacy variant. The shell-quoted string is
+  split into argv once and stored that way in the service preset; the image
+  `ENTRYPOINT` is untouched. `get_service_info` reports the effective command
+  (and the image default when it is not overridden), the dashboard exposes it
+  in the Create/Restore service forms and on the service card, and declarative
+  Stacks gained a `command` field that participates in drift detection. On
+  update the parameter is tri-state: omitted keeps the current command, a
+  string replaces it, and an empty string drops the override.
+
 ## v1.72.1
 
 ### Bug Fixes
