@@ -88,6 +88,28 @@ def test_env_vars_falls_back_to_the_container(tmp_path):
         }
 
 
+def test_env_vars_propagates_an_unreadable_preset(tmp_path):
+    """A preset that exists but cannot be read must not fall back.
+
+    The container's environment carries the image defaults; offering those for
+    editing would bake them into the preset on the first save.
+    """
+    from oduflow.docker_ops import service_ops
+
+    settings, team = _settings(tmp_path)
+    client = MagicMock()
+    client.containers.get.return_value = _container(["MEILI_ENV=production"])
+    with (
+        patch("oduflow.docker_ops.service_ops.get_client", return_value=client),
+        patch(
+            "oduflow.docker_ops.service_ops.service_presets.get_preset",
+            side_effect=OSError("presets file is unreadable"),
+        ),
+    ):
+        with pytest.raises(OSError):
+            service_ops.get_service_env_vars(settings, team, "meili")
+
+
 def test_env_vars_missing_service(tmp_path):
     from oduflow.docker_ops import service_ops
 

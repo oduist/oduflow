@@ -5394,10 +5394,13 @@ async function doUpdateService(name) {
       var vars = data.env_vars || {};
       _updateSvcInitial = Object.keys(vars).map(function(k) { return k + '=' + vars[k]; }).join('\n');
       ta.value = _updateSvcInitial;
-      // A line-per-assignment field cannot represent a multi-line value, so
-      // show it read-only rather than let an edit write back a mangled version.
-      if (Object.keys(vars).some(function(k) { return /[\r\n]/.test(vars[k]); })) {
-        showToast('A variable holds a multi-line value — edit it over MCP', true);
+      // parseEnvLines trims each line, and a line cannot hold a line break at
+      // all, so a value with either would come back mangled. Show the field
+      // read-only rather than let an edit rewrite a secret it cannot represent.
+      if (Object.keys(vars).some(function(k) {
+        return /[\r\n]/.test(vars[k]) || vars[k] !== vars[k].trim();
+      })) {
+        showToast('A variable value has line breaks or leading/trailing spaces — edit it over MCP', true);
       } else {
         ta.disabled = false;
       }

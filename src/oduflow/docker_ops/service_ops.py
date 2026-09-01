@@ -763,7 +763,10 @@ def get_service_env_vars(
     also what an edit dialog must prefill; the container's own environment
     additionally carries the image defaults, which are not part of the service
     configuration. Only legacy services created before presets existed fall
-    back to inspecting the container.
+    back to inspecting the container — a preset that exists but cannot be read
+    raises instead, because prefilling from the container in that case would
+    offer the image defaults for editing and bake them into the preset on the
+    first save.
     """
     client = get_client()
     container_name = get_service_container_name(name, settings.prefix, team.team_id)
@@ -779,15 +782,9 @@ def get_service_env_vars(
     try:
         preset = service_presets.get_preset(team, name)
     except NotFoundError:
-        preset = None
-    except Exception:
-        logger.warning("Failed to read preset for service %s", name, exc_info=True)
-        preset = None
+        return _container_env_vars(container)
 
-    if preset is not None:
-        return dict(preset.get("env_vars") or {})
-
-    return _container_env_vars(container)
+    return dict(preset.get("env_vars") or {})
 
 
 def update_service(
