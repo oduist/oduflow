@@ -190,6 +190,8 @@ oduflow call run_service_command redis "redis-cli ping"
 
 `update_service` is the preferred way to change **any** setting of a running service — image, env vars, port/routes, hostname, `host_mode`, `command`, `volumes`, `privileged`, or `net_admin`. It recreates the container automatically and preserves every setting you do not override, so you rarely need to delete and recreate a service by hand. Passing `routes` fully replaces the route list. To return to a single catch-all port, pass `routes=[]` and the replacement `port` in the same call.
 
+In the dashboard, **Update** on a service card opens a dialog prefilled with the service's current environment variables (from its preset, or from the container for a service created before presets). Edit them and confirm to apply the change and pull the latest image in one go; leave the field untouched to just pull and recreate, or clear it to remove every variable. The other settings are changed over MCP or the CLI.
+
 If you do recreate a service manually (e.g. to rename it), call `get_service_info` first and reuse its fields in the new `create_service` call. The returned dict carries the full configuration (`image`, `port` or `routes`, `hostname`, `env_vars`, `host_mode`, `command`, `volumes`, `cap_add`, `privileged`) so you do not lose anything that `list_services` truncates or that lived only inside the preset.
 
 ## Service Update Flow
