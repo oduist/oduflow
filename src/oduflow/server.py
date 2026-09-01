@@ -32,6 +32,7 @@ from oduflow import (
     artifact_tokens,
     bundled_upgrade,
     git_ops,
+    image_builds,
     migrations,
     po_tools,
     production_registry,
@@ -62,10 +63,15 @@ from oduflow.locking import (
     service_preset_lock_key,
     volume_lock_key,
 )
-from oduflow.naming import normalize_env_vars, parse_env_vars, parse_service_command
+from oduflow.naming import (
+    normalize_env_vars,
+    parse_env_vars,
+    parse_service_command,
+    redact_url_credentials,
+)
 from oduflow.output_cache import CachedOutput, OutputCache
 from oduflow.po_tools import PoEntry
-from oduflow.settings import Settings, TeamSettings, find_toml
+from oduflow.settings import ImageRegistrySettings, Settings, TeamSettings, find_toml
 from oduflow.stack_loader import StackValidationError
 
 logger = logging.getLogger("oduflow")
@@ -2215,6 +2221,259 @@ def read_output(
     numbered = [f"{s + i + 1:>6}| {ln}" for i, ln in enumerate(page)]
     header = f"Lines {s + 1}-{e} of {total}:"
     return header + "\n" + "\n".join(numbered)
+
+
+# =============================================================================
+# MCP Tools — Container image builds
+#
+# Available only to teams with a [team.X.image_registry] section: for everyone
+# else the tools raise a clear prerequisite error (same pattern as production
+# tools behind [production].enabled). The agent gets no Docker socket and no
+# credentials — Oduflow builds and pushes on its behalf, constrained to the
+# team's configured registry namespace. See specs/0054.
+# =============================================================================
+
+
+def _image_registry_settings(team: TeamSettings) -> ImageRegistrySettings:
+    registry = team.image_registry
+    if registry is None:
+        raise PrerequisiteNotMetError(
+            "Container image building is not configured for this team. An "
+            f"operator must add a [team.{team.team_id}.image_registry] section "
+            "(repository_prefix, optional credentials) to oduflow.toml and "
+            "restart Oduflow."
+        )
+    return registry
+
+
+@mcp.tool()
+@handle_errors
+@with_env_lock
+def start_image_build(
+    env_name: str,
+    dockerfile: str = "Dockerfile",
+    context: str = ".",
+    target: str = "",
+    build_args: str = "",
+    ctx: Context | None = None,
+) -> str:
+    """
+    Build a container image from the environment's current git revision.
+
+    The build source is the exact HEAD commit of the environment's managed
+    checkout at call time (push your commits and pull_and_apply first). The
+    build runs asynchronously server-side; this call returns a build_id
+    immediately. Poll progress with get_image_build, then publish a succeeded
+    build to the team's configured registry namespace with publish_image_build.
+
+    Build arguments are non-secret: their values reach the Dockerfile and the
+    image history. Never pass credentials.
+
+    Args:
+        env_name: The environment whose checkout to build from.
+        dockerfile: Dockerfile path relative to the context (default "Dockerfile").
+        context: Build context directory relative to the repository root (default ".").
+        target: Optional multi-stage build target.
+        build_args: Comma-separated KEY=VALUE Docker build arguments (non-secret).
+    """
+    from oduflow.docker_ops import build_ops
+
+    settings = _get_settings()
+    team = _resolve_team(ctx)
+    registry_cfg = _image_registry_settings(team)
+    context_path = image_builds.validate_relative_path(context, "context")
+    dockerfile_path = image_builds.validate_relative_path(dockerfile, "dockerfile")
+    if dockerfile_path == ".":
+        raise ToolError("dockerfile must be a file path, not '.'")
+    args = parse_env_vars(build_args) if build_args.strip() else {}
+    repo_path, branch, owner_id = build_ops.env_checkout_for_build(
+        settings, team, env_name
+    )
+    job = image_builds.store.create(
+        team,
+        env_name,
+        branch,
+        dockerfile_path,
+        context_path,
+        target=target.strip(),
+        build_arg_names=list(args),
+        owner_id=owner_id,
+        max_concurrent_builds=registry_cfg.max_concurrent_builds,
+    )
+    try:
+        # The tool's environment lock is held through this snapshot, so the
+        # sealed context is exactly one commit; the background build then runs
+        # lock-free against the immutable copy.
+        build_ops.snapshot_context(team, registry_cfg, job, repo_path)
+    except Exception as exc:
+        image_builds.store.finish(
+            team,
+            job,
+            image_builds.STATUS_FAILED,
+            error=redact_url_credentials(str(exc)),
+        )
+        raise
+    build_ops.run_build_async(team, registry_cfg, job, args)
+    return (
+        f"Image build started.\n"
+        f"build_id: {job.build_id}\n"
+        f"Source: branch '{branch}' @ {job.commit[:12]} "
+        f"(dockerfile {dockerfile_path}, context {context_path})\n"
+        f"Timeout: {registry_cfg.build_timeout_seconds}s\n\n"
+        f'Poll with get_image_build(build_id="{job.build_id}"). Once succeeded, '
+        f'publish with publish_image_build(build_id="{job.build_id}", '
+        f'repository="<name>", tags="1.0.0,latest") — the destination is '
+        f"{registry_cfg.host}/{registry_cfg.repository_prefix}/<name>."
+    )
+
+
+@mcp.tool()
+@handle_errors
+def get_image_build(
+    env_name: str,
+    build_id: str,
+    tail_lines: int = 100,
+    ctx: Context | None = None,
+) -> str:
+    """
+    Status and log tail of an image build started with start_image_build.
+
+    Args:
+        env_name: The environment the build belongs to.
+        build_id: The build to inspect.
+        tail_lines: Number of trailing build log lines to include (default 100).
+    """
+    from oduflow.docker_ops import build_ops
+
+    team = _resolve_team(ctx)
+    _image_registry_settings(team)
+    settings = _get_settings()
+    owner_id = build_ops.environment_owner_id(settings, team, env_name)
+    job = image_builds.store.load(team, env_name, owner_id, build_id)
+    lines = [
+        f"Build {job.build_id}: {job.status}",
+        f"Source: branch '{job.branch}' @ {job.commit[:12]}",
+        f"Created: {job.created_at}"
+        + (f", finished: {job.finished_at}" if job.finished_at else ""),
+    ]
+    if job.error:
+        lines.append(f"Error: {job.error}")
+    if job.status == image_builds.STATUS_SUCCEEDED:
+        lines.append(
+            f'Ready to publish: publish_image_build(build_id="{job.build_id}", '
+            'repository="<name>", tags="...").'
+        )
+    for pub in job.publications:
+        for res in pub.get("results", []):
+            outcome = res.get("error") or res.get("digest") or "pushed"
+            lines.append(
+                f"Published {pub.get('repository', '')}:{res.get('tag', '')} "
+                f"({pub.get('at', '')}): {outcome}"
+            )
+    tail = image_builds.store.read_log_tail(team, job.build_id, tail_lines)
+    if tail:
+        lines.append("")
+        lines.append(f"--- build log (last {tail_lines} lines) ---")
+        lines.append(tail.rstrip("\n"))
+    return "\n".join(lines)
+
+
+@mcp.tool()
+@handle_errors
+def publish_image_build(
+    env_name: str,
+    build_id: str,
+    repository: str,
+    tags: str,
+    ctx: Context | None = None,
+) -> str:
+    """
+    Publish a succeeded image build to the team's configured registry.
+
+    Copies the exact built image (never a rebuild) to every requested tag under
+    the team's repository prefix. Any syntactically valid tag is accepted,
+    including `latest` and semver; overwriting an existing tag is intentional
+    and last-writer-wins. Tags are pushed one by one — partial success is
+    possible and each tag reports its own outcome.
+
+    Args:
+        env_name: The environment the build belongs to.
+        build_id: A build in status "succeeded".
+        repository: Destination repository below the configured prefix (e.g. "app").
+        tags: Comma-separated tags to publish, e.g. "1.4.0,latest".
+    """
+    from oduflow.docker_ops import build_ops
+    from oduflow.locking import image_publish_lock_key
+
+    settings = _get_settings()
+    team = _resolve_team(ctx)
+    registry_cfg = _image_registry_settings(team)
+    repo = image_builds.validate_repository(repository)
+    tag_list = image_builds.validate_tags(tags)
+    owner_id = build_ops.environment_owner_id(settings, team, env_name)
+    job = image_builds.store.load(team, env_name, owner_id, build_id)
+    if job.status != image_builds.STATUS_SUCCEEDED:
+        raise PrerequisiteNotMetError(
+            f"Build '{job.build_id}' is '{job.status}', not 'succeeded'; only a "
+            "succeeded build can be published."
+        )
+    destination = f"{registry_cfg.host}/{registry_cfg.repository_prefix}/{repo}"
+    key = image_publish_lock_key(team.team_id, destination)
+    _locks.acquire_env(key, operation="publish_image_build")
+    try:
+        publication = build_ops.publish(team, registry_cfg, job, repo, tag_list)
+    finally:
+        _locks.release_env(key)
+    lines = [
+        f"Publish results for build {job.build_id} "
+        f"({registry_cfg.host}/{publication['repository']}):"
+    ]
+    failures = 0
+    for res in publication["results"]:
+        if res["error"]:
+            failures += 1
+            lines.append(f"  ✗ {res['tag']}: {res['error']}")
+        else:
+            lines.append(f"  ✓ {res['tag']}: {res['digest'] or 'pushed'}")
+    if failures:
+        lines.append(
+            f"{failures} of {len(publication['results'])} tags failed; the "
+            "call is retryable per tag."
+        )
+    return "\n".join(lines)
+
+
+@mcp.tool()
+@handle_errors
+def cancel_image_build(env_name: str, build_id: str, ctx: Context | None = None) -> str:
+    """
+    Cancel a running image build.
+
+    The build worker and its Docker connection are terminated even when the
+    current Dockerfile step is not producing output; the job then moves to
+    "cancelled".
+
+    Args:
+        env_name: The environment the build belongs to.
+        build_id: The build to cancel.
+    """
+    team = _resolve_team(ctx)
+    _image_registry_settings(team)
+    settings = _get_settings()
+    from oduflow.docker_ops import build_ops
+
+    owner_id = build_ops.environment_owner_id(settings, team, env_name)
+    job = image_builds.store.load(team, env_name, owner_id, build_id)
+    if job.status in image_builds.TERMINAL_STATUSES:
+        return f"Build {job.build_id} is already '{job.status}'; nothing to cancel."
+    event = image_builds.store.cancel_event(job.build_id)
+    if event is None:
+        return f"Build {job.build_id} is no longer running."
+    event.set()
+    return (
+        f"Cancellation requested for build {job.build_id}. Check "
+        f'get_image_build(build_id="{job.build_id}") for the final status.'
+    )
 
 
 # =============================================================================

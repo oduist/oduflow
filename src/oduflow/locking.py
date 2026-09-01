@@ -81,6 +81,16 @@ def prod_backups_lock_key(team_id: str, name: str = "") -> str:
     return f"prod-backups:{team_id}"
 
 
+def image_build_lock_key(team_id: str, name: str) -> str:
+    """One image build job — serialises publish against retention cleanup."""
+    return f"imgbuild:{team_id}:{name}"
+
+
+def image_publish_lock_key(team_id: str, name: str) -> str:
+    """One destination repository — keeps tag + push atomic across builds."""
+    return f"imgpublish:{team_id}:{name}"
+
+
 def env_wake_key(team_id: str, env_name: str) -> str:
     """Auto-start of one environment (see :func:`keyed_mutex`)."""
     return f"wake:{team_id}:{env_name}"
