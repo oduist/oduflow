@@ -79,6 +79,11 @@ also available via the [REST API](web-api.md).
 | `list_service_presets` | | List saved service presets (configurations that can be restored) |
 | `restore_service` | ✓ | Restore a service from a saved preset |
 | `delete_service_preset` | ✓ | Remove a saved service preset |
+| **Container Image Builds** | | Requires a `[team.X.image_registry]` section |
+| `start_image_build` | ✓ | Build a container image from the environment checkout's current commit (asynchronous; returns a `build_id`); the source is sealed with `git archive` under the environment lock, with hard timeout, log-size, and per-team concurrency limits |
+| `get_image_build` | | Status, source commit, publication history, and a build log tail for one build |
+| `publish_image_build` | ✓ | Push a succeeded build's exact image (never a rebuild) to comma-separated tags — `latest`, semver, anything valid — under the team's configured registry namespace; per-tag outcomes, last-writer-wins |
+| `cancel_image_build` | | Terminate a running build and its Docker connection, including a silent Dockerfile step |
 | **Repository Auth** | | |
 | `setup_repo_auth` | ✓ | Cache git credentials for a private repository |
 | **Extra Addons** | | |
