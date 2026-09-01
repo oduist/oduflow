@@ -38,6 +38,41 @@ def _normalize_agent_image(value: object) -> str:
     return image
 
 
+# One path component of an OCI repository name; components are joined by "/".
+_OCI_REPO_RE = re.compile(
+    r"^[a-z0-9]+(?:[._-][a-z0-9]+)*(?:/[a-z0-9]+(?:[._-][a-z0-9]+)*)*$"
+)
+_REGISTRY_HOST_RE = re.compile(r"^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?(?::[0-9]+)?$")
+
+
+@dataclass(frozen=True)
+class ImageRegistrySettings:
+    """Container registry configuration ([team.X.image_registry] TOML section).
+
+    Presence of the section enables the image build/publish MCP tools for the
+    team; teams without it are refused with a clear prerequisite error. The
+    agent can publish only below ``repository_prefix`` on ``host`` — that prefix
+    is the authorization boundary. Credentials are optional: when ``username``
+    and ``token_env`` are set, pushes send request-scoped auth to the Docker
+    API; otherwise the host Docker daemon's ambient credentials (``docker
+    login``) are used.
+    """
+
+    repository_prefix: str  # e.g. "acme" — namespace all published repos live under
+    host: str = "docker.io"
+    username: str = ""
+    # Name of the environment variable holding the registry token/password.
+    # Resolved at publish time; the value itself never lives in config or jobs.
+    token_env: str = ""
+    build_timeout_seconds: int = 1800
+    max_context_mb: int = 512
+    max_log_mb: int = 16
+    max_concurrent_builds: int = 2
+    # Local staging images kept per team (oduflow-build/team-<id>:<build-id>);
+    # older ones are untagged after each successful build. 0 disables pruning.
+    keep_images: int = 10
+
+
 @dataclass(frozen=True)
 class TeamSettings:
     """Per-team settings (isolated workspaces, templates, credentials, ports)."""
@@ -76,6 +111,9 @@ class TeamSettings:
     agent_enabled: bool = False
     agent_default: str = "claude"  # which agent consoles/chats open by default
     agent_env: dict[str, str] = field(default_factory=dict)
+    # Container image building ([team.X.image_registry]); None = the image
+    # build/publish MCP tools are unavailable for this team.
+    image_registry: ImageRegistrySettings | None = None
 
     @property
     def workspaces_dir(self) -> str:
@@ -573,6 +611,14 @@ class Settings:
                     f"([team.{team_id}.agent_env]), got {agent_env_raw!r}"
                 )
 
+            image_registry_raw = team_cfg.get("image_registry", {})
+            if not isinstance(image_registry_raw, dict):
+                raise ValueError(
+                    f"Team '{team_id}': image_registry must be a table "
+                    f"([team.{team_id}.image_registry]), got {image_registry_raw!r}"
+                )
+            image_registry = _parse_image_registry_section(team_id, image_registry_raw)
+
             teams[team_id] = TeamSettings(
                 team_id=team_id,
                 hostname=hostname,
@@ -599,6 +645,7 @@ class Settings:
                 .lower()
                 or "claude",
                 agent_env={str(k): str(v) for k, v in agent_env_raw.items()},
+                image_registry=image_registry,
             )
 
         # Parse static extra routes ([route.<name>] → host + upstream url).
@@ -662,6 +709,78 @@ class Settings:
             toml_path=path,
             teams=teams,
         )
+
+
+def _parse_image_registry_section(
+    team_id: str, raw: dict[str, object]
+) -> ImageRegistrySettings | None:
+    """Parse a [team.X.image_registry] TOML section.
+
+    Absent/empty section → None (image building disabled for the team). A
+    present section must be complete and valid — misconfigured image publishing
+    should fail at startup, not at the first agent build.
+    """
+    if not raw:
+        return None
+    prefix = str(raw.get("repository_prefix", "")).strip().strip("/")
+    if not prefix:
+        raise ValueError(
+            f"Team '{team_id}': [team.{team_id}.image_registry] requires "
+            "repository_prefix (the registry namespace published images live "
+            "under, e.g. 'acme'). Remove the section to disable image building."
+        )
+    if not _OCI_REPO_RE.match(prefix):
+        raise ValueError(
+            f"Team '{team_id}': image_registry repository_prefix {prefix!r} is "
+            "not a valid lowercase OCI repository namespace."
+        )
+    host = str(raw.get("host", "docker.io")).strip().lower() or "docker.io"
+    if not _REGISTRY_HOST_RE.match(host) or "/" in host:
+        raise ValueError(
+            f"Team '{team_id}': image_registry host {host!r} must be a plain "
+            "registry hostname (optionally with :port), without scheme or path."
+        )
+    username = str(raw.get("username", "")).strip()
+    token_env = str(raw.get("token_env", "")).strip()
+    if bool(username) != bool(token_env):
+        raise ValueError(
+            f"Team '{team_id}': image_registry username and token_env must be "
+            "set together (explicit credentials) or both omitted (use the host "
+            "Docker daemon's own `docker login` credentials)."
+        )
+    timeout = int(str(raw.get("build_timeout_seconds", 1800)))
+    max_context_mb = int(str(raw.get("max_context_mb", 512)))
+    max_log_mb = int(str(raw.get("max_log_mb", 16)))
+    max_concurrent_builds = int(str(raw.get("max_concurrent_builds", 2)))
+    keep_images = int(str(raw.get("keep_images", 10)))
+    if timeout <= 0:
+        raise ValueError(
+            f"Team '{team_id}': image_registry build_timeout_seconds must be > 0"
+        )
+    if max_context_mb <= 0:
+        raise ValueError(f"Team '{team_id}': image_registry max_context_mb must be > 0")
+    if max_log_mb <= 0:
+        raise ValueError(f"Team '{team_id}': image_registry max_log_mb must be > 0")
+    if max_concurrent_builds <= 0:
+        raise ValueError(
+            f"Team '{team_id}': image_registry max_concurrent_builds must be > 0"
+        )
+    if keep_images < 0:
+        raise ValueError(
+            f"Team '{team_id}': image_registry keep_images must be >= 0 "
+            "(0 disables pruning)"
+        )
+    return ImageRegistrySettings(
+        repository_prefix=prefix,
+        host=host,
+        username=username,
+        token_env=token_env,
+        build_timeout_seconds=timeout,
+        max_context_mb=max_context_mb,
+        max_log_mb=max_log_mb,
+        max_concurrent_builds=max_concurrent_builds,
+        keep_images=keep_images,
+    )
 
 
 def _parse_backup_section(backup_raw: dict[str, object]) -> BackupSettings | None:

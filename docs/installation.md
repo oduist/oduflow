@@ -264,6 +264,16 @@ port_range = [50000, 50100]          # port range for Odoo containers [start, en
 # ANTHROPIC_API_KEY = ""
 # OPENAI_API_KEY = ""
 # OPENCODE_API_KEY = ""              # OpenCode Zen; arbitrary provider vars also work
+# [team.1.image_registry]            # enables the image build/publish MCP tools for this team
+# repository_prefix = "acme"         # registry namespace all published images live under (required)
+# host = "docker.io"                 # plain registry hostname, optionally with :port
+# username = "acme-ci"               # optional; with token_env, request-scoped push credentials
+# token_env = "ODUFLOW_REGISTRY_TEAM_1_TOKEN"  # env var holding the registry token
+# build_timeout_seconds = 1800       # per-build wall clock limit
+# max_context_mb = 512               # sealed build context size cap
+# max_log_mb = 16                    # persisted log cap per build
+# max_concurrent_builds = 2          # active build workers allowed for this team
+# keep_images = 10                   # local staging images kept per team; 0 disables pruning
 ```
 
 ### Server settings
@@ -369,6 +379,7 @@ Each `[team.*]` section defines an isolated team with its own workspaces, templa
 | `db_quota_gb` | `50` | Combined size cap for the team's environment and template PostgreSQL databases. `0` disables the check |
 | `disk_quota_gb` | `0` | Kernel-enforced cap for team files and databases when the data filesystem supports XFS project quotas. `0` disables it |
 | `[team.X.agent_env]` | *(empty)* | Sub-table of environment variables injected into the team's agent container — provider credentials (`CLAUDE_CODE_OAUTH_TOKEN`, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `OPENCODE_API_KEY`, or any provider-specific OpenCode variable) and custom vars |
+| `[team.X.image_registry]` | *(absent — image building disabled)* | Sub-table enabling the container image build/publish MCP tools for the team. `repository_prefix` (required) is the registry namespace agents may publish under — the authorization boundary; `host` (default `docker.io`) is a plain registry hostname; `username` + `token_env` (set together) name a push user and the environment variable holding its token for request-scoped authentication — omit both to use the host Docker daemon's own `docker login` credentials. Resource bounds are `build_timeout_seconds` (default `1800`, hard wall-clock deadline), `max_context_mb` (default `512`), `max_log_mb` (default `16`), and `max_concurrent_builds` (default `2`). `keep_images` (default `10`, `0` disables pruning) retains that many local staging builds; temporary publish tags are removed after push and older untagged image objects are deleted once unused. Use a least-privilege registry token restricted to the prefix |
 
 `environment_hostname_mode = "slots"` requires Traefik and a hostname with a
 distinct host prefix and parent domain, such as `dev.example.com`. A bare

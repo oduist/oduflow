@@ -86,6 +86,12 @@ SCOPED_ALLOWLIST = frozenset(
         "http_request_to_odoo",
         "list_installed_modules",
         "restart_environment",
+        # Image builds: available only when the team has [team.X.image_registry]
+        # configured; otherwise the tools raise a prerequisite error.
+        "start_image_build",
+        "get_image_build",
+        "publish_image_build",
+        "cancel_image_build",
     }
 )
 
