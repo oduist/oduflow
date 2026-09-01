@@ -551,6 +551,17 @@ def _traefik_label_by_suffix(labels: dict[str, str], suffix: str) -> str:
     return ""
 
 
+def _container_env_vars(container: Any) -> dict[str, str]:
+    """Env of a service container without the keys every image sets anyway."""
+    env_vars: dict[str, str] = {}
+    for entry in container.attrs.get("Config", {}).get("Env", []) or []:
+        if "=" in entry:
+            key, value = entry.split("=", 1)
+            if key not in _SYSTEM_ENV_KEYS:
+                env_vars[key] = value
+    return env_vars
+
+
 def _describe_service_container(
     settings: Settings, team: TeamSettings, container: Any
 ) -> dict[str, Any]:
@@ -563,13 +574,7 @@ def _describe_service_container(
     image = container.image.tags[0] if container.image.tags else "unknown"
     status = container.status
 
-    raw_env = container.attrs.get("Config", {}).get("Env", [])
-    env_vars: dict[str, str] = {}
-    for entry in raw_env:
-        if "=" in entry:
-            key, value = entry.split("=", 1)
-            if key not in _SYSTEM_ENV_KEYS:
-                env_vars[key] = value
+    env_vars = _container_env_vars(container)
 
     image_env_vars: dict[str, str] = {}
     try:
@@ -749,6 +754,39 @@ def get_service_info(
     return info
 
 
+def get_service_env_vars(
+    settings: Settings, team: TeamSettings, name: str
+) -> dict[str, str]:
+    """Return the env vars ``update_service`` keeps when nothing overrides them.
+
+    The saved preset is authoritative and is what an update reuses, so it is
+    also what an edit dialog must prefill; the container's own environment
+    additionally carries the image defaults, which are not part of the service
+    configuration. Only legacy services created before presets existed fall
+    back to inspecting the container — a preset that exists but cannot be read
+    raises instead, because prefilling from the container in that case would
+    offer the image defaults for editing and bake them into the preset on the
+    first save.
+    """
+    client = get_client()
+    container_name = get_service_container_name(name, settings.prefix, team.team_id)
+
+    try:
+        container = client.containers.get(container_name)
+    except docker.errors.NotFound:
+        raise NotFoundError(f"Service '{name}' not found")
+
+    if not container.labels.get("oduflow.service"):
+        raise NotFoundError(f"Service '{name}' not found")
+
+    try:
+        preset = service_presets.get_preset(team, name)
+    except NotFoundError:
+        return _container_env_vars(container)
+
+    return dict(preset.get("env_vars") or {})
+
+
 def update_service(
     settings: Settings,
     team: TeamSettings,
@@ -815,13 +853,7 @@ def update_service(
         command = list(preset.get("command") or [])
     else:
         # Legacy fallback: extract from running container
-        raw_env = container.attrs.get("Config", {}).get("Env", [])
-        env_vars = {}
-        for entry in raw_env:
-            if "=" in entry:
-                key, value = entry.split("=", 1)
-                if key not in _SYSTEM_ENV_KEYS:
-                    env_vars[key] = value
+        env_vars = _container_env_vars(container)
 
         is_host_mode = container.labels.get("oduflow.host_mode") == "true"
         routes = _routes_from_labels(container.labels)

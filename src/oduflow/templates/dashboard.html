@@ -1578,6 +1578,26 @@
     <div class="modal-body"><pre id="svc-info-content"></pre></div>
   </div>
 </div>
+<div class="modal-overlay" id="svc-update-modal" onclick="closeUpdateService(event)">
+  <div class="modal modal-sm">
+    <div class="modal-header">
+      <h2 id="svc-update-title">Update service</h2>
+      <button class="modal-close" onclick="closeUpdateService()" aria-label="Close">&times;</button>
+    </div>
+    <div class="modal-body">
+      <p class="modal-note">Pull the latest image for <strong id="svc-update-name"></strong> and re-create its container. Volumes are kept.</p>
+      <div class="form-group">
+        <label for="svc-update-env-vars">Environment variables</label>
+        <textarea id="svc-update-env-vars" rows="6" spellcheck="false" placeholder="MEILI_ENV=production&#10;MEILI_MASTER_KEY=..."></textarea>
+        <p class="modal-note">One KEY=VALUE per line. Clear the field to remove all variables; leave it untouched to keep them.</p>
+      </div>
+      <div class="form-actions">
+        <button class="btn" onclick="closeUpdateService()">Cancel</button>
+        <button class="btn-create" onclick="confirmUpdateService()">Update service</button>
+      </div>
+    </div>
+  </div>
+</div>
 <div class="modal-overlay" id="create-database-modal" onclick="closeCreateDatabaseModal(event)">
   <div class="modal modal-md">
     <div class="modal-header">
@@ -5310,7 +5330,10 @@ function renderServices(services) {
       '</div>' +
       '<div class="svc-meta">' +
         '<span>Image: <strong>' + esc(svc.image) + '</strong></span>' +
-        '<span>Container: <strong>' + esc(svc.container_name) + '</strong>' + containerStatsHtml(svc.container_name) + '</span>' +
+        '<span>Container: <strong class="copy-db" role="button" tabindex="0" title="Copy container name" aria-label="Copy container name" ' +
+          'onclick="copyToClipboard(\'' + escAttr(svc.container_name) + '\')" ' +
+          'onkeydown="if (event.key === \'Enter\' || event.key === \' \') { event.preventDefault(); copyToClipboard(\'' + escAttr(svc.container_name) + '\'); }">' +
+          esc(svc.container_name) + '</strong>' + containerStatsHtml(svc.container_name) + '</span>' +
         (svc.port ? '<span>Port: <strong>' + svc.port + '</strong></span>' : '') +
         (svc.created_at ? '<span>Created: <strong>' + formatDate(svc.created_at) + '</strong></span>' : '') +
       '</div>' +
@@ -5346,22 +5369,81 @@ function closeServiceInfo(event) {
   hideModal('svc-info-modal');
 }
 
+var _updateSvc = '';
+var _updateSvcInitial = '';
+// Bumped on every open and every close — see _updateEnvSeq: a slow prefill
+// must not land in a dialog reopened for another service and get submitted
+// there.
+var _updateSvcSeq = 0;
+
 async function doUpdateService(name) {
-  if (!(await confirmDialog({
-    title: 'Update service',
-    message: 'Pull the latest image for "' + name + '" and recreate its container?',
-    confirmLabel: 'Update service'
-  }))) return;
+  var seq = ++_updateSvcSeq;
+  _updateSvc = name;
+  _updateSvcInitial = '';
+  document.getElementById('svc-update-title').textContent = 'Update service — ' + name;
+  document.getElementById('svc-update-name').textContent = name;
+  var ta = document.getElementById('svc-update-env-vars');
+  ta.value = '';
+  ta.disabled = true;
+  showModal('svc-update-modal');
+  try {
+    var r = await fetch(API_SERVICES + '/' + encodeURIComponent(name) + '/env-vars');
+    var data = await readResult(r);
+    if (seq !== _updateSvcSeq) return;
+    if (data.ok) {
+      var vars = data.env_vars || {};
+      _updateSvcInitial = Object.keys(vars).map(function(k) { return k + '=' + vars[k]; }).join('\n');
+      ta.value = _updateSvcInitial;
+      // parseEnvLines trims each line, and a line cannot hold a line break at
+      // all, so a value with either would come back mangled. Show the field
+      // read-only rather than let an edit rewrite a secret it cannot represent.
+      if (Object.keys(vars).some(function(k) {
+        return /[\r\n]/.test(vars[k]) || vars[k] !== vars[k].trim();
+      })) {
+        showToast('A variable value has line breaks or leading/trailing spaces — edit it over MCP', true);
+      } else {
+        ta.disabled = false;
+      }
+    } else {
+      // Keep the field disabled: an empty editable field would look like
+      // "no variables" and the first edit would replace the real ones.
+      showToast(data.error || 'Could not load the current environment variables', true);
+    }
+  } catch (e) {
+    showToast('Could not load the current environment variables', true);
+  }
+}
+
+function closeUpdateService(event) {
+  if (event && event.target !== event.currentTarget) return;
+  _updateSvcSeq++;
+  hideModal('svc-update-modal');
+}
+
+async function confirmUpdateService() {
+  var name = _updateSvc;
+  var raw = document.getElementById('svc-update-env-vars').value;
+  var payload = {};
+  // Send a mapping, not the raw blob: the server must not re-split values.
+  if (raw.trim() !== _updateSvcInitial.trim()) payload.env_vars = parseEnvLines(raw);
+  _updateSvcSeq++;
+  hideModal('svc-update-modal');
   var card = document.querySelector('[data-svc="' + name + '"]');
   if (card) card.querySelectorAll('button').forEach(function(b) { b.disabled = true; });
   try {
-    var r = await fetch(API_SERVICES + '/' + encodeURIComponent(name) + '/update', { method: 'POST' });
+    var r = await fetch(API_SERVICES + '/' + encodeURIComponent(name) + '/update', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(payload)
+    });
     var data = await readResult(r);
     if (data.ok) {
       var res = data.result || {};
       var digest = (res.new_digest || '').substring(0, 19);
       if (res.image_updated) {
         showToast('Service "' + name + '" updated — new image pulled (' + digest + ')');
+      } else if (res.config_updated) {
+        showToast('Service "' + name + '" re-created with the new configuration');
       } else {
         showToast('Service "' + name + '" is already up-to-date (' + digest + ')');
       }
@@ -6721,6 +6803,7 @@ var MODAL_CLOSERS = {
   'feedback-modal': closeFeedbackModal,
   'logs-modal': closeLogsModal,
   'svc-info-modal': closeServiceInfo,
+  'svc-update-modal': closeUpdateService,
   'create-database-modal': closeCreateDatabaseModal,
   'database-credentials-modal': closeDatabaseCredentials,
   'console-modal': closeConsole,

@@ -2808,8 +2808,13 @@ def _build_routes(
             except Exception:
                 body = {}
 
+            # "env_vars" present in the body is a full replacement (an empty
+            # value clears every variable); an absent key keeps the current
+            # ones — see api_update.
             env_override = (
-                _env_vars_from_body(body.get("env_vars")) or None if body else None
+                _env_vars_from_body(body.get("env_vars"))
+                if body and "env_vars" in body
+                else None
             )
 
             volumes_raw = (body.get("volumes") or "").strip() if body else ""
@@ -2870,6 +2875,20 @@ def _build_routes(
             )
         finally:
             locks.release_env(key)
+
+    def api_service_env_vars(request: Request) -> JSONResponse:
+        name = request.path_params["name"]
+        team = _get_ui_team(request)
+        try:
+            env_vars = service_ops.get_service_env_vars(get_settings(), team, name)
+            return JSONResponse({"ok": True, "env_vars": env_vars})
+        except FlowError as e:
+            return _error_response(e)
+        except Exception:
+            logger.exception("Unexpected error in api_service_env_vars")
+            return JSONResponse(
+                {"ok": False, "error": "Internal server error."}, status_code=500
+            )
 
     def api_service_restart(request: Request) -> JSONResponse:
         name = request.path_params["name"]
@@ -5425,6 +5444,7 @@ def _build_routes(
         Route("/api/services", api_services, methods=["GET"]),
         Route("/api/services/create", api_service_create, methods=["POST"]),
         Route("/api/services/{name}/update", api_service_update, methods=["POST"]),
+        Route("/api/services/{name}/env-vars", api_service_env_vars, methods=["GET"]),
         Route("/api/services/{name}/restart", api_service_restart, methods=["POST"]),
         Route("/api/services/{name}/delete", api_service_delete, methods=["POST"]),
         Route("/api/services/{name}/logs", api_service_logs, methods=["GET"]),
