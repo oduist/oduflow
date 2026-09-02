@@ -253,7 +253,7 @@ def test_settings_parse_registry_section(tmp_path):
             [team.1.image_registry]
             repository_prefix = "acme/"
             username = "acme-ci"
-            token_env = "ODUFLOW_REGISTRY_TOKEN"
+            token = "registry-secret"
             build_timeout_seconds = 600
             """
         ),
@@ -263,7 +263,8 @@ def test_settings_parse_registry_section(tmp_path):
     assert registry.repository_prefix == "acme"  # trailing slash trimmed
     assert registry.host == "docker.io"
     assert registry.username == "acme-ci"
-    assert registry.token_env == "ODUFLOW_REGISTRY_TOKEN"
+    assert registry.token == "registry-secret"
+    assert "registry-secret" not in repr(registry)
     assert registry.build_timeout_seconds == 600
     assert registry.max_context_mb == 512
     assert registry.max_log_mb == 16
@@ -279,8 +280,9 @@ def test_settings_parse_registry_section(tmp_path):
         '[team.1.image_registry]\nrepository_prefix = "Acme"',
         # host must be a plain hostname
         '[team.1.image_registry]\nrepository_prefix = "acme"\nhost = "https://x.io"',
-        # username and token_env come together
+        # username and token come together
         '[team.1.image_registry]\nrepository_prefix = "acme"\nusername = "ci"',
+        '[team.1.image_registry]\nrepository_prefix = "acme"\ntoken = "secret"',
         # limits must be positive
         '[team.1.image_registry]\nrepository_prefix = "acme"\nmax_context_mb = 0',
         '[team.1.image_registry]\nrepository_prefix = "acme"\nmax_log_mb = 0',
@@ -289,6 +291,20 @@ def test_settings_parse_registry_section(tmp_path):
 )
 def test_settings_reject_bad_registry_sections(tmp_path, body):
     with pytest.raises(ValueError):
+        _load_settings(tmp_path, body)
+
+
+def test_settings_reject_legacy_registry_token_env(tmp_path):
+    body = textwrap.dedent(
+        """
+        [team.1.image_registry]
+        repository_prefix = "acme"
+        username = "ci"
+        token_env = "ODUFLOW_REGISTRY_TOKEN"
+        """
+    )
+
+    with pytest.raises(ValueError, match="username and token must be set together"):
         _load_settings(tmp_path, body)
 
 
@@ -516,11 +532,10 @@ def test_publish_cleans_tag_after_registry_error_and_uses_scoped_auth(tmp_path):
     client.api.push.return_value = [{"error": "registry rejected push"}]
     client.images.get.return_value = SimpleNamespace(tags=[job.local_tag])
     registry = ImageRegistrySettings(
-        repository_prefix="acme", username="ci", token_env="TEST_REGISTRY_TOKEN"
+        repository_prefix="acme", username="ci", token="secret"
     )
 
     with (
-        patch.dict(os.environ, {"TEST_REGISTRY_TOKEN": "secret"}),
         patch.object(build_ops, "store", local_store),
         patch.object(build_ops, "get_client", return_value=client),
     ):

@@ -513,14 +513,10 @@ def publish(
     )
     auth_config = None
     if registry_cfg.username:
-        token = os.environ.get(registry_cfg.token_env, "")
-        if not token:
-            raise PrerequisiteNotMetError(
-                f"Registry credentials are configured to come from the "
-                f"environment variable '{registry_cfg.token_env}', but it is "
-                "empty in the Oduflow server environment."
-            )
-        auth_config = {"username": registry_cfg.username, "password": token}
+        auth_config = {
+            "username": registry_cfg.username,
+            "password": registry_cfg.token,
+        }
 
     client = get_client()
     results: list[dict[str, Any]] = []
