@@ -17,10 +17,11 @@
   and publishing is a tag and push of that same image — nothing is rebuilt on
   the way out. The capability is gated on a `[team.X.image_registry]` TOML
   section whose `repository_prefix` is the authorization boundary; registry
-  credentials are request-scoped, resolved from `token_env` at publish time and
-  never persisted. Concurrency, context size, log size, and wall-clock limits
-  are enforced per team, and older staging images are pruned automatically
-  (the newest `keep_images` are kept). (#221)
+  credentials are read directly from `username` + `token` in that config and
+  passed request-scoped for each push, without persisting them in build jobs.
+  Concurrency, context size, log size, and wall-clock limits are enforced per
+  team, and older staging images are pruned automatically (the newest
+  `keep_images` are kept). (#221)
 
 - **Custom start command for auxiliary services** — `create_service` and
   `update_service` accept an optional `command` that replaces the image `CMD`,

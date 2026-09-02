@@ -53,17 +53,17 @@ class ImageRegistrySettings:
     team; teams without it are refused with a clear prerequisite error. The
     agent can publish only below ``repository_prefix`` on ``host`` — that prefix
     is the authorization boundary. Credentials are optional: when ``username``
-    and ``token_env`` are set, pushes send request-scoped auth to the Docker
-    API; otherwise the host Docker daemon's ambient credentials (``docker
-    login``) are used.
+    and ``token`` are set, pushes send request-scoped auth to the Docker API;
+    otherwise the host Docker daemon's ambient credentials (``docker login``)
+    are used.
     """
 
     repository_prefix: str  # e.g. "acme" — namespace all published repos live under
     host: str = "docker.io"
     username: str = ""
-    # Name of the environment variable holding the registry token/password.
-    # Resolved at publish time; the value itself never lives in config or jobs.
-    token_env: str = ""
+    # Registry token/password from the Oduflow config. It is sent only as
+    # request-scoped Docker API auth and is never persisted in build jobs.
+    token: str = field(default="", repr=False)
     build_timeout_seconds: int = 1800
     max_context_mb: int = 512
     max_log_mb: int = 16
@@ -741,10 +741,10 @@ def _parse_image_registry_section(
             "registry hostname (optionally with :port), without scheme or path."
         )
     username = str(raw.get("username", "")).strip()
-    token_env = str(raw.get("token_env", "")).strip()
-    if bool(username) != bool(token_env):
+    token = str(raw.get("token", "")).strip()
+    if bool(username) != bool(token):
         raise ValueError(
-            f"Team '{team_id}': image_registry username and token_env must be "
+            f"Team '{team_id}': image_registry username and token must be "
             "set together (explicit credentials) or both omitted (use the host "
             "Docker daemon's own `docker login` credentials)."
         )
@@ -774,7 +774,7 @@ def _parse_image_registry_section(
         repository_prefix=prefix,
         host=host,
         username=username,
-        token_env=token_env,
+        token=token,
         build_timeout_seconds=timeout,
         max_context_mb=max_context_mb,
         max_log_mb=max_log_mb,
