@@ -9,7 +9,11 @@ from typing import Any
 
 import docker
 from oduflow.docker_ops import service_presets, volume_ops
-from oduflow.docker_ops.client import get_client
+from oduflow.docker_ops.client import (
+    docker_error_detail,
+    docker_operation_error,
+    get_client,
+)
 from oduflow.errors import (
     ConflictError,
     FlowError,
@@ -464,7 +468,21 @@ def create_service(
         )
         if vol_binds:
             run_kwargs["volumes"] = vol_binds
-        client.containers.run(**run_kwargs)
+        try:
+            client.containers.run(**run_kwargs)
+        except docker.errors.DockerException as exc:
+            detail = docker_error_detail(exc)
+            if "port is already allocated" in detail.lower() or (
+                "bind for " in detail.lower()
+                and "address already in use" in detail.lower()
+            ):
+                port_label = f" {port}" if port is not None else ""
+                raise ConflictError(
+                    f"Could not start service '{name}': host port{port_label} is "
+                    "already allocated. Choose a different port and retry "
+                    "create_service or update_service."
+                ) from exc
+            raise docker_operation_error(f"start service '{name}'", exc) from exc
     logger.info("Created service container %s from image %s", container_name, image)
 
     # Auto-save preset for future restore

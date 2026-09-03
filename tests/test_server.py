@@ -8,6 +8,7 @@ from unittest.mock import patch
 import pytest
 from fastmcp.exceptions import ToolError
 
+import docker
 from oduflow import po_tools
 from oduflow.po_tools import PoEntry, PoSummary
 from oduflow.settings import Settings, TeamSettings
@@ -970,6 +971,63 @@ def _get_tool_fn(tool_name: str):
         return result
 
     return sync_wrapper
+
+
+def _call_managed_tool(test_mcp, tool_name: str, **arguments):
+    """Call through FastMCP's manager so its masking policy is exercised."""
+    import asyncio
+
+    return asyncio.run(test_mcp._tool_manager.call_tool(tool_name, arguments))
+
+
+class TestMCPErrorVisibility:
+    def test_docker_error_exposes_daemon_detail_only(self):
+        from fastmcp import FastMCP
+
+        from oduflow.server import handle_errors, mcp
+
+        error = docker.errors.APIError(
+            "500 Server Error for "
+            "http+docker://localhost/v1.52/containers/internal-id/restart",
+            explanation="restart failed: port is already allocated",
+        )
+
+        test_mcp = FastMCP("error-test", mask_error_details=True)
+
+        @test_mcp.tool()
+        @handle_errors
+        def restart_without_context(name: str) -> str:
+            raise error
+
+        assert mcp._tool_manager.mask_error_details is True
+        with pytest.raises(ToolError) as exc_info:
+            _call_managed_tool(test_mcp, "restart_without_context", name="redis")
+
+        message = str(exc_info.value)
+        assert "restart failed: port is already allocated" in message
+        assert "http+docker" not in message
+        assert "internal-id" not in message
+        assert "Traceback" not in message
+
+    def test_unexpected_error_remains_masked(self):
+        from fastmcp import FastMCP
+
+        from oduflow.server import handle_errors
+
+        internal_detail = "/srv/oduflow/private/team-1/runtime-state"
+
+        test_mcp = FastMCP("error-test", mask_error_details=True)
+
+        @test_mcp.tool()
+        @handle_errors
+        def restart_without_context(name: str) -> str:
+            raise RuntimeError(internal_detail)
+
+        with pytest.raises(ToolError) as exc_info:
+            _call_managed_tool(test_mcp, "restart_without_context", name="redis")
+
+        assert str(exc_info.value) == "Error calling tool 'restart_without_context'"
+        assert internal_detail not in str(exc_info.value)
 
 
 class TestCreateServiceTool:

@@ -4,11 +4,53 @@ import time
 
 import docker
 from docker import DockerClient
-from oduflow.errors import PrerequisiteNotMetError
+from oduflow.errors import FlowError, PrerequisiteNotMetError
 
 logger = logging.getLogger("oduflow")
 
 _uid_gid_cache: dict[str, str] = {}
+
+
+def docker_error_detail(exc: docker.errors.DockerException) -> str:
+    """Return the actionable Docker detail without the SDK HTTP wrapper.
+
+    ``APIError.__str__`` prefixes the daemon's explanation with the Docker API
+    URL, status code and response reason.  Those details are useful in server
+    logs but noisy (and unnecessarily revealing) in an MCP response.  The
+    daemon explanation is the part that tells an agent what it can fix.
+    """
+    if isinstance(exc, docker.errors.ContainerError):
+        stderr = exc.stderr
+        if isinstance(stderr, bytes):
+            stderr = stderr.decode("utf-8", errors="replace")
+        detail = f"Container command exited with status {exc.exit_status}"
+        return f"{detail}: {str(stderr).strip()}" if stderr else detail
+
+    explanation = getattr(exc, "explanation", None)
+    if isinstance(explanation, bytes):
+        explanation = explanation.decode("utf-8", errors="replace")
+    if explanation:
+        return str(explanation).strip()
+
+    if isinstance(exc, docker.errors.APIError):
+        status = exc.status_code
+        reason = getattr(exc.response, "reason", "") if exc.response is not None else ""
+        status_detail = " ".join(str(part) for part in (status, reason) if part)
+        return (
+            f"Docker API request failed ({status_detail})."
+            if status_detail
+            else "Docker API request failed."
+        )
+
+    detail = str(exc).strip()
+    return detail or exc.__class__.__name__
+
+
+def docker_operation_error(
+    action: str, exc: docker.errors.DockerException
+) -> FlowError:
+    """Translate an expected Docker SDK failure into a client-safe FlowError."""
+    return FlowError(f"Docker failed to {action}: {docker_error_detail(exc)}")
 
 
 def get_client() -> DockerClient:
