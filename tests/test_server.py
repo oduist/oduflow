@@ -484,6 +484,7 @@ class TestUpdateEnvironmentTool:
         assert mock_update.call_args.kwargs == {
             "env_override": None,
             "image_override": None,
+            "rename_to": None,
         }
         assert "Environment updated successfully!" in result
         assert "Image: odoo:17.0" in result
@@ -509,9 +510,95 @@ class TestUpdateEnvironmentTool:
         assert mock_update.call_args.kwargs == {
             "env_override": {"FOO": "new"},
             "image_override": "odoo:17.0",
+            "rename_to": None,
         }
         assert "Image: odoo:17.0 (updated)" in result
         assert "Env vars: FOO=new" in result
+
+    @staticmethod
+    def _renamed_result():
+        return {
+            "url": "http://localhost:50000",
+            "env_name": "next",
+            "renamed_from": "main",
+            "odoo_container": "oduflow-1-next-odoo",
+            "database": "oduflow_1_next",
+            "workspace": "/tmp/ws",
+            "image": "odoo:17.0",
+            "image_updated": False,
+            "env_vars": {},
+        }
+
+    @patch("oduflow.docker_ops.env_ops.update_environment")
+    def test_a_new_name_renames_and_reports_the_moved_mcp_endpoint(self, mock_update):
+        mock_update.return_value = self._renamed_result()
+
+        result = _call_tool("update_environment", env_name="main", new_name="next")
+
+        assert mock_update.call_args.kwargs["rename_to"] == "next"
+        assert "Environment renamed from 'main' to 'next'" in result
+        # An MCP client pointed at the old path stops working; say so.
+        assert "/mcp/next" in result
+
+    @patch("oduflow.docker_ops.env_ops.update_environment")
+    def test_renaming_to_the_current_name_is_a_plain_update(self, mock_update):
+        mock_update.return_value = {
+            "url": "http://localhost:50000",
+            "odoo_container": "oduflow-1-main-odoo",
+            "database": "oduflow_1_main",
+            "workspace": "/tmp/ws",
+            "image": "odoo:17.0",
+            "image_updated": False,
+            "env_vars": {},
+        }
+
+        result = _call_tool("update_environment", env_name="main", new_name="main")
+
+        assert mock_update.call_args.kwargs["rename_to"] is None
+        assert "Environment updated successfully!" in result
+
+    @staticmethod
+    def _name_is_free(env_name: str) -> bool:
+        import oduflow.server
+        from oduflow.errors import BusyError
+
+        locks = oduflow.server._locks
+        try:
+            locks.acquire_env(env_name, "1")
+        except BusyError:
+            return False
+        locks.release_env(env_name)
+        return True
+
+    @patch("oduflow.docker_ops.env_ops.update_environment")
+    def test_the_target_name_is_locked_for_the_rename_and_released_after(
+        self, mock_update
+    ):
+        free_during: list[bool] = []
+
+        def _check(*args, **kwargs):
+            # A concurrent create_environment must not claim the name while the
+            # rename is in flight; the tool decorator only holds env_name.
+            free_during.append(self._name_is_free("next"))
+            return self._renamed_result()
+
+        mock_update.side_effect = _check
+        _call_tool("update_environment", env_name="main", new_name="next")
+
+        assert free_during == [False]
+        # And it is free again afterwards, so the renamed environment is usable.
+        assert self._name_is_free("next")
+
+    @patch("oduflow.docker_ops.env_ops.update_environment")
+    def test_the_target_name_is_released_when_the_rename_fails(self, mock_update):
+        from oduflow.errors import ConflictError
+
+        mock_update.side_effect = ConflictError("taken")
+
+        with pytest.raises(ToolError):
+            _call_tool("update_environment", env_name="main", new_name="next")
+
+        assert self._name_is_free("next")
 
 
 class TestDeleteEnvironmentTool:

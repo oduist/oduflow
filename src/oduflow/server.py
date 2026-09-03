@@ -1712,6 +1712,7 @@ def update_environment(
     env_name: str,
     env_vars: str = "",
     odoo_image: str = "",
+    new_name: str = "",
     ctx: Context | None = None,
 ) -> str:
     """
@@ -1726,23 +1727,53 @@ def update_environment(
     Pass odoo_image to switch to a different image, and/or env_vars to change the
     environment variables. The database and filestore are always preserved.
 
+    Pass new_name to rename the environment — useful when its name no longer
+    describes what it holds. The container has to be re-created for a rename
+    anyway (it carries the name in its own name, its labels and its mounts), so
+    the rename rides on this same recreate. The database, filestore, ports and
+    credentials move with it; the URL / hostname is kept. The scoped MCP
+    endpoint, however, moves from /mcp/<old name> to /mcp/<new name>, so an MCP
+    client configured against the old path has to be re-pointed. Use
+    switch_branch instead when the environment should also move onto another
+    git branch — it renames along the way.
+
     Args:
         env_name: The name of the environment to update.
         env_vars: Comma- or newline-separated KEY=VALUE pairs that fully replace the current user-supplied env vars (e.g. "WORKERS=4,LIMIT_TIME_CPU=900"). Commas inside values are preserved unless what follows the comma looks like another KEY=; put one pair per line when in doubt. Leave empty to keep the current env vars. The database connection variables (HOST/USER/PASSWORD) are always preserved.
         odoo_image: New Docker image with tag to pull and run (e.g. "odoo:19.0"). Leave empty to keep the current image.
+        new_name: Optional new name for the environment. Leave empty to keep the current name.
     """
     settings = _get_settings()
     team = _resolve_team(ctx)
     parsed_env = parse_env_vars(env_vars) or None
-    result = env_ops.update_environment(
-        settings,
-        team,
-        env_name,
-        env_override=parsed_env,
-        image_override=odoo_image or None,
-    )
+    rename_to = (new_name or "").strip()
+    if rename_to and rename_to != env_name:
+        # The tool decorator locks env_name only; hold the target name too, so a
+        # concurrent create_environment cannot claim it mid-rename.
+        _locks.acquire_env(rename_to, team.team_id, operation="update_environment")
+    else:
+        rename_to = ""
+    try:
+        result = env_ops.update_environment(
+            settings,
+            team,
+            env_name,
+            env_override=parsed_env,
+            image_override=odoo_image or None,
+            rename_to=rename_to or None,
+        )
+    finally:
+        if rename_to:
+            _locks.release_env(rename_to)
+    renamed_from = result.get("renamed_from") or ""
+    final_env_name = str(result.get("env_name") or env_name)
     lines = [
-        "Environment updated successfully!",
+        (
+            f"Environment renamed from '{renamed_from}' to '{final_env_name}' "
+            "and updated successfully!"
+            if renamed_from
+            else "Environment updated successfully!"
+        ),
         f"URL: {result['url']}",
         f"Hostname: {result.get('hostname', '')}",
         f"Odoo Container: {result['odoo_container']}",
@@ -1755,6 +1786,11 @@ def update_environment(
     if env_result:
         lines.append(
             "Env vars: " + ", ".join(f"{k}={v}" for k, v in env_result.items())
+        )
+    if renamed_from:
+        lines.append(
+            f"Use env_name='{final_env_name}' from now on; its scoped MCP endpoint "
+            f"is /mcp/{final_env_name}."
         )
     setup_logs = result.get("setup_logs", [])
     if setup_logs:

@@ -1,3 +1,4 @@
+import dataclasses
 import json
 import os
 import re
@@ -1647,6 +1648,160 @@ class TestUpdateEnvironment:
 
         check.assert_not_called()
         relocate.assert_not_called()
+
+    def _rename(self, mock_docker_client, container, **kwargs):
+        """Run a rename through update_environment with the slow parts stubbed."""
+        mock_docker_client.containers.get.return_value = container
+        mock_docker_client.containers.run.return_value = MagicMock()
+        with (
+            patch("oduflow.docker_ops.env_ops.check_rename_target"),
+            patch.object(env_ops, "_relocate_environment_state"),
+            patch(
+                "oduflow.docker_ops.env_ops.load_credentials",
+                return_value={"pg_user": "u_1_main", "pg_password": "pw"},
+            ),
+            patch("oduflow.docker_ops.env_ops._create_pg_role"),
+            patch("oduflow.docker_ops.env_ops.os.path.isdir", return_value=False),
+            patch("oduflow.docker_ops.env_ops.os.path.isfile", return_value=False),
+            patch("oduflow.docker_ops.env_ops._install_apt_packages", return_value=""),
+            patch(
+                "oduflow.docker_ops.env_ops._install_pip_requirements",
+                return_value=(False, ""),
+            ),
+            patch("oduflow.docker_ops.env_ops._resolve_instance_conf") as conf,
+        ):
+            conf.return_value.exists.return_value = False
+            return env_ops.update_environment(
+                TEST_SETTINGS, TEST_TEAM, "main", pull_image=False, **kwargs
+            )
+
+    def test_the_agent_checkout_follows_the_rename(self, mock_docker_client):
+        container = self._make_container()
+        container.labels.update(
+            {
+                TEST_SETTINGS.repo_label: "https://example.com/repo.git",
+                "oduflow.git_branch": "feature/login",
+                "oduflow.git_user": "dev",
+            }
+        )
+
+        with (
+            patch.object(env_ops, "_agent_rename_env") as agent_rename,
+            patch.object(env_ops, "_agent_add_env") as agent_add,
+        ):
+            result = self._rename(mock_docker_client, container, rename_to="next")
+
+        # Moved, never re-cloned: the checkout can hold uncommitted work.
+        assert agent_rename.call_args[0][3:] == ("main", "next")
+        # And its .mcp.json is rewritten, because the scoped MCP URL carries the
+        # environment name in its path.
+        assert agent_add.call_args[0][3:] == (
+            "next",
+            "https://example.com/repo.git",
+            "feature/login",
+            "dev",
+        )
+        assert result["renamed_from"] == "main"
+        assert result["env_name"] == "next"
+
+    def test_a_live_mounted_environment_has_no_repo_to_clone_from(
+        self, mock_docker_client
+    ):
+        container = self._make_container()
+        container.labels.update(
+            {
+                TEST_SETTINGS.repo_label: "https://example.com/repo.git",
+                "oduflow.local_path": "/home/dev/checkout",
+            }
+        )
+
+        with (
+            patch.object(env_ops, "_agent_rename_env"),
+            patch.object(env_ops, "_agent_add_env") as agent_add,
+        ):
+            self._rename(mock_docker_client, container, rename_to="next")
+
+        assert agent_add.call_args[0][4] == ""
+
+    def test_the_caller_can_own_the_agent_sync(self, mock_docker_client):
+        # switch_branch refreshes the checkout itself, with the target branch;
+        # clone-env.sh is too expensive to run twice for one operation.
+        container = self._make_container()
+
+        with (
+            patch.object(env_ops, "_agent_rename_env") as agent_rename,
+            patch.object(env_ops, "_agent_add_env") as agent_add,
+        ):
+            self._rename(
+                mock_docker_client,
+                container,
+                rename_to="next",
+                sync_agent_checkout=False,
+            )
+
+        agent_rename.assert_not_called()
+        agent_add.assert_not_called()
+
+    def test_an_update_without_a_rename_leaves_the_agent_checkout_alone(
+        self, mock_docker_client
+    ):
+        container = self._make_container()
+
+        with (
+            patch.object(env_ops, "_agent_rename_env") as agent_rename,
+            patch.object(env_ops, "_agent_add_env") as agent_add,
+        ):
+            result = self._rename(mock_docker_client, container)
+
+        agent_rename.assert_not_called()
+        agent_add.assert_not_called()
+        assert result["renamed_from"] == ""
+
+    def test_a_stack_managed_environment_cannot_be_renamed(self, mock_docker_client):
+        # The stack reconciles its environments by name; a rename behind its
+        # back would make it provision the old name again.
+        container = self._make_container()
+        container.labels["oduflow.stack"] = "demo"
+        mock_docker_client.containers.get.return_value = container
+
+        with pytest.raises(ConflictError, match="demo"):
+            env_ops.update_environment(
+                TEST_SETTINGS, TEST_TEAM, "main", pull_image=False, rename_to="next"
+            )
+
+        # Refused before the first mutation.
+        container.remove.assert_not_called()
+        mock_docker_client.containers.run.assert_not_called()
+
+    def test_the_reported_database_is_team_scoped(self, mock_docker_client):
+        # The database name a team's environment gets is oduflow_<team>_<slug>;
+        # reporting team 1's name to any other team is a wrong answer.
+        team = dataclasses.replace(TEST_TEAM, team_id="7")
+        container = self._make_container()
+        mock_docker_client.containers.get.return_value = container
+        mock_docker_client.containers.run.return_value = MagicMock()
+
+        with (
+            patch(
+                "oduflow.docker_ops.env_ops.load_credentials",
+                return_value={"pg_user": "u_7_main", "pg_password": "pw"},
+            ),
+            patch("oduflow.docker_ops.env_ops._create_pg_role"),
+            patch("oduflow.docker_ops.env_ops.os.path.isdir", return_value=False),
+            patch("oduflow.docker_ops.env_ops.os.path.isfile", return_value=False),
+            patch("oduflow.docker_ops.env_ops._install_apt_packages", return_value=""),
+            patch(
+                "oduflow.docker_ops.env_ops._install_pip_requirements",
+                return_value=(False, ""),
+            ),
+            patch("oduflow.docker_ops.env_ops._resolve_instance_conf") as conf,
+        ):
+            conf.return_value.exists.return_value = False
+            result = env_ops.update_environment(
+                TEST_SETTINGS, team, "main", pull_image=False
+            )
+
+        assert result["database"] == "oduflow_7_main"
 
     def test_update_aborts_when_image_unavailable(self, mock_docker_client):
         # Image can't be pulled and isn't local: abort WITHOUT removing the old

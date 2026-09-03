@@ -1222,6 +1222,9 @@ def _build_routes(
         except Exception:
             body = {}
         odoo_image = (body.get("odoo_image") or "").strip() if body else ""
+        new_name = (body.get("new_name") or "").strip() if body else ""
+        if new_name == branch:
+            new_name = ""
         # "env_vars" present in the body is a full replacement (an empty value
         # clears every user-supplied var); an absent key keeps the current ones.
         env_override = None
@@ -1231,6 +1234,14 @@ def _build_routes(
             locks.acquire_env(branch, team.team_id)
         except BusyError as e:
             return _error_response(e)
+        # The rename target is locked too, so a concurrent create cannot claim
+        # the name while the environment is moving onto it.
+        if new_name:
+            try:
+                locks.acquire_env(new_name, team.team_id)
+            except BusyError as e:
+                locks.release_env(branch)
+                return _error_response(e)
         try:
             settings = get_settings()
             activity.touch(team, branch)
@@ -1241,16 +1252,23 @@ def _build_routes(
                 branch,
                 env_override=env_override,
                 image_override=odoo_image or None,
+                rename_to=new_name or None,
             )
             return JSONResponse({"ok": True, "result": result})
         except FlowError as e:
             return _error_response(e)
+        except ValueError as e:
+            # A rejected new_name (validate_env_name); the message is written
+            # for the operator reading it.
+            return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
         except Exception:
             logger.exception("Unexpected error in api_update")
             return JSONResponse(
                 {"ok": False, "error": "Internal server error."}, status_code=500
             )
         finally:
+            if new_name:
+                locks.release_env(new_name)
             locks.release_env(branch)
 
     def api_env_vars(request: Request) -> JSONResponse:
