@@ -509,6 +509,9 @@ class TestSwitchWithRename:
         kwargs = switch_env["update"].call_args.kwargs
         assert kwargs["rename_to"] == "dev2"
         assert kwargs["label_overrides"] == {"oduflow.git_branch": "feature/new"}
+        # The switch refreshes the agent checkout itself, with the target
+        # branch; update_environment must not run clone-env.sh a first time.
+        assert kwargs["sync_agent_checkout"] is False
 
     def test_the_checkout_and_the_apply_run_under_the_new_name(
         self, tmp_path, switch_env
@@ -554,6 +557,8 @@ class TestSwitchWithRename:
         result = _switch(tmp_path, new_name="dev2")
 
         assert switch_env["update"].call_args.kwargs["rename_to"] == "dev2"
+        # Same as for a real switch: one clone-env.sh run, owned by the caller.
+        assert switch_env["update"].call_args.kwargs["sync_agent_checkout"] is False
         assert result["branch_switched"] is False
         assert result["env_name"] == "dev2"
         assert result["renamed_from"] == "dev1"
@@ -657,6 +662,39 @@ class TestCheckRenameTarget:
 
         with pytest.raises(ConflictError):
             self._check(tmp_path, "prod-erp", client=client)
+
+    def test_a_production_environment_cannot_be_renamed(self, tmp_path):
+        # Its name is recorded in productions.json; moving the container and
+        # database behind that record would strand the deploy log too.
+        client = MagicMock()
+
+        with pytest.raises(ConflictError, match="production"):
+            env_ops.check_rename_target(
+                client,
+                _settings(tmp_path),
+                _team(tmp_path),
+                "prod-erp",
+                "erp",
+                container_id="own",
+            )
+
+        client.containers.get.assert_not_called()
+
+    def test_a_production_container_is_recognised_by_its_label(self, tmp_path):
+        client = MagicMock()
+
+        with pytest.raises(ConflictError, match="production"):
+            env_ops.check_rename_target(
+                client,
+                _settings(tmp_path),
+                _team(tmp_path),
+                "dev1",
+                "dev2",
+                container_id="own",
+                source_labels={"oduflow.prod": "true"},
+            )
+
+        client.containers.get.assert_not_called()
 
     def test_an_existing_workspace_directory_is_a_conflict(self, tmp_path):
         import docker

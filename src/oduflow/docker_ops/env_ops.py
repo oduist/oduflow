@@ -4306,12 +4306,6 @@ def switch_environment_branch(
     if rename_to == env_name:
         rename_to = ""
     if rename_to:
-        if labels.get("oduflow.stack"):
-            raise ConflictError(
-                f"Environment '{env_name}' belongs to stack "
-                f"'{labels['oduflow.stack']}', which reconciles environments by "
-                "name. Rename it in the stack definition instead."
-            )
         # Everything below this point mutates; a bad or taken target name must
         # fail here.
         check_rename_target(
@@ -4321,6 +4315,7 @@ def switch_environment_branch(
             env_name=env_name,
             new_name=rename_to,
             container_id=container_obj.id,
+            source_labels=labels,
         )
 
     current_branch = labels.get("oduflow.git_branch", env_name)
@@ -4357,6 +4352,9 @@ def switch_environment_branch(
                 rename_to=rename_to,
                 pull_image=False,
                 install_dependencies=False,
+                # The agent checkout is moved and refreshed right below, with
+                # the branch in hand; clone-env.sh must not run twice.
+                sync_agent_checkout=False,
             )
             _agent_rename_env(client, settings, team, env_name, rename_to)
             env_name = rename_to
@@ -4439,6 +4437,10 @@ def switch_environment_branch(
         pull_image=False,
         install_dependencies=False,
         rename_to=rename_to or None,
+        # update_environment moves the agent checkout; the .mcp.json rewrite it
+        # would follow with is the same clone-env.sh run as _agent_add_env
+        # below, which also carries the target branch.
+        sync_agent_checkout=False,
     )
     if rename_to:
         _agent_rename_env(client, settings, team, env_name, rename_to)
@@ -4516,6 +4518,7 @@ def check_rename_target(
     new_name: str,
     *,
     container_id: str = "",
+    source_labels: dict[str, str] | None = None,
 ) -> None:
     """Reject a rename target before anything is mutated.
 
@@ -4524,8 +4527,27 @@ def check_rename_target(
     collide on all three). Every check therefore compares against the resource
     the *target* name derives, and skips the case where that resource is the
     environment's own (a rename whose slug does not change).
+
+    ``source_labels`` are the renamed container's own labels, which say whether
+    the name is Oduflow's to change at all: a production's name is recorded in
+    productions.json and a stack member's in the stack definition.
     """
     from oduflow.naming import PROD_ENV_PREFIX, validate_env_name
+
+    labels = source_labels or {}
+    if env_name.startswith(PROD_ENV_PREFIX) or labels.get("oduflow.prod") == "true":
+        raise ConflictError(
+            f"'{env_name}' is a production environment. Its name is recorded in "
+            "productions.json and cannot be changed here; use the *_production "
+            "tools instead."
+        )
+    stack = labels.get("oduflow.stack")
+    if stack:
+        raise ConflictError(
+            f"Environment '{env_name}' belongs to stack '{stack}', which "
+            "reconciles environments by name. Rename it in the stack definition "
+            "instead."
+        )
 
     validate_env_name(new_name)
     if new_name.startswith(PROD_ENV_PREFIX):
@@ -4714,6 +4736,7 @@ def update_environment(
     install_dependencies: bool = True,
     label_overrides: dict[str, str] | None = None,
     rename_to: str | None = None,
+    sync_agent_checkout: bool = True,
 ) -> dict[str, Any]:
     """Re-create an environment's container, preserving DB, repo and filestore.
 
@@ -4733,7 +4756,10 @@ def update_environment(
     recreate instead of adding a second one: the name-keyed state is relocated
     (see :func:`_relocate_environment_state`) while the container is down, and
     everything the rest of this function derives from ``env_name`` is then
-    derived from the new one.
+    derived from the new one. The coding agent's checkout for the environment
+    follows the name as well, unless ``sync_agent_checkout`` is False:
+    switch_branch refreshes that checkout itself once it is on the target
+    branch, and clone-env.sh is too expensive to run twice.
     """
     client = get_client()
     odoo_container_name = get_resource_name(
@@ -4756,7 +4782,13 @@ def update_environment(
         # Before the first mutation: a taken name must not cost the environment
         # its container.
         check_rename_target(
-            client, settings, team, env_name, rename_to, container_id=container.id
+            client,
+            settings,
+            team,
+            env_name,
+            rename_to,
+            container_id=container.id,
+            source_labels=dict(container.labels),
         )
 
     # Labels
@@ -4877,6 +4909,7 @@ def update_environment(
     # ------------------------------------------------------------------
     # 2b. Rename: relocate the name-keyed state, then work under the new name
     # ------------------------------------------------------------------
+    renamed_from = ""
     if rename_to:
         old_workspace = get_workspace_path(env_name, team.workspaces_dir)
         old_db_name = get_db_name(env_name, team.team_id)
@@ -4892,6 +4925,12 @@ def update_environment(
                 f"workspace are intact under '{env_name}', but the environment "
                 "currently has no container."
             ) from exc
+        renamed_from = env_name
+        # A move, not a re-clone: the checkout can hold the agent's uncommitted
+        # work. Its .mcp.json still points at the old scoped URL and is
+        # rewritten below, once the environment answers on the new name.
+        if sync_agent_checkout:
+            _agent_rename_env(client, settings, team, env_name, rename_to)
         env_name = rename_to
         odoo_container_name = get_resource_name(
             env_name, "odoo", settings.prefix, team.team_id
@@ -4920,7 +4959,7 @@ def update_environment(
     # excluded the stale case, where it reports False (ENOTCONN) — the one
     # state that most needs a remount.
     if has_overlay_dirs and overlay_mount_state(merged) != MOUNT_ALIVE:
-        env_db = get_db_name(env_name)
+        env_db = get_db_name(env_name, team.team_id)
         template_name = labels.get("oduflow.template", "none")
         if template_name and template_name != "none":
             try:
@@ -5079,6 +5118,26 @@ def update_environment(
             setup_logs.append(pip_log)
 
     # ------------------------------------------------------------------
+    # 5b. Point the agent checkout at the renamed environment
+    # ------------------------------------------------------------------
+    if renamed_from and sync_agent_checkout:
+        # The checkout itself was moved above; this rewrites its .mcp.json with
+        # the scoped MCP URL, which carries the environment name in its path.
+        # Live-mounted environments have no repo to clone from (clone-env.sh
+        # skips on an empty URL).
+        _agent_add_env(
+            client,
+            settings,
+            team,
+            env_name,
+            ""
+            if labels.get("oduflow.local_path")
+            else labels.get(settings.repo_label, ""),
+            labels.get("oduflow.git_branch", renamed_from),
+            labels.get("oduflow.git_user", ""),
+        )
+
+    # ------------------------------------------------------------------
     # 6. Build URL and return result
     # ------------------------------------------------------------------
     if settings.routing_mode == "traefik":
@@ -5086,7 +5145,7 @@ def update_environment(
     else:
         url = f"http://{team.hostname}:{host_port}"
 
-    env_db = get_db_name(env_name)
+    env_db = get_db_name(env_name, team.team_id)
     workspace = get_workspace_path(env_name, team.workspaces_dir)
     logger.info(
         "Environment updated",
@@ -5096,6 +5155,7 @@ def update_environment(
     return {
         "url": url,
         "env_name": env_name,
+        "renamed_from": renamed_from,
         "hostname": get_env_short_hostname(env_name, route_hostname),
         "odoo_container": odoo_container_name,
         "database": env_db,

@@ -2176,6 +2176,11 @@
     <div class="modal-body">
       <p class="modal-note">Recreate the container for <strong id="update-env-name"></strong>. The database and filestore are kept.</p>
       <div class="form-group">
+        <label for="update-env-newname">Environment name</label>
+        <input type="text" id="update-env-newname" spellcheck="false">
+        <div class="hint">Change it to rename this environment. The database and filestore move with it; a pooled or explicit hostname is kept, a hostname derived from the environment name follows the new one. Its MCP endpoint becomes /mcp/&lt;new name&gt; — re-point any MCP client configured against the old path</div>
+      </div>
+      <div class="form-group">
         <label for="update-env-vars">Environment variables</label>
         <textarea id="update-env-vars" rows="5" spellcheck="false" placeholder="WORKERS=2&#10;LIMIT_TIME_CPU=600"></textarea>
         <p class="modal-note">One KEY=VALUE per line, injected into the Odoo container on top of the database connection variables. Clear the field to remove all custom variables; leave it untouched to keep them.</p>
@@ -3909,6 +3914,7 @@ async function doUpdate(branch) {
   _updateEnvInitial = '';
   document.getElementById('update-env-title').textContent = 'Update environment — ' + branch;
   document.getElementById('update-env-name').textContent = branch;
+  document.getElementById('update-env-newname').value = branch;
   var ta = document.getElementById('update-env-vars');
   ta.value = '';
   ta.disabled = true;
@@ -3950,12 +3956,14 @@ function closeUpdateEnv(event) {
 async function confirmUpdateEnv() {
   var branch = _updateEnv;
   var raw = document.getElementById('update-env-vars').value;
+  var newName = document.getElementById('update-env-newname').value.trim();
   var payload = {};
   // Send a mapping, not the raw blob: the server must not re-split values.
   if (raw.trim() !== _updateEnvInitial.trim()) payload.env_vars = parseEnvLines(raw);
+  if (newName && newName !== branch) payload.new_name = newName;
   _updateEnvSeq++;
   hideModal('update-env-modal');
-  setBusy(branch, 'Updating');
+  setBusy(branch, payload.new_name ? 'Renaming' : 'Updating');
   try {
     const r = await fetch(API + '/' + encodeURIComponent(branch) + '/update', {
       method: 'POST',
@@ -3964,9 +3972,13 @@ async function confirmUpdateEnv() {
     });
     const data = await readResult(r);
     if (data.ok) {
-      showToast(branch + ': updated');
+      // The card the busy state is keyed on disappears with the old name; the
+      // reload below draws the environment under the new one.
+      showToast(payload.new_name
+        ? branch + ': renamed to ' + payload.new_name
+        : branch + ': updated');
     } else {
-      showToast(data.error || 'Update failed', true);
+      showToast(data.error || (payload.new_name ? 'Rename failed' : 'Update failed'), true);
     }
   } catch (e) {
     showToast('Connection error: ' + e.message, true);

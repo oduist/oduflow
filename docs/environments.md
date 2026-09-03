@@ -194,6 +194,9 @@ oduflow call update_environment feature-login
 # Switch image and/or replace env vars (keeps database and filestore)
 oduflow call update_environment feature-login "WORKERS=4,LIMIT_TIME_CPU=900" odoo:19.0
 
+# Rename it (keeps database, filestore and a pooled or explicit hostname)
+oduflow call update_environment '{"env_name": "feature-login", "new_name": "login"}'
+
 # Tear down everything (container, database, filestore, workspace)
 oduflow call delete_environment feature-login
 ```
@@ -240,6 +243,9 @@ confusing. Pass `new_name` to relabel the slot in the same operation:
 ```bash
 oduflow call switch_branch '{"env_name": "dev1", "branch": "feature/next-task", "new_name": "next-task"}'
 ```
+
+(To rename without moving to another branch, pass `new_name` to
+`update_environment` — see [Renaming an Environment](#renaming-an-environment).)
 
 The database, filestore, ports, credentials and the environment's URL all move
 with it, so the browser tab you have open keeps working. Two things to know:
@@ -288,6 +294,43 @@ the main repo by passing `extra_addons` (`"enterprise:19.0"`).
 Reuse and recreate answer different questions: switch the branch when the
 database is still a reasonable starting point, and **Recreate** (below) when you
 want it replaced from the template.
+
+### Renaming an Environment
+
+A name that no longer describes what the slot holds does not have to be lived
+with, and it does not need a branch switch to fix. `update_environment` takes a
+`new_name`:
+
+```bash
+oduflow call update_environment '{"env_name": "dev1", "new_name": "next-task"}'
+```
+
+The container is re-created either way — it carries the environment name in its
+own name, its labels and its bind mounts — so the rename rides on that same
+recreate, and it can be combined with an image or env-var change in one call. On
+the dashboard the **Update environment** dialog has an *Environment name* field
+that does the same thing.
+
+What moves with the name: the database, the filestore, the workspace directory,
+the allocated port, the environment's PostgreSQL credentials, its activity clock
+and Agent Chat history, and the coding agent's checkout (uncommitted work
+included — the checkout is moved, never re-cloned). The URL is kept for pooled
+and explicit hostnames.
+
+Two things to know — the same two as for a
+[rename while switching](#renaming-while-switching):
+
+- **The scoped MCP endpoint moves**, from `/mcp/dev1` to `/mcp/next-task` (the
+  token itself is unchanged). Re-point any MCP client configured against the old
+  path.
+- **Environments using branch-derived hostnames** get a new URL, because the
+  hostname follows the environment name. Pooled and explicit hostnames stay.
+
+The target name must be free and Oduflow's to set: a rename onto a name that
+already has an environment, workspace directory or database is refused before
+anything is touched. So is a rename of a production environment (its name is
+recorded in `productions.json`) or of an environment managed by a
+[Stack](stacks.md) (there the name comes from the stack definition).
 
 ### Recreating Environments
 

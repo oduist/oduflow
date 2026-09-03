@@ -5,28 +5,31 @@ replacement (an empty string or an empty mapping clears every user-supplied
 variable), while an absent key keeps the current ones. A mapping is taken
 verbatim; the legacy string form is parsed for existing REST clients. api_env_vars returns the persisted
 ``oduflow.env_vars`` label for a single environment so the update dialog can
-prefill the current values.
+prefill the current values. The same endpoint carries the dialog's rename, so
+``new_name`` is covered here too.
 """
 
 from unittest.mock import MagicMock, patch
 
+import pytest
 from starlette.applications import Starlette
 from starlette.testclient import TestClient
 
 import docker
+from oduflow.errors import BusyError
 from oduflow.locking import LockManager
 from oduflow.settings import Settings, TeamSettings
 from oduflow.web_ui import mount_web_ui
 
 
-def _client(tmp_path):
+def _client(tmp_path, locks=None):
     settings = Settings(
         routing_mode="port",
         base_data_dir=str(tmp_path),
         teams={"1": TeamSettings(team_id="1")},
     )
     app = Starlette()
-    mount_web_ui(app, lambda: settings, LockManager())
+    mount_web_ui(app, lambda: settings, locks or LockManager())
     return TestClient(app)
 
 
@@ -113,6 +116,59 @@ def test_api_update_absent_env_vars_keeps_current(tmp_path):
     assert update.call_args.kwargs["env_override"] is None
 
 
+def test_api_update_renames_with_new_name(tmp_path):
+    client = _client(tmp_path)
+    with patch("oduflow.web_ui.env_ops.update_environment", return_value={}) as update:
+        resp = client.post("/api/environments/main/update", json={"new_name": "next"})
+    assert resp.json()["ok"] is True
+    assert update.call_args.kwargs["rename_to"] == "next"
+
+
+def test_api_update_new_name_equal_to_the_current_one_is_not_a_rename(tmp_path):
+    client = _client(tmp_path)
+    with patch("oduflow.web_ui.env_ops.update_environment", return_value={}) as update:
+        resp = client.post("/api/environments/main/update", json={"new_name": "main"})
+    assert resp.json()["ok"] is True
+    assert update.call_args.kwargs["rename_to"] is None
+
+
+def test_api_update_holds_the_target_name_and_releases_it(tmp_path):
+    """A concurrent create must not claim the name mid-rename."""
+    locks = LockManager()
+    client = _client(tmp_path, locks)
+
+    def _check(*args, **kwargs):
+        with pytest.raises(BusyError):
+            locks.acquire_env("next", "1")
+        return {}
+
+    with patch("oduflow.web_ui.env_ops.update_environment", side_effect=_check):
+        resp = client.post("/api/environments/main/update", json={"new_name": "next"})
+
+    assert resp.json()["ok"] is True
+    locks.acquire_env("next", "1")
+    locks.release_env("next")
+
+
+def test_api_update_reports_a_busy_target_name_without_touching_the_env(tmp_path):
+    locks = LockManager()
+    client = _client(tmp_path, locks)
+    locks.acquire_env("next", "1")
+    try:
+        with patch("oduflow.web_ui.env_ops.update_environment") as update:
+            resp = client.post(
+                "/api/environments/main/update", json={"new_name": "next"}
+            )
+    finally:
+        locks.release_env("next")
+
+    assert resp.json()["ok"] is False
+    update.assert_not_called()
+    # The source environment's own lock is released again, not leaked.
+    locks.acquire_env("main", "1")
+    locks.release_env("main")
+
+
 def test_api_create_accepts_mapping(tmp_path):
     """The create dialog posts a mapping too, so both dialogs share a contract."""
     client = _client(tmp_path)
@@ -151,3 +207,18 @@ def test_api_env_vars_missing_env_is_404(tmp_path):
         resp = client.get("/api/environments/main/env-vars")
     assert resp.status_code == 404
     assert resp.json()["ok"] is False
+
+
+def test_api_update_reports_an_invalid_new_name_as_a_bad_request(tmp_path):
+    client = _client(tmp_path)
+    with patch(
+        "oduflow.web_ui.env_ops.update_environment",
+        side_effect=ValueError("Invalid environment name: '../escape'"),
+    ):
+        resp = client.post(
+            "/api/environments/main/update", json={"new_name": "../escape"}
+        )
+
+    # Not an internal error: the message is written for the operator.
+    assert resp.status_code == 400
+    assert "../escape" in resp.json()["error"]
