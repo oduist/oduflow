@@ -185,7 +185,7 @@ def test_api_recreate_uses_recorded_git_branch(tmp_path):
         patch("oduflow.docker_ops.client.get_client") as mock_client,
         patch("oduflow.docker_ops.system_ops.check_disk_space"),
         patch("oduflow.docker_ops.system_ops.estimate_new_db_bytes", return_value=0),
-        patch("oduflow.docker_ops.env_ops.delete_environment"),
+        patch("oduflow.docker_ops.env_ops.delete_environment") as delete,
         patch(
             "oduflow.docker_ops.env_ops.create_environment",
             return_value={"url": "http://localhost:50000"},
@@ -195,6 +195,7 @@ def test_api_recreate_uses_recorded_git_branch(tmp_path):
         resp = client.post("/api/environments/oldstaging/recreate")
 
     assert resp.status_code == 200
+    assert delete.call_args.kwargs["preserve_share"] is True
     assert create.call_args.args[2] == "staging"
     assert create.call_args.kwargs["env_name"] == "oldstaging"
 
@@ -239,7 +240,7 @@ def test_api_recreate_restores_legacy_slot_to_branch_hostname(tmp_path):
         patch("oduflow.docker_ops.client.get_client") as mock_client,
         patch("oduflow.docker_ops.system_ops.check_disk_space"),
         patch("oduflow.docker_ops.system_ops.estimate_new_db_bytes", return_value=0),
-        patch("oduflow.docker_ops.env_ops.delete_environment"),
+        patch("oduflow.docker_ops.env_ops.delete_environment") as delete,
         patch(
             "oduflow.docker_ops.env_ops.create_environment",
             return_value={"url": "https://feature-a.dev.example.com"},
@@ -249,6 +250,7 @@ def test_api_recreate_restores_legacy_slot_to_branch_hostname(tmp_path):
         resp = client.post("/api/environments/feature-a/recreate")
 
     assert resp.status_code == 200
+    assert delete.call_args.kwargs["preserve_share"] is True
     assert create.call_args.kwargs["hostname"] == ""
     assert create.call_args.kwargs["hostname_source"] == ""
 
