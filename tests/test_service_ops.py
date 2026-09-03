@@ -164,7 +164,14 @@ class TestCreateService:
         mock_docker_client.containers.run.assert_not_called()
 
     def test_port_conflict_is_actionable_flow_error(self, mock_docker_client):
-        mock_docker_client.containers.get.side_effect = docker.errors.NotFound("nf")
+        # First lookup: no service yet. Second lookup: the container the SDK
+        # created before the failed start, which must be removed for the retry.
+        stale = MagicMock()
+        stale.status = "created"
+        mock_docker_client.containers.get.side_effect = [
+            docker.errors.NotFound("nf"),
+            stale,
+        ]
         mock_docker_client.containers.run.side_effect = docker.errors.APIError(
             "500 Server Error for http+docker://localhost/containers/id/start",
             explanation=(
@@ -184,8 +191,28 @@ class TestCreateService:
 
         message = str(exc_info.value)
         assert "host port 8080 is already allocated" in message
-        assert "update_service" in message
+        assert "call create_service again" in message
         assert "http+docker" not in message
+        stale.remove.assert_called_once_with(force=True)
+
+    def test_start_failure_keeps_stopped_container_with_same_name(
+        self, mock_docker_client
+    ):
+        """A name clash with an exited service must not delete that service."""
+        stopped = MagicMock()
+        stopped.status = "exited"
+        mock_docker_client.containers.get.side_effect = [stopped, stopped]
+        mock_docker_client.containers.run.side_effect = docker.errors.APIError(
+            "409 Client Error for http+docker://localhost/containers/create",
+            explanation="Conflict. The container name is already in use",
+        )
+
+        with pytest.raises(FlowError):
+            service_ops.create_service(
+                TEST_SETTINGS, TEST_TEAM, "redis", "redis:7", 6379
+            )
+
+        stopped.remove.assert_not_called()
 
     def test_other_start_failure_is_flow_error(self, mock_docker_client):
         mock_docker_client.containers.get.side_effect = docker.errors.NotFound("nf")
@@ -779,6 +806,81 @@ class TestListServices:
         svc = result[0]
         assert svc["port"] == 6379
         assert svc["url"] is None
+
+
+class TestRestartService:
+    def _conflict(self, port: int) -> docker.errors.APIError:
+        return docker.errors.APIError(
+            "500 Server Error for http+docker://localhost/containers/id/restart",
+            explanation=(
+                "driver failed programming external connectivity: Bind for "
+                f"0.0.0.0:{port} failed: port is already allocated"
+            ),
+        )
+
+    def test_restart_port_conflict_names_preset_port(self, mock_docker_client):
+        container = MagicMock()
+        container.restart.side_effect = self._conflict(6379)
+        mock_docker_client.containers.get.return_value = container
+
+        with (
+            patch(
+                "oduflow.docker_ops.service_ops.service_presets.get_preset",
+                return_value={"name": "redis", "port": 6379},
+            ),
+            pytest.raises(ConflictError) as exc_info,
+        ):
+            service_ops.restart_service(TEST_SETTINGS, TEST_TEAM, "redis")
+
+        assert "host port 6379 is already allocated" in str(exc_info.value)
+        assert "http+docker" not in str(exc_info.value)
+
+    def test_restart_without_preset_still_reports_conflict(self, mock_docker_client):
+        from oduflow.errors import NotFoundError
+
+        container = MagicMock()
+        container.restart.side_effect = self._conflict(6379)
+        mock_docker_client.containers.get.return_value = container
+
+        with (
+            patch(
+                "oduflow.docker_ops.service_ops.service_presets.get_preset",
+                side_effect=NotFoundError("no preset"),
+            ),
+            pytest.raises(ConflictError) as exc_info,
+        ):
+            service_ops.restart_service(TEST_SETTINGS, TEST_TEAM, "redis")
+
+        assert "host port is already allocated" in str(exc_info.value)
+
+    def test_restart_other_failure_is_flow_error(self, mock_docker_client):
+        container = MagicMock()
+        container.restart.side_effect = docker.errors.APIError(
+            "500 Server Error for http+docker://localhost/containers/id/restart",
+            explanation='OCI runtime create failed: exec: "serve": not found',
+        )
+        mock_docker_client.containers.get.return_value = container
+
+        with (
+            patch(
+                "oduflow.docker_ops.service_ops.service_presets.get_preset",
+                return_value={"name": "redis", "port": 6379},
+            ),
+            pytest.raises(FlowError) as exc_info,
+        ):
+            service_ops.restart_service(TEST_SETTINGS, TEST_TEAM, "redis")
+
+        assert str(exc_info.value) == (
+            "Docker failed to start service 'redis': OCI runtime create failed: "
+            'exec: "serve": not found'
+        )
+
+    def test_restart_not_found(self, mock_docker_client):
+        from oduflow.errors import NotFoundError
+
+        mock_docker_client.containers.get.side_effect = docker.errors.NotFound("nf")
+        with pytest.raises(NotFoundError):
+            service_ops.restart_service(TEST_SETTINGS, TEST_TEAM, "redis")
 
 
 class TestUpdateService:
@@ -1639,7 +1741,7 @@ class TestUpdateService:
         run_kwargs = mock_docker_client.containers.run.call_args
         assert run_kwargs[1]["ports"] == {"6380/tcp": 6380}
 
-    def test_update_port_conflict_tells_agent_to_retry(self, mock_docker_client):
+    def test_update_port_conflict_points_at_create_service(self, mock_docker_client):
         container = self._make_container(
             image_tags=["redis:7"],
             labels={"oduflow.managed": "true", "oduflow.service": "redis"},
@@ -1650,6 +1752,7 @@ class TestUpdateService:
         mock_docker_client.images.pull.return_value = pulled_image
         mock_docker_client.containers.get.side_effect = [
             container,
+            docker.errors.NotFound("nf"),
             docker.errors.NotFound("nf"),
         ]
         mock_docker_client.containers.run.side_effect = docker.errors.APIError(
@@ -1678,8 +1781,9 @@ class TestUpdateService:
                 TEST_SETTINGS, TEST_TEAM, "redis", port_override=6380
             )
 
+        # The old container is already gone, so the retry path is create_service.
         assert "host port 6380 is already allocated" in str(exc_info.value)
-        assert "update_service" in str(exc_info.value)
+        assert "call create_service again" in str(exc_info.value)
         container.stop.assert_called_once()
         container.remove.assert_called_once_with(v=True)
 

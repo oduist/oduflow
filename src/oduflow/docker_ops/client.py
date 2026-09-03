@@ -18,14 +18,12 @@ def docker_error_detail(exc: docker.errors.DockerException) -> str:
     URL, status code and response reason.  Those details are useful in server
     logs but noisy (and unnecessarily revealing) in an MCP response.  The
     daemon explanation is the part that tells an agent what it can fix.
-    """
-    if isinstance(exc, docker.errors.ContainerError):
-        stderr = exc.stderr
-        if isinstance(stderr, bytes):
-            stderr = stderr.decode("utf-8", errors="replace")
-        detail = f"Container command exited with status {exc.exit_status}"
-        return f"{detail}: {str(stderr).strip()}" if stderr else detail
 
+    Only use this where the explanation describes caller-supplied parameters
+    (a service image, port or volume).  Elsewhere Docker errors stay masked by
+    ``handle_errors``: the daemon freely quotes container names, IDs and host
+    paths, which must not reach MCP or dashboard clients.
+    """
     explanation = getattr(exc, "explanation", None)
     if isinstance(explanation, bytes):
         explanation = explanation.decode("utf-8", errors="replace")

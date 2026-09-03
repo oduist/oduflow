@@ -981,15 +981,16 @@ def _call_managed_tool(test_mcp, tool_name: str, **arguments):
 
 
 class TestMCPErrorVisibility:
-    def test_docker_error_exposes_daemon_detail_only(self):
+    def test_docker_error_remains_masked(self):
+        """Daemon text quotes container names, IDs and host paths: never shown."""
         from fastmcp import FastMCP
 
-        from oduflow.server import handle_errors, mcp
+        from oduflow.server import handle_errors
 
         error = docker.errors.APIError(
             "500 Server Error for "
             "http+docker://localhost/v1.52/containers/internal-id/restart",
-            explanation="restart failed: port is already allocated",
+            explanation='No such container: "internal-name" (/srv/private/path)',
         )
 
         test_mcp = FastMCP("error-test", mask_error_details=True)
@@ -999,15 +1000,13 @@ class TestMCPErrorVisibility:
         def restart_without_context(name: str) -> str:
             raise error
 
-        assert mcp._tool_manager.mask_error_details is True
         with pytest.raises(ToolError) as exc_info:
             _call_managed_tool(test_mcp, "restart_without_context", name="redis")
 
         message = str(exc_info.value)
-        assert "restart failed: port is already allocated" in message
-        assert "http+docker" not in message
-        assert "internal-id" not in message
-        assert "Traceback" not in message
+        assert message == "Error calling tool 'restart_without_context'"
+        assert "internal-name" not in message
+        assert "/srv/private/path" not in message
 
     def test_unexpected_error_remains_masked(self):
         from fastmcp import FastMCP
@@ -1028,6 +1027,22 @@ class TestMCPErrorVisibility:
 
         assert str(exc_info.value) == "Error calling tool 'restart_without_context'"
         assert internal_detail not in str(exc_info.value)
+
+    def test_flow_error_message_is_shown(self):
+        from fastmcp import FastMCP
+
+        from oduflow.errors import ConflictError
+        from oduflow.server import handle_errors
+
+        test_mcp = FastMCP("error-test", mask_error_details=True)
+
+        @test_mcp.tool()
+        @handle_errors
+        def create_without_context(name: str) -> str:
+            raise ConflictError("host port 8080 is already allocated")
+
+        with pytest.raises(ToolError, match="host port 8080 is already allocated"):
+            _call_managed_tool(test_mcp, "create_without_context", name="redis")
 
 
 class TestCreateServiceTool:

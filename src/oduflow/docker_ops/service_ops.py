@@ -64,6 +64,29 @@ _SYSTEM_ENV_KEYS = {
 }
 
 
+def _raise_service_start_error(
+    name: str, port: int | None, exc: docker.errors.DockerException
+) -> None:
+    """Translate a failed service start into an actionable FlowError.
+
+    A host-port clash is the one failure an agent can fix on its own, so it
+    gets a dedicated ConflictError with the retry path spelled out.  Every other
+    daemon explanation describes the caller's own image/port/volume parameters
+    and is passed through without the SDK's HTTP wrapper.
+    """
+    detail = docker_error_detail(exc).lower()
+    if "port is already allocated" in detail or (
+        "bind for " in detail and "address already in use" in detail
+    ):
+        port_label = f" {port}" if port is not None else ""
+        raise ConflictError(
+            f"Could not start service '{name}': host port{port_label} is already "
+            "allocated. Choose a different host port and call create_service "
+            "again."
+        ) from exc
+    raise docker_operation_error(f"start service '{name}'", exc) from exc
+
+
 def _pull_service_image(client: Any, image: str) -> Any:
     """Pull a service image and expose only safe, actionable failures."""
     try:
@@ -471,18 +494,11 @@ def create_service(
         try:
             client.containers.run(**run_kwargs)
         except docker.errors.DockerException as exc:
-            detail = docker_error_detail(exc)
-            if "port is already allocated" in detail.lower() or (
-                "bind for " in detail.lower()
-                and "address already in use" in detail.lower()
-            ):
-                port_label = f" {port}" if port is not None else ""
-                raise ConflictError(
-                    f"Could not start service '{name}': host port{port_label} is "
-                    "already allocated. Choose a different port and retry "
-                    "create_service or update_service."
-                ) from exc
-            raise docker_operation_error(f"start service '{name}'", exc) from exc
+            # The SDK creates the container before starting it, so a failed
+            # start leaves a `created` container holding the name. Drop it,
+            # otherwise the retry this error recommends hits a name conflict.
+            _remove_stale_service_container(client, container_name)
+            _raise_service_start_error(name, port, exc)
     logger.info("Created service container %s from image %s", container_name, image)
 
     # Auto-save preset for future restore
@@ -516,6 +532,28 @@ def create_service(
     }
 
 
+def _remove_stale_service_container(client: Any, container_name: str) -> None:
+    """Best-effort removal of a service container that never started.
+
+    Only a ``created`` container is touched: that is what the SDK leaves behind
+    when ``start`` fails. A stopped (``exited``) container is someone's service
+    and is left alone, so a name clash surfaces instead of deleting it.
+    """
+    try:
+        stale = client.containers.get(container_name)
+        if stale.status != "created":
+            return
+        stale.remove(force=True)
+    except docker.errors.NotFound:
+        pass
+    except docker.errors.DockerException:
+        logger.warning(
+            "Could not remove failed service container %s",
+            container_name,
+            exc_info=True,
+        )
+
+
 def restart_service(
     settings: Settings, team: TeamSettings, name: str
 ) -> dict[str, str]:
@@ -527,7 +565,16 @@ def restart_service(
     except docker.errors.NotFound:
         raise NotFoundError(f"Service '{name}' not found")
 
-    container.restart()
+    port: int | None = None
+    try:
+        preset = service_presets.get_preset(team, name)
+        port = int(preset["port"]) if preset and preset.get("port") else None
+    except Exception:
+        pass
+    try:
+        container.restart()
+    except docker.errors.DockerException as exc:
+        _raise_service_start_error(name, port, exc)
     logger.info("Restarted service container %s", container_name)
 
     return {

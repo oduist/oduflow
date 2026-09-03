@@ -13,8 +13,6 @@ import warnings
 from collections.abc import Awaitable, Callable, Sequence
 from typing import Any, ParamSpec, TypeVar, cast
 
-import docker
-
 # Suppress a third-party deprecation warning emitted at import time by fastmcp's
 # JWT auth provider (it imports the deprecated authlib.jose module). This keeps
 # CLI output (e.g. `oduflow --version`) clean.
@@ -54,7 +52,6 @@ from oduflow.docker_ops import (
     volume_file_ops,
     volume_ops,
 )
-from oduflow.docker_ops.client import docker_operation_error
 from oduflow.errors import FlowError, NotFoundError, PrerequisiteNotMetError
 from oduflow.locking import (
     PROD_KEY_PREFIX,
@@ -106,11 +103,10 @@ get_odoo_development_guide(version="..."), follow it immediately before
 editing code.
 """.strip()
 
-# mask_error_details=True: only messages explicitly approved by handle_errors
-# reach the client. FlowError and ValueError are author-authored messages;
-# DockerException is reduced to its daemon explanation. Any other exception is
-# returned as a generic "Error calling tool", so internal paths, container/DB
-# names and stack detail are not disclosed to MCP callers.
+# mask_error_details=True: only messages from explicitly-raised ToolError (our
+# handle_errors wraps FlowError into one) reach the client. Any other exception
+# is returned as a generic "Error calling tool" without its text, so internal
+# paths, container/DB names and stack detail are not disclosed to MCP callers.
 mcp = FastMCP("Oduflow", instructions=_MCP_INSTRUCTIONS, mask_error_details=True)
 _locks = LockManager()
 _settings: Settings | None = None
@@ -321,14 +317,6 @@ def handle_errors(fn: Callable[P, R]) -> Callable[P, Awaitable[R]]:
                 # masked by mask_error_details=True so internal detail never leaks.
                 logger.error("[%s] Invalid input: %s", fn.__name__, e)
                 raise ToolError(str(e))
-            except docker.errors.DockerException as e:
-                # Docker daemon failures are expected operational errors.  Keep
-                # FastMCP's blanket masking enabled for programming errors, but
-                # expose the daemon explanation so an MCP agent can act on it.
-                # The full exception and traceback remain in the server log.
-                logger.exception("[%s] Docker operation failed", fn.__name__)
-                error = docker_operation_error(f"complete MCP tool '{fn.__name__}'", e)
-                raise ToolError(str(error)) from e
 
         return await anyio.to_thread.run_sync(_run)
 
