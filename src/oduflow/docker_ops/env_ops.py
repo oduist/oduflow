@@ -19,7 +19,7 @@ from typing import Any
 
 import docker
 from docker import DockerClient
-from oduflow import activity, settings
+from oduflow import activity, env_share, settings
 from oduflow.docker_ops.client import chown_recursive, get_client, get_odoo_uid_gid
 from oduflow.docker_ops.stats import default_env_limits
 from oduflow.docker_ops.system_ops import (
@@ -3009,6 +3009,16 @@ def unprotect_environment(
     return {"env_name": env_name, "protected": False}
 
 
+def require_environment(settings: Settings, team: TeamSettings, env_name: str) -> None:
+    """Raise NotFoundError unless the team owns an environment by that name."""
+    client = get_client()
+    container_name = get_resource_name(env_name, "odoo", settings.prefix, team.team_id)
+    try:
+        client.containers.get(container_name)
+    except docker.errors.NotFound:
+        raise NotFoundError(f"Environment '{env_name}' does not exist.")
+
+
 def get_env_token(settings: Settings, team: TeamSettings, env_name: str) -> str | None:
     """Return the per-environment MCP access token from the container label.
 
@@ -3149,6 +3159,7 @@ def delete_environment(
         shutil.rmtree(workspace_path)
 
     activity.remove(team, env_name)
+    env_share.remove(team, env_name)
     invalidate_cache()
     logger.info("Environment deleted", extra={"env_name": env_name})
     return warnings
@@ -4669,6 +4680,7 @@ def _relocate_environment_state(
     if team.hostname_registry_path or team.data_dir:
         rename_hostname_env(_hostname_registry_path(team), old_name, new_name)
     activity.rename(team, old_name, new_name)
+    env_share.rename(team, old_name, new_name)
 
     from oduflow import agent_sessions
 
