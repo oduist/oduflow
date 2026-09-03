@@ -9,7 +9,11 @@ from typing import Any
 
 import docker
 from oduflow.docker_ops import service_presets, volume_ops
-from oduflow.docker_ops.client import get_client
+from oduflow.docker_ops.client import (
+    docker_error_detail,
+    docker_operation_error,
+    get_client,
+)
 from oduflow.errors import (
     ConflictError,
     FlowError,
@@ -58,6 +62,35 @@ _SYSTEM_ENV_KEYS = {
     "SSH_AGENT_PID",
     "DBUS_SESSION_BUS_ADDRESS",
 }
+
+
+def _raise_service_start_error(
+    name: str,
+    port: int | None,
+    exc: docker.errors.DockerException,
+    *,
+    retry_with: str,
+) -> None:
+    """Translate a failed service start into an actionable FlowError.
+
+    A host-port clash is the one failure an agent can fix on its own, so it
+    gets a dedicated ConflictError with the retry path spelled out.
+    ``retry_with`` names the tool that can apply a new port: after a failed
+    create the name is free again, so ``create_service``; after a failed
+    restart the stopped container still holds the name, so ``update_service``.
+    Every other daemon explanation describes the caller's own image/port/volume
+    parameters and is passed through without the SDK's HTTP wrapper.
+    """
+    detail = docker_error_detail(exc).lower()
+    if "port is already allocated" in detail or (
+        "bind for " in detail and "address already in use" in detail
+    ):
+        port_label = f" {port}" if port is not None else ""
+        raise ConflictError(
+            f"Could not start service '{name}': host port{port_label} is already "
+            f"allocated. Choose a different host port and call {retry_with}."
+        ) from exc
+    raise docker_operation_error(f"start service '{name}'", exc) from exc
 
 
 def _pull_service_image(client: Any, image: str) -> Any:
@@ -324,6 +357,14 @@ def create_service(
         existing = client.containers.get(container_name)
         if existing.status == "running":
             raise ConflictError(f"Service '{name}' already exists and is running.")
+        # Docker would refuse the name with a 409 that quotes the container
+        # name and ID; say it in our own words instead.
+        raise ConflictError(
+            f"Service '{name}' already exists but is not running "
+            f"(status: {existing.status}). Use restart_service to start it, "
+            "update_service to recreate it with new settings, or delete_service "
+            "first."
+        )
     except docker.errors.NotFound:
         is_new_service = True
 
@@ -464,7 +505,16 @@ def create_service(
         )
         if vol_binds:
             run_kwargs["volumes"] = vol_binds
-        client.containers.run(**run_kwargs)
+        try:
+            client.containers.run(**run_kwargs)
+        except docker.errors.DockerException as exc:
+            # The SDK creates the container before starting it, so a failed
+            # start leaves a `created` container holding the name. Drop it,
+            # otherwise the retry this error recommends hits a name conflict.
+            _remove_stale_service_container(client, container_name)
+            _raise_service_start_error(
+                name, port, exc, retry_with="create_service again"
+            )
     logger.info("Created service container %s from image %s", container_name, image)
 
     # Auto-save preset for future restore
@@ -498,6 +548,31 @@ def create_service(
     }
 
 
+def _remove_stale_service_container(client: Any, container_name: str) -> None:
+    """Best-effort removal of a service container that never started.
+
+    Only an Oduflow-managed ``created`` container is touched: that is what the
+    SDK leaves behind when ``start`` fails. A stopped (``exited``) container or
+    one without our label is someone's service and is left alone, so a name
+    clash surfaces instead of deleting it.
+    """
+    try:
+        stale = client.containers.get(container_name)
+        if stale.status != "created":
+            return
+        if (stale.labels or {}).get("oduflow.managed") != "true":
+            return
+        stale.remove(force=True)
+    except docker.errors.NotFound:
+        pass
+    except docker.errors.DockerException:
+        logger.warning(
+            "Could not remove failed service container %s",
+            container_name,
+            exc_info=True,
+        )
+
+
 def restart_service(
     settings: Settings, team: TeamSettings, name: str
 ) -> dict[str, str]:
@@ -509,7 +584,18 @@ def restart_service(
     except docker.errors.NotFound:
         raise NotFoundError(f"Service '{name}' not found")
 
-    container.restart()
+    port: int | None = None
+    try:
+        preset = service_presets.get_preset(team, name)
+        port = int(preset["port"]) if preset and preset.get("port") else None
+    except Exception:
+        pass
+    try:
+        container.restart()
+    except docker.errors.DockerException as exc:
+        _raise_service_start_error(
+            name, port, exc, retry_with="update_service with a new port"
+        )
     logger.info("Restarted service container %s", container_name)
 
     return {

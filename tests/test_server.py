@@ -8,6 +8,7 @@ from unittest.mock import patch
 import pytest
 from fastmcp.exceptions import ToolError
 
+import docker
 from oduflow import po_tools
 from oduflow.po_tools import PoEntry, PoSummary
 from oduflow.settings import Settings, TeamSettings
@@ -1057,6 +1058,78 @@ def _get_tool_fn(tool_name: str):
         return result
 
     return sync_wrapper
+
+
+def _call_managed_tool(test_mcp, tool_name: str, **arguments):
+    """Call through FastMCP's manager so its masking policy is exercised."""
+    import asyncio
+
+    return asyncio.run(test_mcp._tool_manager.call_tool(tool_name, arguments))
+
+
+class TestMCPErrorVisibility:
+    def test_docker_error_remains_masked(self):
+        """Daemon text quotes container names, IDs and host paths: never shown."""
+        from fastmcp import FastMCP
+
+        from oduflow.server import handle_errors
+
+        error = docker.errors.APIError(
+            "500 Server Error for "
+            "http+docker://localhost/v1.52/containers/internal-id/restart",
+            explanation='No such container: "internal-name" (/srv/private/path)',
+        )
+
+        test_mcp = FastMCP("error-test", mask_error_details=True)
+
+        @test_mcp.tool()
+        @handle_errors
+        def restart_without_context(name: str) -> str:
+            raise error
+
+        with pytest.raises(ToolError) as exc_info:
+            _call_managed_tool(test_mcp, "restart_without_context", name="redis")
+
+        message = str(exc_info.value)
+        assert message == "Error calling tool 'restart_without_context'"
+        assert "internal-name" not in message
+        assert "/srv/private/path" not in message
+
+    def test_unexpected_error_remains_masked(self):
+        from fastmcp import FastMCP
+
+        from oduflow.server import handle_errors
+
+        internal_detail = "/srv/oduflow/private/team-1/runtime-state"
+
+        test_mcp = FastMCP("error-test", mask_error_details=True)
+
+        @test_mcp.tool()
+        @handle_errors
+        def restart_without_context(name: str) -> str:
+            raise RuntimeError(internal_detail)
+
+        with pytest.raises(ToolError) as exc_info:
+            _call_managed_tool(test_mcp, "restart_without_context", name="redis")
+
+        assert str(exc_info.value) == "Error calling tool 'restart_without_context'"
+        assert internal_detail not in str(exc_info.value)
+
+    def test_flow_error_message_is_shown(self):
+        from fastmcp import FastMCP
+
+        from oduflow.errors import ConflictError
+        from oduflow.server import handle_errors
+
+        test_mcp = FastMCP("error-test", mask_error_details=True)
+
+        @test_mcp.tool()
+        @handle_errors
+        def create_without_context(name: str) -> str:
+            raise ConflictError("host port 8080 is already allocated")
+
+        with pytest.raises(ToolError, match="host port 8080 is already allocated"):
+            _call_managed_tool(test_mcp, "create_without_context", name="redis")
 
 
 class TestCreateServiceTool:

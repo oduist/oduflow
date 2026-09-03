@@ -1,14 +1,63 @@
 import logging
 import os
+import re
 import time
 
 import docker
 from docker import DockerClient
-from oduflow.errors import PrerequisiteNotMetError
+from oduflow.errors import FlowError, PrerequisiteNotMetError
 
 logger = logging.getLogger("oduflow")
 
 _uid_gid_cache: dict[str, str] = {}
+_HEX_ID_RE = re.compile(r"\b[0-9a-f]{12,64}\b")
+# Absolute paths: host mount sources, /var/lib/docker/volumes/..., and the
+# "/name" form Docker uses when it quotes a container name.
+_ABS_PATH_RE = re.compile(r"(?<![\w.-])/[\w.@:+-]+(?:/[\w.@:+-]+)*")
+
+
+def docker_error_detail(exc: docker.errors.DockerException) -> str:
+    """Return the actionable Docker detail without the SDK HTTP wrapper.
+
+    ``APIError.__str__`` prefixes the daemon's explanation with the Docker API
+    URL, status code and response reason.  Those details are useful in server
+    logs but noisy (and unnecessarily revealing) in an MCP response.  The
+    daemon explanation is the part that tells an agent what it can fix.
+
+    Only use this where the explanation describes caller-supplied parameters
+    (a service image, port or volume), and even there hex IDs and absolute
+    paths are scrubbed: the daemon quotes container names as ``/name`` and
+    mount failures include host and ``/var/lib/docker`` paths.  Elsewhere
+    Docker errors stay masked by ``handle_errors``.
+    """
+    explanation = getattr(exc, "explanation", None)
+    if isinstance(explanation, bytes):
+        explanation = explanation.decode("utf-8", errors="replace")
+    if explanation:
+        # Container/image IDs and absolute paths are internal identifiers with
+        # no value to a caller; drop them even from caller-facing explanations.
+        detail = _HEX_ID_RE.sub("<id>", str(explanation).strip())
+        return _ABS_PATH_RE.sub("<path>", detail)
+
+    if isinstance(exc, docker.errors.APIError):
+        status = exc.status_code
+        reason = getattr(exc.response, "reason", "") if exc.response is not None else ""
+        status_detail = " ".join(str(part) for part in (status, reason) if part)
+        return (
+            f"Docker API request failed ({status_detail})."
+            if status_detail
+            else "Docker API request failed."
+        )
+
+    detail = str(exc).strip()
+    return detail or exc.__class__.__name__
+
+
+def docker_operation_error(
+    action: str, exc: docker.errors.DockerException
+) -> FlowError:
+    """Translate an expected Docker SDK failure into a client-safe FlowError."""
+    return FlowError(f"Docker failed to {action}: {docker_error_detail(exc)}")
 
 
 def get_client() -> DockerClient:
