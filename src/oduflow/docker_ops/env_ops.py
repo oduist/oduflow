@@ -4336,6 +4336,9 @@ def switch_environment_branch(
                 rename_to=rename_to,
                 pull_image=False,
                 install_dependencies=False,
+                # The agent checkout is moved and refreshed right below, with
+                # the branch in hand; clone-env.sh must not run twice.
+                sync_agent_checkout=False,
             )
             _agent_rename_env(client, settings, team, env_name, rename_to)
             env_name = rename_to
@@ -4510,11 +4513,19 @@ def check_rename_target(
     environment's own (a rename whose slug does not change).
 
     ``source_labels`` are the renamed container's own labels, which say whether
-    the name is Oduflow's to change at all.
+    the name is Oduflow's to change at all: a production's name is recorded in
+    productions.json and a stack member's in the stack definition.
     """
     from oduflow.naming import PROD_ENV_PREFIX, validate_env_name
 
-    stack = (source_labels or {}).get("oduflow.stack")
+    labels = source_labels or {}
+    if env_name.startswith(PROD_ENV_PREFIX) or labels.get("oduflow.prod") == "true":
+        raise ConflictError(
+            f"'{env_name}' is a production environment. Its name is recorded in "
+            "productions.json and cannot be changed here; use the *_production "
+            "tools instead."
+        )
+    stack = labels.get("oduflow.stack")
     if stack:
         raise ConflictError(
             f"Environment '{env_name}' belongs to stack '{stack}', which "

@@ -2154,7 +2154,7 @@
       <div class="form-group">
         <label for="update-env-newname">Environment name</label>
         <input type="text" id="update-env-newname" spellcheck="false">
-        <div class="hint">Change it to rename this environment. The database, filestore and URL move with it, but its MCP endpoint becomes /mcp/&lt;new name&gt; — re-point any MCP client configured against the old path</div>
+        <div class="hint">Change it to rename this environment. The database and filestore move with it; a pooled or explicit hostname is kept, a hostname derived from the environment name follows the new one. Its MCP endpoint becomes /mcp/&lt;new name&gt; — re-point any MCP client configured against the old path</div>
       </div>
       <div class="form-group">
         <label for="update-env-vars">Environment variables</label>

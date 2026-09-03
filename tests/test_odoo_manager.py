@@ -1773,6 +1773,21 @@ class TestUpdateEnvironment:
         container.remove.assert_not_called()
         mock_docker_client.containers.run.assert_not_called()
 
+    def test_a_production_container_cannot_be_renamed(self, mock_docker_client):
+        # The REST route has no production fence of its own; the rename must
+        # refuse a production before the first mutation.
+        container = self._make_container()
+        container.labels["oduflow.prod"] = "true"
+        mock_docker_client.containers.get.return_value = container
+
+        with pytest.raises(ConflictError, match="production"):
+            env_ops.update_environment(
+                TEST_SETTINGS, TEST_TEAM, "main", pull_image=False, rename_to="next"
+            )
+
+        container.remove.assert_not_called()
+        mock_docker_client.containers.run.assert_not_called()
+
     def test_the_reported_database_is_team_scoped(self, mock_docker_client):
         # The database name a team's environment gets is oduflow_<team>_<slug>;
         # reporting team 1's name to any other team is a wrong answer.

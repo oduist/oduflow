@@ -1731,9 +1731,12 @@ def update_environment(
     describes what it holds. The container has to be re-created for a rename
     anyway (it carries the name in its own name, its labels and its mounts), so
     the rename rides on this same recreate. The database, filestore, ports and
-    credentials move with it; the URL / hostname is kept. The scoped MCP
-    endpoint, however, moves from /mcp/<old name> to /mcp/<new name>, so an MCP
-    client configured against the old path has to be re-pointed. Use
+    credentials move with it. A pooled or explicit hostname is kept, so the URL
+    stays the same; a hostname derived from the environment name follows the
+    new name. The scoped MCP endpoint moves from /mcp/<old name> to
+    /mcp/<new name>, so an MCP client configured against the old path has to
+    be re-pointed. Production environments and stack members cannot be renamed
+    here: their names are recorded elsewhere. Use
     switch_branch instead when the environment should also move onto another
     git branch — it renames along the way.
 

@@ -1807,7 +1807,7 @@ oduflow call update_environment feature-login
 # Switch image and/or replace env vars (keeps database and filestore)
 oduflow call update_environment feature-login "WORKERS=4,LIMIT_TIME_CPU=900" odoo:19.0
 
-# Rename it (keeps database, filestore and URL)
+# Rename it (keeps database, filestore and a pooled or explicit hostname)
 oduflow call update_environment '{"env_name": "feature-login", "new_name": "login"}'
 
 # Tear down everything (container, database, filestore, workspace)
@@ -1927,7 +1927,8 @@ that does the same thing.
 What moves with the name: the database, the filestore, the workspace directory,
 the allocated port, the environment's PostgreSQL credentials, its activity clock
 and Agent Chat history, and the coding agent's checkout (uncommitted work
-included — the checkout is moved, never re-cloned). The URL is kept.
+included — the checkout is moved, never re-cloned). The URL is kept for pooled
+and explicit hostnames.
 
 Two things to know — the same two as for a
 [rename while switching](#renaming-while-switching):
@@ -1940,8 +1941,9 @@ Two things to know — the same two as for a
 
 The target name must be free and Oduflow's to set: a rename onto a name that
 already has an environment, workspace directory or database is refused before
-anything is touched, as is an environment managed by a [Stack](stacks.md) (there
-the name comes from the stack definition).
+anything is touched. So is a rename of a production environment (its name is
+recorded in `productions.json`) or of an environment managed by a
+[Stack](stacks.md) (there the name comes from the stack definition).
 
 ### Recreating Environments
 
@@ -3215,7 +3217,7 @@ than a JSON API. Production routes are registered only when
 | `GET` | `/api/environments/{branch}/modules` | List installed modules (name and version) — the source for the dashboard's Upgrade modules picker |
 | `POST` | `/api/environments/{branch}/modules` | Install or upgrade modules. Body: `action` (`install` or `upgrade`), `modules` (comma-separated string). A successful action returns `modules_installed` or `modules_upgraded` plus `container_restarted`; if the follow-up restart fails, the module action remains successful with `container_restarted: false` plus a warning. Every result includes `modules_attempted`; a non-zero Odoo exit code omits the success field and includes the command output |
 | `POST` | `/api/environments/{branch}/switch-branch` | Move the environment onto another git branch, keeping DB, filestore and URL, then apply the difference. Body: `branch`, optional `new_name` to rename the environment at the same time. The response's `env_name` is the name to address it by afterwards |
-| `POST` | `/api/environments/{branch}/update` | Recreate the container while preserving DB and filestore. Optional body: `env_vars` (full replacement of the user-supplied container variables — either an object mapping names to values, or a `KEY=VALUE` string separated by newlines or commas; an empty object/string clears them, an absent key keeps them). The dashboard sends an object, so a value may contain commas, `odoo_image`, `new_name` (rename the environment; the URL is kept but its scoped MCP endpoint moves to `/mcp/<new name>`) |
+| `POST` | `/api/environments/{branch}/update` | Recreate the container while preserving DB and filestore. Optional body: `env_vars` (full replacement of the user-supplied container variables — either an object mapping names to values, or a `KEY=VALUE` string separated by newlines or commas; an empty object/string clears them, an absent key keeps them). The dashboard sends an object, so a value may contain commas, `odoo_image`, `new_name` (rename the environment; a pooled or explicit hostname is kept, its scoped MCP endpoint moves to `/mcp/<new name>`; productions and stack members are refused) |
 | `GET` | `/api/environments/{branch}/env-vars` | Return the user-supplied container environment variables |
 | `POST` | `/api/environments/{branch}/recreate` | Delete and recreate with the recorded parameters |
 | `POST` | `/api/environments/{branch}/delete` | Delete the environment |

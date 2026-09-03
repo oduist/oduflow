@@ -194,7 +194,7 @@ oduflow call update_environment feature-login
 # Switch image and/or replace env vars (keeps database and filestore)
 oduflow call update_environment feature-login "WORKERS=4,LIMIT_TIME_CPU=900" odoo:19.0
 
-# Rename it (keeps database, filestore and URL)
+# Rename it (keeps database, filestore and a pooled or explicit hostname)
 oduflow call update_environment '{"env_name": "feature-login", "new_name": "login"}'
 
 # Tear down everything (container, database, filestore, workspace)
@@ -314,7 +314,8 @@ that does the same thing.
 What moves with the name: the database, the filestore, the workspace directory,
 the allocated port, the environment's PostgreSQL credentials, its activity clock
 and Agent Chat history, and the coding agent's checkout (uncommitted work
-included — the checkout is moved, never re-cloned). The URL is kept.
+included — the checkout is moved, never re-cloned). The URL is kept for pooled
+and explicit hostnames.
 
 Two things to know — the same two as for a
 [rename while switching](#renaming-while-switching):
@@ -327,8 +328,9 @@ Two things to know — the same two as for a
 
 The target name must be free and Oduflow's to set: a rename onto a name that
 already has an environment, workspace directory or database is refused before
-anything is touched, as is an environment managed by a [Stack](stacks.md) (there
-the name comes from the stack definition).
+anything is touched. So is a rename of a production environment (its name is
+recorded in `productions.json`) or of an environment managed by a
+[Stack](stacks.md) (there the name comes from the stack definition).
 
 ### Recreating Environments
 
