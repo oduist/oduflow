@@ -61,10 +61,10 @@ a thin control plane over the host Docker daemon:
   `interrupted` on first access; succeeded builds remain publishable while
   their retained staging image exists. Retry is a new build, cheap via the
   layer cache.
-- **Credentials are request-scoped.** `username` + `token_env` (resolved from
-  the server environment at publish time) are passed per-push to the Docker
-  API; with neither set, the host's own `docker login` is used. No daemon-wide
-  login, nothing persisted.
+- **Credentials are request-scoped.** `username` + `token` are read from the
+  Oduflow config and passed per-push to the Docker API; with neither set, the
+  host's own `docker login` is used. There is no daemon-wide login, and the
+  credentials are not persisted in build jobs.
 
 ## Consequences
 
@@ -122,3 +122,6 @@ mutually untrusting tenants. Each pillar and why it was dropped:
 
 - 2026-09-01 — introduced (simplified from a 2026-08-31 design after review;
   that document's rationale is folded into this record).
+- 2026-09-02 — registry tokens moved from an environment-variable reference to
+  a direct config value, matching how Oduflow stores its other deployment
+  credentials while preserving request-scoped Docker authentication.

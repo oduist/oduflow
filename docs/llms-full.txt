@@ -828,8 +828,8 @@ port_range = [50000, 50100]          # port range for Odoo containers [start, en
 # [team.1.image_registry]            # enables the image build/publish MCP tools for this team
 # repository_prefix = "acme"         # registry namespace all published images live under (required)
 # host = "docker.io"                 # plain registry hostname, optionally with :port
-# username = "acme-ci"               # optional; with token_env, request-scoped push credentials
-# token_env = "ODUFLOW_REGISTRY_TEAM_1_TOKEN"  # env var holding the registry token
+# username = "acme-ci"               # optional; with token, request-scoped push credentials
+# token = "<registry-token>"         # registry token/password stored in this config
 # build_timeout_seconds = 1800       # per-build wall clock limit
 # max_context_mb = 512               # sealed build context size cap
 # max_log_mb = 16                    # persisted log cap per build
@@ -940,7 +940,7 @@ Each `[team.*]` section defines an isolated team with its own workspaces, templa
 | `db_quota_gb` | `50` | Combined size cap for the team's environment and template PostgreSQL databases. `0` disables the check |
 | `disk_quota_gb` | `0` | Kernel-enforced cap for team files and databases when the data filesystem supports XFS project quotas. `0` disables it |
 | `[team.X.agent_env]` | *(empty)* | Sub-table of environment variables injected into the team's agent container — provider credentials (`CLAUDE_CODE_OAUTH_TOKEN`, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `OPENCODE_API_KEY`, or any provider-specific OpenCode variable) and custom vars |
-| `[team.X.image_registry]` | *(absent — image building disabled)* | Sub-table enabling the container image build/publish MCP tools for the team. `repository_prefix` (required) is the registry namespace agents may publish under — the authorization boundary; `host` (default `docker.io`) is a plain registry hostname; `username` + `token_env` (set together) name a push user and the environment variable holding its token for request-scoped authentication — omit both to use the host Docker daemon's own `docker login` credentials. Resource bounds are `build_timeout_seconds` (default `1800`, hard wall-clock deadline), `max_context_mb` (default `512`), `max_log_mb` (default `16`), and `max_concurrent_builds` (default `2`). `keep_images` (default `10`, `0` disables pruning) retains that many local staging builds; temporary publish tags are removed after push and older untagged image objects are deleted once unused. Use a least-privilege registry token restricted to the prefix |
+| `[team.X.image_registry]` | *(absent — image building disabled)* | Sub-table enabling the container image build/publish MCP tools for the team. `repository_prefix` (required) is the registry namespace agents may publish under — the authorization boundary; `host` (default `docker.io`) is a plain registry hostname; `username` + `token` (set together) provide request-scoped push credentials directly from the Oduflow config — omit both to use the host Docker daemon's own `docker login` credentials. Resource bounds are `build_timeout_seconds` (default `1800`, hard wall-clock deadline), `max_context_mb` (default `512`), `max_log_mb` (default `16`), and `max_concurrent_builds` (default `2`). `keep_images` (default `10`, `0` disables pruning) retains that many local staging builds; temporary publish tags are removed after push and older untagged image objects are deleted once unused. Protect the config file and use a least-privilege registry token restricted to the prefix |
 
 `environment_hostname_mode = "slots"` requires Traefik and a hostname with a
 distinct host prefix and parent domain, such as `dev.example.com`. A bare
@@ -3131,8 +3131,8 @@ hooks, dashboard controls, and OCI distribution are intentionally deferred.
 HTTP mode serves the dashboard at `/`. It manages environments, templates,
 services, volumes, extra addons, credentials, licenses, usage/quotas, and—when
 enabled—coding agents and productions. Environment cards also expose logs,
-Odoo/SQL terminals, Connect As, notes, protection, scoped MCP access, and
-save-as-template actions.
+Odoo/SQL terminals, Connect As, notes, protection, scoped MCP access,
+single-environment share links, and save-as-template actions.
 
 The header's **Feedback** action opens a prefilled issue form on
 `github.com/oduist/oduflow`. Oduflow holds no GitHub credentials and files
@@ -3184,6 +3184,10 @@ than a JSON API. Production routes are registered only when
 | `POST` | `/api/environments/{branch}/note` | Store the body `note` on the environment |
 | `POST` | `/api/environments/{branch}/storage/refresh` | Refresh cached DB/workspace sizes |
 | `GET` | `/api/environments/{branch}/mcp-access` | Return the scoped MCP URL and per-environment token |
+| `GET` | `/api/environments/{branch}/share` | Return the environment's share link status: `shared`, `url` (with its key) and `created_at` |
+| `POST` | `/api/environments/{branch}/share` | Start sharing the environment, or return the existing link |
+| `POST` | `/api/environments/{branch}/share/rotate` | Issue a new link; the previous one and every session opened with it stop working |
+| `POST` | `/api/environments/{branch}/share/revoke` | Stop sharing the environment |
 | `GET` | `/api/environments/{branch}/users` | List internal and portal users for Connect As |
 | `POST` | `/api/environments/{branch}/connect-as` | Mint an Odoo session for body `user` and return URL/cookie details |
 | `GET` | `/api/environments/{branch}/connect-open?user=` | Mint a session and redirect toward the environment login handoff |
@@ -3191,6 +3195,44 @@ than a JSON API. Production routes are registered only when
 
 Branch parameters use Starlette's `path` converter internally, so names that
 contain `/` are accepted and URL-decoded as one environment name.
+
+The four `share` routes are operator-only: a shared session cannot read, reissue
+or revoke the link it arrived on. See
+[Shared environment links](#shared-environment-links).
+
+## Shared environment links
+
+`/env/{name}` is the same dashboard reduced to a single environment. An operator
+opens **Share UI** on an environment card, which mints a link
+`https://<team-host>/env/<name>?key=<secret>` and hands it to a client. Opening
+it exchanges the key for an HTTP-only, SameSite=Strict cookie and redirects to
+the clean `/env/<name>`, so the key leaves the address bar and browser history.
+The link stays valid until it is regenerated or revoked from the same modal;
+both act immediately on sessions already opened with it.
+
+A shared session may only do the following, enforced server-side as a
+default-deny allowlist (`src/oduflow/ui_scope.py`) and re-checked on every
+request:
+
+- see that environment's card, status, storage and logs;
+- start, stop, restart and sync it, and install or upgrade modules;
+- open its Odoo shell and `psql` consoles, use Connect As, and read its scoped
+  MCP endpoint and Secret Key;
+- use **Agent Chat**.
+
+Everything else is refused with HTTP 403 (WebSockets close with 1008): the full
+dashboard, any other environment, every team-wide surface (templates, services,
+volumes, extra addons, credentials, productions, host statistics, license), the
+provisioning actions on the shared environment itself (create, delete, update,
+recreate, switch branch, protect, save as template), the share routes, and
+**Agent CLI**.
+
+Agent CLI is excluded because it is a terminal in the *per-team* agent
+container, whose workspace holds a checkout of every environment of the team.
+Agent Chat runs in that same container, so the scope of a shared link is a
+policy boundary on the dashboard — it is not the cryptographic confinement that
+the per-environment token gives on `/mcp/<env>`. Share links with people you
+would let work in the environment.
 
 ## Environment WebSockets
 
@@ -4311,6 +4353,50 @@ oduflow client get_environment_info
 Environments created before this feature carry no Secret Key (Docker labels can't
 be added to a live container); recreate the environment to issue one. Recreating
 an environment also rotates its token.
+
+## Shared single-environment dashboard (`/env/<name>`)
+
+The dashboard equivalent of `/mcp/<env>`: a link that opens the dashboard
+reduced to one environment, for a client or collaborator who has no team
+password.
+
+Open **More → Share UI** on an environment card and Oduflow mints
+
+```
+https://your-server.com/env/<env>?key=<share-secret>
+```
+
+Opening it trades the key for a signed, HTTP-only, SameSite=Strict cookie and
+redirects to the clean `/env/<env>`, so the key does not linger in the address
+bar or browser history. The same modal regenerates or revokes the link; both
+take effect immediately, including for sessions already opened with it, because
+the cookie carries a fingerprint of the secret it was minted from. Links have no
+expiry of their own; a session cookie lasts seven days and re-opening the link
+renews it.
+
+A shared session sees that environment's card, logs, storage and status; can
+start, stop, restart and sync it, install and upgrade modules, open its Odoo
+shell and `psql` consoles, use Connect As and its **Agent Chat**, and read its
+`/mcp/<env>` URL and Secret Key. Everything else is refused server-side by a
+default-deny allowlist re-checked on every request: the full dashboard, any
+other environment, all team-wide surfaces (templates, services, volumes, extra
+addons, credentials, productions, host statistics, license), the provisioning
+actions on the environment itself (create, delete, update, recreate, switch
+branch, protect, save as template), the share routes themselves, and **Agent
+CLI**.
+
+Agent CLI is deliberately excluded: it is a terminal in the *per-team* agent
+container, whose workspace holds a checkout of every environment of the team.
+Agent Chat runs in that same container — driven over ACP at this environment's
+checkout, with this environment's scoped MCP token — so the boundary a share
+link enforces is the dashboard surface, not the confinement that the
+per-environment Bearer token gives on `/mcp/<env>`. Share with people you would
+let work in the environment, and revoke when they are done.
+
+Share secrets live in the team's data directory (`shares.json`, mode 0600), not
+in a container label, so environments that already exist can be shared, and a
+link survives recreating the environment. Deleting an environment drops its
+share; renaming one carries it over.
 
 ## Web Dashboard Auth
 

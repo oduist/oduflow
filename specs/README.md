@@ -73,6 +73,7 @@ precursors).
 | [0052](0052-managed-postgresql-databases-for-auxiliary-services.md) | 2026-08-29 | Managed PostgreSQL databases for auxiliary services |
 | [0053](0053-explicit-start-commands-for-auxiliary-services.md) | 2026-08-31 | Explicit Docker CMD overrides for auxiliary services |
 | [0054](0054-agent-container-image-build-and-publish.md) | 2026-09-01 | Agent-driven container image build and publication |
+| [0055](0055-scoped-environment-ui-sharing.md) | 2026-09-02 | Shared single-environment dashboard (`/env/<name>` share links) |
 
 ## Design docs
 

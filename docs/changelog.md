@@ -1,8 +1,27 @@
 # Changelog
 
-## Unreleased
+## v1.73.0
 
 ### Features
+
+- **Agents can build and publish container images** — environment-scoped agents
+  get four new MCP tools (`start_image_build`, `get_image_build`,
+  `publish_image_build`, `cancel_image_build`) that build a Dockerfile from the
+  environment's managed checkout and push the exact built image to the team's
+  registry namespace, so shipping an auxiliary-service image no longer needs a
+  human with Docker and registry access. Oduflow keeps the socket: the agent
+  never receives Docker access or registry credentials. The build source is
+  pinned to the checkout's `HEAD` commit, exported under the environment lock
+  into a sealed per-job context, which closes the build/pull race. A successful
+  build is staged in the local daemon as `oduflow-build/team-<id>:<build-id>`,
+  and publishing is a tag and push of that same image — nothing is rebuilt on
+  the way out. The capability is gated on a `[team.X.image_registry]` TOML
+  section whose `repository_prefix` is the authorization boundary; registry
+  credentials are read directly from `username` + `token` in that config and
+  passed request-scoped for each push, without persisting them in build jobs.
+  Concurrency, context size, log size, and wall-clock limits are enforced per
+  team, and older staging images are pruned automatically (the newest
+  `keep_images` are kept). (#221)
 
 - **Custom start command for auxiliary services** — `create_service` and
   `update_service` accept an optional `command` that replaces the image `CMD`,
@@ -14,7 +33,23 @@
   in the Create/Restore service forms and on the service card, and declarative
   Stacks gained a `command` field that participates in drift detection. On
   update the parameter is tri-state: omitted keeps the current command, a
-  string replaces it, and an empty string drops the override.
+  string replaces it, and an empty string drops the override. (#219)
+
+### Dashboard
+
+- **Service environment variables are editable from the card** — **Update** on a
+  service now opens a dialog prefilled with the service's saved environment
+  variables; editing them applies the change and pulls the latest image in one
+  step, leaving the field untouched keeps the previous pull-and-recreate
+  behaviour, and clearing it removes every variable. `update_service` has always
+  accepted an env override — only the dashboard had no way to send one, so
+  changing a variable meant dropping to MCP or the CLI. The prefill comes from a
+  new `GET /api/services/{name}/env-vars` that returns the saved preset (falling
+  back to container inspection for services created before presets existed)
+  rather than the container's whole environment, so image defaults are never
+  offered for editing and cannot leak into the preset on first save. The
+  container name on a service card now copies on click, like the one on an
+  environment card. (#220)
 
 ## v1.72.1
 
