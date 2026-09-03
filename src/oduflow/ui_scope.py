@@ -49,12 +49,13 @@ _ENV_API_PREFIX = "/api/environments/"
 
 # Team-wide paths a scoped session may still reach. `/api/agent` reports only
 # whether the team's coding agent is enabled and its default type — no secrets
-# — and the dashboard needs it to decide whether to offer Agent Chat.
+# — and the dashboard needs it to decide whether to offer Agent Chat. Feedback
+# returns only a prefilled public GitHub issue URL.
 _GLOBAL_ALLOWED: dict[str, frozenset[str]] = {
     "GET": frozenset({"/api/agent"}),
     # Ends the scoped session by clearing the cookie; the visitor gets back in
     # with the share link they were sent.
-    "POST": frozenset({"/logout"}),
+    "POST": frozenset({"/logout", "/api/feedback/link"}),
 }
 
 # Per-environment paths, keyed by method, matched against the part of the path

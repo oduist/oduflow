@@ -3062,7 +3062,11 @@ def set_note(
 
 
 def delete_environment(
-    settings: Settings, team: TeamSettings, env_name: str
+    settings: Settings,
+    team: TeamSettings,
+    env_name: str,
+    *,
+    preserve_share: bool = False,
 ) -> list[str]:
     if is_protected(settings, team, env_name):
         raise ProtectedError(
@@ -3159,7 +3163,8 @@ def delete_environment(
         shutil.rmtree(workspace_path)
 
     activity.remove(team, env_name)
-    env_share.remove(team, env_name)
+    if not preserve_share:
+        env_share.remove(team, env_name)
     invalidate_cache()
     logger.info("Environment deleted", extra={"env_name": env_name})
     return warnings

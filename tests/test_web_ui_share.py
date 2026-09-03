@@ -154,6 +154,17 @@ def test_operator_can_preview_the_shared_view(app):
     resp = client.get(f"/env/{_ENV}")
     assert resp.status_code == 200
     assert f'data-scoped-env="{_ENV}"' in resp.text
+    assert "environments.filter(function (env)" in resp.text
+
+
+def test_share_cookie_scopes_an_existing_operator_session(app):
+    client = _operator(app)
+    result = client.post(f"/api/environments/{_ENV}/share").json()["result"]
+    path = str(result["url"]).split("/", 3)[3]
+
+    assert client.get("/" + path, follow_redirects=False).status_code == 303
+    envs = client.get("/api/environments").json()["environments"]
+    assert [e["env_name"] for e in envs] == [_ENV]
 
 
 # --- what the scoped session may do --------------------------------------
@@ -203,6 +214,18 @@ def test_agent_cli_websocket_is_refused_for_a_share_link(app):
     assert excinfo.value.code == 1008
 
 
+def test_feedback_is_available_from_a_shared_view(app):
+    client = _visitor(app, _share_url(app))
+    resp = client.post(
+        "/api/feedback/link",
+        json={"kind": "feedback", "details": "Feedback from a shared view"},
+    )
+
+    assert resp.status_code == 200
+    assert resp.json()["ok"] is True
+    assert resp.json()["url"].startswith("https://github.com/")
+
+
 # --- ending access -------------------------------------------------------
 
 
@@ -227,6 +250,36 @@ def test_logout_clears_the_scoped_session(app):
     # Back to their own page (they have no team password to log in with).
     assert resp.headers["location"] == f"/env/{_ENV}"
     assert client.get("/api/environments").status_code == 401
+
+
+def test_scoped_logout_restores_an_existing_operator_session(app):
+    client = _operator(app)
+    result = client.post(f"/api/environments/{_ENV}/share").json()["result"]
+    path = str(result["url"]).split("/", 3)[3]
+    assert client.get("/" + path, follow_redirects=False).status_code == 303
+    assert len(client.get("/api/environments").json()["environments"]) == 1
+
+    resp = client.post("/logout", follow_redirects=False)
+
+    assert resp.status_code == 303
+    assert resp.headers["location"] == "/"
+    envs = client.get("/api/environments").json()["environments"]
+    assert [e["env_name"] for e in envs] == [_ENV, "other"]
+
+
+def test_scoped_logout_restores_operator_after_share_is_revoked(app):
+    client = _operator(app)
+    result = client.post(f"/api/environments/{_ENV}/share").json()["result"]
+    path = str(result["url"]).split("/", 3)[3]
+    assert client.get("/" + path, follow_redirects=False).status_code == 303
+    _operator(app).post(f"/api/environments/{_ENV}/share/revoke")
+
+    resp = client.post("/logout", follow_redirects=False)
+
+    assert resp.status_code == 303
+    assert resp.headers["location"] == "/"
+    envs = client.get("/api/environments").json()["environments"]
+    assert [e["env_name"] for e in envs] == [_ENV, "other"]
 
 
 def test_deleting_the_environment_drops_its_share(app, settings, monkeypatch):

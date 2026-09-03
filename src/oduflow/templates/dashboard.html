@@ -2241,7 +2241,7 @@
       <button class="modal-close" onclick="closeShare()">&times;</button>
     </div>
     <div class="modal-body">
-      <p class="modal-note">A link to this environment alone. Whoever opens it gets this card, its logs, consoles, module install/upgrade, Connect As and Agent Chat &mdash; and nothing else of the team: no other environment, no templates, services, volumes, repositories or credentials, and no Agent CLI. The link carries its own key, so treat it as a credential.</p>
+      <p class="modal-note">The dashboard link is scoped to this environment: its card, logs, consoles, module install/upgrade, Connect As and Agent Chat. Other team environments and team-wide pages are unavailable, as is Agent CLI. Important: Agent Chat runs in the team's shared coder container, so the agent may read other team checkouts and Git credentials available there. Share only with someone trusted for that access. The link carries its own key, so treat it as a credential.</p>
       <div class="form-group" id="share-link-group">
         <label for="share-url">Share link</label>
         <div class="copy-row">
@@ -2250,9 +2250,12 @@
           <button class="btn" type="button" onclick="copyMcpField('share-url', 'Share link copied')">Copy</button>
         </div>
       </div>
+      <p class="modal-note" id="share-loading" role="status" aria-live="polite" style="display:none;"></p>
+      <div class="form-error" id="share-error" style="display:none;"></div>
       <p class="modal-note" id="share-created" style="display:none;"></p>
       <p class="modal-note" id="share-none" style="display:none;">This environment is not shared yet.</p>
       <div class="form-actions">
+        <button class="btn" type="button" id="share-retry" onclick="loadShare()" style="display:none;">Retry</button>
         <button class="btn btn-create" type="button" id="share-create" onclick="shareCreate()">Create link</button>
         <button class="btn" type="button" id="share-rotate" onclick="shareRotate()" title="Issue a new link and invalidate the old one, including sessions already opened with it">Regenerate</button>
         <button class="btn btn-delete" type="button" id="share-revoke" onclick="shareRevoke()" title="Stop sharing: the link and any session opened with it stop working">Revoke</button>
@@ -3330,9 +3333,57 @@ async function openMcpAccess(branch) {
 }
 
 var _shareBranch = '';
+var _shareRequestGeneration = 0;
+var _shareBusy = false;
+var _shareResult = null;
+
+function _setShareActions(shared, disabled) {
+  var create = document.getElementById('share-create');
+  var rotate = document.getElementById('share-rotate');
+  var revoke = document.getElementById('share-revoke');
+  create.style.display = shared ? 'none' : '';
+  rotate.style.display = shared ? '' : 'none';
+  revoke.style.display = shared ? '' : 'none';
+  create.disabled = disabled;
+  rotate.disabled = disabled;
+  revoke.disabled = disabled;
+}
+
+function _renderSharePending(message, clearState) {
+  _shareBusy = true;
+  var loading = document.getElementById('share-loading');
+  loading.textContent = message;
+  loading.style.display = '';
+  document.getElementById('share-error').style.display = 'none';
+  document.getElementById('share-retry').style.display = 'none';
+  if (clearState) {
+    document.getElementById('share-url').value = '';
+    document.getElementById('share-link-group').style.display = 'none';
+    document.getElementById('share-created').style.display = 'none';
+    document.getElementById('share-none').style.display = 'none';
+    document.getElementById('share-create').style.display = 'none';
+    document.getElementById('share-rotate').style.display = 'none';
+    document.getElementById('share-revoke').style.display = 'none';
+  } else {
+    _setShareActions(!!(_shareResult && _shareResult.shared), true);
+  }
+}
+
+function _renderShareError(message) {
+  _shareBusy = false;
+  document.getElementById('share-loading').style.display = 'none';
+  var error = document.getElementById('share-error');
+  error.textContent = message;
+  error.style.display = 'block';
+  document.getElementById('share-retry').style.display = '';
+}
 
 async function openShare(branch) {
+  // Invalidate an older request before changing the modal's environment.
+  _shareRequestGeneration += 1;
   _shareBranch = branch;
+  _shareResult = null;
+  _shareBusy = false;
   document.getElementById('share-title').textContent = 'Share environment — ' + branch;
   var urlEl = document.getElementById('share-url');
   // Reset to the masked state every time: the link is a credential.
@@ -3346,6 +3397,11 @@ async function openShare(branch) {
 }
 
 function renderShare(result) {
+  _shareBusy = false;
+  _shareResult = result;
+  document.getElementById('share-loading').style.display = 'none';
+  document.getElementById('share-error').style.display = 'none';
+  document.getElementById('share-retry').style.display = 'none';
   var shared = !!(result && result.shared);
   document.getElementById('share-url').value = shared ? (result.url || '') : '';
   document.getElementById('share-link-group').style.display = shared ? '' : 'none';
@@ -3359,26 +3415,44 @@ function renderShare(result) {
   } else {
     created.style.display = 'none';
   }
-  document.getElementById('share-create').style.display = shared ? 'none' : '';
-  document.getElementById('share-rotate').style.display = shared ? '' : 'none';
-  document.getElementById('share-revoke').style.display = shared ? '' : 'none';
+  _setShareActions(shared, false);
 }
 
-async function _shareRequest(path, method, okMessage) {
+async function _shareRequest(path, method, okMessage, pendingMessage) {
+  if (_shareBusy) return;
+  var branch = _shareBranch;
+  var generation = ++_shareRequestGeneration;
+  var previous = _shareResult;
+  _renderSharePending(pendingMessage, method === 'GET');
   try {
-    var r = await fetch(API + '/' + encodeURIComponent(_shareBranch) + path,
+    var r = await fetch(API + '/' + encodeURIComponent(branch) + path,
       { method: method });
     var data = await readResult(r);
-    if (!data.ok) { showToast(data.error || 'Share request failed', true); return; }
+    if (generation !== _shareRequestGeneration || branch !== _shareBranch) return;
+    if (!data.ok) {
+      var error = data.error || 'Share request failed';
+      if (previous) renderShare(previous); else _renderShareError(error);
+      showToast(error, true);
+      return;
+    }
     renderShare(data.result);
     if (okMessage) showToast(okMessage);
   } catch (e) {
-    showToast('Connection error: ' + e.message, true);
+    if (generation !== _shareRequestGeneration || branch !== _shareBranch) return;
+    var error = 'Connection error: ' + e.message;
+    if (previous) renderShare(previous); else _renderShareError(error);
+    showToast(error, true);
   }
 }
 
-function loadShare() { return _shareRequest('/share', 'GET', ''); }
-function shareCreate() { return _shareRequest('/share', 'POST', 'Share link created'); }
+function loadShare() {
+  return _shareRequest('/share', 'GET', '', 'Loading share status…');
+}
+
+function shareCreate() {
+  if (_shareBusy || !_shareResult || _shareResult.shared) return;
+  return _shareRequest('/share', 'POST', 'Share link created', 'Creating share link…');
+}
 
 // The confirm dialog is its own overlay, so step out of the share modal for it
 // and come back afterwards rather than stacking two modals.
@@ -3390,29 +3464,43 @@ async function _shareConfirm(opts) {
 }
 
 async function shareRotate() {
+  if (_shareBusy || !_shareResult || !_shareResult.shared) return;
+  var branch = _shareBranch;
+  var generation = _shareRequestGeneration;
   if (!(await _shareConfirm({
     title: 'Regenerate share link',
-    message: 'Issue a new link for "' + _shareBranch + '"? The current link, and ' +
+    message: 'Issue a new link for "' + branch + '"? The current link, and ' +
       'anyone already using it, stop working.',
     confirmLabel: 'Regenerate link',
     danger: true
   }))) return;
-  await _shareRequest('/share/rotate', 'POST', 'New share link issued');
+  if (generation !== _shareRequestGeneration || branch !== _shareBranch) return;
+  await _shareRequest(
+    '/share/rotate', 'POST', 'New share link issued', 'Regenerating share link…'
+  );
 }
 
 async function shareRevoke() {
+  if (_shareBusy || !_shareResult || !_shareResult.shared) return;
+  var branch = _shareBranch;
+  var generation = _shareRequestGeneration;
   if (!(await _shareConfirm({
     title: 'Revoke sharing',
-    message: 'Stop sharing "' + _shareBranch + '"? The link, and anyone already ' +
+    message: 'Stop sharing "' + branch + '"? The link, and anyone already ' +
       'using it, stop working.',
     confirmLabel: 'Revoke link',
     danger: true
   }))) return;
-  await _shareRequest('/share/revoke', 'POST', 'Sharing revoked');
+  if (generation !== _shareRequestGeneration || branch !== _shareBranch) return;
+  await _shareRequest(
+    '/share/revoke', 'POST', 'Sharing revoked', 'Revoking share link…'
+  );
 }
 
 function closeShare(event) {
   if (event && event.target !== event.currentTarget) return;
+  _shareRequestGeneration += 1;
+  _shareBusy = false;
   hideModal('share-modal');
 }
 
@@ -3534,7 +3622,10 @@ async function loadEnvironments(force) {
     const r = await fetch(API);
     const data = await readResult(r);
     if (data.ok) {
-      cachedEnvs = data.environments || [];
+      var environments = data.environments || [];
+      cachedEnvs = SCOPED_ENV
+        ? environments.filter(function (env) { return env.env_name === SCOPED_ENV; })
+        : environments;
       renderEnvironments(cachedEnvs, force);
     } else {
       showToast(data.error || 'Failed to load', true);

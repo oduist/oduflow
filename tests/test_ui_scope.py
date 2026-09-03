@@ -22,6 +22,7 @@ ENV = "feature/scope"
         ("GET", f"/env/{ENV}/"),
         ("GET", "/api/environments"),
         ("GET", "/api/agent"),
+        ("POST", "/api/feedback/link"),
         ("POST", "/logout"),
         ("GET", f"/api/environments/{ENV}/logs"),
         ("GET", f"/api/environments/{ENV}/modules"),
@@ -116,6 +117,7 @@ def test_method_must_match():
     assert not ui_scope.is_allowed("DELETE", f"/api/environments/{ENV}/modules", ENV)
     assert not ui_scope.is_allowed("POST", "/api/environments", ENV)
     assert not ui_scope.is_allowed("GET", "/logout", ENV)
+    assert not ui_scope.is_allowed("GET", "/api/feedback/link", ENV)
 
 
 def test_attachment_pattern_does_not_widen_the_surface():

@@ -342,20 +342,23 @@ class BasicAuthMiddleware:
             return
 
         conn = HTTPConnection(scope)
-        team = self._check_credentials(conn.headers.get("authorization", ""))
+        # A valid share cookie deliberately wins over full credentials. This
+        # keeps a share link scoped even when an operator previews it in a
+        # browser that already has a team session.
+        share = _check_share_token(
+            conn.cookies.get(ui_scope.SHARE_COOKIE, ""), self._get_settings()
+        )
+        team: TeamSettings | None = None
         scoped_env: str | None = None
+        if share:
+            team = share[0]
+            scoped_env = share[1]
+        else:
+            team = self._check_credentials(conn.headers.get("authorization", ""))
         if not team:
             token = conn.cookies.get(_AUTH_COOKIE)
             if token:
                 team = _check_cookie_token(token, self._get_settings())
-        if not team:
-            # A share link's scoped session: full team rights are absent, the
-            # principal is one environment of that team (see oduflow.ui_scope).
-            share = _check_share_token(
-                conn.cookies.get(ui_scope.SHARE_COOKIE, ""), self._get_settings()
-            )
-            if share:
-                team, scoped_env = share
         if team:
             # CSRF: browsers authenticate with an ambient cookie, so reject
             # cross-site state-changing requests (unsafe HTTP methods and every
@@ -1032,14 +1035,27 @@ def _build_routes(
 
     def logout(request: Request) -> RedirectResponse:
         # /logout is public, so the scoped session is read from its cookie
-        # rather than request.state: a share-link visitor is sent back to their
-        # own environment page (which then asks for the link), not to a team
-        # login form they have no password for.
-        share = _check_share_token(
-            request.cookies.get(ui_scope.SHARE_COOKIE, ""), get_settings()
-        )
-        target = ui_scope.PAGE_PREFIX + quote(share[1], safe="/") if share else "/login"
-        response = RedirectResponse(target, status_code=303)
+        # rather than request.state. When an operator opened a share link in an
+        # already authenticated browser, leaving scoped mode restores that
+        # operator session instead of signing it out too.
+        settings = get_settings()
+        share_token = request.cookies.get(ui_scope.SHARE_COOKIE, "")
+        share = _check_share_token(share_token, settings)
+        session = request.cookies.get(_AUTH_COOKIE, "")
+        operator = _check_cookie_token(session, settings) if session else None
+        if share_token and operator is not None:
+            response = RedirectResponse("/", status_code=303)
+            response.delete_cookie(ui_scope.SHARE_COOKIE, path="/", samesite="strict")
+            return response
+        if share:
+            target = ui_scope.PAGE_PREFIX + quote(share[1], safe="/")
+            response = RedirectResponse(target, status_code=303)
+            response.delete_cookie(ui_scope.SHARE_COOKIE, path="/", samesite="strict")
+            return response
+
+        # A normal operator logout clears the full session. Also remove any
+        # stale scoped cookie that failed validation.
+        response = RedirectResponse("/login", status_code=303)
         response.delete_cookie(_AUTH_COOKIE, path="/", samesite="strict")
         response.delete_cookie(ui_scope.SHARE_COOKIE, path="/", samesite="strict")
         return response
@@ -1549,7 +1565,7 @@ def _build_routes(
                 env_name=branch,
             )
 
-            env_ops.delete_environment(settings, team, branch)
+            env_ops.delete_environment(settings, team, branch, preserve_share=True)
             result = env_ops.create_environment(
                 settings,
                 team,
