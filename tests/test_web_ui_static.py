@@ -152,6 +152,149 @@ def test_feedback_modal_is_registered_for_escape_key(tmp_path):
     assert re.search(r"'feedback-modal':\s*closeFeedbackModal", dashboard.text)
 
 
+@pytest.mark.skipif(shutil.which("node") is None, reason="Node.js is not installed")
+def test_scoped_preview_filters_environment_data_in_the_browser():
+    source = _DASHBOARD.read_text(encoding="utf-8")
+    function = _js_function(source, "loadEnvironments")
+    result = _run_node(
+        f"""
+        var API = '/api/environments';
+        var SCOPED_ENV = 'feature/x';
+        var cachedEnvs = [];
+        var rendered = [];
+        async function fetch() {{ return {{}}; }}
+        async function readResult() {{
+          return {{ok: true, environments: [
+            {{env_name: 'feature/x'}}, {{env_name: 'other'}}
+          ]}};
+        }}
+        function renderEnvironments(envs) {{ rendered = envs; }}
+        function showToast() {{}}
+        {function}
+        loadEnvironments().then(function () {{
+          console.log(JSON.stringify({{
+            cached: cachedEnvs.map(function (env) {{ return env.env_name; }}),
+            rendered: rendered.map(function (env) {{ return env.env_name; }})
+          }}));
+        }});
+        """
+    )
+
+    assert result == {"cached": ["feature/x"], "rendered": ["feature/x"]}
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="Node.js is not installed")
+def test_share_modal_ignores_stale_loads_and_blocks_unsafe_actions():
+    source = _DASHBOARD.read_text(encoding="utf-8")
+    names = (
+        "_setShareActions",
+        "_renderSharePending",
+        "_renderShareError",
+        "openShare",
+        "renderShare",
+        "_shareRequest",
+        "loadShare",
+        "shareCreate",
+        "shareRotate",
+    )
+    functions = "\n".join(_js_function(source, name) for name in names)
+    result = _run_node(
+        f"""
+        var elements = {{}};
+        function element(id) {{
+          if (!elements[id]) elements[id] = {{
+            id: id, style: {{display: ''}}, disabled: false, value: 'stale',
+            type: 'text', textContent: '', attributes: {{}},
+            setAttribute: function (key, value) {{ this.attributes[key] = value; }}
+          }};
+          return elements[id];
+        }}
+        var document = {{getElementById: element}};
+        var API = '/api/environments';
+        var _shareBranch = '';
+        var _shareRequestGeneration = 0;
+        var _shareBusy = false;
+        var _shareResult = null;
+        var pending = [];
+        function fetch(url) {{
+          return new Promise(function (resolve) {{ pending.push({{url: url, resolve: resolve}}); }});
+        }}
+        async function readResult(response) {{ return response; }}
+        function showModal() {{}}
+        function showToast() {{}}
+        function formatDate(value) {{ return value; }}
+        {functions}
+
+        (async function () {{
+          var first = openShare('first');
+          var loading = {{
+            status: element('share-loading').style.display,
+            create: element('share-create').style.display,
+            rotate: element('share-rotate').style.display,
+            revoke: element('share-revoke').style.display
+          }};
+          var second = openShare('second');
+          pending[1].resolve({{ok: true, result: {{shared: false, url: null}}}});
+          await second;
+          pending[0].resolve({{
+            ok: true,
+            result: {{shared: true, url: 'https://stale.invalid', created_at: 'old'}}
+          }});
+          await first;
+
+          var beforeCreateRequests = pending.length;
+          var create = shareCreate();
+          var duplicate = shareCreate();
+          var mutation = {{
+            disabled: element('share-create').disabled,
+            requestCount: pending.length - beforeCreateRequests,
+            duplicateIgnored: duplicate === undefined
+          }};
+          pending[2].resolve({{ok: false, error: 'failed'}});
+          await create;
+          await shareRotate();
+
+          console.log(JSON.stringify({{
+            loading: loading,
+            branch: _shareBranch,
+            url: element('share-url').value,
+            createDisplay: element('share-create').style.display,
+            createDisabledAfterError: element('share-create').disabled,
+            rotateDisplay: element('share-rotate').style.display,
+            requestCountAfterInvalidRotate: pending.length,
+            mutation: mutation
+          }}));
+        }})();
+        """
+    )
+
+    assert result["loading"] == {
+        "status": "",
+        "create": "none",
+        "rotate": "none",
+        "revoke": "none",
+    }
+    assert result["branch"] == "second"
+    assert result["url"] == ""
+    assert result["createDisplay"] == ""
+    assert result["createDisabledAfterError"] is False
+    assert result["rotateDisplay"] == "none"
+    assert result["requestCountAfterInvalidRotate"] == 3
+    assert result["mutation"] == {
+        "disabled": True,
+        "requestCount": 1,
+        "duplicateIgnored": True,
+    }
+
+
+def test_share_modal_discloses_agent_chat_workspace_access(tmp_path):
+    dashboard = _client(tmp_path).get("/")
+
+    assert dashboard.status_code == 200
+    assert "Agent Chat runs in the team's shared coder container" in dashboard.text
+    assert "may read other team checkouts and Git credentials" in dashboard.text
+
+
 def test_dashboard_accepts_opencode_default_and_labels_it(tmp_path):
     dashboard = _client(tmp_path).get("/")
 

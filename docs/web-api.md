@@ -7,8 +7,8 @@
 HTTP mode serves the dashboard at `/`. It manages environments, templates,
 services, volumes, extra addons, credentials, licenses, usage/quotas, and—when
 enabled—coding agents and productions. Environment cards also expose logs,
-Odoo/SQL terminals, Connect As, notes, protection, scoped MCP access, and
-save-as-template actions.
+Odoo/SQL terminals, Connect As, notes, protection, scoped MCP access,
+single-environment share links, and save-as-template actions.
 
 The header's **Feedback** action opens a prefilled issue form on
 `github.com/oduist/oduflow`. Oduflow holds no GitHub credentials and files
@@ -60,6 +60,10 @@ than a JSON API. Production routes are registered only when
 | `POST` | `/api/environments/{branch}/note` | Store the body `note` on the environment |
 | `POST` | `/api/environments/{branch}/storage/refresh` | Refresh cached DB/workspace sizes |
 | `GET` | `/api/environments/{branch}/mcp-access` | Return the scoped MCP URL and per-environment token |
+| `GET` | `/api/environments/{branch}/share` | Return the environment's share link status: `shared`, `url` (with its key) and `created_at` |
+| `POST` | `/api/environments/{branch}/share` | Start sharing the environment, or return the existing link |
+| `POST` | `/api/environments/{branch}/share/rotate` | Issue a new link; the previous one and every session opened with it stop working |
+| `POST` | `/api/environments/{branch}/share/revoke` | Stop sharing the environment |
 | `GET` | `/api/environments/{branch}/users` | List internal and portal users for Connect As |
 | `POST` | `/api/environments/{branch}/connect-as` | Mint an Odoo session for body `user` and return URL/cookie details |
 | `GET` | `/api/environments/{branch}/connect-open?user=` | Mint a session and redirect toward the environment login handoff |
@@ -67,6 +71,44 @@ than a JSON API. Production routes are registered only when
 
 Branch parameters use Starlette's `path` converter internally, so names that
 contain `/` are accepted and URL-decoded as one environment name.
+
+The four `share` routes are operator-only: a shared session cannot read, reissue
+or revoke the link it arrived on. See
+[Shared environment links](#shared-environment-links).
+
+## Shared environment links
+
+`/env/{name}` is the same dashboard reduced to a single environment. An operator
+opens **Share UI** on an environment card, which mints a link
+`https://<team-host>/env/<name>?key=<secret>` and hands it to a client. Opening
+it exchanges the key for an HTTP-only, SameSite=Strict cookie and redirects to
+the clean `/env/<name>`, so the key leaves the address bar and browser history.
+The link stays valid until it is regenerated or revoked from the same modal;
+both act immediately on sessions already opened with it.
+
+A shared session may only do the following, enforced server-side as a
+default-deny allowlist (`src/oduflow/ui_scope.py`) and re-checked on every
+request:
+
+- see that environment's card, status, storage and logs;
+- start, stop, restart and sync it, and install or upgrade modules;
+- open its Odoo shell and `psql` consoles, use Connect As, and read its scoped
+  MCP endpoint and Secret Key;
+- use **Agent Chat**.
+
+Everything else is refused with HTTP 403 (WebSockets close with 1008): the full
+dashboard, any other environment, every team-wide surface (templates, services,
+volumes, extra addons, credentials, productions, host statistics, license), the
+provisioning actions on the shared environment itself (create, delete, update,
+recreate, switch branch, protect, save as template), the share routes, and
+**Agent CLI**.
+
+Agent CLI is excluded because it is a terminal in the *per-team* agent
+container, whose workspace holds a checkout of every environment of the team.
+Agent Chat runs in that same container, so the scope of a shared link is a
+policy boundary on the dashboard — it is not the cryptographic confinement that
+the per-environment token gives on `/mcp/<env>`. Share links with people you
+would let work in the environment.
 
 ## Environment WebSockets
 

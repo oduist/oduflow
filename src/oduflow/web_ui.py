@@ -41,10 +41,12 @@ from oduflow import (
     agent_uploads,
     artifact_tokens,
     connect_tokens,
+    env_share,
     feedback,
     git_ops,
     import_tokens,
     production_registry,
+    ui_scope,
 )
 from oduflow.docker_ops import (
     env_ops,
@@ -133,14 +135,22 @@ _PUBLIC_PATHS = frozenset(
         "/oduflow-artifact",
     }
 )
-_PUBLIC_PREFIXES = ("/static/",)
+# /env/<name> is the scoped single-environment dashboard reached from a share
+# link. It bypasses the team login because it authenticates itself: the link's
+# ?key= (verified against the team's share registry) or the scoped cookie it
+# exchanges that key for. Only the page lives under this prefix — every API
+# call it makes goes to the normal /api/... routes, where the middleware
+# resolves the scoped cookie and applies the ui_scope allowlist.
+_PUBLIC_PREFIXES = ("/static/", ui_scope.PAGE_PREFIX)
 _SESSION_SALT = "oduflow.ui-auth.v1"
+_SHARE_SALT = "oduflow.env-share.v1"
 _SESSION_MAX_AGE = 7 * 24 * 3600  # 7 days
 _SECRET_FILENAME = ".ui_session_secret"
 
 # Cached per data dir (process-wide; the server runs against a single one).
 _secrets_cache: dict[str, str] = {}
 _signers: dict[str, URLSafeTimedSerializer] = {}
+_share_signers: dict[str, URLSafeTimedSerializer] = {}
 
 
 def _load_or_create_secret(data_dir: str) -> str:
@@ -234,6 +244,67 @@ def _check_cookie_token(token: str, settings: Settings) -> "TeamSettings | None"
     return team
 
 
+def _get_share_signer(settings: Settings) -> URLSafeTimedSerializer:
+    """Signer for scoped-environment share cookies.
+
+    Same server secret as the operator session signer but a different salt, so
+    a scoped cookie can never be replayed as a full team session (or the other
+    way round) even if the payload shapes ever converge.
+    """
+    key = settings.base_data_dir or ""
+    signer = _share_signers.get(key)
+    if signer is None:
+        signer = URLSafeTimedSerializer(_get_secret(settings), salt=_SHARE_SALT)
+        _share_signers[key] = signer
+    return signer
+
+
+def _share_fingerprint(secret: str, share_secret: str) -> str:
+    """A fingerprint of an environment's share secret, keyed by the server
+    secret. Embedded in the scoped cookie so that rotating or revoking the
+    share link invalidates every session opened with the old link."""
+    return hmac.new(
+        secret.encode("utf-8"), share_secret.encode("utf-8"), hashlib.sha256
+    ).hexdigest()
+
+
+def _make_share_token(
+    settings: Settings, team: "TeamSettings", env_name: str, share_secret: str
+) -> str:
+    """Signed, timestamped scoped session token for one environment."""
+    fingerprint = _share_fingerprint(_get_secret(settings), share_secret)
+    return _get_share_signer(settings).dumps([team.team_id, env_name, fingerprint])
+
+
+def _check_share_token(
+    token: str, settings: Settings
+) -> "tuple[TeamSettings, str] | None":
+    """Validate a scoped cookie from `_make_share_token` and return its
+    ``(team, env_name)``, or None when it is invalid, expired, or its share
+    link has since been rotated or revoked."""
+    if not token:
+        return None
+    try:
+        data = _get_share_signer(settings).loads(token, max_age=_SESSION_MAX_AGE)
+    except BadData:
+        return None
+    if not (isinstance(data, list) and len(data) == 3):
+        return None
+    team_id, env_name, fingerprint = data
+    if not all(isinstance(v, str) for v in (team_id, env_name, fingerprint)):
+        return None
+    team = settings.teams.get(team_id)
+    if not team:
+        return None
+    record = env_share.get(team, env_name)
+    if not record:
+        return None
+    expected = _share_fingerprint(_get_secret(settings), str(record["secret"]))
+    if not hmac.compare_digest(fingerprint, expected):
+        return None
+    return (team, env_name)
+
+
 def _is_cross_origin(headers: Headers) -> bool:
     """Whether Origin/Referer mark this as a cross-site request (CSRF).
 
@@ -271,7 +342,19 @@ class BasicAuthMiddleware:
             return
 
         conn = HTTPConnection(scope)
-        team = self._check_credentials(conn.headers.get("authorization", ""))
+        # A valid share cookie deliberately wins over full credentials. This
+        # keeps a share link scoped even when an operator previews it in a
+        # browser that already has a team session.
+        share = _check_share_token(
+            conn.cookies.get(ui_scope.SHARE_COOKIE, ""), self._get_settings()
+        )
+        team: TeamSettings | None = None
+        scoped_env: str | None = None
+        if share:
+            team = share[0]
+            scoped_env = share[1]
+        else:
+            team = self._check_credentials(conn.headers.get("authorization", ""))
         if not team:
             token = conn.cookies.get(_AUTH_COOKIE)
             if token:
@@ -300,7 +383,24 @@ class BasicAuthMiddleware:
                     )
                     await forbidden(scope, receive, send)
                 return
+            # Scoped sessions are default-deny: only the single-environment
+            # surface of ui_scope, and only for their own environment.
+            if scoped_env is not None and not ui_scope.is_allowed(
+                "WEBSOCKET" if scope["type"] == "websocket" else method,
+                path,
+                scoped_env,
+            ):
+                if scope["type"] == "websocket":
+                    await WebSocket(scope, receive, send).close(code=1008)
+                else:
+                    denied: Response = JSONResponse(
+                        {"ok": False, "error": "Not available for a shared link."},
+                        status_code=403,
+                    )
+                    await denied(scope, receive, send)
+                return
             scope.setdefault("state", {})["team"] = team
+            scope["state"]["scoped_env"] = scoped_env
             await self._app(scope, receive, send)
             return
 
@@ -794,14 +894,17 @@ def _build_routes(
             path="/",
         )
 
-    def dashboard(request: Request) -> HTMLResponse:
+    def _render_dashboard(settings: Settings, scoped_env: str = "") -> str:
+        """Render the dashboard page. With ``scoped_env`` set it renders in
+        shared single-environment mode (see oduflow.ui_scope): the client-side
+        surface collapses to that one environment's card. The server-side
+        allowlist, not this rendering, is the boundary."""
         html_path = _TEMPLATE_DIR / "dashboard.html"
-        settings = get_settings()
-        page = (
+        return (
             html_path.read_text(encoding="utf-8")
             .replace(
                 "__PRODUCTION_TAB_HIDDEN__",
-                "" if settings.prod_enabled else "hidden",
+                "" if settings.prod_enabled and not scoped_env else "hidden",
             )
             .replace("__ODUFLOW_VERSION__", html.escape(feedback.oduflow_version()))
             .replace(
@@ -810,12 +913,98 @@ def _build_routes(
                     feedback.format_diagnostics(feedback.diagnostics(settings))
                 ),
             )
+            # Read back from a body data attribute, never inlined into a script
+            # literal: environment names are git branch names and may carry
+            # quotes. Attribute escaping is exactly the right encoding there.
+            .replace("__SCOPED_ENV__", html.escape(scoped_env, quote=True))
         )
+
+    def dashboard(request: Request) -> HTMLResponse:
+        settings = get_settings()
+        page = _render_dashboard(settings)
         response = HTMLResponse(page)
         team = getattr(request.state, "team", None)
         if team is not None and team.ui_password:
             _set_session_cookie(response, team, request)
         return response
+
+    def _team_for_share(
+        settings: Settings, env_name: str, key: str, host: str
+    ) -> TeamSettings | None:
+        """The team whose environment ``env_name`` is shared under ``key``.
+
+        The share secret is the only credential a link carries, so the team is
+        resolved from it. In traefik mode the request host names the team, so
+        try that one first; the scan is the fallback for port mode (one host,
+        many teams)."""
+        by_host = settings.get_team_by_hostname(host) if host else None
+        candidates = [by_host] if by_host else []
+        candidates += [t for t in settings.teams.values() if t is not by_host]
+        for team in candidates:
+            if team is not None and env_share.verify(team, env_name, key):
+                return team
+        return None
+
+    def _share_link_error(message: str, status_code: int) -> Response:
+        return Response(message, status_code=status_code, media_type="text/plain")
+
+    def scoped_env_page(request: Request) -> Response:
+        """The shared single-environment dashboard at ``/env/<name>``.
+
+        This route authenticates itself (it is outside the team login): either
+        the share link's ``?key=``, which is exchanged for a scoped cookie and
+        dropped from the URL, or that cookie on later visits. An operator with
+        a full session can also open it to preview what the client sees.
+        """
+        env_name = request.path_params["name"]
+        settings = get_settings()
+        key = request.query_params.get("key") or ""
+        if key:
+            client_ip = request.client.host if request.client else "unknown"
+            if login_limiter.is_limited(client_ip):
+                return _share_link_error(
+                    "Too many failed attempts. Try again later.", 429
+                )
+            team = _team_for_share(settings, env_name, key, request.url.hostname or "")
+            if team is None:
+                login_limiter.record_failure(client_ip)
+                return _share_link_error(
+                    "This share link is invalid or has been revoked. "
+                    "Ask for a new one.",
+                    403,
+                )
+            login_limiter.clear(client_ip)
+            # Land on the clean URL so the key leaves the address bar, browser
+            # history, and any Referer sent by the page's own requests.
+            target = ui_scope.PAGE_PREFIX + quote(env_name, safe="/")
+            response: Response = RedirectResponse(target, status_code=303)
+            response.set_cookie(
+                ui_scope.SHARE_COOKIE,
+                _make_share_token(settings, team, env_name, key),
+                max_age=_SESSION_MAX_AGE,
+                httponly=True,
+                samesite="strict",
+                secure=_is_secure_request(request),
+                path="/",
+            )
+            return response
+
+        share = _check_share_token(
+            request.cookies.get(ui_scope.SHARE_COOKIE, ""), settings
+        )
+        if share and share[1] == env_name:
+            return HTMLResponse(_render_dashboard(settings, scoped_env=env_name))
+
+        auth_enabled = any(t.ui_password for t in settings.teams.values())
+        session = request.cookies.get(_AUTH_COOKIE, "")
+        operator = _check_cookie_token(session, settings) if session else None
+        if operator is not None or not auth_enabled:
+            return HTMLResponse(_render_dashboard(settings, scoped_env=env_name))
+        return _share_link_error(
+            "This link is missing its key. Open the full share link you were "
+            "sent (it ends with ?key=...).",
+            401,
+        )
 
     async def login(request: Request) -> Response:
         settings = get_settings()
@@ -845,8 +1034,30 @@ def _build_routes(
         return HTMLResponse(_render_login())
 
     def logout(request: Request) -> RedirectResponse:
+        # /logout is public, so the scoped session is read from its cookie
+        # rather than request.state. When an operator opened a share link in an
+        # already authenticated browser, leaving scoped mode restores that
+        # operator session instead of signing it out too.
+        settings = get_settings()
+        share_token = request.cookies.get(ui_scope.SHARE_COOKIE, "")
+        share = _check_share_token(share_token, settings)
+        session = request.cookies.get(_AUTH_COOKIE, "")
+        operator = _check_cookie_token(session, settings) if session else None
+        if share_token and operator is not None:
+            response = RedirectResponse("/", status_code=303)
+            response.delete_cookie(ui_scope.SHARE_COOKIE, path="/", samesite="strict")
+            return response
+        if share:
+            target = ui_scope.PAGE_PREFIX + quote(share[1], safe="/")
+            response = RedirectResponse(target, status_code=303)
+            response.delete_cookie(ui_scope.SHARE_COOKIE, path="/", samesite="strict")
+            return response
+
+        # A normal operator logout clears the full session. Also remove any
+        # stale scoped cookie that failed validation.
         response = RedirectResponse("/login", status_code=303)
         response.delete_cookie(_AUTH_COOKIE, path="/", samesite="strict")
+        response.delete_cookie(ui_scope.SHARE_COOKIE, path="/", samesite="strict")
         return response
 
     def favicon(request: Request) -> Response:
@@ -907,6 +1118,11 @@ def _build_routes(
             settings = get_settings()
             team = _get_ui_team(request)
             envs = env_ops.list_environments(settings, team)
+            # A share link sees exactly its own environment: the scoped
+            # dashboard polls this route for its single card.
+            scoped_env = getattr(request.state, "scoped_env", None)
+            if scoped_env:
+                envs = [e for e in envs if e.get("env_name") == scoped_env]
             return JSONResponse({"ok": True, "environments": envs})
         except FlowError as e:
             return _error_response(e)
@@ -1367,7 +1583,7 @@ def _build_routes(
                 env_name=branch,
             )
 
-            env_ops.delete_environment(settings, team, branch)
+            env_ops.delete_environment(settings, team, branch, preserve_share=True)
             result = env_ops.create_environment(
                 settings,
                 team,
@@ -3783,6 +3999,92 @@ def _build_routes(
                 {"ok": False, "error": "Internal server error."}, status_code=500
             )
 
+    def _share_base_url(
+        request: Request, settings: Settings, team: TeamSettings
+    ) -> str:
+        """Origin a share link should be opened on. In traefik mode that is the
+        team's own TLS-terminated hostname (the env pages are served there);
+        port mode keeps the configured base or the request's own."""
+        if settings.routing_mode == "traefik":
+            return f"https://{team.hostname}"
+        return (settings.oauth_base_url or str(request.base_url)).rstrip("/")
+
+    def _share_payload(
+        request: Request,
+        settings: Settings,
+        team: TeamSettings,
+        branch: str,
+        record: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        if not record:
+            return {"shared": False, "url": None, "created_at": None}
+        page = ui_scope.PAGE_PREFIX + quote(branch, safe="/")
+        key = quote(str(record["secret"]), safe="")
+        return {
+            "shared": True,
+            "url": f"{_share_base_url(request, settings, team)}{page}?key={key}",
+            "created_at": record.get("created_at"),
+        }
+
+    def _share_endpoint(
+        request: Request, action: Callable[[TeamSettings, str], dict[str, Any] | None]
+    ) -> JSONResponse:
+        """Shared plumbing for the four share routes. Sharing is an operator
+        action: a scoped session must not be able to read, mint or revoke the
+        link it came in on (the ui_scope allowlist denies these paths too)."""
+        branch = request.path_params["branch"]
+        try:
+            if getattr(request.state, "scoped_env", None):
+                return JSONResponse(
+                    {"ok": False, "error": "Not available for a shared link."},
+                    status_code=403,
+                )
+            settings = get_settings()
+            team = _get_ui_team(request)
+            record = action(team, branch)
+            return JSONResponse(
+                {
+                    "ok": True,
+                    "result": _share_payload(request, settings, team, branch, record),
+                },
+                headers={"Cache-Control": "no-store"},
+            )
+        except FlowError as e:
+            return _error_response(e)
+        except Exception:
+            logger.exception("Unexpected error in share endpoint")
+            return JSONResponse(
+                {"ok": False, "error": "Internal server error."}, status_code=500
+            )
+
+    def api_share_get(request: Request) -> JSONResponse:
+        return _share_endpoint(
+            request, lambda team, branch: env_share.get(team, branch)
+        )
+
+    def api_share_create(request: Request) -> JSONResponse:
+        def action(team: TeamSettings, branch: str) -> dict[str, Any] | None:
+            env_ops.require_environment(get_settings(), team, branch)
+            env_share.create_or_get(team, branch)
+            return env_share.get(team, branch)
+
+        return _share_endpoint(request, action)
+
+    def api_share_rotate(request: Request) -> JSONResponse:
+        def action(team: TeamSettings, branch: str) -> dict[str, Any] | None:
+            env_ops.require_environment(get_settings(), team, branch)
+            env_share.rotate(team, branch)
+            return env_share.get(team, branch)
+
+        return _share_endpoint(request, action)
+
+    def api_share_revoke(request: Request) -> JSONResponse:
+        def action(team: TeamSettings, branch: str) -> dict[str, Any] | None:
+            env_share.revoke(team, branch)
+            return None
+
+        return _share_endpoint(request, action)
+
     def api_env_users(request: Request) -> JSONResponse:
         branch = request.path_params["branch"]
         try:
@@ -5302,6 +5604,9 @@ def _build_routes(
 
     return [
         Route("/", dashboard, methods=["GET"]),
+        # Shared single-environment dashboard; authenticates itself with the
+        # share link's ?key= or the scoped cookie (see oduflow.ui_scope).
+        Route(ui_scope.PAGE_PREFIX + "{name:path}", scoped_env_page, methods=["GET"]),
         Route("/login", login, methods=["GET", "POST"]),
         Route("/logout", logout, methods=["POST"]),
         Route("/favicon.ico", favicon, methods=["GET"]),
@@ -5402,6 +5707,26 @@ def _build_routes(
             "/api/environments/{branch:path}/mcp-access",
             api_mcp_access,
             methods=["GET"],
+        ),
+        Route(
+            "/api/environments/{branch:path}/share",
+            api_share_get,
+            methods=["GET"],
+        ),
+        Route(
+            "/api/environments/{branch:path}/share",
+            api_share_create,
+            methods=["POST"],
+        ),
+        Route(
+            "/api/environments/{branch:path}/share/rotate",
+            api_share_rotate,
+            methods=["POST"],
+        ),
+        Route(
+            "/api/environments/{branch:path}/share/revoke",
+            api_share_revoke,
+            methods=["POST"],
         ),
         Route(
             "/api/environments/{branch:path}/users",

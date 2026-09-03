@@ -154,6 +154,50 @@ Environments created before this feature carry no Secret Key (Docker labels can'
 be added to a live container); recreate the environment to issue one. Recreating
 an environment also rotates its token.
 
+## Shared single-environment dashboard (`/env/<name>`)
+
+The dashboard equivalent of `/mcp/<env>`: a link that opens the dashboard
+reduced to one environment, for a client or collaborator who has no team
+password.
+
+Open **More → Share UI** on an environment card and Oduflow mints
+
+```
+https://your-server.com/env/<env>?key=<share-secret>
+```
+
+Opening it trades the key for a signed, HTTP-only, SameSite=Strict cookie and
+redirects to the clean `/env/<env>`, so the key does not linger in the address
+bar or browser history. The same modal regenerates or revokes the link; both
+take effect immediately, including for sessions already opened with it, because
+the cookie carries a fingerprint of the secret it was minted from. Links have no
+expiry of their own; a session cookie lasts seven days and re-opening the link
+renews it.
+
+A shared session sees that environment's card, logs, storage and status; can
+start, stop, restart and sync it, install and upgrade modules, open its Odoo
+shell and `psql` consoles, use Connect As and its **Agent Chat**, and read its
+`/mcp/<env>` URL and Secret Key. Everything else is refused server-side by a
+default-deny allowlist re-checked on every request: the full dashboard, any
+other environment, all team-wide surfaces (templates, services, volumes, extra
+addons, credentials, productions, host statistics, license), the provisioning
+actions on the environment itself (create, delete, update, recreate, switch
+branch, protect, save as template), the share routes themselves, and **Agent
+CLI**.
+
+Agent CLI is deliberately excluded: it is a terminal in the *per-team* agent
+container, whose workspace holds a checkout of every environment of the team.
+Agent Chat runs in that same container — driven over ACP at this environment's
+checkout, with this environment's scoped MCP token — so the boundary a share
+link enforces is the dashboard surface, not the confinement that the
+per-environment Bearer token gives on `/mcp/<env>`. Share with people you would
+let work in the environment, and revoke when they are done.
+
+Share secrets live in the team's data directory (`shares.json`, mode 0600), not
+in a container label, so environments that already exist can be shared, and a
+link survives recreating the environment. Deleting an environment drops its
+share; renaming one carries it over.
+
 ## Web Dashboard Auth
 
 The browser login form creates a signed, seven-day HTTP-only session cookie.

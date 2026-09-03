@@ -2282,7 +2282,8 @@ class TestDeleteEnvironment:
         container.labels = {"oduflow.team": "1"}
         mock_docker_client.containers.get.return_value = container
 
-        env_ops.delete_environment(TEST_SETTINGS, TEST_TEAM, "feature/payments")
+        with patch("oduflow.docker_ops.env_ops.env_share.remove") as remove_share:
+            env_ops.delete_environment(TEST_SETTINGS, TEST_TEAM, "feature/payments")
 
         container.stop.assert_called_once()
         container.remove.assert_called_once()
@@ -2294,6 +2295,7 @@ class TestDeleteEnvironment:
         mock_release.assert_called_once_with(
             TEST_TEAM.port_registry_path, "feature/payments"
         )
+        remove_share.assert_called_once_with(TEST_TEAM, "feature/payments")
 
     @patch("oduflow.docker_ops.env_ops.release_port")
     @patch("oduflow.docker_ops.env_ops._exec_sql")

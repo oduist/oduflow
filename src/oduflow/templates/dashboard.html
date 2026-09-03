@@ -1257,6 +1257,29 @@
   .tpl-head-right { display: flex; align-items: center; gap: 8px; }
   .tpl-meta strong { font-family: var(--font-mono); font-size: var(--text-xs); color: var(--text); font-weight: 500; }
   .tag-plain { font-weight: 400 !important; text-transform: none !important; letter-spacing: normal !important; }
+  /* Shared single-environment view (/env/<name>): the same dashboard with
+     everything that is not this one environment taken away. The server-side
+     allowlist (oduflow/ui_scope.py) is the boundary — this only shapes the UI. */
+  body.scoped .tabs,
+  body.scoped #license-badge,
+  body.scoped #bulk-bar,
+  body.scoped header .btn-create,
+  body.scoped .env-card .select-box { display: none !important; }
+  /* Hide the host metrics but keep the bar: it docks minimized consoles. */
+  body.scoped .system-bar > span { display: none; }
+  .scoped-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 10px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--surface);
+    font-size: var(--text-xs);
+    color: var(--text-dim);
+  }
+  .scoped-chip strong { font-family: var(--font-mono); color: var(--text); font-weight: 500; }
+
   @media (max-width: 880px) {
     body { padding: 16px; padding-bottom: 96px; }
     header { flex-wrap: wrap; gap: 12px; }
@@ -1305,7 +1328,7 @@
   }
 </style>
 </head>
-<body>
+<body data-scoped-env="__SCOPED_ENV__">
 
 <header>
   <div class="brand-lockup">
@@ -1315,6 +1338,7 @@
       <div class="brand-byline">a product by <a href="https://oduist.com" target="_blank" rel="noopener">Oduist</a></div>
     </div>
   </div>
+  <span class="scoped-chip" id="scoped-chip" hidden></span>
   <button id="license-badge" class="license-badge" style="display:none"></button>
   <div class="actions">
     <a class="docs-link" href="https://docs.oduflow.dev" target="_blank" rel="noopener" title="Open the Oduflow documentation">Docs &#8599;</a>
@@ -2215,6 +2239,36 @@
     </div>
   </div>
 </div>
+<div class="modal-overlay" id="share-modal" onclick="closeShare(event)">
+  <div class="modal modal-sm">
+    <div class="modal-header">
+      <h2 id="share-title">Share environment</h2>
+      <button class="modal-close" onclick="closeShare()">&times;</button>
+    </div>
+    <div class="modal-body">
+      <p class="modal-note">The dashboard link is scoped to this environment: its card, logs, consoles, module install/upgrade, Connect As and Agent Chat. Other team environments and team-wide pages are unavailable, as is Agent CLI. Important: Agent Chat runs in the team's shared coder container, so the agent may read other team checkouts and Git credentials available there. Share only with someone trusted for that access. The link carries its own key, so treat it as a credential.</p>
+      <div class="form-group" id="share-link-group">
+        <label for="share-url">Share link</label>
+        <div class="copy-row">
+          <input id="share-url" class="mono-input" type="password" readonly>
+          <button class="btn" type="button" id="share-reveal" onclick="toggleShareSecret()" aria-pressed="false">Show</button>
+          <button class="btn" type="button" onclick="copyMcpField('share-url', 'Share link copied')">Copy</button>
+        </div>
+      </div>
+      <p class="modal-note" id="share-loading" role="status" aria-live="polite" style="display:none;"></p>
+      <div class="form-error" id="share-error" style="display:none;"></div>
+      <p class="modal-note" id="share-created" style="display:none;"></p>
+      <p class="modal-note" id="share-none" style="display:none;">This environment is not shared yet.</p>
+      <div class="form-actions">
+        <button class="btn" type="button" id="share-retry" onclick="loadShare()" style="display:none;">Retry</button>
+        <button class="btn btn-create" type="button" id="share-create" onclick="shareCreate()">Create link</button>
+        <button class="btn" type="button" id="share-rotate" onclick="shareRotate()" title="Issue a new link and invalidate the old one, including sessions already opened with it">Regenerate</button>
+        <button class="btn btn-delete" type="button" id="share-revoke" onclick="shareRevoke()" title="Stop sharing: the link and any session opened with it stop working">Revoke</button>
+        <button class="btn" onclick="closeShare()">Close</button>
+      </div>
+    </div>
+  </div>
+</div>
 <div class="modal-overlay" id="mcp-access-modal" onclick="closeMcpAccess(event)">
   <div class="modal modal-sm">
     <div class="modal-header">
@@ -2338,17 +2392,43 @@
   </div>
 </div>
 <script>
-// Redirect to the login page whenever a request is rejected as unauthenticated
-// (e.g. the session cookie expired while the tab was open).
+// Shared single-environment view: set when the page was served at /env/<name>
+// from a share link (see specs/0055-scoped-environment-ui-sharing.md). The
+// server enforces the scope in oduflow/ui_scope.py; everything this flag does
+// on the page is presentation — hiding controls whose endpoints are denied.
+var SCOPED_ENV = document.body.getAttribute('data-scoped-env') || '';
+
+// Path of the scoped page itself. Environment names may contain slashes
+// (feature/x), which stay separators in the URL.
+function scopedPagePath() {
+  return '/env/' + SCOPED_ENV.split('/').map(encodeURIComponent).join('/');
+}
+
+// Redirect whenever a request is rejected as unauthenticated (e.g. the session
+// cookie expired while the tab was open). A share-link visitor has no team
+// password, so send them back to their own page, which asks for the link.
 (function () {
   const _fetch = window.fetch;
   window.fetch = function () {
     return _fetch.apply(this, arguments).then(function (resp) {
-      if (resp.status === 401) { window.location.href = '/login'; }
+      if (resp.status === 401) {
+        window.location.href = SCOPED_ENV ? scopedPagePath() : '/login';
+      }
       return resp;
     });
   };
 })();
+
+if (SCOPED_ENV) {
+  document.body.classList.add('scoped');
+  document.title = 'Oduflow — ' + SCOPED_ENV;
+  var _scopedChip = document.getElementById('scoped-chip');
+  _scopedChip.textContent = 'Shared environment ';
+  var _scopedName = document.createElement('strong');
+  _scopedName.textContent = SCOPED_ENV;
+  _scopedChip.appendChild(_scopedName);
+  _scopedChip.hidden = false;
+}
 
 function logout() {
   const form = document.createElement('form');
@@ -2766,6 +2846,11 @@ function renderEnvironments(envs, force) {
   const el = document.getElementById('env-list');
   if (!envs || envs.length === 0) {
     el._lastHtml = '';
+    if (SCOPED_ENV) {
+      el.innerHTML = '<div class="empty">This environment is not available.<br>' +
+        '<span class="empty-hint">It may have been deleted. Ask whoever shared the link.</span></div>';
+      return;
+    }
     el.innerHTML = '<div class="empty">No environments yet.<br>' +
       '<span class="empty-hint">Agents create them over MCP: <code>create_environment(env_name="feature/...")</code></span><br>' +
       'or use "+ Create" above.</div>';
@@ -2853,6 +2938,8 @@ function renderEnvironments(envs, force) {
           // itself the control that switches it. Live-mount has no managed clone.
           (env.local_path
             ? ''
+            : SCOPED_ENV
+            ? '<span class="git-branch">⎇ ' + esc(env.git_branch || env.branch) + '</span>'
             : '<span class="git-branch" role="button" tabindex="0" title="Switch this environment to another branch" ' +
                 'onclick="openSwitchBranch(\'' + escAttr(env.branch) + '\')" ' +
                 'onkeydown="if (event.key === \'Enter\' || event.key === \' \') { event.preventDefault(); openSwitchBranch(\'' + escAttr(env.branch) + '\'); }"' +
@@ -2891,30 +2978,39 @@ function renderEnvironments(envs, force) {
               '<button role="menuitem" title="Pick installed modules and upgrade them with odoo -u" onclick="openUpgradeModules(\'' + escAttr(env.branch) + '\')" ' + dis +
                 (allStopped ? 'disabled' : '') + '>Upgrade modules</button>' +
               '<button role="menuitem" title="Scoped MCP endpoint and Secret Key for this environment only" onclick="openMcpAccess(\'' + escAttr(env.branch) + '\')">MCP Access</button>' +
-              (showAgent
+              (SCOPED_ENV
+                ? ''
+                : '<button role="menuitem" title="Share a link to this environment only: its dashboard, consoles and Agent Chat, nothing else" onclick="openShare(\'' + escAttr(env.branch) + '\')">Share UI</button>') +
+              (showAgent && !SCOPED_ENV
                 ? '<button role="menuitem" title="Terminal session with the coding agent for this environment" onclick="openAgentConsole(\'' + escAttr(env.branch) + '\')">Agent CLI</button>'
                 : '') +
-              '<button role="menuitem" title="' + (env.note ? 'Edit the note on this environment' : 'Add a note to this environment') + '" onclick="editNote(\'' + escAttr(env.branch) + '\')">' +
-                (env.note ? 'Edit note' : 'Add note') + '</button>' +
-              '<button role="menuitem" title="' + (env.protected ? 'Allow Stop, Update, Recreate and Delete again' : 'Disable Stop, Update, Recreate and Delete') + '" onclick="doProtect(\'' + escAttr(env.branch) + '\',' + (env.protected ? 'true' : 'false') + ')" ' + dis + '>' +
-                (env.protected ? 'Unprotect' : 'Protect') + '</button>' +
-              (env.local_path
-                ? ''
-                : '<button role="menuitem" onclick="openSwitchBranch(\'' + escAttr(env.branch) + '\')" ' + dis +
-                    'title="Reuse this environment for another branch, keeping its database and URL">Switch branch</button>') +
-              '<button role="menuitem" onclick="doUpdate(\'' + escAttr(env.branch) + '\')" ' + dis +
-                (env.protected ? 'disabled title="Environment is protected"' : 'title="Recreate the container, keep the database and filestore"') + '>Update</button>' +
-              '<button role="menuitem" onclick="doRecreate(\'' + escAttr(env.branch) + '\')" ' + dis +
-                (env.protected ? 'disabled title="Environment is protected"' : 'title="Delete and rebuild from template: replaces the current database"') + '>Recreate</button>' +
-              '<button role="menuitem" onclick="doNewTemplate(\'' + escAttr(env.branch) + '\')" ' + dis +
-                'title="Save this environment (DB + filestore) as a new template">New Template</button>' +
-              '<button role="menuitem" class="danger" onclick="doDelete(\'' + escAttr(env.branch) + '\')" ' + dis +
-                (env.protected ? 'disabled title="Environment is protected"' : '') + '>Delete</button>' +
+              (SCOPED_ENV ? '' :
+                '<button role="menuitem" title="' + (env.note ? 'Edit the note on this environment' : 'Add a note to this environment') + '" onclick="editNote(\'' + escAttr(env.branch) + '\')">' +
+                  (env.note ? 'Edit note' : 'Add note') + '</button>' +
+                '<button role="menuitem" title="' + (env.protected ? 'Allow Stop, Update, Recreate and Delete again' : 'Disable Stop, Update, Recreate and Delete') + '" onclick="doProtect(\'' + escAttr(env.branch) + '\',' + (env.protected ? 'true' : 'false') + ')" ' + dis + '>' +
+                  (env.protected ? 'Unprotect' : 'Protect') + '</button>' +
+                (env.local_path
+                  ? ''
+                  : '<button role="menuitem" onclick="openSwitchBranch(\'' + escAttr(env.branch) + '\')" ' + dis +
+                      'title="Reuse this environment for another branch, keeping its database and URL">Switch branch</button>') +
+                '<button role="menuitem" onclick="doUpdate(\'' + escAttr(env.branch) + '\')" ' + dis +
+                  (env.protected ? 'disabled title="Environment is protected"' : 'title="Recreate the container, keep the database and filestore"') + '>Update</button>' +
+                '<button role="menuitem" onclick="doRecreate(\'' + escAttr(env.branch) + '\')" ' + dis +
+                  (env.protected ? 'disabled title="Environment is protected"' : 'title="Delete and rebuild from template: replaces the current database"') + '>Recreate</button>' +
+                '<button role="menuitem" onclick="doNewTemplate(\'' + escAttr(env.branch) + '\')" ' + dis +
+                  'title="Save this environment (DB + filestore) as a new template">New Template</button>' +
+                '<button role="menuitem" class="danger" onclick="doDelete(\'' + escAttr(env.branch) + '\')" ' + dis +
+                  (env.protected ? 'disabled title="Environment is protected"' : '') + '>Delete</button>') +
             '</div>' +
           '</div>' +
         '</div>' +
       '</div>' +
-      (env.note
+      (env.note && SCOPED_ENV
+        ? '<div class="env-note env-note-set">' +
+            '<span class="note-label" aria-hidden="true">Note</span>' + esc(env.note) +
+          '</div>'
+        : '') +
+      (env.note && !SCOPED_ENV
         ? '<div class="env-note env-note-set" role="button" tabindex="0" aria-label="Edit note" ' +
             'onclick="editNote(\'' + escAttr(env.branch) + '\')" title="Click to edit note">' +
             '<span class="note-label" aria-hidden="true">Note</span>' + esc(env.note) +
@@ -3241,6 +3337,187 @@ async function openMcpAccess(branch) {
   }
 }
 
+var _shareBranch = '';
+var _shareRequestGeneration = 0;
+var _shareBusy = false;
+var _shareResult = null;
+
+function _setShareActions(shared, disabled) {
+  var create = document.getElementById('share-create');
+  var rotate = document.getElementById('share-rotate');
+  var revoke = document.getElementById('share-revoke');
+  create.style.display = shared ? 'none' : '';
+  rotate.style.display = shared ? '' : 'none';
+  revoke.style.display = shared ? '' : 'none';
+  create.disabled = disabled;
+  rotate.disabled = disabled;
+  revoke.disabled = disabled;
+}
+
+function _renderSharePending(message, clearState) {
+  _shareBusy = true;
+  var loading = document.getElementById('share-loading');
+  loading.textContent = message;
+  loading.style.display = '';
+  document.getElementById('share-error').style.display = 'none';
+  document.getElementById('share-retry').style.display = 'none';
+  if (clearState) {
+    document.getElementById('share-url').value = '';
+    document.getElementById('share-link-group').style.display = 'none';
+    document.getElementById('share-created').style.display = 'none';
+    document.getElementById('share-none').style.display = 'none';
+    document.getElementById('share-create').style.display = 'none';
+    document.getElementById('share-rotate').style.display = 'none';
+    document.getElementById('share-revoke').style.display = 'none';
+  } else {
+    _setShareActions(!!(_shareResult && _shareResult.shared), true);
+  }
+}
+
+function _renderShareError(message) {
+  _shareBusy = false;
+  document.getElementById('share-loading').style.display = 'none';
+  var error = document.getElementById('share-error');
+  error.textContent = message;
+  error.style.display = 'block';
+  document.getElementById('share-retry').style.display = '';
+}
+
+async function openShare(branch) {
+  // Invalidate an older request before changing the modal's environment.
+  _shareRequestGeneration += 1;
+  _shareBranch = branch;
+  _shareResult = null;
+  _shareBusy = false;
+  document.getElementById('share-title').textContent = 'Share environment — ' + branch;
+  var urlEl = document.getElementById('share-url');
+  // Reset to the masked state every time: the link is a credential.
+  urlEl.type = 'password';
+  urlEl.value = '';
+  var reveal = document.getElementById('share-reveal');
+  reveal.textContent = 'Show';
+  reveal.setAttribute('aria-pressed', 'false');
+  showModal('share-modal');
+  await loadShare();
+}
+
+function renderShare(result) {
+  _shareBusy = false;
+  _shareResult = result;
+  document.getElementById('share-loading').style.display = 'none';
+  document.getElementById('share-error').style.display = 'none';
+  document.getElementById('share-retry').style.display = 'none';
+  var shared = !!(result && result.shared);
+  document.getElementById('share-url').value = shared ? (result.url || '') : '';
+  document.getElementById('share-link-group').style.display = shared ? '' : 'none';
+  document.getElementById('share-none').style.display = shared ? 'none' : '';
+  var created = document.getElementById('share-created');
+  if (shared && result.created_at) {
+    // formatDate returns markup (a <span> carrying the absolute time as a
+    // tooltip), built from our own escaped timestamp.
+    created.innerHTML = 'Link created ' + formatDate(result.created_at) + '.';
+    created.style.display = '';
+  } else {
+    created.style.display = 'none';
+  }
+  _setShareActions(shared, false);
+}
+
+async function _shareRequest(path, method, okMessage, pendingMessage) {
+  if (_shareBusy) return;
+  var branch = _shareBranch;
+  var generation = ++_shareRequestGeneration;
+  var previous = _shareResult;
+  _renderSharePending(pendingMessage, method === 'GET');
+  try {
+    var r = await fetch(API + '/' + encodeURIComponent(branch) + path,
+      { method: method });
+    var data = await readResult(r);
+    if (generation !== _shareRequestGeneration || branch !== _shareBranch) return;
+    if (!data.ok) {
+      var error = data.error || 'Share request failed';
+      if (previous) renderShare(previous); else _renderShareError(error);
+      showToast(error, true);
+      return;
+    }
+    renderShare(data.result);
+    if (okMessage) showToast(okMessage);
+  } catch (e) {
+    if (generation !== _shareRequestGeneration || branch !== _shareBranch) return;
+    var error = 'Connection error: ' + e.message;
+    if (previous) renderShare(previous); else _renderShareError(error);
+    showToast(error, true);
+  }
+}
+
+function loadShare() {
+  return _shareRequest('/share', 'GET', '', 'Loading share status…');
+}
+
+function shareCreate() {
+  if (_shareBusy || !_shareResult || _shareResult.shared) return;
+  return _shareRequest('/share', 'POST', 'Share link created', 'Creating share link…');
+}
+
+// The confirm dialog is its own overlay, so step out of the share modal for it
+// and come back afterwards rather than stacking two modals.
+async function _shareConfirm(opts) {
+  hideModal('share-modal');
+  var ok = await confirmDialog(opts);
+  showModal('share-modal');
+  return ok;
+}
+
+async function shareRotate() {
+  if (_shareBusy || !_shareResult || !_shareResult.shared) return;
+  var branch = _shareBranch;
+  var generation = _shareRequestGeneration;
+  if (!(await _shareConfirm({
+    title: 'Regenerate share link',
+    message: 'Issue a new link for "' + branch + '"? The current link, and ' +
+      'anyone already using it, stop working.',
+    confirmLabel: 'Regenerate link',
+    danger: true
+  }))) return;
+  if (generation !== _shareRequestGeneration || branch !== _shareBranch) return;
+  await _shareRequest(
+    '/share/rotate', 'POST', 'New share link issued', 'Regenerating share link…'
+  );
+}
+
+async function shareRevoke() {
+  if (_shareBusy || !_shareResult || !_shareResult.shared) return;
+  var branch = _shareBranch;
+  var generation = _shareRequestGeneration;
+  if (!(await _shareConfirm({
+    title: 'Revoke sharing',
+    message: 'Stop sharing "' + branch + '"? The link, and anyone already ' +
+      'using it, stop working.',
+    confirmLabel: 'Revoke link',
+    danger: true
+  }))) return;
+  if (generation !== _shareRequestGeneration || branch !== _shareBranch) return;
+  await _shareRequest(
+    '/share/revoke', 'POST', 'Sharing revoked', 'Revoking share link…'
+  );
+}
+
+function closeShare(event) {
+  if (event && event.target !== event.currentTarget) return;
+  _shareRequestGeneration += 1;
+  _shareBusy = false;
+  hideModal('share-modal');
+}
+
+function toggleShareSecret() {
+  var el = document.getElementById('share-url');
+  var btn = document.getElementById('share-reveal');
+  var show = el.type === 'password';
+  el.type = show ? 'text' : 'password';
+  btn.textContent = show ? 'Hide' : 'Show';
+  btn.setAttribute('aria-pressed', show ? 'true' : 'false');
+}
+
 function closeMcpAccess(event) {
   if (event && event.target !== event.currentTarget) return;
   hideModal('mcp-access-modal');
@@ -3350,7 +3627,10 @@ async function loadEnvironments(force) {
     const r = await fetch(API);
     const data = await readResult(r);
     if (data.ok) {
-      cachedEnvs = data.environments || [];
+      var environments = data.environments || [];
+      cachedEnvs = SCOPED_ENV
+        ? environments.filter(function (env) { return env.env_name === SCOPED_ENV; })
+        : environments;
       renderEnvironments(cachedEnvs, force);
     } else {
       showToast(data.error || 'Failed to load', true);
@@ -5042,6 +5322,7 @@ function resetTimers() {
   var ms = refreshInterval * 1000;
   refreshTimer = setInterval(function() {
     loadEnvironments();
+    if (SCOPED_ENV) return;
     loadStats();
     loadHealth();
     var prodTab = document.getElementById('tab-production');
@@ -6832,6 +7113,7 @@ var MODAL_CLOSERS = {
   'import-odoo-modal': closeImportOdooModal,
   'template-settings-modal': closeTemplateSettingsModal,
   'confirm-modal': cancelConfirm,
+  'share-modal': closeShare,
   'note-modal': closeNoteModal,
   'install-modules-modal': closeInstallModules,
   'upgrade-modules-modal': closeUpgradeModules
@@ -7310,11 +7592,13 @@ async function loadHealth() {
   } catch (e) { /* health chips are best-effort */ }
 }
 
-loadLicense();
+if (!SCOPED_ENV) {
+  loadLicense();
+  loadStats();
+  loadHealth();
+  loadServicePresets();
+}
 loadEnvironments();
-loadStats();
-loadHealth();
-loadServicePresets();
 refreshAgentInfo();
 resetTimers();
 </script>
