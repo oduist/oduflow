@@ -1,5 +1,6 @@
 import logging
 import os
+import re
 import time
 
 import docker
@@ -9,6 +10,7 @@ from oduflow.errors import FlowError, PrerequisiteNotMetError
 logger = logging.getLogger("oduflow")
 
 _uid_gid_cache: dict[str, str] = {}
+_HEX_ID_RE = re.compile(r"\b[0-9a-f]{12,64}\b")
 
 
 def docker_error_detail(exc: docker.errors.DockerException) -> str:
@@ -28,7 +30,9 @@ def docker_error_detail(exc: docker.errors.DockerException) -> str:
     if isinstance(explanation, bytes):
         explanation = explanation.decode("utf-8", errors="replace")
     if explanation:
-        return str(explanation).strip()
+        # Container/image IDs are internal identifiers with no value to a
+        # caller; drop them even from otherwise caller-facing explanations.
+        return _HEX_ID_RE.sub("<id>", str(explanation).strip())
 
     if isinstance(exc, docker.errors.APIError):
         status = exc.status_code

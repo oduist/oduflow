@@ -8,12 +8,14 @@
   container behind `create_service`, `update_service` or `restart_service`
   fails to start, the MCP response used to be a bare "Error calling tool" with
   the daemon's reason buried in the server log. A host port that is already
-  taken is now reported as a conflict that names the port and tells the agent
-  to call `create_service` again with a different one; any other start failure
-  carries the Docker daemon's explanation (minus the SDK's HTTP wrapper). The
+  taken is now reported as a conflict that names the port and the tool that
+  can apply a new one (`create_service` after a failed create, `update_service`
+  after a failed restart); any other start failure carries the Docker daemon's
+  explanation minus the SDK's HTTP wrapper and any container IDs. The
   container Docker leaves behind after a failed start is removed, so the retry
-  no longer collides with its own name. Docker errors outside service start
-  stay masked as before.
+  no longer collides with its own name, and `create_service` against a stopped
+  service of the same name now explains itself instead of surfacing Docker's
+  409. Docker errors outside service start stay masked as before.
 
 ## v1.73.0
 

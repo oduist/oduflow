@@ -65,14 +65,21 @@ _SYSTEM_ENV_KEYS = {
 
 
 def _raise_service_start_error(
-    name: str, port: int | None, exc: docker.errors.DockerException
+    name: str,
+    port: int | None,
+    exc: docker.errors.DockerException,
+    *,
+    retry_with: str,
 ) -> None:
     """Translate a failed service start into an actionable FlowError.
 
     A host-port clash is the one failure an agent can fix on its own, so it
-    gets a dedicated ConflictError with the retry path spelled out.  Every other
-    daemon explanation describes the caller's own image/port/volume parameters
-    and is passed through without the SDK's HTTP wrapper.
+    gets a dedicated ConflictError with the retry path spelled out.
+    ``retry_with`` names the tool that can apply a new port: after a failed
+    create the name is free again, so ``create_service``; after a failed
+    restart the stopped container still holds the name, so ``update_service``.
+    Every other daemon explanation describes the caller's own image/port/volume
+    parameters and is passed through without the SDK's HTTP wrapper.
     """
     detail = docker_error_detail(exc).lower()
     if "port is already allocated" in detail or (
@@ -81,8 +88,7 @@ def _raise_service_start_error(
         port_label = f" {port}" if port is not None else ""
         raise ConflictError(
             f"Could not start service '{name}': host port{port_label} is already "
-            "allocated. Choose a different host port and call create_service "
-            "again."
+            f"allocated. Choose a different host port and call {retry_with}."
         ) from exc
     raise docker_operation_error(f"start service '{name}'", exc) from exc
 
@@ -351,6 +357,14 @@ def create_service(
         existing = client.containers.get(container_name)
         if existing.status == "running":
             raise ConflictError(f"Service '{name}' already exists and is running.")
+        # Docker would refuse the name with a 409 that quotes the container
+        # name and ID; say it in our own words instead.
+        raise ConflictError(
+            f"Service '{name}' already exists but is not running "
+            f"(status: {existing.status}). Use restart_service to start it, "
+            "update_service to recreate it with new settings, or delete_service "
+            "first."
+        )
     except docker.errors.NotFound:
         is_new_service = True
 
@@ -498,7 +512,9 @@ def create_service(
             # start leaves a `created` container holding the name. Drop it,
             # otherwise the retry this error recommends hits a name conflict.
             _remove_stale_service_container(client, container_name)
-            _raise_service_start_error(name, port, exc)
+            _raise_service_start_error(
+                name, port, exc, retry_with="create_service again"
+            )
     logger.info("Created service container %s from image %s", container_name, image)
 
     # Auto-save preset for future restore
@@ -574,7 +590,9 @@ def restart_service(
     try:
         container.restart()
     except docker.errors.DockerException as exc:
-        _raise_service_start_error(name, port, exc)
+        _raise_service_start_error(
+            name, port, exc, retry_with="update_service with a new port"
+        )
     logger.info("Restarted service container %s", container_name)
 
     return {

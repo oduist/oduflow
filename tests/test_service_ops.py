@@ -195,24 +195,63 @@ class TestCreateService:
         assert "http+docker" not in message
         stale.remove.assert_called_once_with(force=True)
 
-    def test_start_failure_keeps_stopped_container_with_same_name(
+    def test_stopped_service_with_same_name_is_authored_conflict(
         self, mock_docker_client
     ):
-        """A name clash with an exited service must not delete that service."""
+        """A name clash with an exited service is reported in our own words.
+
+        Docker's 409 would quote the container name and ID; the stopped
+        service must also survive the attempt untouched.
+        """
         stopped = MagicMock()
         stopped.status = "exited"
-        mock_docker_client.containers.get.side_effect = [stopped, stopped]
-        mock_docker_client.containers.run.side_effect = docker.errors.APIError(
-            "409 Client Error for http+docker://localhost/containers/create",
-            explanation="Conflict. The container name is already in use",
-        )
+        mock_docker_client.containers.get.return_value = stopped
 
-        with pytest.raises(FlowError):
+        with pytest.raises(ConflictError) as exc_info:
             service_ops.create_service(
                 TEST_SETTINGS, TEST_TEAM, "redis", "redis:7", 6379
             )
 
+        message = str(exc_info.value)
+        assert "already exists but is not running" in message
+        assert "status: exited" in message
+        assert "update_service" in message
+        mock_docker_client.containers.run.assert_not_called()
         stopped.remove.assert_not_called()
+
+    def test_stale_created_container_is_removed_only_when_never_started(
+        self, mock_docker_client
+    ):
+        """_remove_stale_service_container leaves non-`created` containers alone."""
+        stopped = MagicMock()
+        stopped.status = "exited"
+        mock_docker_client.containers.get.return_value = stopped
+        service_ops._remove_stale_service_container(mock_docker_client, "c")
+        stopped.remove.assert_not_called()
+
+        created = MagicMock()
+        created.status = "created"
+        mock_docker_client.containers.get.return_value = created
+        service_ops._remove_stale_service_container(mock_docker_client, "c")
+        created.remove.assert_called_once_with(force=True)
+
+    def test_start_failure_scrubs_container_ids(self, mock_docker_client):
+        mock_docker_client.containers.get.side_effect = docker.errors.NotFound("nf")
+        mock_docker_client.containers.run.side_effect = docker.errors.APIError(
+            "500 Server Error for http+docker://localhost/containers/id/start",
+            explanation=(
+                "cannot join network of a non running container: "
+                "3f9a1c2b4d5e6f708192a3b4c5d6e7f8"
+            ),
+        )
+
+        with pytest.raises(FlowError) as exc_info:
+            service_ops.create_service(
+                TEST_SETTINGS, TEST_TEAM, "redis", "redis:7", 6379
+            )
+
+        assert "3f9a1c2b4d5e" not in str(exc_info.value)
+        assert "<id>" in str(exc_info.value)
 
     def test_other_start_failure_is_flow_error(self, mock_docker_client):
         mock_docker_client.containers.get.side_effect = docker.errors.NotFound("nf")
@@ -833,6 +872,10 @@ class TestRestartService:
             service_ops.restart_service(TEST_SETTINGS, TEST_TEAM, "redis")
 
         assert "host port 6379 is already allocated" in str(exc_info.value)
+        # The stopped container still holds the name, so create_service would
+        # fail; update_service is the path that can apply a new port.
+        assert "call update_service with a new port" in str(exc_info.value)
+        assert "create_service" not in str(exc_info.value)
         assert "http+docker" not in str(exc_info.value)
 
     def test_restart_without_preset_still_reports_conflict(self, mock_docker_client):
