@@ -168,6 +168,7 @@ class TestCreateService:
         # created before the failed start, which must be removed for the retry.
         stale = MagicMock()
         stale.status = "created"
+        stale.labels = {"oduflow.managed": "true"}
         mock_docker_client.containers.get.side_effect = [
             docker.errors.NotFound("nf"),
             stale,
@@ -229,8 +230,16 @@ class TestCreateService:
         service_ops._remove_stale_service_container(mock_docker_client, "c")
         stopped.remove.assert_not_called()
 
+        foreign = MagicMock()
+        foreign.status = "created"
+        foreign.labels = {}
+        mock_docker_client.containers.get.return_value = foreign
+        service_ops._remove_stale_service_container(mock_docker_client, "c")
+        foreign.remove.assert_not_called()
+
         created = MagicMock()
         created.status = "created"
+        created.labels = {"oduflow.managed": "true"}
         mock_docker_client.containers.get.return_value = created
         service_ops._remove_stale_service_container(mock_docker_client, "c")
         created.remove.assert_called_once_with(force=True)
@@ -252,6 +261,30 @@ class TestCreateService:
 
         assert "3f9a1c2b4d5e" not in str(exc_info.value)
         assert "<id>" in str(exc_info.value)
+
+    def test_start_failure_scrubs_host_paths_and_container_names(
+        self, mock_docker_client
+    ):
+        mock_docker_client.containers.get.side_effect = docker.errors.NotFound("nf")
+        mock_docker_client.containers.run.side_effect = docker.errors.APIError(
+            "500 Server Error for http+docker://localhost/containers/id/start",
+            explanation=(
+                "error while mounting volume "
+                "'/var/lib/docker/volumes/oduflow-vol-t1-data/_data': "
+                'failed to mount local volume: no such file; container "/oduflow-t1-redis"'
+            ),
+        )
+
+        with pytest.raises(FlowError) as exc_info:
+            service_ops.create_service(
+                TEST_SETTINGS, TEST_TEAM, "redis", "redis:7", 6379
+            )
+
+        message = str(exc_info.value)
+        assert "/var/lib/docker" not in message
+        assert "oduflow-t1-redis" not in message
+        assert "failed to mount local volume: no such file" in message
+        assert message.startswith("Docker failed to start service 'redis': ")
 
     def test_other_start_failure_is_flow_error(self, mock_docker_client):
         mock_docker_client.containers.get.side_effect = docker.errors.NotFound("nf")

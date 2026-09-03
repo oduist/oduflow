@@ -551,13 +551,16 @@ def create_service(
 def _remove_stale_service_container(client: Any, container_name: str) -> None:
     """Best-effort removal of a service container that never started.
 
-    Only a ``created`` container is touched: that is what the SDK leaves behind
-    when ``start`` fails. A stopped (``exited``) container is someone's service
-    and is left alone, so a name clash surfaces instead of deleting it.
+    Only an Oduflow-managed ``created`` container is touched: that is what the
+    SDK leaves behind when ``start`` fails. A stopped (``exited``) container or
+    one without our label is someone's service and is left alone, so a name
+    clash surfaces instead of deleting it.
     """
     try:
         stale = client.containers.get(container_name)
         if stale.status != "created":
+            return
+        if (stale.labels or {}).get("oduflow.managed") != "true":
             return
         stale.remove(force=True)
     except docker.errors.NotFound:

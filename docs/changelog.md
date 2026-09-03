@@ -11,7 +11,8 @@
   taken is now reported as a conflict that names the port and the tool that
   can apply a new one (`create_service` after a failed create, `update_service`
   after a failed restart); any other start failure carries the Docker daemon's
-  explanation minus the SDK's HTTP wrapper and any container IDs. The
+  explanation minus the SDK's HTTP wrapper, container IDs and absolute
+  paths. The
   container Docker leaves behind after a failed start is removed, so the retry
   no longer collides with its own name, and `create_service` against a stopped
   service of the same name now explains itself instead of surfacing Docker's

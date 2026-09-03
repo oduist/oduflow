@@ -11,6 +11,9 @@ logger = logging.getLogger("oduflow")
 
 _uid_gid_cache: dict[str, str] = {}
 _HEX_ID_RE = re.compile(r"\b[0-9a-f]{12,64}\b")
+# Absolute paths: host mount sources, /var/lib/docker/volumes/..., and the
+# "/name" form Docker uses when it quotes a container name.
+_ABS_PATH_RE = re.compile(r"(?<![\w.-])/[\w.@:+-]+(?:/[\w.@:+-]+)*")
 
 
 def docker_error_detail(exc: docker.errors.DockerException) -> str:
@@ -22,17 +25,19 @@ def docker_error_detail(exc: docker.errors.DockerException) -> str:
     daemon explanation is the part that tells an agent what it can fix.
 
     Only use this where the explanation describes caller-supplied parameters
-    (a service image, port or volume).  Elsewhere Docker errors stay masked by
-    ``handle_errors``: the daemon freely quotes container names, IDs and host
-    paths, which must not reach MCP or dashboard clients.
+    (a service image, port or volume), and even there hex IDs and absolute
+    paths are scrubbed: the daemon quotes container names as ``/name`` and
+    mount failures include host and ``/var/lib/docker`` paths.  Elsewhere
+    Docker errors stay masked by ``handle_errors``.
     """
     explanation = getattr(exc, "explanation", None)
     if isinstance(explanation, bytes):
         explanation = explanation.decode("utf-8", errors="replace")
     if explanation:
-        # Container/image IDs are internal identifiers with no value to a
-        # caller; drop them even from otherwise caller-facing explanations.
-        return _HEX_ID_RE.sub("<id>", str(explanation).strip())
+        # Container/image IDs and absolute paths are internal identifiers with
+        # no value to a caller; drop them even from caller-facing explanations.
+        detail = _HEX_ID_RE.sub("<id>", str(explanation).strip())
+        return _ABS_PATH_RE.sub("<path>", detail)
 
     if isinstance(exc, docker.errors.APIError):
         status = exc.status_code
