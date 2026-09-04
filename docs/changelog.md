@@ -1,5 +1,26 @@
 # Changelog
 
+## v1.75.0
+
+### Features
+
+- **Plain-HTTP deployments via `[routing] public_scheme`** — a new setting fixes
+  the scheme (`http` or `https`) of every URL Oduflow hands out: environment,
+  service and production URLs, dashboard share links, MCP endpoints and artifact
+  links. Unset, it derives the historical default — `https` in traefik mode,
+  `http` in port mode — so existing deployments, including `tls = false` behind
+  a Cloudflare tunnel, are untouched. Declaring `public_scheme = "http"`
+  (plain HTTP end to end, nothing terminating TLS) also switches off trust in
+  client-supplied `X-Forwarded-Proto` on Traefik's `web` entrypoint — with no
+  trusted terminator in front, that header must not be believed — and the
+  Traefik drift check recreates the container when the trust flag no longer
+  matches. Contradictory combinations are rejected at validation:
+  `public_scheme = "http"` with traefik `tls = true` (the :80→:443 redirect
+  would bounce every link and leak tokens on the plaintext first hop), and
+  `public_scheme = "https"` in port mode (published ports serve plain HTTP).
+  See the new "Plain HTTP, with nothing terminating TLS" section in the Traefik
+  docs. (#226)
+
 ## v1.74.0
 
 ### Features
