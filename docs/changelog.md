@@ -1,6 +1,37 @@
 # Changelog
 
-## Unreleased
+## v1.74.0
+
+### Features
+
+- **Share a single environment by link** — an operator can now mint a revocable
+  share link from the environment card and hand out
+  `https://<team-host>/env/<name>?key=<secret>` without giving away the team
+  password. The link exchanges the key for a signed host-only cookie and lands
+  on the same dashboard scoped to that one environment: the client gets logs,
+  consoles, module install/upgrade, Connect As, the `/mcp/<env>` credentials and
+  Agent Chat, but no templates, services, volumes, extra repos, productions,
+  host statistics or any other environment. The boundary is a server-side
+  default-deny allowlist that runs in the auth middleware for every HTTP and
+  WebSocket request a scoped session makes — hiding buttons is presentation,
+  this is policy. Agent CLI is deliberately denied: its PTY lives in the
+  per-team agent container, whose workspace holds a checkout of every
+  environment. Share secrets live in the team's `shares.json` rather than a
+  container label, so environments that already exist are shareable too; they
+  survive recreation and are revoked on deletion. See `docs/security.md` and
+  specs/0055. (#223)
+
+- **Rename an environment in place** — `update_environment` (and the dashboard's
+  Update environment dialog / `POST /api/environments/{branch}/update`) accepts
+  a `new_name` and renames the environment on the same container recreate. The
+  database, filestore, workspace, port, credentials, activity, Agent Chat
+  history and the coding agent's checkout (moved, never re-cloned) all follow
+  the name, and the scoped MCP endpoint moves to `/mcp/<new name>`. The target
+  name is locked for the duration, so a concurrent `create_environment` cannot
+  claim it mid-rename, and productions are refused outright so a rename cannot
+  move a production out from under `productions.json`. A hostname derived from
+  the environment name follows the new name; pooled and explicit hostnames stay
+  as they are. (#225)
 
 ### Bug Fixes
 
@@ -11,12 +42,22 @@
   taken is now reported as a conflict that names the port and the tool that
   can apply a new one (`create_service` after a failed create, `update_service`
   after a failed restart); any other start failure carries the Docker daemon's
-  explanation minus the SDK's HTTP wrapper, container IDs and absolute
-  paths. The
-  container Docker leaves behind after a failed start is removed, so the retry
-  no longer collides with its own name, and `create_service` against a stopped
-  service of the same name now explains itself instead of surfacing Docker's
-  409. Docker errors outside service start stay masked as before.
+  explanation minus the SDK's HTTP wrapper, container IDs and absolute paths.
+  The container Docker leaves behind after a failed start is removed, so the
+  retry no longer collides with its own name, and `create_service` against a
+  stopped service of the same name now explains itself instead of surfacing
+  Docker's 409. Docker errors outside service start stay masked as before.
+  (#224)
+
+### Breaking Changes
+
+- **Registry credentials are configured directly** — the
+  `[team.X.image_registry]` section introduced in v1.73.0 took the push token
+  through a `token_env` indirection naming an environment variable. It now takes
+  the token itself as `token`, alongside `username`; `token_env` is gone. The
+  value stays request-scoped for each push and is hidden from the settings
+  repr. Update `oduflow.toml` if you enabled agent image builds on v1.73.0.
+  (#222)
 
 ## v1.73.0
 
