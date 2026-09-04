@@ -447,6 +447,18 @@ def _resolve_instance_conf(name: str, data_dir: str) -> pathlib.Path:
     return _PACKAGE_ROOT / "templates" / name
 
 
+def _trusts_upstream_headers(settings: Settings) -> bool:
+    """Whether Traefik's ``web`` entrypoint should trust incoming X-Forwarded-*.
+
+    Only true for the "upstream terminates TLS" shape: ``tls = false`` plus a
+    public scheme of https, i.e. a Cloudflare-tunnel-style terminator in front
+    that must be able to tell us the browser spoke HTTPS. When the deployment is
+    plain HTTP end to end (``public_scheme = "http"``) there is no trusted hop,
+    so the headers stay untrusted and any client-supplied ones are overwritten.
+    """
+    return not settings.routing_tls and settings.public_scheme == "https"
+
+
 def _route_entrypoint(settings: Settings) -> dict[str, Any]:
     """Entrypoint/TLS fragment shared by team and extra-route routers.
 
@@ -578,6 +590,9 @@ def _ensure_traefik(client: DockerClient, settings: Settings) -> None:
         # Recreate on either drift:
         #   - routing tls: the HTTP->HTTPS redirect arg is present only in TLS
         #     mode, so its presence must match routing_tls.
+        #   - forwarded headers: trusted only in front of an upstream TLS
+        #     terminator, so its presence must match _trusts_upstream_headers
+        #     (which public_scheme can flip without touching tls).
         #   - file provider: older containers watch a single file
         #     (--providers.file.filename); we now watch the dynamic directory
         #     (--providers.file.directory), which is what lets operator drop-in
@@ -587,14 +602,24 @@ def _ensure_traefik(client: DockerClient, settings: Settings) -> None:
         #     while the server ran in port mode.
         cmd = t.attrs.get("Config", {}).get("Cmd") or []
         has_redirect = any("redirections" in str(arg) for arg in cmd)
+        has_forwarded = any("forwardedHeaders.insecure" in str(arg) for arg in cmd)
+        wants_forwarded = _trusts_upstream_headers(settings)
         on_dir_provider = any(
             str(arg).startswith("--providers.file.directory=") for arg in cmd
         )
-        if has_redirect != settings.routing_tls or not on_dir_provider:
+        if (
+            has_redirect != settings.routing_tls
+            or has_forwarded != wants_forwarded
+            or not on_dir_provider
+        ):
             logger.info(
-                "Recreating %s: config drift (tls now=%s, on_dir_provider=%s)",
+                "Recreating %s: config drift (tls container=%s wanted=%s, "
+                "forwarded_headers container=%s wanted=%s, on_dir_provider=%s)",
                 settings.traefik_container,
+                has_redirect,
                 settings.routing_tls,
+                has_forwarded,
+                wants_forwarded,
                 on_dir_provider,
             )
             t.stop()
@@ -630,17 +655,21 @@ def _ensure_traefik(client: DockerClient, settings: Settings) -> None:
             "--certificatesresolvers.letsencrypt.acme.storage=/acme/acme.json",
         ]
     else:
-        # Plain HTTP on :80 only — an upstream (e.g. Cloudflare tunnel)
-        # terminates TLS and forwards here over HTTP.
+        # Plain HTTP on :80 only — either an upstream (e.g. Cloudflare tunnel)
+        # terminates TLS and forwards here over HTTP, or the deployment really
+        # is plain HTTP end to end (public_scheme = "http").
         ports = {"80/tcp": 80}
-        # Trust the upstream's X-Forwarded-* headers. Without this Traefik
-        # overwrites X-Forwarded-Proto with the actual connection scheme (http
-        # on this entrypoint), so the tunnel's `X-Forwarded-Proto: https` would
-        # be lost and Oduflow would treat the request as insecure (dropping the
-        # cookie Secure flag and generating http:// links). This entrypoint is
-        # only meant to receive traffic from the trusted TLS terminator, so
-        # trusting all forwarded headers here is intended.
-        command.append("--entrypoints.web.forwardedHeaders.insecure=true")
+        if _trusts_upstream_headers(settings):
+            # Trust the upstream's X-Forwarded-* headers. Without this Traefik
+            # overwrites X-Forwarded-Proto with the actual connection scheme
+            # (http on this entrypoint), so the tunnel's `X-Forwarded-Proto:
+            # https` would be lost and Oduflow would treat the request as
+            # insecure (dropping the cookie Secure flag and generating http://
+            # links). This entrypoint is only meant to receive traffic from the
+            # trusted TLS terminator, so trusting all forwarded headers here is
+            # intended. Without such a terminator the entrypoint is directly
+            # exposed and anyone could forge the header, so it stays off.
+            command.append("--entrypoints.web.forwardedHeaders.insecure=true")
 
     client.containers.run(
         "traefik:v3",

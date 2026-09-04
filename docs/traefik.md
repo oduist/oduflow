@@ -179,3 +179,37 @@ With `tls = false` Traefik:
 Point the tunnel at the server's port 80 and route the wildcard hostname to it (e.g. `*.dev.example.com → http://localhost:80`). Cloudflare provides the certificate and forwards requests over HTTP; the tunnel sets `X-Forwarded-Proto: https`. On the `web` entrypoint Oduflow enables `forwardedHeaders.insecure` so Traefik passes those headers through (by default Traefik would overwrite `X-Forwarded-Proto` with the plain-HTTP connection scheme), letting Oduflow see the request as secure — the dashboard's session cookie stays `Secure` and every environment/service URL Oduflow reports is still `https://…`. Because this entrypoint trusts all forwarded headers, expose port 80 **only** to the tunnel, not to the public internet.
 
 > **Changing `tls` on a running deployment recreates Traefik but not your environments.** Each environment and service bakes its Traefik routing labels in at creation time — `entrypoints=websecure` (with Let's Encrypt) when `tls = true`, `entrypoints=web` when `tls = false`. Restarting Oduflow recreates the Traefik container in the new mode, but pre-existing environments and services keep their old labels: after the switch their routers point at an entrypoint that no longer matches, so they become unreachable until **recreated** (or, going `false → true`, get caught by the HTTP→HTTPS redirect). Treat `tls` as a deploy-time choice; if you must flip it on a live server, recreate the existing environments and services afterwards. The default is `tls = true` (Traefik terminates TLS with Let's Encrypt, as described above).
+
+## Plain HTTP, with nothing terminating TLS
+
+`tls = false` on its own means "**someone else** terminates TLS", so the links
+Oduflow hands out — environment and service URLs, dashboard share links, MCP
+endpoints — stay `https://`. If there is no such upstream (a LAN box, an
+internal staging server, a local demo), those links point at an endpoint nobody
+serves. Say so explicitly with `public_scheme`:
+
+```toml
+[routing]
+mode = "traefik"
+tls = false
+public_scheme = "http"   # no TLS anywhere: hand out http:// links
+
+[team.1]
+hostname = "dev.example.com"
+```
+
+`public_scheme` sets the scheme of every URL Oduflow reports; it defaults to
+`https` in traefik mode and `http` in port mode, and is independent of `tls`
+(which only decides whether *Traefik* terminates TLS). It also switches off
+`forwardedHeaders.insecure` on the `web` entrypoint: with no trusted terminator
+in front, that entrypoint is directly reachable and must not believe a
+client-supplied `X-Forwarded-Proto`.
+
+Changing `public_scheme` recreates the Traefik container (the forwarded-headers
+argument changes) but not your environments — only the reported URLs change, so
+no environment or service needs recreating.
+
+!!! warning "Plain HTTP is unencrypted"
+    Odoo logins, session cookies, the dashboard password and MCP bearer tokens
+    all travel in cleartext. Use this only on a trusted network, never on a
+    public-facing server.

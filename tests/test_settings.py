@@ -282,6 +282,79 @@ class TestSettings:
         s.validate()
 
 
+class TestPublicScheme:
+    """[routing] public_scheme: the scheme of every URL Oduflow hands out."""
+
+    def _settings(self, routing_mode="traefik", tls=True, scheme=""):
+        team = TeamSettings(team_id="1", hostname="dev.example.com")
+        return Settings(
+            routing_mode=routing_mode,
+            routing_tls=tls,
+            acme_email="admin@example.com",
+            public_scheme_setting=scheme,
+            teams={"1": team},
+        )
+
+    def test_traefik_defaults_to_https(self):
+        assert self._settings().public_scheme == "https"
+
+    def test_traefik_without_tls_still_defaults_to_https(self):
+        # tls = false means "an upstream terminates TLS" (Cloudflare tunnel),
+        # not "plain HTTP" — the public URL keeps the upstream's scheme.
+        assert self._settings(tls=False).public_scheme == "https"
+
+    def test_port_mode_defaults_to_http(self):
+        assert self._settings(routing_mode="port").public_scheme == "http"
+
+    def test_explicit_http_overrides_traefik_default(self):
+        # The whole point of the option: a tls = false deployment with nothing
+        # terminating TLS in front must hand out reachable http:// links.
+        assert self._settings(tls=False, scheme="http").public_scheme == "http"
+
+    def test_validate_rejects_https_in_port_mode(self):
+        # Published per-environment ports serve plain HTTP; https:// links (and
+        # the internal probes built from get_env_base_url) could never work.
+        with pytest.raises(ValueError, match="port mode"):
+            self._settings(routing_mode="port", scheme="https").validate()
+
+    def test_validate_rejects_http_with_traefik_tls(self):
+        # tls = true keeps the :80->:443 redirect, so http:// links would
+        # bounce and leak tokens on the first plaintext hop.
+        with pytest.raises(ValueError, match="tls = false"):
+            self._settings(tls=True, scheme="http").validate()
+
+    def test_from_toml(self, tmp_path):
+        toml = tmp_path / "oduflow.toml"
+        toml.write_text(
+            '[routing]\nmode = "traefik"\ntls = false\npublic_scheme = "HTTP"\n'
+            '[team.1]\nhostname = "dev.example.com"\n'
+        )
+        s = Settings.from_toml(str(toml))
+        # Case-insensitive, and it does not touch routing_tls.
+        assert s.public_scheme == "http"
+        assert s.routing_tls is False
+
+    def test_from_toml_default_is_empty(self, tmp_path):
+        toml = tmp_path / "oduflow.toml"
+        toml.write_text(
+            '[routing]\nmode = "traefik"\n[team.1]\nhostname = "dev.example.com"\n'
+        )
+        s = Settings.from_toml(str(toml))
+        assert s.public_scheme_setting == ""
+        assert s.public_scheme == "https"
+
+    def test_validate_rejects_other_schemes(self):
+        with pytest.raises(ValueError, match="public_scheme"):
+            self._settings(scheme="ftp").validate()
+
+    def test_validate_accepts_supported_schemes(self):
+        # Every combination that matches what actually answers on the wire.
+        self._settings(scheme="").validate()
+        self._settings(scheme="https").validate()
+        self._settings(tls=False, scheme="http").validate()
+        self._settings(routing_mode="port", scheme="http").validate()
+
+
 class TestOAuthSettings:
     def _team(self, **kw):
         defaults = {"team_id": "1", "port_range_start": 50000, "port_range_end": 50100}

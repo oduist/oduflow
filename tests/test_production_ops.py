@@ -27,6 +27,29 @@ def settings(team, tmp_path):
     )
 
 
+class TestProdUrl:
+    def test_defaults_to_https(self, settings):
+        assert (
+            production_ops.prod_url(settings, {"domain": "erp.example.com"})
+            == "https://erp.example.com"
+        )
+
+    def test_follows_public_scheme(self, team, tmp_path):
+        # tls = false with no upstream terminator: the link must be reachable.
+        settings = Settings(
+            routing_mode="traefik",
+            routing_tls=False,
+            base_data_dir=str(tmp_path),
+            etc_dir=str(tmp_path / "etc"),
+            public_scheme_setting="http",
+            teams={"1": team},
+        )
+        assert (
+            production_ops.prod_url(settings, {"domain": "erp.example.com"})
+            == "http://erp.example.com"
+        )
+
+
 def _mock_client():
     client = MagicMock()
     client.containers.get.side_effect = docker.errors.NotFound("nf")

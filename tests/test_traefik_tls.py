@@ -7,7 +7,7 @@ from oduflow.docker_ops.env_ops import build_env_traefik_labels
 from oduflow.settings import ExtraRoute, Settings, TeamSettings
 
 
-def _traefik_settings(tmp_path, tls, extra_routes=()):
+def _traefik_settings(tmp_path, tls, extra_routes=(), public_scheme=""):
     team = TeamSettings(team_id="1", hostname="dev.example.com")
     return Settings(
         routing_mode="traefik",
@@ -16,6 +16,7 @@ def _traefik_settings(tmp_path, tls, extra_routes=()):
         etc_dir=str(tmp_path),
         teams={"1": team},
         extra_routes=tuple(extra_routes),
+        public_scheme_setting=public_scheme,
     )
 
 
@@ -208,13 +209,14 @@ class TestEnsureTraefik:
         client.containers.run.assert_called_once()
 
     def test_no_drift_when_mode_matches(self, tmp_path):
-        # Existing container already in the desired (no-TLS, directory) mode:
-        # reuse it.
+        # Existing container already in the desired (no-TLS, upstream-trusting,
+        # directory) mode: reuse it.
         existing = MagicMock()
         existing.attrs = {
             "Config": {
                 "Cmd": [
                     "--entrypoints.web.address=:80",
+                    "--entrypoints.web.forwardedHeaders.insecure=true",
                     "--providers.file.directory=/etc/traefik/dynamic",
                 ]
             }
@@ -225,6 +227,42 @@ class TestEnsureTraefik:
         system_ops._ensure_traefik(client, _traefik_settings(tmp_path, False))
         existing.remove.assert_not_called()
         client.containers.run.assert_not_called()
+
+    def test_plain_http_mode_does_not_trust_forwarded_headers(self, tmp_path):
+        # public_scheme = "http": nothing terminates TLS in front, so the :80
+        # entrypoint is directly exposed and must not believe a client-supplied
+        # X-Forwarded-Proto (which would forge a "secure" request).
+        client = self._client_no_container()
+        system_ops._ensure_traefik(
+            client, _traefik_settings(tmp_path, False, public_scheme="http")
+        )
+        cmd = client.containers.run.call_args[1]["command"]
+        assert client.containers.run.call_args[1]["ports"] == {"80/tcp": 80}
+        assert not any("forwardedHeaders" in a for a in cmd)
+
+    def test_drift_recreates_when_public_scheme_drops_tls(self, tmp_path):
+        # Container was built for an upstream terminator (forwarded headers
+        # trusted); the operator has since set public_scheme = "http".
+        existing = MagicMock()
+        existing.attrs = {
+            "Config": {
+                "Cmd": [
+                    "--entrypoints.web.address=:80",
+                    "--entrypoints.web.forwardedHeaders.insecure=true",
+                    "--providers.file.directory=/etc/traefik/dynamic",
+                ]
+            }
+        }
+        existing.status = "running"
+        client = MagicMock()
+        client.containers.get.return_value = existing
+        system_ops._ensure_traefik(
+            client, _traefik_settings(tmp_path, False, public_scheme="http")
+        )
+        existing.stop.assert_called_once()
+        existing.remove.assert_called_once()
+        cmd = client.containers.run.call_args[1]["command"]
+        assert not any("forwardedHeaders" in a for a in cmd)
 
 
 def _env_settings(routing_mode, tls):

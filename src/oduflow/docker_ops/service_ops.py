@@ -211,7 +211,7 @@ def _routes_from_labels(labels: dict[str, str]) -> list[dict[str, object]] | Non
 
 
 def _routes_with_urls(
-    routes: list[dict[str, object]] | None, hostname: str | None
+    routes: list[dict[str, object]] | None, hostname: str | None, scheme: str
 ) -> list[dict[str, object]]:
     if not routes:
         return []
@@ -219,7 +219,7 @@ def _routes_with_urls(
     for route in routes:
         item = dict(route)
         if hostname:
-            item["url"] = f"https://{hostname}{route['path']}"
+            item["url"] = f"{scheme}://{hostname}{route['path']}"
         result.append(item)
     return result
 
@@ -455,7 +455,8 @@ def create_service(
                 )
             else:
                 # Upstream terminates TLS (e.g. Cloudflare tunnel): plain HTTP on
-                # the web entrypoint. Public URL stays https:// below.
+                # the web entrypoint. The public URL below keeps the upstream's
+                # scheme (settings.public_scheme), not this entrypoint's.
                 labels[f"traefik.http.routers.{container_name}.entrypoints"] = "web"
             if host_mode:
                 labels[
@@ -466,11 +467,11 @@ def create_service(
                     f"traefik.http.services.{container_name}.loadbalancer.server.port"
                 ] = str(port)
                 labels["traefik.docker.network"] = team_network
-        url = f"https://{hostname}"
+        url = f"{settings.public_scheme}://{hostname}"
     else:
         if not host_mode:
             run_kwargs["ports"] = {f"{port}/tcp": port}
-        url = f"http://{team.hostname}:{port}"
+        url = f"{settings.public_scheme}://{team.hostname}:{port}"
 
     if env_vars:
         run_kwargs["environment"] = env_vars
@@ -544,7 +545,7 @@ def create_service(
         "url": url,
         "host_mode": host_mode,
         "command": list(command or []),
-        "routes": _routes_with_urls(routes, hostname),
+        "routes": _routes_with_urls(routes, hostname, settings.public_scheme),
     }
 
 
@@ -685,7 +686,7 @@ def _describe_service_container(
         match = re.search(r"Host\(`([^`]+)`\)", rule_value)
         if match:
             hostname = match.group(1)
-            url = f"https://{hostname}"
+            url = f"{settings.public_scheme}://{hostname}"
 
         if routes:
             port_num = None
@@ -712,7 +713,7 @@ def _describe_service_container(
             except Exception:
                 pass
             if port_num:
-                url = f"http://{team.hostname}:{port_num}"
+                url = f"{settings.public_scheme}://{team.hostname}:{port_num}"
         else:
             ports_dict = container.attrs.get("NetworkSettings", {}).get("Ports", {})
             if ports_dict:
@@ -724,7 +725,7 @@ def _describe_service_container(
                         for mapping in mappings:
                             host_port = mapping.get("HostPort")
                             if host_port:
-                                url = f"http://{team.hostname}:{host_port}"
+                                url = f"{settings.public_scheme}://{team.hostname}:{host_port}"
                                 break
                     break  # only process first port entry
 
@@ -761,7 +762,7 @@ def _describe_service_container(
         "port": port_num,
         "hostname": hostname,
         "url": url,
-        "routes": _routes_with_urls(routes, hostname),
+        "routes": _routes_with_urls(routes, hostname, settings.public_scheme),
         "env_vars": env_vars,
         "image_env_vars": image_env_vars,
         "host_mode": is_host_mode,
@@ -1108,9 +1109,9 @@ def update_service(
             h = hostname or f"{name}.{team.hostname}"
             if "." not in h:
                 h = f"{h}.{team.hostname}"
-            url = f"https://{h}"
+            url = f"{settings.public_scheme}://{h}"
         else:
-            url = f"http://{team.hostname}:{port}"
+            url = f"{settings.public_scheme}://{team.hostname}:{port}"
         return {
             "name": name,
             "container_name": container_name,
@@ -1123,7 +1124,9 @@ def update_service(
             "old_digest": old_digest,
             "new_digest": new_digest,
             "routes": _routes_with_urls(
-                routes, h if settings.routing_mode == "traefik" else None
+                routes,
+                h if settings.routing_mode == "traefik" else None,
+                settings.public_scheme,
             ),
         }
 
