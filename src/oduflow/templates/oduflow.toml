@@ -20,6 +20,12 @@ mode = "port"                   # "port" | "traefik"
 #                                  # Deploy-time choice: flipping it on a live server
 #                                  # requires recreating existing environments/services
 #                                  # (their routing labels are fixed at creation).
+# public_scheme = "https"          # scheme of every URL Oduflow hands out (dashboard
+#                                  # links, MCP endpoints, share links). Default:
+#                                  # https in traefik mode, http in port mode. Set
+#                                  # "http" with tls = false when NOTHING terminates
+#                                  # TLS in front, so the links are reachable (this
+#                                  # also stops Traefik trusting X-Forwarded-* on :80).
 
 # ── Extra routes (traefik only) ───────────────────────
 # Forward an external hostname to an arbitrary upstream URL for a service that

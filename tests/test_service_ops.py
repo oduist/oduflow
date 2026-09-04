@@ -28,6 +28,21 @@ TEST_SETTINGS = Settings(
 )
 
 
+class TestRoutesWithUrls:
+    ROUTES = [{"path": "/api", "port": 3000}]
+
+    def _url(self, scheme):
+        routes = service_ops._routes_with_urls(self.ROUTES, "svc.example.com", scheme)
+        return routes[0]["url"]
+
+    def test_uses_given_scheme(self):
+        assert self._url("https") == "https://svc.example.com/api"
+        assert self._url("http") == "http://svc.example.com/api"
+
+    def test_no_hostname_means_no_url(self):
+        assert "url" not in service_ops._routes_with_urls(self.ROUTES, None, "https")[0]
+
+
 @pytest.fixture(autouse=True)
 def _fake_team_network(monkeypatch):
     # Network provisioning is covered by tests/test_team_networks.py; here it

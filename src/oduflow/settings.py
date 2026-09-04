@@ -250,8 +250,16 @@ class Settings:
     # Traefik listens on plain HTTP :80 only, no redirect and no ACME — for
     # running behind a TLS-terminating upstream (e.g. a Cloudflare tunnel) that
     # already serves HTTPS. Public URLs stay https:// (the upstream provides the
-    # certificate). Ignored in port mode.
+    # certificate) unless ``public_scheme`` says otherwise. Ignored in port mode.
     routing_tls: bool = True
+    # Raw ``[routing] public_scheme`` value; read the resolved
+    # :attr:`public_scheme` property instead of this field. Empty (default)
+    # derives the scheme from the routing mode: ``https`` in traefik mode
+    # (Traefik terminates TLS itself, or an upstream does when ``tls = false``)
+    # and ``http`` in port mode. Set it explicitly to ``"http"`` when nothing
+    # terminates TLS in front of a ``tls = false`` deployment — otherwise every
+    # URL Oduflow hands out points at an https:// endpoint nobody serves.
+    public_scheme_setting: str = ""
     # Static extra routes (traefik mode): each forwards an external hostname to
     # an arbitrary upstream URL for a service Oduflow does not manage. Parsed
     # from ``[route.*]`` TOML sections. For anything more complex than
@@ -359,6 +367,22 @@ class Settings:
         return None
 
     @property
+    def public_scheme(self) -> str:
+        """URL scheme ("http"/"https") for the public URLs Oduflow hands out.
+
+        Every dashboard link, MCP endpoint, share link and reported environment
+        URL is built with this scheme. It is deliberately independent of
+        ``routing_tls``: that flag only says whether *Traefik* terminates TLS,
+        and a ``tls = false`` deployment is normally fronted by an upstream
+        terminator (e.g. a Cloudflare tunnel) that still serves https. An
+        operator who runs plain HTTP end to end sets ``[routing]
+        public_scheme = "http"`` to override the derived default.
+        """
+        if self.public_scheme_setting:
+            return self.public_scheme_setting
+        return "https" if self.routing_mode == "traefik" else "http"
+
+    @property
     def oauth_enabled(self) -> bool:
         # Self-hosted OAuth is served whenever an explicit issuer is configured
         # (oauth_base_url) or we run behind Traefik, where each team's own
@@ -389,6 +413,30 @@ class Settings:
 
         if self.routing_mode not in ("port", "traefik"):
             raise ValueError("routing_mode must be 'port' or 'traefik'")
+
+        if self.public_scheme_setting not in ("", "http", "https"):
+            raise ValueError("public_scheme must be 'http' or 'https'")
+
+        # public_scheme must match what actually answers on the wire: with
+        # Traefik terminating TLS, :80 redirects to :443, so http:// links would
+        # bounce (POSTs drop body/Authorization) and leak tokens on the first
+        # plaintext hop; in port mode nothing can terminate TLS on the published
+        # per-environment ports, so https:// links (and the internal probes
+        # built from them) would fail the handshake outright.
+        if (
+            self.public_scheme_setting == "http"
+            and self.routing_mode == "traefik"
+            and self.routing_tls
+        ):
+            raise ValueError(
+                "public_scheme = 'http' requires tls = false: with tls = true "
+                "Traefik redirects :80 to :443, so http:// links would not work"
+            )
+        if self.public_scheme_setting == "https" and self.routing_mode == "port":
+            raise ValueError(
+                "public_scheme = 'https' is not supported in port mode: "
+                "published environment ports serve plain HTTP"
+            )
 
         if self.routing_mode == "traefik" and self.routing_tls:
             if not self.acme_email:
@@ -687,6 +735,7 @@ class Settings:
             routing_mode=routing_mode,
             acme_email=str(routing.get("acme_email", "")).strip(),
             routing_tls=bool(routing.get("tls", True)),
+            public_scheme_setting=str(routing.get("public_scheme", "")).strip().lower(),
             extra_routes=tuple(extra_routes),
             db_user=str(database.get("user", "odoo")),
             db_password=str(database.get("password", "odoo")),

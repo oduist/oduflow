@@ -180,6 +180,8 @@ allow_local_path = true     # trusted single-user local development; disable on 
 mode = "port"               # "port" (direct host port) | "traefik" (reverse proxy with auto-HTTPS)
 # acme_email = "admin@example.com"  # required when mode = "traefik" and tls = true
 # tls = true                # traefik only. false = plain HTTP on :80, no ACME (behind a Cloudflare tunnel / TLS proxy)
+# public_scheme = "https"   # scheme of the URLs Oduflow hands out. Default: https (traefik) / http (port).
+                            # Set "http" with tls = false when nothing terminates TLS in front
 # hostname = "localhost"    # port mode only: default host for teams without their own
                             # (traefik requires each team to set its own hostname)
 
@@ -293,7 +295,8 @@ port_range = [50000, 50100]          # port range for Odoo containers [start, en
 |---|---|---|
 | `[routing].mode` | `port` | `port` — direct host port mapping; `traefik` — reverse proxy with auto-HTTPS |
 | `[routing].acme_email` | *(empty)* | Let's Encrypt email for TLS certificates. Required when `mode = "traefik"` and `tls = true` |
-| `[routing].tls` | `true` | Traefik only. `true`: Traefik terminates TLS (:443, HTTP→HTTPS redirect, Let's Encrypt). `false`: plain HTTP on :80 only, no redirect/ACME — for a TLS-terminating upstream (e.g. a Cloudflare tunnel). Public URLs stay `https://` either way |
+| `[routing].tls` | `true` | Traefik only. `true`: Traefik terminates TLS (:443, HTTP→HTTPS redirect, Let's Encrypt). `false`: plain HTTP on :80 only, no redirect/ACME — for a TLS-terminating upstream (e.g. a Cloudflare tunnel). Public URLs stay `https://` either way unless `public_scheme` says otherwise |
+| `[routing].public_scheme` | *(derived)* | Scheme of every URL Oduflow hands out (dashboard links, MCP endpoints, share links, reported environment/service URLs). Derived by default: `https` in traefik mode, `http` in port mode. Set to `http` alongside `tls = false` when **nothing** terminates TLS in front — this also stops Traefik trusting inbound `X-Forwarded-*` on :80 |
 | `[routing].hostname` | `localhost` | Default hostname for teams that don't set their own `hostname` |
 
 ### OAuth settings

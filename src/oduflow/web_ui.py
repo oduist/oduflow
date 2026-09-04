@@ -3978,14 +3978,10 @@ def _build_routes(
             settings = get_settings()
             team = _get_ui_team(request)
             token = env_ops.get_env_token(settings, team, branch)
-            # In traefik mode the MCP endpoint is served on the team's own
-            # (TLS-terminated) hostname, which is also the per-request OAuth
-            # issuer — so advertise that, not a central oauth_base_url or the
-            # internal request host. Port mode keeps the explicit issuer/base.
-            if settings.routing_mode == "traefik":
-                base = f"https://{team.hostname}"
-            else:
-                base = (settings.oauth_base_url or str(request.base_url)).rstrip("/")
+            # The MCP endpoint is advertised on the same public origin as share
+            # links: the team's own hostname in traefik mode (also the
+            # per-request OAuth issuer), the explicit issuer/base in port mode.
+            base = _public_base_url(request, settings, team)
             url = f"{base}/mcp/{quote(branch, safe='/')}"
             return JSONResponse(
                 {"ok": True, "result": {"url": url, "token": token}},
@@ -3999,14 +3995,14 @@ def _build_routes(
                 {"ok": False, "error": "Internal server error."}, status_code=500
             )
 
-    def _share_base_url(
+    def _public_base_url(
         request: Request, settings: Settings, team: TeamSettings
     ) -> str:
-        """Origin a share link should be opened on. In traefik mode that is the
-        team's own TLS-terminated hostname (the env pages are served there);
+        """Origin share links and MCP endpoints should be opened on. In traefik
+        mode that is the team's own hostname (the env pages are served there);
         port mode keeps the configured base or the request's own."""
         if settings.routing_mode == "traefik":
-            return f"https://{team.hostname}"
+            return f"{settings.public_scheme}://{team.hostname}"
         return (settings.oauth_base_url or str(request.base_url)).rstrip("/")
 
     def _share_payload(
@@ -4022,7 +4018,7 @@ def _build_routes(
         key = quote(str(record["secret"]), safe="")
         return {
             "shared": True,
-            "url": f"{_share_base_url(request, settings, team)}{page}?key={key}",
+            "url": f"{_public_base_url(request, settings, team)}{page}?key={key}",
             "created_at": record.get("created_at"),
         }
 
@@ -4181,7 +4177,10 @@ def _build_routes(
             if settings.routing_mode == "traefik":
                 env_host = result["cookie_domain"]
                 token = connect_tokens.issue(env_host, result["sid"])
-                landing = f"https://{env_host}/oduflow-connect?token={token}"
+                landing = (
+                    f"{settings.public_scheme}://{env_host}"
+                    f"/oduflow-connect?token={token}"
+                )
                 return RedirectResponse(landing, status_code=303)
             response: Response = RedirectResponse(result["url"], status_code=303)
             # Host-only cookie (no domain): scoped to the dashboard's host and,
@@ -4231,7 +4230,7 @@ def _build_routes(
                 media_type="text/plain",
             )
         response: Response = RedirectResponse(
-            f"https://{env_host}/web", status_code=303
+            f"{get_settings().public_scheme}://{env_host}/web", status_code=303
         )
         response.set_cookie(
             "session_id",
